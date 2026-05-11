@@ -16,6 +16,19 @@ demo keys are not production keys.
   `/tmp/hyperlane-validator-*.json`, `demo/.env*`, `e2e/consensus.keys`,
   `*.keys`, or password files as CI artifacts.
 
+## Manual Repro Workflow
+
+`.github/workflows/manual-repro-check.yml` is `workflow_dispatch` only and is
+intended for a Dusk-controlled self-hosted runner. It needs
+`DUSK_ORG_READ_TOKEN` only to checkout private Dusk repositories.
+
+`DUSK_ORG_READ_TOKEN` must be a read-only repository/org token scoped to source
+checkout. It must not be a Dusk signer, validator key, consensus key password,
+or deployment secret.
+
+Do not enable artifact upload for the manual repro workflow unless the exact
+files are scanned first with `scripts/secret-hygiene-check.sh`.
+
 ## Checks
 
 Run the source hygiene check before review:
