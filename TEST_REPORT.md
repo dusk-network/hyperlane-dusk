@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `7d92b1d4e6dc16d1f61cecc8605f17c68401d445` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `86fd241a37b00d5263aa697355d4bb4d5805177b` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -38,7 +38,7 @@ Result:
 
 - `make all`: passed, all contract WASMs built.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
-- `cargo test -p hyperlane-dusk-integration-tests`: passed, 61 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: passed, 64 tests.
 - `cargo test -p dusk-tx`: passed, 0 tests.
 
 ### Hyperlane Rust Agent Checks
@@ -417,6 +417,9 @@ changes, remains a production-readiness gate.
 - Added operational events for initialization, ownership/configuration changes,
   account registration, validator-set updates, IGP domain gas config updates,
   native pending-transfer claims, and WarpDrc20 transfer/mint/burn accounting.
+- Added negative tests for WarpDrc20 non-owner admin rejection, WarpNative
+  zero-amount remote sends, and WarpDrc20Collateral unlock attempts without
+  sufficient locked wrapped-token balance.
 - Reviewed remaining `#[contract(no_event)]` uses. They are now limited to
   test-only contracts (`TestMock` and `TestRecipient`); production contracts no
   longer use `#[contract(no_event)]`.
@@ -442,15 +445,15 @@ Result:
 - `cargo test -p hyperlane-dusk-types` passed:
   `28 passed; 0 failed; 0 ignored`.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:
-  `61 passed; 0 failed; 0 ignored`.
+  `64 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 
 - Continue expanding negative/security coverage; current coverage includes
   malformed mailbox messages, wrong domains, duplicate delivery, invalid
   multisig metadata, insufficient signatures, unauthorized multisig admin
-  paths, dirty redeploy refusal, and several token-accounting failures, but
-  more cross-route failure cases remain.
+  paths, dirty redeploy refusal, and several token-accounting/cross-route
+  failures, but broader route-matrix coverage remains useful.
 - Continue stress and reliability testing. Current coverage includes dirty
   redeploy refusal, 20-message relayer burst delivery, relayer restart/backlog
   recovery, and delayed validator checkpoint recovery through relayer metadata

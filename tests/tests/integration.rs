@@ -14,7 +14,7 @@ extern crate alloc;
 use std::sync::LazyLock;
 
 use dusk_bytes::Serializable;
-use dusk_core::abi::ContractId;
+use dusk_core::abi::{ContractError, ContractId};
 use dusk_core::dusk;
 use dusk_core::signatures::bls::{PublicKey as AccountPublicKey, SecretKey as AccountSecretKey};
 use dusk_vm::{CallReceipt, Error as VMError};
@@ -25,6 +25,31 @@ use hyperlane_dusk_types::{message, DomainGasConfig, EthAddress, H256, MessageId
 
 mod test_session;
 use test_session::{assert_contract_panic, TestSession};
+
+fn assert_contract_panic_contains<R>(
+    call_result: Result<CallReceipt<R>, ContractError>,
+    expected_panic_part: &str,
+) where
+    R: rkyv::Archive,
+    R::Archived: rkyv::Deserialize<R, rkyv::Infallible>
+        + for<'b> rkyv::bytecheck::CheckBytes<
+            rkyv::validation::validators::DefaultValidator<'b>,
+        >,
+{
+    let contract_err = match call_result {
+        Ok(_) => panic!("Contract call shouldn't pass"),
+        Err(error) => error,
+    };
+
+    if let ContractError::Panic(panic_msg) = contract_err {
+        assert!(
+            panic_msg.contains(expected_panic_part),
+            "panic `{panic_msg}` did not contain `{expected_panic_part}`"
+        );
+    } else {
+        panic!("Expected contract panic, got error: {contract_err}");
+    }
+}
 
 // =============================================================================
 // Contract bytecodes (must be built via `make all` first)
@@ -1540,6 +1565,20 @@ fn test_warp_drc20_ism_override() {
     assert_eq!(ism, ContractId::from_bytes([0u8; 32]));
 }
 
+#[test]
+fn test_warp_drc20_admin_rejects_non_owner() {
+    let mut session = session_with_warp_drc20();
+
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_DRC20_ID,
+        "set_ism",
+        &(TEST_MOCK_ID,),
+    );
+
+    assert_contract_panic(result, "WarpDrc20: caller is not the owner");
+}
+
 // =============================================================================
 // Tests: WarpNative
 // =============================================================================
@@ -2362,6 +2401,19 @@ fn test_warp_drc20_transfer_remote_rejects_zero_amount() {
     assert_contract_panic(result, "WarpDrc20: amount must be > 0");
 }
 
+#[test]
+fn test_warp_native_transfer_remote_rejects_zero_amount() {
+    let (mut session, _remote_router) = session_with_warp_native_flow();
+
+    // The assert fires before deposit claiming, so direct_call is sufficient.
+    let result = session.direct_call::<_, MessageId>(
+        WARP_NATIVE_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0xFFu8; 32], 0u64),
+    );
+    assert_contract_panic(result, "WarpNative: amount must be > 0");
+}
+
 // --- WarpNative: escrow for unregistered recipients ---
 
 #[test]
@@ -2486,6 +2538,36 @@ fn test_warp_collateral_register_account() {
         .expect("is_registered should succeed")
         .data;
     assert!(registered);
+}
+
+#[test]
+fn test_warp_collateral_handle_rejects_insufficient_locked_balance() {
+    let (mut session, remote_router) = session_with_warp_collateral_flow();
+
+    let token_body = hyperlane_dusk_types::token_message::encode(
+        TEST_RECIPIENT_ID.to_bytes(),
+        500_000,
+    );
+
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &token_body,
+    );
+
+    let result = session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), encoded),
+    );
+    assert_contract_panic_contains(
+        result,
+        "WarpDrc20: insufficient balance",
+    );
 }
 
 /// Deploy WarpDrc20Collateral with funded DRC20 balance so handle() can

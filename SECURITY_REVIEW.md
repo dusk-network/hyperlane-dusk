@@ -347,7 +347,7 @@ contracts. Other contract reverts still intentionally use `assert!` and
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 14 new security tests (61 total, up from 47) |
+| `tests/tests/integration.rs` | 17 new security tests (64 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -355,10 +355,13 @@ contracts. Other contract reverts still intentionally use `assert!` and
 | Test | What it validates |
 |---|---|
 | `test_warp_drc20_transfer_remote_rejects_zero_amount` | Zero-amount assertion fires before any state mutation |
+| `test_warp_drc20_admin_rejects_non_owner` | WarpDrc20 admin path rejects a Moonlight sender that is not the configured owner |
+| `test_warp_native_transfer_remote_rejects_zero_amount` | Native warp send rejects zero amounts before deposit handling |
 | `test_warp_native_handle_escrows_unregistered_recipient` | Unregistered recipient goes to escrow instead of panicking; `pending_balance` returns correct amount |
 | `test_warp_native_escrow_accumulates` | Multiple inbound messages to same unregistered recipient accumulate correctly |
 | `test_warp_native_claim_pending_requires_pending` | `claim_pending` panics if no pending balance exists |
 | `test_warp_collateral_register_account` | Registration round-trip: `is_registered` returns false before, true after |
+| `test_warp_collateral_handle_rejects_insufficient_locked_balance` | Collateral unlock fails if the route does not hold enough wrapped-token balance |
 | `test_warp_collateral_handle_resolves_registered_external` | End-to-end: pre-fund collateral with DRC20, register BLS key, process inbound message, verify DRC20 tokens unlock to External account |
 | `test_multisig_ism_init_rejects_no_validators` | Init fails if validator set is empty |
 | `test_multisig_ism_init_rejects_invalid_threshold` | Init fails if threshold exceeds validator count |
@@ -379,7 +382,7 @@ cargo test -p hyperlane-dusk-integration-tests
 
 All commands passed after the explicit event annotation cleanup. The type
 package reported `28 passed; 0 failed; 0 ignored`; the integration package
-reported `61 passed; 0 failed; 0 ignored`.
+reported `64 passed; 0 failed; 0 ignored`.
 
 ### Test Gaps
 
@@ -413,7 +416,7 @@ make all    # in dusk/ directory
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 61 integration tests pass (47 pre-existing + 14 new)
+# 64 integration tests pass (47 pre-existing + 17 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
