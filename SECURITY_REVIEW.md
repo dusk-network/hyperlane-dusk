@@ -207,6 +207,42 @@ self.total_gas_payments = self.total_gas_payments.saturating_add(payment);
 
 **Trade-off**: We chose `saturating_add` over `checked_add` here because these are accounting-only counters. They are not used in any security-critical logic — no funds are gated on these values. If they saturate at `u64::MAX`, the only consequence is that the counter stops incrementing, which is an acceptable degradation for a field that would require ~18.4 quintillion dispatches to overflow. Using `checked_add` would panic and prevent message dispatch, which is worse.
 
+### MEDIUM-3: MessageIdMultisigISM accepted malformed signature metadata shape
+
+**File**: `contracts/ism-multisig/src/lib.rs`, `verify()`
+
+**Before**: The verifier computed signature count using integer division:
+
+```rust
+let sig_count = (metadata.len() - SIGNATURES_OFFSET) / SIGNATURE_LENGTH;
+```
+
+This ignored trailing bytes after the last full 65-byte signature. Verification
+only consumed the first `threshold` full signatures, so malformed metadata with
+partial trailing signature data could be accepted if the threshold signatures
+were otherwise valid. The verifier also did not explicitly reject an empty
+validator/threshold state before metadata parsing. That state should not be
+reachable through normal Dusk deployment because the init args are required,
+but the runtime check makes the invariant explicit.
+
+**After**: `verify()` now rejects uninitialized state and requires the signature
+section length to be an exact multiple of 65 bytes before signature counting:
+
+```rust
+assert!(
+    self.threshold > 0 && !self.validators.is_empty(),
+    "MultisigISM: not initialized"
+);
+assert!(
+    (metadata.len() - SIGNATURES_OFFSET) % SIGNATURE_LENGTH == 0,
+    "MultisigISM: metadata signature length mismatch"
+);
+```
+
+**Trade-off**: This is intentionally stricter than silently ignoring trailing
+metadata. Valid Hyperlane multisig metadata is unchanged because validator
+signatures are fixed-width.
+
 ### LOW-1: WarpDrc20 `transfer_remote` accepted zero amounts
 
 **File**: `contracts/warp-drc20/src/lib.rs`, `transfer_remote()` (line 245)
@@ -256,8 +292,9 @@ Dusk VM does not support reentrancy. When contract A calls contract B, contract 
 | `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, recipient resolution in `handle` |
 | `contracts/warp-drc20-collateral/Cargo.toml` | Added `dusk-bytes = "0.1.7"` dependency |
 | `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; `saturating_add` for accounting |
+| `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
 | `contracts/protocol-fee/src/lib.rs` | `saturating_add` for `collected_fees` |
-| `tests/tests/integration.rs` | 6 new tests (53 total, up from 47) |
+| `tests/tests/integration.rs` | 13 new security tests (60 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -270,6 +307,13 @@ Dusk VM does not support reentrancy. When contract A calls contract B, contract 
 | `test_warp_native_claim_pending_requires_pending` | `claim_pending` panics if no pending balance exists |
 | `test_warp_collateral_register_account` | Registration round-trip: `is_registered` returns false before, true after |
 | `test_warp_collateral_handle_resolves_registered_external` | End-to-end: pre-fund collateral with DRC20, register BLS key, process inbound message, verify DRC20 tokens unlock to External account |
+| `test_multisig_ism_init_rejects_no_validators` | Init fails if validator set is empty |
+| `test_multisig_ism_init_rejects_invalid_threshold` | Init fails if threshold exceeds validator count |
+| `test_multisig_ism_init_rejects_unsorted_validators` | Init fails if validator list is not strictly sorted |
+| `test_multisig_ism_verify_rejects_short_metadata` | Verify fails before parsing metadata shorter than the fixed header |
+| `test_multisig_ism_verify_rejects_partial_signature_bytes` | Verify fails when signature metadata has trailing partial bytes |
+| `test_multisig_ism_verify_rejects_insufficient_signatures` | Verify fails when metadata contains fewer signatures than threshold |
+| `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
 
 ### Test Gaps
 
@@ -303,7 +347,7 @@ make all    # in dusk/ directory
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 53 integration tests pass (47 pre-existing + 6 new)
+# 60 integration tests pass (47 pre-existing + 13 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
