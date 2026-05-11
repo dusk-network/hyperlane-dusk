@@ -360,3 +360,6 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
 - Dirty redeploy refusal against a non-reset local Dusk chain.
 - Relayer restart/backlog recovery with 5 EVM -> Dusk and 5 Dusk -> EVM
   transfers.
+- Delayed validator startup for MessageIdMultisigISM: relayer observes missing
+  metadata, Dusk-side delivery remains blocked during the configured validator
+  delay, and delivery succeeds after validator checkpoint output is available.

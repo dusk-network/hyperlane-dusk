@@ -97,6 +97,19 @@ The script sends a burst of EVM -> Dusk transfers through a live relayer, stops
 the relayer, queues the same number of Dusk -> EVM transfers, restarts the
 relayer with the same config/database, and verifies final balances.
 
+### Validator Delay E2E
+
+To verify MessageIdMultisig delivery waits for validator checkpoint metadata:
+
+```bash
+VALIDATOR_DELAY_SECS=35 bash demo/e2e-validator-delay.sh
+```
+
+The script starts a `messageIdMultisig` deployment, runs the relayer before the
+validator, sends an EVM -> Dusk transfer, verifies the Dusk-side token supply
+does not change during the configured validator delay, starts the validator,
+and then waits for delivery through the normal relayer retry path.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |

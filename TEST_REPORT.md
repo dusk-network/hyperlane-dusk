@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `654eae00c5ac2e1bbdec67cbb00d822ce4d68fcf` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `184d49debcc68fa50e61075a9d691fd2ccc655b8` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -157,6 +157,35 @@ Artifacts:
 - `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778512771.log`
 - `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778512771/`
 
+### Validator Delay and Checkpoint Backoff
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/rusk-private \
+TIMEOUT_SECS=360 \
+VALIDATOR_DELAY_SECS=35 \
+bash demo/e2e-validator-delay.sh
+```
+
+Result:
+
+- Passed.
+- Deployed a fresh MessageIdMultisig environment.
+- Started the relayer before the validator.
+- Submitted 1 EVM -> Dusk transfer while no validator checkpoint metadata was
+  available.
+- Verified Dusk token supply did not change during the 35 second validator
+  delay.
+- Started the validator, allowed the relayer to recover through its normal
+  retry/backoff path, and verified the delayed message was delivered.
+
+Artifacts:
+
+- `/tmp/hyperlane-validator-delay-start-messageIdMultisig-1778513634.log`
+- `/tmp/hyperlane-validator-delay-deploy-messageIdMultisig-1778513634.log`
+- `/tmp/hyperlane-validator-delay-relayer-messageIdMultisig-1778513634.log`
+- `/tmp/hyperlane-validator-delay-validator-messageIdMultisig-1778513634.log`
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -179,9 +208,10 @@ Artifacts:
   more cross-route failure cases remain.
 - Continue stress and reliability testing. Current coverage includes dirty
   redeploy refusal, 5-message relayer burst delivery, and relayer
-  restart/backlog recovery. Remaining scenarios include explicit duplicate
-  relayer attempts, RPC failures, delayed checkpoints, low signer balance, and
-  E2E metadata corruption.
+  restart/backlog recovery, and delayed validator checkpoint recovery through
+  relayer metadata backoff. Remaining scenarios include explicit duplicate
+  relayer attempts, RPC failures, low signer balance, and E2E metadata
+  corruption.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or document the exact local
