@@ -8,9 +8,9 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 ## Repository State
 
-| Component | Repository | Branch | Commit |
+| Component | Repository | Branch | Validated commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `61d138deece8d04478df216de90dbb9e88ef2760` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `6616059e23b21afa7eed3221a021965815ef258f` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
