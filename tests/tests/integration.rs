@@ -926,6 +926,26 @@ fn test_multisig_ism_verify_rejects_insufficient_signatures() {
 }
 
 #[test]
+fn test_multisig_ism_verify_rejects_corrupt_signature_bytes() {
+    let mut session = session_with_multisig_ism(
+        MAILBOX_ID.to_bytes(),
+        vec![EthAddress([1; 20])],
+        1,
+    );
+
+    let mut metadata = vec![0u8; 68 + 65];
+    metadata[132] = 27;
+
+    let result = session.direct_call::<_, bool>(
+        ISM_MULTISIG_ID,
+        "verify",
+        &(metadata, sample_encoded_message(TEST_RECIPIENT_ID)),
+    );
+
+    assert_contract_panic(result, "MultisigISM: ecrecover failed");
+}
+
+#[test]
 fn test_multisig_ism_admin_rejects_unauthorized_caller() {
     let mut session = session_with_multisig_ism(
         MAILBOX_ID.to_bytes(),
