@@ -1,6 +1,7 @@
 # Dusk Hyperlane Test Report
 
 Date: 2026-05-11
+Last updated: 2026-05-12
 
 This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
@@ -12,6 +13,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` |
+| Supplemental current-head local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `47d0b5cffd9765fa01335e90565f9d7011388f24`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -33,6 +35,12 @@ Notes:
 - `SECRET_HANDLING.md` documents the local/production boundary, and
   `make secret-hygiene` checks tracked source plus optional CI artifact paths
   for secret-handling regressions.
+- A 2026-05-12 supplemental `make repro-check-agent` run passed on the current
+  Dusk and monorepo PR branch heads. It used the fixed Cargo path dependency
+  layout at `../../rusk-private`; that Rusk checkout was at commit
+  `c0c64db4659500d077bb253ad13acba0e347d3fc` but had unrelated dirty local
+  changes, so this run is current-head supplemental evidence and not a
+  replacement for the clean-Rusk E2E/stress evidence below.
 
 ## Commands Run
 
@@ -80,6 +88,42 @@ Result:
 - Negative artifact scan against `/tmp/hyperlane-relayer-testMock-1778530398.json`:
   failed as expected after detecting generated `hexKey` and `duskKey` signer
   config entries.
+
+### Supplemental Current-Head Local Repro
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+make repro-check-agent
+```
+
+Refs:
+
+- Dusk PR branch: `47d0b5cffd9765fa01335e90565f9d7011388f24`
+- Hyperlane monorepo branch: `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
+- Rusk path dependency checkout: `/home/hein_/projects/rusk-private` at
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`
+
+Result:
+
+- Passed.
+- Contract WASM build via `make all`: passed.
+- `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
+- `cargo test -p dusk-tx`: passed, 3 tests.
+- `make secret-hygiene`: passed.
+- Hyperlane Rust agent check from the adjacent monorepo passed:
+
+```bash
+cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander
+```
+
+Caveat:
+
+- `scripts/local-repro-check.sh` currently expects the private Rusk path
+  dependencies at `../../rusk-private`, so this run used the dirty local Rusk
+  worktree. The commit was the same Rusk commit used by the earlier clean
+  reproduction evidence, but the clean-Rusk E2E/stress runs below remain the
+  stronger release evidence.
 
 ### Hyperlane Rust Agent Checks
 
