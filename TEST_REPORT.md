@@ -13,7 +13,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` |
-| Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b0fdfffd1cdb5e7ee77809be52c450500216c12c`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
+| Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `ba6c02d06b22705daa22ae513924eeb9c2767a79`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -97,26 +97,43 @@ run_dir=/tmp/hyperlane-dusk-repro-rusk-dir-1778540326
 HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
 RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
 make repro-check-agent 2>&1 | tee "$run_dir.log"
+
+run_dir=/tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170
+HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+make repro-check-agent 2>&1 | tee "$run_dir.log"
 ```
 
 Refs:
 
-- Dusk PR branch: `b0fdfffd1cdb5e7ee77809be52c450500216c12c`
+- Earlier run Dusk PR branch:
+  `b0fdfffd1cdb5e7ee77809be52c450500216c12c`
+- Latest run Dusk PR branch:
+  `ba6c02d06b22705daa22ae513924eeb9c2767a79`
 - Hyperlane monorepo branch: `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
-- Rusk path dependency checkout in the temporary layout:
+- Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
   detached worktree `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db`
   at `c0c64db4659500d077bb253ad13acba0e347d3fc`.
-- Log: `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326.log`
+- Latest run Rusk path dependency checkout in the temporary layout:
+  `/tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170/rusk-private`,
+  symlinked to clean detached worktree
+  `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Logs:
+  `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326.log`,
+  `/tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170.log`
 
 Result:
 
-- Passed.
+- Passed in both runs.
 - Contract WASM build via `make all`: passed.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
 - `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
 - `cargo test -p dusk-tx`: passed, 3 tests.
 - `make secret-hygiene`: passed.
+- `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170.log`:
+  passed.
 - Hyperlane Rust agent check from the adjacent monorepo passed:
 
 ```bash
