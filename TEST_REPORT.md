@@ -20,8 +20,8 @@ Notes:
 - Most local agent E2E evidence used the dirty local `rusk-private` checkout.
   A clean detached Rusk worktree at `c0c64db4659500d077bb253ad13acba0e347d3fc`
   has now passed the TestMock and MessageIdMultisig E2E paths plus the
-  20-transfer relayer restart/backlog stress test. The remaining fault-injection
-  scenarios still need the same clean rerun.
+  20-transfer relayer restart/backlog stress test and the currently documented
+  fault-injection scenarios.
 - Docker was unavailable in this WSL environment, so the agent E2E runs skipped
   the optional block explorers.
 - The E2E scripts used ignored local files for dev keys and runtime config:
@@ -198,6 +198,10 @@ Artifacts:
 - `/tmp/hyperlane-dirty-redeploy-start-testMock-1778510813.log`
 - `/tmp/hyperlane-dirty-redeploy-first-testMock-1778510813.log`
 - `/tmp/hyperlane-dirty-redeploy-second-testMock-1778510813.log`
+- Clean Rusk rerun:
+  `/tmp/hyperlane-dirty-redeploy-start-testMock-1778522551.log`,
+  `/tmp/hyperlane-dirty-redeploy-first-testMock-1778522551.log`,
+  `/tmp/hyperlane-dirty-redeploy-second-testMock-1778522551.log`
 
 ### Relayer Restart and Backlog Stress
 
@@ -290,6 +294,11 @@ Artifacts:
 - `/tmp/hyperlane-validator-delay-deploy-messageIdMultisig-1778513634.log`
 - `/tmp/hyperlane-validator-delay-relayer-messageIdMultisig-1778513634.log`
 - `/tmp/hyperlane-validator-delay-validator-messageIdMultisig-1778513634.log`
+- Clean Rusk rerun:
+  `/tmp/hyperlane-validator-delay-start-messageIdMultisig-1778522740.log`,
+  `/tmp/hyperlane-validator-delay-deploy-messageIdMultisig-1778522740.log`,
+  `/tmp/hyperlane-validator-delay-relayer-messageIdMultisig-1778522740.log`,
+  `/tmp/hyperlane-validator-delay-validator-messageIdMultisig-1778522740.log`
 
 ### Corrupt Checkpoint Metadata Recovery
 
@@ -323,6 +332,12 @@ Artifacts:
 - `/tmp/hyperlane-corrupt-metadata-validator-messageIdMultisig-1778514463.log`
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778514463/0_with_id.json`
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778514463/0_with_id.json.valid`
+- Clean Rusk rerun:
+  `/tmp/hyperlane-corrupt-metadata-start-messageIdMultisig-1778523252.log`,
+  `/tmp/hyperlane-corrupt-metadata-deploy-messageIdMultisig-1778523252.log`,
+  `/tmp/hyperlane-corrupt-metadata-relayer-messageIdMultisig-1778523252.log`,
+  `/tmp/hyperlane-corrupt-metadata-validator-messageIdMultisig-1778523252.log`,
+  `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778523252/0_with_id.json`
 
 ### Low Dusk Relayer Signer Balance
 
@@ -358,6 +373,11 @@ Artifacts:
 - `/tmp/hyperlane-low-signer-relayer-funded-testMock-1778514942.log`
 - `/tmp/hyperlane-relayer-low-signer-testMock-1778514942.json`
 - `/tmp/hyperlane-relayer-funded-signer-testMock-1778514942.json`
+- Clean Rusk rerun:
+  `/tmp/hyperlane-low-signer-start-testMock-1778523531.log`,
+  `/tmp/hyperlane-low-signer-deploy-testMock-1778523531.log`,
+  `/tmp/hyperlane-low-signer-relayer-low-testMock-1778523531.log`,
+  `/tmp/hyperlane-low-signer-relayer-funded-testMock-1778523531.log`
 
 ### Origin RPC Failure Recovery
 
@@ -393,6 +413,11 @@ Artifacts:
 - `/tmp/hyperlane-rpc-failure-relayer-healthy-testMock-1778515388.log`
 - `/tmp/hyperlane-relayer-bad-origin-rpc-testMock-1778515388.json`
 - `/tmp/hyperlane-relayer-healthy-origin-rpc-testMock-1778515388.json`
+- Clean Rusk rerun:
+  `/tmp/hyperlane-rpc-failure-start-testMock-1778523772.log`,
+  `/tmp/hyperlane-rpc-failure-deploy-testMock-1778523772.log`,
+  `/tmp/hyperlane-rpc-failure-relayer-bad-rpc-testMock-1778523772.log`,
+  `/tmp/hyperlane-rpc-failure-relayer-healthy-testMock-1778523772.log`
 
 ### Destination RPC Failure Recovery
 
@@ -427,6 +452,11 @@ Artifacts:
 - `/tmp/hyperlane-destination-rpc-failure-relayer-healthy-testMock-1778515791.log`
 - `/tmp/hyperlane-relayer-bad-destination-rpc-testMock-1778515791.json`
 - `/tmp/hyperlane-relayer-healthy-destination-rpc-testMock-1778515791.json`
+- Clean Rusk rerun:
+  `/tmp/hyperlane-destination-rpc-failure-start-testMock-1778524014.log`,
+  `/tmp/hyperlane-destination-rpc-failure-deploy-testMock-1778524014.log`,
+  `/tmp/hyperlane-destination-rpc-failure-relayer-bad-rpc-testMock-1778524014.log`,
+  `/tmp/hyperlane-destination-rpc-failure-relayer-healthy-testMock-1778524014.log`
 
 ### Duplicate Relayer Attempt
 
@@ -460,6 +490,11 @@ Artifacts:
 - `/tmp/hyperlane-duplicate-relayer-b-testMock-1778516191.log`
 - `/tmp/hyperlane-relayer-duplicate-a-testMock-1778516191.json`
 - `/tmp/hyperlane-relayer-duplicate-b-testMock-1778516191.json`
+- Clean Rusk rerun:
+  `/tmp/hyperlane-duplicate-relayer-start-testMock-1778524257.log`,
+  `/tmp/hyperlane-duplicate-relayer-deploy-testMock-1778524257.log`,
+  `/tmp/hyperlane-duplicate-relayer-a-testMock-1778524257.log`,
+  `/tmp/hyperlane-duplicate-relayer-b-testMock-1778524257.log`
 
 ## Rusk Checkout Reproduction Caveat
 
@@ -497,11 +532,10 @@ earlier E2E evidence should be treated as **dirty-Rusk evidence**.
 
 A clean detached worktree at the same base commit has since passed the TestMock
 and MessageIdMultisig E2E paths plus the 20-transfer relayer restart/backlog
-stress test with a regenerated genesis state. This suggests the baseline
-bidirectional bridge, validator/relayer multisig path, and restart/backlog
-stress path do not depend on the dirty local Rusk patch. The remaining
-fault-injection runs still need clean-Rusk reruns, or a dedicated Rusk branch
-containing any exact required changes, before production readiness.
+stress test and the documented fault-injection scenarios with a regenerated
+genesis state. This suggests the baseline bidirectional bridge,
+validator/relayer multisig path, restart/backlog stress path, and currently
+documented recovery/failure modes do not depend on the dirty local Rusk patch.
 
 ## Compatibility Fixes Applied During E2E
 
@@ -562,13 +596,14 @@ Result:
   redeploy refusal, 20-message relayer burst delivery, relayer restart/backlog
   recovery, and delayed validator checkpoint recovery through relayer metadata
   backoff. No currently listed reliability scenario remains untested in this
-  report. The relayer restart/backlog path has also passed on a clean Rusk
-  worktree, but the other fault-injection paths still need clean-Rusk reruns and
-  longer-duration/larger-volume runs before production readiness.
+  report. The currently documented E2E and fault-injection paths have also
+  passed on a clean Rusk worktree, but longer-duration/larger-volume runs are
+  still needed before production readiness.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
-  containing the exact required changes. The TestMock and MessageIdMultisig
-  E2E paths plus the 20-transfer relayer restart/backlog stress test now pass
-  on a clean detached `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree, but
-  the remaining fault-injection evidence still needs the same clean rerun.
+  containing the exact required changes if new Rusk-dependent scenarios are
+  added. The current TestMock and MessageIdMultisig E2E paths, 20-transfer
+  relayer restart/backlog stress test, and documented fault-injection scenarios
+  now pass on a clean detached
+  `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree.
