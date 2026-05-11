@@ -363,3 +363,6 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
 - Delayed validator startup for MessageIdMultisigISM: relayer observes missing
   metadata, Dusk-side delivery remains blocked during the configured validator
   delay, and delivery succeeds after validator checkpoint output is available.
+- Corrupted MessageIdMultisig checkpoint metadata: relayer-side delivery remains
+  blocked while local checkpoint signature fields are corrupt, then succeeds
+  after the valid checkpoint is restored.

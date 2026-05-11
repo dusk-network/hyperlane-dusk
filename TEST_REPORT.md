@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `184d49debcc68fa50e61075a9d691fd2ccc655b8` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `c000ac36a171f8ec6e77dda41213df34ec77529c` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -186,6 +186,39 @@ Artifacts:
 - `/tmp/hyperlane-validator-delay-relayer-messageIdMultisig-1778513634.log`
 - `/tmp/hyperlane-validator-delay-validator-messageIdMultisig-1778513634.log`
 
+### Corrupt Checkpoint Metadata Recovery
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/rusk-private \
+TIMEOUT_SECS=420 \
+CORRUPT_METADATA_SECS=35 \
+bash demo/e2e-corrupt-checkpoint-metadata.sh
+```
+
+Result:
+
+- Passed.
+- Deployed a fresh MessageIdMultisig environment.
+- Started the validator, submitted 1 EVM -> Dusk transfer, and waited for a
+  valid checkpoint at index 0.
+- Stopped the validator, saved the valid checkpoint, and corrupted
+  `signature.r`, `signature.s`, `signature.v`, and `serialized_signature` in
+  the local checkpoint file.
+- Started the relayer and verified Dusk token supply did not change during the
+  35 second corruption window.
+- Restored the valid checkpoint file and verified the relayer delivered the
+  message.
+
+Artifacts:
+
+- `/tmp/hyperlane-corrupt-metadata-start-messageIdMultisig-1778514463.log`
+- `/tmp/hyperlane-corrupt-metadata-deploy-messageIdMultisig-1778514463.log`
+- `/tmp/hyperlane-corrupt-metadata-relayer-messageIdMultisig-1778514463.log`
+- `/tmp/hyperlane-corrupt-metadata-validator-messageIdMultisig-1778514463.log`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778514463/0_with_id.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778514463/0_with_id.json.valid`
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -210,8 +243,7 @@ Artifacts:
   redeploy refusal, 5-message relayer burst delivery, and relayer
   restart/backlog recovery, and delayed validator checkpoint recovery through
   relayer metadata backoff. Remaining scenarios include explicit duplicate
-  relayer attempts, RPC failures, low signer balance, and E2E metadata
-  corruption.
+  relayer attempts, RPC failures, and low signer balance.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or document the exact local

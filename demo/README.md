@@ -110,6 +110,19 @@ validator, sends an EVM -> Dusk transfer, verifies the Dusk-side token supply
 does not change during the configured validator delay, starts the validator,
 and then waits for delivery through the normal relayer retry path.
 
+### Corrupt Checkpoint Metadata E2E
+
+To verify corrupted MessageIdMultisig checkpoint metadata does not deliver:
+
+```bash
+CORRUPT_METADATA_SECS=35 bash demo/e2e-corrupt-checkpoint-metadata.sh
+```
+
+The script creates a valid EVM -> Dusk validator checkpoint, stops the
+validator, corrupts the local checkpoint signature, starts the relayer, verifies
+delivery remains blocked while the metadata is corrupt, restores the checkpoint,
+and verifies delivery resumes.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |
