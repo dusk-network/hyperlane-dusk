@@ -737,7 +737,7 @@ fn test_dispatch_via_transaction() {
 
     // Sender should be keccak256(OWNER_PK.to_bytes()) — a 32-byte hash
     // (not the TRANSFER_CONTRACT or a ContractId)
-    assert_ne!(msg.sender, [0u8; 32], "Sender should be non-zero");
+    assert_eq!(msg.sender, message::keccak256(&OWNER_PK.to_bytes()));
 
     // Verify latest_dispatched_id matches
     assert_eq!(s.mailbox_latest_dispatched_id(), message_id);
