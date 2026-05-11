@@ -83,9 +83,14 @@ command -v cargo >/dev/null 2>&1 || fail "cargo is required"
 command -v make >/dev/null 2>&1 || fail "make is required"
 command -v git >/dev/null 2>&1 || fail "git is required"
 
+[ -d "$RUSK_DIR" ] || fail "missing Rusk checkout: $RUSK_DIR"
 RUSK_DIR="$(cd "$RUSK_DIR" && pwd -P)"
 DEFAULT_RUSK_DIR="$(cd "$(dirname "$DEFAULT_RUSK_DIR")" && pwd -P)/$(basename "$DEFAULT_RUSK_DIR")"
-MONOREPO_DIR="$(cd "$MONOREPO_DIR" && pwd -P)"
+
+if [ "$RUN_AGENT_CHECK" -eq 1 ]; then
+    [ -d "$MONOREPO_DIR" ] || fail "missing Hyperlane monorepo checkout: $MONOREPO_DIR"
+    MONOREPO_DIR="$(cd "$MONOREPO_DIR" && pwd -P)"
+fi
 
 if [ "$RUSK_DIR" != "$DEFAULT_RUSK_DIR" ] && [ "${HYPERLANE_DUSK_REPRO_LAYOUT:-0}" != "1" ]; then
     [ -d "$RUSK_DIR/core" ] || fail "missing Rusk path dependency: $RUSK_DIR/core"
