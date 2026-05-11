@@ -19,8 +19,9 @@ Notes:
 
 - Most local agent E2E evidence used the dirty local `rusk-private` checkout.
   A clean detached Rusk worktree at `c0c64db4659500d077bb253ad13acba0e347d3fc`
-  has now passed the TestMock and MessageIdMultisig E2E paths, but stress and
-  reliability scenarios still need the same clean rerun.
+  has now passed the TestMock and MessageIdMultisig E2E paths plus the
+  20-transfer relayer restart/backlog stress test. The remaining fault-injection
+  scenarios still need the same clean rerun.
 - Docker was unavailable in this WSL environment, so the agent E2E runs skipped
   the optional block explorers.
 - The E2E scripts used ignored local files for dev keys and runtime config:
@@ -225,6 +226,29 @@ Result:
   a local test-account funding limit. The script now supports
   `TRANSFER_AMOUNT_WEI` so high-count runs can stay within the funded balance.
 
+Clean Rusk rerun:
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+SKIP_OTTERSCAN=true \
+SKIP_DUSK_EXPLORER=true \
+TIMEOUT_SECS=600 \
+TRANSFERS=20 \
+TRANSFER_AMOUNT_WEI=500000000000000000 \
+bash demo/e2e-relayer-restart-stress.sh
+```
+
+- Passed on detached Rusk commit `c0c64db4659500d077bb253ad13acba0e347d3fc`
+  with the regenerated clean `/tmp/example.state`.
+- The EVM -> Dusk burst hit repeated Rusk mempool pressure:
+  `spendId exists in the mempool`, then recovered and reached the target
+  Dusk supply.
+- The Dusk -> EVM backlog was queued with the relayer stopped and delivered
+  after relayer restart with the same config and DB.
+- Final balances matched the starting state:
+  EVM account returned to 10 wDUSK and Dusk wrapped supply returned to 0.
+
 Artifacts:
 
 - `/tmp/hyperlane-restart-stress-start-testMock-1778518816.log`
@@ -232,6 +256,11 @@ Artifacts:
 - `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778518816.log`
 - `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778518816.log`
 - `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778518816/`
+- `/tmp/hyperlane-restart-stress-start-testMock-1778521340.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778521340.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778521340.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778521340.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778521340/`
 
 ### Validator Delay and Checkpoint Backoff
 
@@ -467,11 +496,12 @@ an extensive local working tree rather than a small reproducibility patch, the
 earlier E2E evidence should be treated as **dirty-Rusk evidence**.
 
 A clean detached worktree at the same base commit has since passed the TestMock
-and MessageIdMultisig E2E paths with a regenerated genesis state, which
-suggests the baseline bidirectional bridge and validator/relayer multisig path
-do not depend on the dirty local Rusk patch. The stress/reliability runs still
-need clean-Rusk reruns, or a dedicated Rusk branch containing any exact required
-changes, before production readiness.
+and MessageIdMultisig E2E paths plus the 20-transfer relayer restart/backlog
+stress test with a regenerated genesis state. This suggests the baseline
+bidirectional bridge, validator/relayer multisig path, and restart/backlog
+stress path do not depend on the dirty local Rusk patch. The remaining
+fault-injection runs still need clean-Rusk reruns, or a dedicated Rusk branch
+containing any exact required changes, before production readiness.
 
 ## Compatibility Fixes Applied During E2E
 
@@ -532,12 +562,13 @@ Result:
   redeploy refusal, 20-message relayer burst delivery, relayer restart/backlog
   recovery, and delayed validator checkpoint recovery through relayer metadata
   backoff. No currently listed reliability scenario remains untested in this
-  report, but longer-duration and larger-volume runs are still needed before
-  production readiness.
+  report. The relayer restart/backlog path has also passed on a clean Rusk
+  worktree, but the other fault-injection paths still need clean-Rusk reruns and
+  longer-duration/larger-volume runs before production readiness.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
   containing the exact required changes. The TestMock and MessageIdMultisig
-  E2E paths now pass on a clean detached
-  `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree, but stress/reliability
-  evidence still needs the same clean rerun.
+  E2E paths plus the 20-transfer relayer restart/backlog stress test now pass
+  on a clean detached `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree, but
+  the remaining fault-injection evidence still needs the same clean rerun.
