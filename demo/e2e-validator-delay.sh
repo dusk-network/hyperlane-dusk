@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# =============================================================================
+# E2E: Delayed Validator Checkpoint Flow
+# =============================================================================
+#
+# Starts a MessageIdMultisig environment with the relayer running before the
+# validator. Verifies EVM -> Dusk delivery waits for validator checkpoint
+# metadata, then starts the validator and verifies delivery succeeds.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/.env.bridge"
+
+fail() { echo "[FAIL] $*" >&2; exit 1; }
+info() { echo "[INFO] $*" >&2; }
+
+TIMEOUT_SECS="${TIMEOUT_SECS:-300}"
+VALIDATOR_DELAY_SECS="${VALIDATOR_DELAY_SECS:-35}"
+AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-1}"
+
+CURRENT_RELAYER_PID=""
+CURRENT_VALIDATOR_PID=""
+
+require_tools() {
+    command -v jq >/dev/null 2>&1 || fail "jq not found"
+    command -v cast >/dev/null 2>&1 || fail "cast not found (foundry)"
+    command -v forge >/dev/null 2>&1 || fail "forge not found (foundry)"
+    command -v python3 >/dev/null 2>&1 || fail "python3 not found"
+}
+
+to_wei() {
+    local amount="$1"
+    if ! [[ "$amount" =~ ^[1-9][0-9]*$ ]]; then
+        fail "Invalid amount '$amount' (expected whole positive integer)"
+    fi
+    echo "${amount}000000000000000000"
+}
+
+kill_pid() {
+    local pid="$1"
+    if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            kill -0 "$pid" 2>/dev/null || return 0
+            sleep 1
+        done
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    kill_pid "$CURRENT_RELAYER_PID"
+    kill_pid "$CURRENT_VALIDATOR_PID"
+    bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT
+
+tail_logs_on_fail() {
+    local relayer_log="$1"
+    local validator_log="${2:-}"
+    echo "" >&2
+    echo "=== relayer log (tail) ===" >&2
+    tail -n 160 "$relayer_log" 2>/dev/null || true
+    if [ -n "$validator_log" ]; then
+        echo "" >&2
+        echo "=== validator log (tail) ===" >&2
+        tail -n 160 "$validator_log" 2>/dev/null || true
+    fi
+}
+
+start_relayer() {
+    local cfg="$1"
+    local log="$2"
+
+    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" ./target/debug/relayer \
+      >"$log" 2>&1) &
+    CURRENT_RELAYER_PID="$!"
+    sleep 2
+    kill -0 "$CURRENT_RELAYER_PID" 2>/dev/null || {
+        tail_logs_on_fail "$log"
+        fail "relayer failed to start"
+    }
+}
+
+start_validator() {
+    local cfg="$1"
+    local log="$2"
+
+    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" ./target/debug/validator \
+      >"$log" 2>&1) &
+    CURRENT_VALIDATOR_PID="$!"
+    sleep 2
+    kill -0 "$CURRENT_VALIDATOR_PID" 2>/dev/null || {
+        tail_logs_on_fail "$relayer_log" "$log"
+        fail "validator failed to start"
+    }
+}
+
+query_dusk_supply() {
+    local dusk_warp="$1"
+    "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+        --contract "$dusk_warp" --method total_supply --return-type u64 \
+        2>/dev/null | jq -r '.value // 0'
+}
+
+assert_not_delivered_before_validator() {
+    local dusk_warp="$1"
+    local expected="$2"
+    local relayer_log="$3"
+    local start_ts now supply
+
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -ge "$VALIDATOR_DELAY_SECS" ]; then
+            return 0
+        fi
+        kill -0 "$CURRENT_RELAYER_PID" 2>/dev/null || {
+            tail_logs_on_fail "$relayer_log"
+            fail "relayer exited before validator started"
+        }
+        supply="$(query_dusk_supply "$dusk_warp")"
+        if [ "$supply" = "$expected" ]; then
+            fail "message delivered before validator checkpoint metadata was available"
+        fi
+        sleep 5
+    done
+}
+
+wait_for_dusk_supply() {
+    local dusk_warp="$1"
+    local expected="$2"
+    local relayer_log="$3"
+    local validator_log="$4"
+    local start_ts now supply
+
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "$validator_log"
+            fail "timeout waiting for Dusk supply $expected"
+        fi
+        kill -0 "$CURRENT_RELAYER_PID" 2>/dev/null || {
+            tail_logs_on_fail "$relayer_log" "$validator_log"
+            fail "relayer exited unexpectedly"
+        }
+        kill -0 "$CURRENT_VALIDATOR_PID" 2>/dev/null || {
+            tail_logs_on_fail "$relayer_log" "$validator_log"
+            fail "validator exited unexpectedly"
+        }
+        supply="$(query_dusk_supply "$dusk_warp")"
+        if [ "$supply" = "$expected" ]; then
+            return 0
+        fi
+        sleep 5
+    done
+}
+
+require_tools
+
+run_id="$(date +%s)"
+start_env_log="/tmp/hyperlane-validator-delay-start-messageIdMultisig-${run_id}.log"
+deploy_log="/tmp/hyperlane-validator-delay-deploy-messageIdMultisig-${run_id}.log"
+relayer_log="/tmp/hyperlane-validator-delay-relayer-messageIdMultisig-${run_id}.log"
+validator_log="/tmp/hyperlane-validator-delay-validator-messageIdMultisig-${run_id}.log"
+
+info "Starting fresh local environment..."
+bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+SKIP_OTTERSCAN=true SKIP_DUSK_EXPLORER=true bash "$SCRIPT_DIR/start-env.sh" \
+    >"$start_env_log" 2>&1 || {
+        tail -n 200 "$start_env_log" >&2 || true
+        fail "start-env.sh failed (log: $start_env_log)"
+    }
+
+info "Deploying MessageIdMultisig environment..."
+bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism messageIdMultisig \
+    --multisig-validators "$ANVIL_DEPLOYER" --multisig-threshold 1 \
+    >"$deploy_log" 2>&1 || {
+        tail -n 200 "$deploy_log" >&2 || true
+        fail "deploy.sh failed (log: $deploy_log)"
+    }
+
+cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism messageIdMultisig --run-id "$run_id")"
+relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
+validator_cfg="$(echo "$cfg_json" | jq -r '.validator')"
+
+info "Building agent binaries..."
+(cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer -p validator >/dev/null)
+
+state="$BRIDGE_STATE_FILE"
+evm_token="$(jq -r '.evm.token' "$state")"
+dusk_warp="$(jq -r '.dusk.warp_drc20' "$state")"
+account_h256="$(jq -r '.account_h256' "$state")"
+dusk_domain="$(jq -r '.dusk_domain' "$state")"
+
+amount_wei="$(to_wei "$AMOUNT_TO_DUSK")"
+dusk_supply_before="$(query_dusk_supply "$dusk_warp")"
+expected_dusk_supply="$(python3 - <<PY
+print(int(${dusk_supply_before}) + int(${amount_wei}))
+PY
+)"
+
+info "Starting relayer without validator..."
+start_relayer "$relayer_cfg" "$relayer_log"
+
+info "Dispatching EVM -> Dusk ($AMOUNT_TO_DUSK wDUSK) while validator is delayed..."
+cast send "$evm_token" \
+    "transferRemote(uint32,bytes32,uint256)" \
+    "$dusk_domain" "0x${account_h256}" "$amount_wei" \
+    --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+
+info "Verifying delivery is delayed for ${VALIDATOR_DELAY_SECS}s before validator starts..."
+assert_not_delivered_before_validator "$dusk_warp" "$expected_dusk_supply" "$relayer_log"
+
+info "Starting validator..."
+start_validator "$validator_cfg" "$validator_log"
+
+info "Waiting for delayed message delivery after validator checkpoint..."
+wait_for_dusk_supply "$dusk_warp" "$expected_dusk_supply" "$relayer_log" "$validator_log"
+
+info "Stopping agents..."
+kill_pid "$CURRENT_RELAYER_PID"
+kill_pid "$CURRENT_VALIDATOR_PID"
+CURRENT_RELAYER_PID=""
+CURRENT_VALIDATOR_PID=""
+
+info "Stopping environment..."
+bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+
+info "Delayed validator flow delivered."
+info "Logs:"
+info "  start:     $start_env_log"
+info "  deploy:    $deploy_log"
+info "  relayer:   $relayer_log"
+info "  validator: $validator_log"
+info "CASE OK: validator delay"
