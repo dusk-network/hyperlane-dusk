@@ -351,6 +351,30 @@ bash demo/e2e-soak-restart-stress.sh
   2 Dusk -> EVM transfers, restarted the relayer with the same config/DB, and
   returned EVM and Dusk accounting to the starting state.
 
+Three-cycle/high-volume clean Rusk soak:
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+SKIP_OTTERSCAN=true \
+SKIP_DUSK_EXPLORER=true \
+SOAK_CYCLES=3 \
+TRANSFERS=20 \
+TRANSFER_AMOUNT_WEI=500000000000000000 \
+TIMEOUT_SECS=600 \
+bash demo/e2e-soak-restart-stress.sh
+```
+
+- Passed on the same clean detached Rusk commit
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Completed 3 full restart/backlog cycles in 3102 seconds.
+- Each cycle delivered 20 EVM -> Dusk transfers, stopped the relayer, queued
+  20 Dusk -> EVM transfers, restarted the relayer with the same config/DB, and
+  returned EVM and Dusk accounting to the starting state.
+- The EVM -> Dusk bursts encountered transient Dusk `spendId exists in the
+  mempool` preverify responses under load, and relayer retry/backoff recovered
+  inside the configured checkpoints.
+
 Artifacts:
 
 - `/tmp/hyperlane-restart-stress-start-testMock-1778518816.log`
@@ -388,6 +412,25 @@ Artifacts:
 - `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778529420.log`
 - `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778529420.log`
 - `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778529420/`
+- `/tmp/hyperlane-soak-restart-stress-1778530903.log`
+- `/tmp/hyperlane-soak-restart-stress-1778530903-cycle-1.log`
+- `/tmp/hyperlane-soak-restart-stress-1778530903-cycle-2.log`
+- `/tmp/hyperlane-soak-restart-stress-1778530903-cycle-3.log`
+- `/tmp/hyperlane-restart-stress-start-testMock-1778530903.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778530903.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778530903.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778530903.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778530903/`
+- `/tmp/hyperlane-restart-stress-start-testMock-1778531937.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778531937.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778531937.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778531937.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778531937/`
+- `/tmp/hyperlane-restart-stress-start-testMock-1778532971.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778532971.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778532971.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778532971.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778532971/`
 
 ### Validator Delay and Checkpoint Backoff
 
@@ -724,9 +767,10 @@ Result:
   backoff. No currently listed reliability scenario remains untested in this
   report. The currently documented E2E and fault-injection paths have also
   passed on a clean Rusk worktree. `demo/e2e-soak-restart-stress.sh` provides
-  repeatable restart/backlog soak cycles and has passed 1-cycle and 2-cycle
-  clean-Rusk runs, but longer time-boxed soak runs are still recommended
-  before production readiness.
+  repeatable restart/backlog soak cycles and has passed 1-cycle, 2-cycle, and
+  3-cycle/20-transfer clean-Rusk runs. An hours-long soak is still reasonable
+  before production readiness, but the documented restart/backlog path now has
+  a 3102-second high-volume run.
 - Have Dusk reviewers accept or change the open production review decisions
   recorded in `SECURITY_REVIEW.md`.
 - Production secret handling remains an operational gate. The local scripts use

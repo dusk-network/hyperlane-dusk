@@ -35,7 +35,7 @@ submission or production claims.
 | Local EVM <-> Dusk with TestMock/null-style ISM | Clean Rusk run `1778520709`: bidirectional E2E passed | Done |
 | Local EVM <-> Dusk with MessageIdMultisigISM | Clean Rusk run `1778521018`: bidirectional E2E with validator/checkpoint passed | Done |
 | Bidirectional DUSK/wDUSK bridge through relayer/validator, no manual process calls | `TEST_REPORT.md` records relayer/validator-driven EVM -> Dusk and Dusk -> EVM flows for TestMock and MessageIdMultisig | Done |
-| Stress/reliability: relayer restart/backlog | Clean Rusk run `1778524643`: 50 transfers each direction; clean soak runs `1778528713` and `1778529143` | Done, longer time-boxed soak still recommended |
+| Stress/reliability: relayer restart/backlog | Clean Rusk run `1778524643`: 50 transfers each direction; clean soak runs `1778528713`, `1778529143`, and `1778530903`; the latest run completed 3 cycles, 20 transfers each direction per cycle, in 3102 seconds | Done, hours-long soak still reasonable before production claims |
 | Stress/reliability: dirty redeploy guard | Clean Rusk run `1778522551` | Done |
 | Stress/reliability: validator delay/checkpoint backoff | Clean Rusk run `1778522740` | Done |
 | Stress/reliability: metadata corruption | Clean Rusk run `1778523252` | Done |
@@ -65,9 +65,11 @@ submission or production claims.
    - Mailbox transfer-contract sender resolution.
    - Immutable `registered_accounts` registration.
    - No admin drain for native/collateral pending escrow.
-2. Longer time-boxed soak testing remains recommended before production claims.
-   Current evidence includes a 50-transfer restart/backlog run and 1-cycle and
-   2-cycle clean-Rusk soak runs, but not an hours-long soak.
+2. Longer soak testing remains recommended before production claims if Dusk
+   wants an hours-long release gate. Current evidence includes a 50-transfer
+   restart/backlog run, 1-cycle and 2-cycle clean-Rusk soak runs, and a
+   3102-second 3-cycle clean-Rusk soak with 20 transfers each direction per
+   cycle.
 3. Production secret handling needs an operational/CI sign-off. Current scripts
    keep dev configs in ignored files and `/tmp`, and Dusk consensus passwords
    are no longer passed to `dusk-tx` in process argv. Production deployment
