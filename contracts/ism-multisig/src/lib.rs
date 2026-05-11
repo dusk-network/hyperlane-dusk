@@ -81,12 +81,7 @@ mod ism_multisig {
         /// Validators must be sorted by address (ascending). The threshold
         /// must be > 0 and <= number of validators.
         #[contract(no_event)]
-        pub fn init(
-            &mut self,
-            owner: [u8; 32],
-            validators: Vec<EthAddress>,
-            threshold: u8,
-        ) {
+        pub fn init(&mut self, owner: [u8; 32], validators: Vec<EthAddress>, threshold: u8) {
             assert!(self.owner.is_none(), "MultisigISM: already initialized");
             assert!(!validators.is_empty(), "MultisigISM: no validators");
             assert!(
@@ -117,12 +112,19 @@ mod ism_multisig {
         #[allow(clippy::unused_self)]
         pub fn verify(&self, metadata: Vec<u8>, encoded_message: Vec<u8>) -> bool {
             assert!(
+                self.threshold > 0 && !self.validators.is_empty(),
+                "MultisigISM: not initialized"
+            );
+            assert!(
                 metadata.len() >= SIGNATURES_OFFSET,
                 "MultisigISM: metadata too short"
             );
+            assert!(
+                (metadata.len() - SIGNATURES_OFFSET) % SIGNATURE_LENGTH == 0,
+                "MultisigISM: metadata signature length mismatch"
+            );
 
-            let sig_count =
-                (metadata.len() - SIGNATURES_OFFSET) / SIGNATURE_LENGTH;
+            let sig_count = (metadata.len() - SIGNATURES_OFFSET) / SIGNATURE_LENGTH;
             assert!(
                 sig_count >= self.threshold as usize,
                 "MultisigISM: not enough signatures"
@@ -142,8 +144,7 @@ mod ism_multisig {
             let origin = message::origin(&encoded_message);
 
             // Compute the digest that validators signed.
-            let digest =
-                compute_digest(origin, merkle_tree_hook, root, index, &message_id);
+            let digest = compute_digest(origin, merkle_tree_hook, root, index, &message_id);
 
             // Verify threshold signatures using sorted two-pointer matching.
             let mut validator_index = 0usize;
@@ -200,11 +201,7 @@ mod ism_multisig {
 
         /// Update validators and threshold. Owner only.
         #[contract(no_event)]
-        pub fn set_validators_and_threshold(
-            &mut self,
-            validators: Vec<EthAddress>,
-            threshold: u8,
-        ) {
+        pub fn set_validators_and_threshold(&mut self, validators: Vec<EthAddress>, threshold: u8) {
             self.only_owner();
 
             assert!(!validators.is_empty(), "MultisigISM: no validators");
@@ -285,8 +282,8 @@ mod ism_multisig {
         sig_arr.copy_from_slice(sig);
 
         // Recover the uncompressed public key (65 bytes: 0x04 || x || y).
-        let pubkey = abi::secp256k1_recover(*digest, sig_arr)
-            .expect("MultisigISM: ecrecover failed");
+        let pubkey =
+            abi::secp256k1_recover(*digest, sig_arr).expect("MultisigISM: ecrecover failed");
 
         // Derive Ethereum address: keccak256(pubkey[1..])[12..32]
         let hash = keccak256(&pubkey[1..]);

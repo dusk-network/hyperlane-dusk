@@ -17,11 +17,11 @@ use dusk_bytes::Serializable;
 use dusk_core::abi::ContractId;
 use dusk_core::dusk;
 use dusk_core::signatures::bls::{PublicKey as AccountPublicKey, SecretKey as AccountSecretKey};
-use dusk_vm::CallReceipt;
+use dusk_vm::{CallReceipt, Error as VMError};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use hyperlane_dusk_types::{message, DomainGasConfig, H256, MessageId, VERSION};
+use hyperlane_dusk_types::{message, DomainGasConfig, EthAddress, H256, MessageId, VERSION};
 
 mod test_session;
 use test_session::{assert_contract_panic, TestSession};
@@ -48,6 +48,9 @@ const PROTOCOL_FEE_BYTECODE: &[u8] = include_bytes!(
 const IGP_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_igp.wasm"
 );
+const ISM_MULTISIG_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_ism_multisig.wasm"
+);
 
 // =============================================================================
 // Contract IDs (fixed for deterministic tests)
@@ -59,6 +62,7 @@ const TEST_MOCK_ID: ContractId = ContractId::from_bytes([12; 32]);
 const TEST_RECIPIENT_ID: ContractId = ContractId::from_bytes([13; 32]);
 const PROTOCOL_FEE_ID: ContractId = ContractId::from_bytes([14; 32]);
 const IGP_ID: ContractId = ContractId::from_bytes([15; 32]);
+const ISM_MULTISIG_ID: ContractId = ContractId::from_bytes([16; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
@@ -371,6 +375,26 @@ impl HyperlaneSession {
             .expect("post_dispatch_count should succeed")
             .data
     }
+}
+
+fn assert_deploy_panic(result: Result<ContractId, VMError>, expected_panic: &str) {
+    match result {
+        Err(VMError::Panic(panic_msg)) => assert_eq!(panic_msg, expected_panic),
+        Err(error) => panic!("Expected deploy panic, got error: {error}"),
+        Ok(contract_id) => panic!("Deploy should have failed, got {contract_id:?}"),
+    }
+}
+
+fn sample_encoded_message(recipient: ContractId) -> Vec<u8> {
+    message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        recipient.to_bytes(),
+        b"hello",
+    )
 }
 
 // =============================================================================
@@ -772,6 +796,151 @@ fn test_mock_quote_dispatch_zero() {
         .data;
 
     assert_eq!(quote, 0);
+}
+
+// =============================================================================
+// Tests: MessageIdMultisigISM
+// =============================================================================
+
+fn session_with_multisig_ism(
+    owner: [u8; 32],
+    validators: Vec<EthAddress>,
+    threshold: u8,
+) -> TestSession {
+    let mut session = TestSession::instantiate(vec![
+        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
+        (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
+    ]);
+
+    session
+        .deploy(
+            ISM_MULTISIG_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(owner, validators, threshold))
+                .contract_id(ISM_MULTISIG_ID),
+        )
+        .expect("Deploying MessageIdMultisigISM should succeed");
+
+    session
+}
+
+#[test]
+fn test_multisig_ism_init_rejects_invalid_threshold() {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+
+    let result = session.deploy(
+        ISM_MULTISIG_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(MAILBOX_ID.to_bytes(), vec![EthAddress([1; 20])], 2u8))
+            .contract_id(ISM_MULTISIG_ID),
+    );
+
+    assert_deploy_panic(result, "MultisigISM: invalid threshold");
+}
+
+#[test]
+fn test_multisig_ism_init_rejects_unsorted_validators() {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+
+    let result = session.deploy(
+        ISM_MULTISIG_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                MAILBOX_ID.to_bytes(),
+                vec![EthAddress([2; 20]), EthAddress([1; 20])],
+                1u8,
+            ))
+            .contract_id(ISM_MULTISIG_ID),
+    );
+
+    assert_deploy_panic(result, "MultisigISM: validators not sorted");
+}
+
+#[test]
+fn test_multisig_ism_init_rejects_no_validators() {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+
+    let result = session.deploy(
+        ISM_MULTISIG_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(MAILBOX_ID.to_bytes(), Vec::<EthAddress>::new(), 1u8))
+            .contract_id(ISM_MULTISIG_ID),
+    );
+
+    assert_deploy_panic(result, "MultisigISM: no validators");
+}
+
+#[test]
+fn test_multisig_ism_verify_rejects_short_metadata() {
+    let mut session = session_with_multisig_ism(
+        MAILBOX_ID.to_bytes(),
+        vec![EthAddress([1; 20])],
+        1,
+    );
+
+    let result = session.direct_call::<_, bool>(
+        ISM_MULTISIG_ID,
+        "verify",
+        &(vec![0u8; 67], sample_encoded_message(TEST_RECIPIENT_ID)),
+    );
+
+    assert_contract_panic(result, "MultisigISM: metadata too short");
+}
+
+#[test]
+fn test_multisig_ism_verify_rejects_partial_signature_bytes() {
+    let mut session = session_with_multisig_ism(
+        MAILBOX_ID.to_bytes(),
+        vec![EthAddress([1; 20])],
+        1,
+    );
+
+    let result = session.direct_call::<_, bool>(
+        ISM_MULTISIG_ID,
+        "verify",
+        &(vec![0u8; 69], sample_encoded_message(TEST_RECIPIENT_ID)),
+    );
+
+    assert_contract_panic(result, "MultisigISM: metadata signature length mismatch");
+}
+
+#[test]
+fn test_multisig_ism_verify_rejects_insufficient_signatures() {
+    let mut session = session_with_multisig_ism(
+        MAILBOX_ID.to_bytes(),
+        vec![EthAddress([1; 20])],
+        1,
+    );
+
+    let result = session.direct_call::<_, bool>(
+        ISM_MULTISIG_ID,
+        "verify",
+        &(vec![0u8; 68], sample_encoded_message(TEST_RECIPIENT_ID)),
+    );
+
+    assert_contract_panic(result, "MultisigISM: not enough signatures");
+}
+
+#[test]
+fn test_multisig_ism_admin_rejects_unauthorized_caller() {
+    let mut session = session_with_multisig_ism(
+        MAILBOX_ID.to_bytes(),
+        vec![EthAddress([1; 20])],
+        1,
+    );
+
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        ISM_MULTISIG_ID,
+        "set_validators_and_threshold",
+        &(vec![EthAddress([2; 20])], 1u8),
+    );
+
+    assert_contract_panic(result, "MultisigISM: caller is not owner");
 }
 
 // =============================================================================
