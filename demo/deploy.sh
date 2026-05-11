@@ -1,0 +1,488 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Deploy Hyperlane Contracts on Both Chains
+# =============================================================================
+#
+# Deploys Hyperlane on EVM (Anvil) and Dusk (Rusk), enrolls routers, and
+# registers the deployer's BLS account for token bridging.
+#
+# Usage:
+#   bash deploy.sh              Full deployment
+#   bash deploy.sh --skip-deploy  Reuse existing deployment files
+#   bash deploy.sh --reset      Delete existing and redeploy
+#
+# Requires: start-env.sh running (Rusk + Anvil)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/.env.bridge"
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+info()   { echo -e "${BLUE}[INFO]${NC}  $*"; }
+ok()     { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()   { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+fail()   { echo -e "${RED}[FAIL]${NC}  $*"; exit 1; }
+header() { echo -e "\n${BOLD}${GREEN}═══ $* ═══${NC}\n"; }
+step()   { echo -e "${CYAN}  -> $*${NC}"; }
+
+pad_evm_address() {
+    local addr="${1#0x}"
+    addr="$(echo "$addr" | tr '[:upper:]' '[:lower:]')"
+    echo "000000000000000000000000${addr}"
+}
+
+# ── Parse Arguments ──────────────────────────────────────────────────────────
+
+SKIP_DEPLOY=false
+RESET=false
+
+# Dusk Mailbox default ISM. `testMock` is permissive (no validator/metadata).
+# `messageIdMultisig` requires running a validator agent for the EVM origin chain.
+DUSK_DEFAULT_ISM="${DUSK_DEFAULT_ISM:-testMock}"
+MULTISIG_VALIDATORS="${MULTISIG_VALIDATORS:-$ANVIL_DEPLOYER}"
+MULTISIG_THRESHOLD="${MULTISIG_THRESHOLD:-1}"
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --skip-deploy)
+            SKIP_DEPLOY=true
+            shift
+            ;;
+        --reset)
+            RESET=true
+            shift
+            ;;
+        --dusk-ism)
+            DUSK_DEFAULT_ISM="${2:-}"
+            shift 2
+            ;;
+        --multisig-validators)
+            MULTISIG_VALIDATORS="${2:-}"
+            shift 2
+            ;;
+        --multisig-threshold)
+            MULTISIG_THRESHOLD="${2:-}"
+            shift 2
+            ;;
+        *)
+            fail "Unknown argument: $1"
+            ;;
+    esac
+done
+
+if [ "$DUSK_DEFAULT_ISM" != "testMock" ] && [ "$DUSK_DEFAULT_ISM" != "messageIdMultisig" ]; then
+    fail "Invalid --dusk-ism '$DUSK_DEFAULT_ISM' (expected: testMock or messageIdMultisig)"
+fi
+
+if [ "$RESET" = true ]; then
+    info "Resetting — removing existing deployment files..."
+    rm -f /tmp/hyperlane-demo-evm.json
+    rm -f /tmp/hyperlane-demo-dusk-deploy.json
+    rm -f "$BRIDGE_STATE_FILE"
+fi
+
+# ── Prerequisites ────────────────────────────────────────────────────────────
+
+header "Prerequisites"
+
+# Check binaries
+[ -f "$DUSK_TX" ] || fail "dusk-tx not found at $DUSK_TX — run start-env.sh first"
+ok "dusk-tx: $DUSK_TX"
+
+[ -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ] || fail "WASMs not found — run start-env.sh first"
+ok "Contract WASMs: $WASM_DIR"
+
+[ -f "$CONSENSUS_KEYS" ] || fail "Consensus keys not found at $CONSENSUS_KEYS"
+ok "Consensus keys: $CONSENSUS_KEYS"
+
+for tool in forge cast jq; do
+    command -v "$tool" &>/dev/null || fail "$tool not found"
+done
+ok "Tools: forge, cast, jq"
+
+[ -d "$SOLIDITY_DIR" ] || fail "Solidity directory not found at $SOLIDITY_DIR"
+if [ ! -d "$SOLIDITY_DIR/dependencies" ]; then
+    info "Installing Solidity dependencies..."
+    (cd "$SOLIDITY_DIR" && forge soldeer install) || fail "Failed to install Solidity deps"
+fi
+ok "Solidity deps installed"
+
+# Check connectivity
+cast block-number --rpc-url "$ANVIL_RPC" >/dev/null 2>&1 || fail "Cannot connect to Anvil at $ANVIL_RPC"
+ok "Anvil reachable"
+
+DUSK_CHAIN_ID=$(curl -s -X POST \
+    -H "Content-Type: application/octet-stream" \
+    -H "rusk-version: 1.0.0-rc.0" \
+    "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
+    --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
+[ -n "$DUSK_CHAIN_ID" ] || fail "Cannot connect to Dusk RUES at $DUSK_RUES_URL"
+ok "Dusk RUES reachable"
+
+# ── Check for existing deployment ────────────────────────────────────────────
+
+if [ "$SKIP_DEPLOY" = true ] && [ -f "$BRIDGE_STATE_FILE" ]; then
+    info "Using existing deployment (--skip-deploy)"
+    echo ""
+    info "State file: $BRIDGE_STATE_FILE"
+    jq '.' "$BRIDGE_STATE_FILE"
+    echo ""
+    ok "Deployment loaded. Run 'bash demo/bridge.sh status' to check balances."
+    exit 0
+fi
+
+# ── Deploy on EVM ────────────────────────────────────────────────────────────
+
+header "Deploy Hyperlane on EVM (domain=$EVM_DOMAIN)"
+
+EVM_DEPLOY_FILE="/tmp/hyperlane-demo-evm.json"
+
+if [ "$SKIP_DEPLOY" = true ] && [ -f "$EVM_DEPLOY_FILE" ]; then
+    info "Skipping EVM deployment (--skip-deploy)"
+    EVM_ISM=$(jq -r '.ism' "$EVM_DEPLOY_FILE")
+    EVM_HOOK=$(jq -r '.hook' "$EVM_DEPLOY_FILE")
+    EVM_MERKLE_TREE_HOOK=$(jq -r '.merkle_tree_hook // empty' "$EVM_DEPLOY_FILE")
+    EVM_VALIDATOR_ANNOUNCE=$(jq -r '.validator_announce // empty' "$EVM_DEPLOY_FILE")
+    EVM_IGP=$(jq -r '.igp // empty' "$EVM_DEPLOY_FILE")
+    EVM_MAILBOX=$(jq -r '.mailbox' "$EVM_DEPLOY_FILE")
+    EVM_RECIPIENT=$(jq -r '.recipient' "$EVM_DEPLOY_FILE")
+    EVM_TOKEN=$(jq -r '.token' "$EVM_DEPLOY_FILE")
+else
+    cd "$SOLIDITY_DIR"
+
+    # Pre-compile so forge create doesn't mix compiler output with JSON
+    step "Compiling Solidity contracts..."
+    forge build --quiet || fail "Solidity compilation failed"
+    ok "Contracts compiled"
+
+    # Helper: deploy a contract and extract the address from forge JSON output
+    forge_deploy() {
+        local contract="$1"; shift
+        local output
+        # Put --broadcast --json before remaining args so --constructor-args (greedy) doesn't eat them
+        output=$(forge create "$contract" --broadcast --json "$@" 2>&1) || true
+        # Extract deployedTo — collapse to single line first for jq
+        local addr
+        addr=$(echo "$output" | tr '\n' ' ' | grep -o '{[^{]*"deployedTo"[^}]*}' | jq -r '.deployedTo' 2>/dev/null)
+        if [ -z "$addr" ] || [ "$addr" = "null" ]; then
+            echo "forge create output: $output" >&2
+            return 1
+        fi
+        echo "$addr"
+    }
+
+    step "Deploying TestIsm..."
+    EVM_ISM=$(forge_deploy contracts/test/TestIsm.sol:TestIsm \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy TestIsm"
+    ok "TestIsm: $EVM_ISM"
+
+    step "Deploying TestPostDispatchHook..."
+    EVM_HOOK=$(forge_deploy contracts/test/TestPostDispatchHook.sol:TestPostDispatchHook \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy Hook"
+    ok "TestPostDispatchHook: $EVM_HOOK"
+
+    step "Deploying Mailbox (domain=$EVM_DOMAIN)..."
+    EVM_MAILBOX=$(forge_deploy contracts/Mailbox.sol:Mailbox \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        --constructor-args "$EVM_DOMAIN") || fail "Failed to deploy Mailbox"
+    ok "Mailbox: $EVM_MAILBOX"
+
+    step "Deploying MerkleTreeHook..."
+    EVM_MERKLE_TREE_HOOK=$(forge_deploy contracts/hooks/MerkleTreeHook.sol:MerkleTreeHook \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        --constructor-args "$EVM_MAILBOX") || fail "Failed to deploy MerkleTreeHook"
+    ok "MerkleTreeHook: $EVM_MERKLE_TREE_HOOK"
+
+    step "Deploying ValidatorAnnounce..."
+    EVM_VALIDATOR_ANNOUNCE=$(forge_deploy contracts/isms/multisig/ValidatorAnnounce.sol:ValidatorAnnounce \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        --constructor-args "$EVM_MAILBOX") || fail "Failed to deploy ValidatorAnnounce"
+    ok "ValidatorAnnounce: $EVM_VALIDATOR_ANNOUNCE"
+
+    step "Deploying InterchainGasPaymaster..."
+    EVM_IGP=$(forge_deploy contracts/hooks/igp/InterchainGasPaymaster.sol:InterchainGasPaymaster \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy InterchainGasPaymaster"
+    ok "InterchainGasPaymaster: $EVM_IGP"
+
+    step "Initializing InterchainGasPaymaster..."
+    cast send "$EVM_IGP" \
+        "initialize(address,address)" \
+        "$ANVIL_DEPLOYER" "$ANVIL_DEPLOYER" \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to initialize InterchainGasPaymaster"
+    ok "InterchainGasPaymaster initialized"
+
+    step "Initializing Mailbox..."
+    cast send "$EVM_MAILBOX" \
+        "initialize(address,address,address,address)" \
+        "$ANVIL_DEPLOYER" "$EVM_ISM" "$EVM_HOOK" "$EVM_MERKLE_TREE_HOOK" \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to initialize Mailbox"
+    ok "Mailbox initialized"
+
+    step "Deploying TestRecipient..."
+    EVM_RECIPIENT=$(forge_deploy contracts/test/TestRecipient.sol:TestRecipient \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy TestRecipient"
+    ok "TestRecipient: $EVM_RECIPIENT"
+
+    step "Deploying HypERC20 ($TOKEN_SYMBOL)..."
+    EVM_TOKEN=$(forge_deploy contracts/token/HypERC20.sol:HypERC20 \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        --constructor-args "$TOKEN_DECIMALS" 1 "$EVM_MAILBOX") || fail "Failed to deploy HypERC20"
+    ok "HypERC20: $EVM_TOKEN"
+
+    step "Initializing HypERC20 (supply=$INITIAL_SUPPLY)..."
+    cast send "$EVM_TOKEN" \
+        "initialize(uint256,string,string,address,address,address)" \
+        "$INITIAL_SUPPLY" "$TOKEN_NAME" "$TOKEN_SYMBOL" \
+        "$EVM_HOOK" "$EVM_ISM" "$ANVIL_DEPLOYER" \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to initialize HypERC20"
+    ok "HypERC20 initialized (10 $TOKEN_SYMBOL minted)"
+
+    cat > "$EVM_DEPLOY_FILE" <<EVMJSON
+{
+    "ism": "$EVM_ISM",
+    "hook": "$EVM_HOOK",
+    "merkle_tree_hook": "$EVM_MERKLE_TREE_HOOK",
+    "validator_announce": "$EVM_VALIDATOR_ANNOUNCE",
+    "igp": "$EVM_IGP",
+    "mailbox": "$EVM_MAILBOX",
+    "recipient": "$EVM_RECIPIENT",
+    "token": "$EVM_TOKEN"
+}
+EVMJSON
+fi
+
+# ── Deploy on Dusk ───────────────────────────────────────────────────────────
+
+header "Deploy Hyperlane on Dusk (domain=$DUSK_DOMAIN)"
+
+DUSK_DEPLOY_FILE="/tmp/hyperlane-demo-dusk-deploy.json"
+
+if [ "$SKIP_DEPLOY" = true ] && [ -f "$DUSK_DEPLOY_FILE" ]; then
+    info "Skipping Dusk deployment (--skip-deploy)"
+else
+    step "Deploying Hyperlane contracts on Dusk..."
+    DUSK_DEPLOY_CMD=(
+        "$DUSK_TX" deploy-hyperlane
+        --rues-url "$DUSK_RUES_URL"
+        --keys "$CONSENSUS_KEYS"
+        --password "$CONSENSUS_PASSWORD"
+        --domain "$DUSK_DOMAIN"
+        --wasm-dir "$WASM_DIR"
+        --deploy-warp-drc20
+        --warp-name "$TOKEN_NAME"
+        --warp-symbol "$TOKEN_SYMBOL"
+        --warp-decimals "$TOKEN_DECIMALS"
+        --default-ism "$DUSK_DEFAULT_ISM"
+    )
+    if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
+        DUSK_DEPLOY_CMD+=(
+            --multisig-validators "$MULTISIG_VALIDATORS"
+            --multisig-threshold "$MULTISIG_THRESHOLD"
+        )
+    fi
+
+    "${DUSK_DEPLOY_CMD[@]}" > "$DUSK_DEPLOY_FILE" || {
+            # Error JSON goes to stdout (captured in deploy file) — show it
+            err=$(jq -r '.error // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null || true)
+            fail "Dusk deployment failed${err:+: $err}"
+        }
+    ok "Dusk contracts deployed"
+fi
+
+# Parse deployment output
+DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_FILE")
+DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_FILE")
+DUSK_ISM_MULTISIG=$(jq -r '.contracts.ism_multisig // empty' "$DUSK_DEPLOY_FILE")
+DUSK_VALIDATOR_ANNOUNCE=$(jq -r '.contracts.validator_announce' "$DUSK_DEPLOY_FILE")
+DUSK_IGP=$(jq -r '.contracts.igp' "$DUSK_DEPLOY_FILE")
+DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_FILE")
+DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
+
+info "  Mailbox:        $DUSK_MAILBOX"
+info "  MerkleTreeHook: $DUSK_MERKLE"
+if [ -n "${DUSK_ISM_MULTISIG:-}" ] && [ "$DUSK_ISM_MULTISIG" != "null" ]; then
+    info "  MultisigISM:    $DUSK_ISM_MULTISIG"
+fi
+info "  ValidatorAnnounce: $DUSK_VALIDATOR_ANNOUNCE"
+info "  IGP:            $DUSK_IGP"
+info "  WarpDrc20:      $DUSK_WARP"
+info "  TestRecipient:  $DUSK_TEST_RECIPIENT"
+
+# ── Enroll Remote Routers ────────────────────────────────────────────────────
+
+header "Enroll Remote Routers"
+
+EVM_TOKEN_PAD32="0x$(pad_evm_address "$EVM_TOKEN")"
+DUSK_WARP_PAD32="0x${DUSK_WARP}"
+
+step "EVM: Enrolling Dusk WarpDrc20 (domain=$DUSK_DOMAIN)..."
+cast send "$EVM_TOKEN" \
+    "enrollRemoteRouter(uint32,bytes32)" \
+    "$DUSK_DOMAIN" "$DUSK_WARP_PAD32" \
+    --rpc-url "$ANVIL_RPC" \
+    --private-key "$ANVIL_PRIVATE_KEY" \
+    &>/dev/null || fail "Failed to enroll remote router on EVM"
+ok "EVM router enrolled"
+
+step "Dusk: Enrolling EVM HypERC20 (domain=$EVM_DOMAIN)..."
+ENROLL_OUT=$("$DUSK_TX" enroll-router \
+    --rues-url "$DUSK_RUES_URL" \
+    --keys "$CONSENSUS_KEYS" \
+    --password "$CONSENSUS_PASSWORD" \
+    --warp-contract "$DUSK_WARP" \
+    --domain "$EVM_DOMAIN" \
+    --router "$(pad_evm_address "$EVM_TOKEN")" 2>&1) || {
+        err=$(echo "$ENROLL_OUT" | jq -r '.error // empty' 2>/dev/null || true)
+        fail "Failed to enroll remote router on Dusk${err:+: $err}"
+    }
+ok "Dusk router enrolled"
+
+# Wait for enroll-router TX to be included before sending another TX (nonce ordering)
+# Dusk block time is ~10s; wait 2 blocks to be safe
+info "Waiting for block inclusion (20s)..."
+sleep 20
+
+# ── Register BLS Account ────────────────────────────────────────────────────
+
+header "Register BLS Account on Warp Routes"
+
+step "Registering deployer's BLS key on WarpDrc20..."
+REGISTER_RESULT=$("$DUSK_TX" register-account \
+    --rues-url "$DUSK_RUES_URL" \
+    --keys "$CONSENSUS_KEYS" \
+    --password "$CONSENSUS_PASSWORD" \
+    --warp-contract "$DUSK_WARP" 2>&1) || {
+        echo "$REGISTER_RESULT" >&2
+        fail "Failed to register account on WarpDrc20"
+    }
+DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
+ok "WarpDrc20 account registered: ${DUSK_ACCOUNT_H256:0:16}..."
+
+# Register on WarpDrc20Collateral if deployed
+DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null)
+if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
+    sleep 20 # Wait for block inclusion before next TX (nonce ordering)
+    step "Registering deployer's BLS key on WarpDrc20Collateral..."
+    "$DUSK_TX" register-account \
+        --rues-url "$DUSK_RUES_URL" \
+        --keys "$CONSENSUS_KEYS" \
+        --password "$CONSENSUS_PASSWORD" \
+        --warp-contract "$DUSK_WARP_COLLATERAL" 2>&1 >/dev/null || {
+            warn "Failed to register on WarpDrc20Collateral (non-fatal)"
+        }
+    ok "WarpDrc20Collateral account registered"
+fi
+
+# Register on WarpNative if deployed
+DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null)
+if [ -n "$DUSK_WARP_NATIVE" ] && [ "$DUSK_WARP_NATIVE" != "null" ]; then
+    sleep 20 # Wait for block inclusion before next TX (nonce ordering)
+    step "Registering deployer's BLS key on WarpNative..."
+    "$DUSK_TX" register-account \
+        --rues-url "$DUSK_RUES_URL" \
+        --keys "$CONSENSUS_KEYS" \
+        --password "$CONSENSUS_PASSWORD" \
+        --warp-contract "$DUSK_WARP_NATIVE" 2>&1 >/dev/null || {
+            warn "Failed to register on WarpNative (non-fatal)"
+        }
+    ok "WarpNative account registered"
+fi
+
+# Wait for block inclusion
+sleep 3
+
+# ── Write Combined State File ────────────────────────────────────────────────
+
+header "Saving Deployment State"
+
+cat > "$BRIDGE_STATE_FILE" <<STATEJSON
+{
+    "evm": {
+        "mailbox": "$EVM_MAILBOX",
+        "token": "$EVM_TOKEN",
+        "ism": "$EVM_ISM",
+        "hook": "$EVM_HOOK",
+        "merkle_tree_hook": "${EVM_MERKLE_TREE_HOOK:-}",
+        "validator_announce": "${EVM_VALIDATOR_ANNOUNCE:-}",
+        "igp": "${EVM_IGP:-}",
+        "recipient": "$EVM_RECIPIENT"
+    },
+    "dusk": {
+        "mailbox": "$DUSK_MAILBOX",
+        "ism_multisig": "${DUSK_ISM_MULTISIG:-}",
+        "warp_drc20": "$DUSK_WARP",
+        "merkle_tree_hook": "$DUSK_MERKLE",
+        "validator_announce": "$DUSK_VALIDATOR_ANNOUNCE",
+        "igp": "$DUSK_IGP",
+        "test_recipient": "$DUSK_TEST_RECIPIENT"
+    },
+    "account_h256": "$DUSK_ACCOUNT_H256",
+    "evm_domain": $EVM_DOMAIN,
+    "dusk_domain": $DUSK_DOMAIN,
+    "token_symbol": "$TOKEN_SYMBOL",
+    "initial_supply": "$INITIAL_SUPPLY",
+    "deployed_at": "$(date -Iseconds)"
+}
+STATEJSON
+
+ok "State saved to: $BRIDGE_STATE_FILE"
+
+# Update explorer .env with contract IDs (if explorer dir exists)
+if [ -d "$EXPLORER_DIR" ] && [ -f "$EXPLORER_DIR/.env" ]; then
+    info "Updating Dusk Explorer with contract IDs..."
+    if grep -q "^VITE_HYPERLANE_WARP_DRC20_ID=" "$EXPLORER_DIR/.env"; then
+        sed -i "s/^VITE_HYPERLANE_WARP_DRC20_ID=.*/VITE_HYPERLANE_WARP_DRC20_ID=\"${DUSK_WARP}\"/" "$EXPLORER_DIR/.env"
+        sed -i "s/^VITE_HYPERLANE_MAILBOX_ID=.*/VITE_HYPERLANE_MAILBOX_ID=\"${DUSK_MAILBOX}\"/" "$EXPLORER_DIR/.env"
+    else
+        echo "VITE_HYPERLANE_WARP_DRC20_ID=\"${DUSK_WARP}\"" >> "$EXPLORER_DIR/.env"
+        echo "VITE_HYPERLANE_MAILBOX_ID=\"${DUSK_MAILBOX}\"" >> "$EXPLORER_DIR/.env"
+    fi
+    ok "Explorer .env updated (restart explorer to pick up changes)"
+fi
+echo ""
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+
+echo -e "${BOLD}Deployment Complete${NC}"
+echo ""
+echo -e "  ${GREEN}EVM (domain=$EVM_DOMAIN):${NC}"
+echo "    Mailbox:  $EVM_MAILBOX"
+echo "    HypERC20: $EVM_TOKEN ($TOKEN_SYMBOL)"
+echo ""
+echo -e "  ${GREEN}Dusk (domain=$DUSK_DOMAIN):${NC}"
+echo "    Mailbox:   $DUSK_MAILBOX"
+echo "    WarpDrc20: $DUSK_WARP ($TOKEN_SYMBOL)"
+echo ""
+echo -e "  ${GREEN}Deployer:${NC}"
+echo "    EVM:  $ANVIL_DEPLOYER"
+echo "    Dusk: ${DUSK_ACCOUNT_H256:0:16}... (BLS key registered)"
+echo ""
+echo "  Ready to bridge! Run:"
+echo "    bash demo/bridge.sh status"
+echo "    bash demo/bridge.sh to-dusk 3"
+echo "    bash demo/bridge.sh to-evm 1"
+echo ""

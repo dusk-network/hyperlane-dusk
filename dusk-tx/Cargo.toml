@@ -1,0 +1,43 @@
+[package]
+name = "dusk-tx"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "dusk-tx"
+path = "src/main.rs"
+
+[dependencies]
+# Internal
+hyperlane-dusk-types = { workspace = true }
+
+# Dusk — using same local fork as workspace
+dusk-core = { workspace = true }
+dusk-bytes = "0.1.7"
+
+# Serialization
+rkyv = { workspace = true, features = ["validation"] }
+blake3 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { version = "1", features = ["std"] }
+
+# Crypto
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["hmac"] }
+sha2 = "0.10"
+base64 = "0.22"
+
+# HTTP + async
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+tokio = { version = "1", features = ["full"] }
+hex = "0.4"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Pin to avoid edition2024 issues
+blake2b_simd = { workspace = true }
+constant_time_eq = { workspace = true }
+time-core = { workspace = true }

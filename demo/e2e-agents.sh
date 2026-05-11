@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# =============================================================================
+# E2E: Bridge wDUSK Between Dusk <-> EVM Using Hyperlane Agents
+# =============================================================================
+#
+# Runs a full local end-to-end flow:
+# - starts rusk + anvil (optionally without explorers)
+# - deploys Hyperlane + warp route contracts
+# - starts relayer (and validator for MessageIdMultisig)
+# - proves token bridging EVM->Dusk and Dusk->EVM without manual processing
+#
+# By default it runs both cases:
+#   1) Dusk Mailbox default ISM = testMock
+#   2) Dusk Mailbox default ISM = messageIdMultisig
+#
+# Usage:
+#   bash demo/e2e-agents.sh
+#   bash demo/e2e-agents.sh --only testMock
+#   bash demo/e2e-agents.sh --only messageIdMultisig
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/.env.bridge"
+
+fail() { echo "[FAIL] $*" >&2; exit 1; }
+info() { echo "[INFO] $*" >&2; }
+
+ONLY=""
+AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-3}" # whole tokens
+AMOUNT_TO_EVM="${AMOUNT_TO_EVM:-1}"   # whole tokens
+TIMEOUT_SECS="${TIMEOUT_SECS:-240}"
+
+# PIDs of the currently running agents (used by the EXIT trap).
+CURRENT_RELAYER_PID=""
+CURRENT_VALIDATOR_PID=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --only)
+            ONLY="${2:-}"; shift 2 ;;
+        --amount-to-dusk)
+            AMOUNT_TO_DUSK="${2:-}"; shift 2 ;;
+        --amount-to-evm)
+            AMOUNT_TO_EVM="${2:-}"; shift 2 ;;
+        --timeout)
+            TIMEOUT_SECS="${2:-}"; shift 2 ;;
+        *)
+            fail "Unknown argument: $1" ;;
+    esac
+done
+
+to_wei() {
+    local amount="$1"
+    if ! [[ "$amount" =~ ^[1-9][0-9]*$ ]]; then
+        fail "Invalid amount '$amount' (expected whole positive integer)"
+    fi
+    echo "${amount}000000000000000000"
+}
+
+pad_evm_address() {
+    local addr="${1#0x}"
+    addr="$(echo "$addr" | tr '[:upper:]' '[:lower:]')"
+    echo "000000000000000000000000${addr}"
+}
+
+require_tools() {
+    command -v jq >/dev/null 2>&1 || fail "jq not found"
+    command -v cast >/dev/null 2>&1 || fail "cast not found (foundry)"
+    command -v forge >/dev/null 2>&1 || fail "forge not found (foundry)"
+    command -v python3 >/dev/null 2>&1 || fail "python3 not found"
+}
+
+kill_pid() {
+    local pid="$1"
+    if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            kill -0 "$pid" 2>/dev/null || return 0
+            sleep 1
+        done
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    # Best-effort cleanup on failures/timeouts.
+    kill_pid "$CURRENT_RELAYER_PID"
+    kill_pid "$CURRENT_VALIDATOR_PID"
+    bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT
+
+tail_logs_on_fail() {
+    local relayer_log="$1"
+    local validator_log="${2:-}"
+    echo "" >&2
+    echo "=== relayer log (tail) ===" >&2
+    tail -n 120 "$relayer_log" 2>/dev/null || true
+    if [ -n "$validator_log" ]; then
+        echo "" >&2
+        echo "=== validator log (tail) ===" >&2
+        tail -n 120 "$validator_log" 2>/dev/null || true
+    fi
+}
+
+run_case() {
+    local ism="$1"
+
+    if [ "$ism" != "testMock" ] && [ "$ism" != "messageIdMultisig" ]; then
+        fail "Invalid case '$ism' (expected: testMock or messageIdMultisig)"
+    fi
+
+    local run_id
+    run_id="$(date +%s)"
+
+    info "=== CASE: dusk default ISM = $ism ==="
+
+    # Hard reset environment (fresh rusk state is required; Dusk deployments are deterministic).
+    bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+
+    # Start only what we need for headless E2E.
+    local start_env_log="/tmp/hyperlane-start-env-${ism}-${run_id}.log"
+    SKIP_OTTERSCAN=true SKIP_DUSK_EXPLORER=true bash "$SCRIPT_DIR/start-env.sh" >"$start_env_log" 2>&1 || {
+        tail -n 200 "$start_env_log" >&2 || true
+        fail "start-env.sh failed (log: $start_env_log)"
+    }
+
+    # Deploy contracts.
+    local deploy_log="/tmp/hyperlane-deploy-${ism}-${run_id}.log"
+    if [ "$ism" = "messageIdMultisig" ]; then
+        bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism messageIdMultisig \
+          --multisig-validators "$ANVIL_DEPLOYER" --multisig-threshold 1 >"$deploy_log" 2>&1 || {
+            tail -n 200 "$deploy_log" >&2 || true
+            fail "deploy.sh failed (log: $deploy_log)"
+          }
+    else
+        bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism testMock >"$deploy_log" 2>&1 || {
+            tail -n 200 "$deploy_log" >&2 || true
+            fail "deploy.sh failed (log: $deploy_log)"
+        }
+    fi
+
+    # Generate agent configs.
+    local cfg_json relayer_cfg validator_cfg
+    cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id")"
+    relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
+    validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
+
+    # Build agent binaries (incremental).
+    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer -p validator >/dev/null)
+
+    local relayer_log="/tmp/hyperlane-relayer-${ism}-${run_id}.log"
+    local validator_log="/tmp/hyperlane-validator-${ism}-${run_id}.log"
+
+    local relayer_pid="" validator_pid=""
+
+    # Start validator first (needed for messageIdMultisig metadata).
+    if [ "$ism" = "messageIdMultisig" ]; then
+        info "Starting validator..."
+        (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+          DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$validator_cfg" ./target/debug/validator \
+          >"$validator_log" 2>&1) &
+        validator_pid="$!"
+        CURRENT_VALIDATOR_PID="$validator_pid"
+        sleep 2
+        kill -0 "$validator_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "$validator_log"; fail "validator failed to start"; }
+    fi
+
+    info "Starting relayer..."
+    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+      DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$relayer_cfg" ./target/debug/relayer \
+      >"$relayer_log" 2>&1) &
+    relayer_pid="$!"
+    CURRENT_RELAYER_PID="$relayer_pid"
+    sleep 2
+    kill -0 "$relayer_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"; fail "relayer failed to start"; }
+
+    # Load state.
+    local state="$BRIDGE_STATE_FILE"
+    local evm_token dusk_warp account_h256 evm_domain dusk_domain
+    evm_token="$(jq -r '.evm.token' "$state")"
+    dusk_warp="$(jq -r '.dusk.warp_drc20' "$state")"
+    account_h256="$(jq -r '.account_h256' "$state")"
+    evm_domain="$(jq -r '.evm_domain' "$state")"
+    dusk_domain="$(jq -r '.dusk_domain' "$state")"
+
+    # ----------------------------
+    # EVM -> Dusk (via relayer)
+    # ----------------------------
+    local amount_to_dusk_wei
+    amount_to_dusk_wei="$(to_wei "$AMOUNT_TO_DUSK")"
+
+    info "Dispatching EVM -> Dusk ($AMOUNT_TO_DUSK wDUSK)..."
+    local evm_balance_before dusk_supply_before_json dusk_supply_before
+    evm_balance_before="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    dusk_supply_before_json="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_warp" --method total_supply --return-type u64 2>/dev/null)"
+    dusk_supply_before="$(echo "$dusk_supply_before_json" | jq -r '.value // 0')"
+
+    cast send "$evm_token" \
+      "transferRemote(uint32,bytes32,uint256)" \
+      "$dusk_domain" "0x${account_h256}" "$amount_to_dusk_wei" \
+      --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+
+    local expected_dusk_supply
+    expected_dusk_supply="$(
+python3 - <<PY
+print(int(${dusk_supply_before}) + int(${amount_to_dusk_wei}))
+PY
+)"
+
+    info "Waiting for relayer to mint on Dusk (target supply=${expected_dusk_supply})..."
+    local start_ts now supply
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for EVM->Dusk delivery"
+        fi
+        kill -0 "$relayer_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"; fail "relayer exited unexpectedly"; }
+        if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
+            tail_logs_on_fail "$relayer_log" "$validator_log"
+            fail "validator exited unexpectedly"
+        fi
+        supply="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_warp" --method total_supply --return-type u64 2>/dev/null | jq -r '.value // 0')"
+        if [ "$supply" = "$expected_dusk_supply" ]; then
+            break
+        fi
+        sleep 5
+    done
+    info "EVM->Dusk delivered."
+
+    # ----------------------------
+    # Dusk -> EVM (via relayer)
+    # ----------------------------
+    local amount_to_evm_wei
+    amount_to_evm_wei="$(to_wei "$AMOUNT_TO_EVM")"
+    local evm_balance_mid
+    evm_balance_mid="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+
+    info "Dispatching Dusk -> EVM ($AMOUNT_TO_EVM wDUSK)..."
+    local evm_recipient_pad32
+    evm_recipient_pad32="$(pad_evm_address "$ANVIL_DEPLOYER")"
+
+    "$DUSK_TX" transfer-remote \
+      --rues-url "$DUSK_RUES_URL" \
+      --keys "$CONSENSUS_KEYS" \
+      --password "$CONSENSUS_PASSWORD" \
+      --warp-contract "$dusk_warp" \
+      --destination "$evm_domain" \
+      --recipient "$evm_recipient_pad32" \
+      --amount "$amount_to_evm_wei" >/dev/null
+
+    local expected_evm_balance
+    expected_evm_balance="$(
+python3 - <<PY
+print(int(${evm_balance_mid}) + int(${amount_to_evm_wei}))
+PY
+)"
+
+    info "Waiting for relayer to mint on EVM (target balance=${expected_evm_balance})..."
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for Dusk->EVM delivery"
+        fi
+        kill -0 "$relayer_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"; fail "relayer exited unexpectedly"; }
+        if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
+            tail_logs_on_fail "$relayer_log" "$validator_log"
+            fail "validator exited unexpectedly"
+        fi
+        local bal
+        bal="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+        if [ "$bal" = "$expected_evm_balance" ]; then
+            break
+        fi
+        sleep 2
+    done
+    info "Dusk->EVM delivered."
+
+    # Cleanup agents + env.
+    info "Stopping agents..."
+    kill_pid "$relayer_pid"
+    kill_pid "$validator_pid"
+    CURRENT_RELAYER_PID=""
+    CURRENT_VALIDATOR_PID=""
+
+    info "Stopping environment..."
+    bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+
+    info "CASE OK: $ism"
+}
+
+main() {
+    require_tools
+
+    if [ -n "$ONLY" ]; then
+        run_case "$ONLY"
+        return 0
+    fi
+
+    run_case "testMock"
+    run_case "messageIdMultisig"
+}
+
+main
