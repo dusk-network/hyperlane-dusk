@@ -73,6 +73,7 @@ mod igp {
         ///
         /// Must be called once after deployment. Optionally accepts initial
         /// gas configurations for known domains.
+        #[contract(no_event)]
         pub fn init(
             &mut self,
             owner: ContractId,
@@ -211,6 +212,7 @@ mod igp {
         // =================================================================
 
         /// Set the gas configuration for a single domain. Owner only.
+        #[contract(no_event)]
         pub fn set_domain_gas_config(
             &mut self,
             domain: u32,
@@ -221,6 +223,7 @@ mod igp {
         }
 
         /// Set gas configurations for multiple domains. Owner only.
+        #[contract(no_event)]
         pub fn set_domain_gas_configs(
             &mut self,
             configs: Vec<(u32, DomainGasConfig)>,
@@ -232,6 +235,7 @@ mod igp {
         }
 
         /// Set the beneficiary. Owner only.
+        #[contract(no_event)]
         pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
             self.only_owner();
             assert!(
@@ -242,6 +246,7 @@ mod igp {
         }
 
         /// Transfer ownership. Owner only.
+        #[contract(no_event)]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             self.owner = Some(new_owner);

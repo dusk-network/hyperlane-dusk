@@ -14,6 +14,7 @@ use dusk_core::transfer::data::ContractCall;
 use dusk_core::transfer::moonlight::AccountData;
 use dusk_core::transfer::{Transaction, TRANSFER_CONTRACT};
 use dusk_core::LUX;
+use dusk_vm::host_queries::{set_hard_fork, HardFork};
 use dusk_vm::{execute, CallReceipt, ContractData, Error as VMError, ExecutionConfig, Session, VM};
 use rkyv::bytecheck::CheckBytes;
 use rkyv::ser::serializers::{BufferScratch, BufferSerializer, CompositeSerializer};
@@ -32,6 +33,9 @@ const CONFIG: ExecutionConfig = ExecutionConfig {
     with_public_sender: true,
     with_blob: true,
     disable_wasm64: false,
+    disable_wasm32: false,
+    disable_3rd_party: false,
+    phoenix_refund_check: false,
 };
 
 /// VM Session with transfer + stake contracts deployed and funded accounts.
@@ -135,6 +139,7 @@ impl TestSession {
         )
         .expect("Creating moonlight transaction should succeed");
 
+        let _hard_fork = set_hard_fork(HardFork::Aegis);
         let receipt = execute(&mut self.0, &transaction, &CONFIG)
             .unwrap_or_else(|e| panic!("Unspendable transaction due to '{e}'"));
 

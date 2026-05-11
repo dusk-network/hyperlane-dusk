@@ -51,6 +51,7 @@ mod merkle_tree_hook {
         }
 
         /// Initialize with the Mailbox contract ID.
+        #[contract(no_event)]
         pub fn init(&mut self, mailbox: ContractId) {
             assert!(
                 self.mailbox == ZERO_CONTRACT,

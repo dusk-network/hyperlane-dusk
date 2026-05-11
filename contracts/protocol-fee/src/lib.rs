@@ -64,6 +64,7 @@ mod protocol_fee {
         ///
         /// Must be called once after deployment. Panics if already
         /// initialized.
+        #[contract(no_event)]
         pub fn init(
             &mut self,
             protocol_fee: u64,
@@ -154,6 +155,7 @@ mod protocol_fee {
         /// Set the protocol fee. Owner only.
         ///
         /// Panics if the new fee exceeds `max_protocol_fee`.
+        #[contract(no_event)]
         pub fn set_protocol_fee(&mut self, fee: u64) {
             self.only_owner();
             assert!(
@@ -164,6 +166,7 @@ mod protocol_fee {
         }
 
         /// Set the beneficiary. Owner only.
+        #[contract(no_event)]
         pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
             self.only_owner();
             assert!(
@@ -174,6 +177,7 @@ mod protocol_fee {
         }
 
         /// Transfer ownership. Owner only.
+        #[contract(no_event)]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             self.owner = Some(new_owner);

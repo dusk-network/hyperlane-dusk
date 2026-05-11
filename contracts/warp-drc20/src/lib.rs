@@ -151,6 +151,7 @@ mod warp_drc20 {
         // =================================================================
 
         /// Initialize the warp route.
+        #[contract(no_event)]
         pub fn init(
             &mut self,
             mailbox: ContractId,
@@ -181,6 +182,7 @@ mod warp_drc20 {
         ///
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
+        #[contract(no_event)]
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpDrc20: register_account requires Moonlight TX");
@@ -223,6 +225,7 @@ mod warp_drc20 {
         }
 
         /// Transfer tokens from the caller to a recipient.
+        #[contract(no_event)]
         pub fn transfer(&mut self, to: Account, value: u64) {
             let from = sender_account();
             self.do_transfer(from, to, value);
@@ -364,24 +367,28 @@ mod warp_drc20 {
         // =================================================================
 
         /// Enroll a remote router for a domain. Owner only.
+        #[contract(no_event)]
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
             self.enrolled_routers.insert(domain, router);
         }
 
         /// Set the hook override. Owner only.
+        #[contract(no_event)]
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
         }
 
         /// Set the ISM override. Owner only.
+        #[contract(no_event)]
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
         }
 
         /// Transfer ownership. Owner only.
+        #[contract(no_event)]
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
             self.owner = Some(new_owner);

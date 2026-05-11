@@ -104,6 +104,7 @@ mod mailbox {
         ///
         /// Must be called once after deployment. Panics if already
         /// initialized (owner is set).
+        #[contract(no_event)]
         pub fn init(
             &mut self,
             local_domain: u32,
@@ -198,6 +199,7 @@ mod mailbox {
         }
 
         /// Dispatch with default hook and empty metadata.
+        #[contract(no_event)]
         pub fn dispatch_default(
             &mut self,
             destination: u32,
@@ -467,12 +469,14 @@ mod mailbox {
         }
 
         /// Transfer ownership. Owner only.
+        #[contract(no_event)]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             self.owner = Some(new_owner);
         }
 
         /// Renounce ownership. Owner only.
+        #[contract(no_event)]
         pub fn renounce_ownership(&mut self) {
             self.only_owner();
             self.owner = None;

@@ -65,6 +65,7 @@ mod validator_announce {
         }
 
         /// Initialize with domain and mailbox.
+        #[contract(no_event)]
         pub fn init(&mut self, local_domain: u32, mailbox: ContractId) {
             assert!(
                 self.mailbox == ZERO_CONTRACT,

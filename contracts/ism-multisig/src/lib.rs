@@ -80,6 +80,7 @@ mod ism_multisig {
         ///
         /// Validators must be sorted by address (ascending). The threshold
         /// must be > 0 and <= number of validators.
+        #[contract(no_event)]
         pub fn init(
             &mut self,
             owner: [u8; 32],
@@ -198,6 +199,7 @@ mod ism_multisig {
         // =================================================================
 
         /// Update validators and threshold. Owner only.
+        #[contract(no_event)]
         pub fn set_validators_and_threshold(
             &mut self,
             validators: Vec<EthAddress>,

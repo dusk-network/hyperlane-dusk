@@ -134,6 +134,7 @@ mod warp_drc20_collateral {
         // =================================================================
 
         /// Initialize the collateral warp route.
+        #[contract(no_event)]
         pub fn init(
             &mut self,
             wrapped_token: ContractId,
@@ -166,6 +167,7 @@ mod warp_drc20_collateral {
         ///
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
+        #[contract(no_event)]
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpCollateral: register_account requires Moonlight TX");
@@ -327,24 +329,28 @@ mod warp_drc20_collateral {
         // =================================================================
 
         /// Enroll a remote router for a domain. Owner only.
+        #[contract(no_event)]
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
             self.enrolled_routers.insert(domain, router);
         }
 
         /// Set the hook override. Owner only.
+        #[contract(no_event)]
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
         }
 
         /// Set the ISM override. Owner only.
+        #[contract(no_event)]
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
         }
 
         /// Transfer ownership. Owner only.
+        #[contract(no_event)]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             self.owner = Some(new_owner);

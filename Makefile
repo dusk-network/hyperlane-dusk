@@ -5,7 +5,7 @@
 # Builds all Hyperlane contract WASMs for the Dusk VM.
 #
 # Prerequisites:
-#   - Rust nightly toolchain (nightly-2024-07-30) with wasm32-unknown-unknown target
+#   - Rust nightly toolchain from rust-toolchain.toml with wasm32-unknown-unknown target
 #   - wasm-opt (optional, for smaller binaries)
 
 WASM_TARGET := wasm32-unknown-unknown
