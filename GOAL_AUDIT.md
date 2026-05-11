@@ -94,7 +94,7 @@ Observed:
 | Evidence | Location |
 |---|---|
 | Security assumptions, fixes, Solidity deviations, reviewer decisions | `SECURITY_REVIEW.md` |
-| Secret handling policy and source/artifact guardrail | `SECRET_HANDLING.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
+| Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
 | CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent` |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Repeatable local E2E scripts | `demo/e2e-agents.sh`, `demo/e2e-relayer-restart-stress.sh`, `demo/e2e-soak-restart-stress.sh`, `demo/e2e-*.sh` |
@@ -118,8 +118,10 @@ Observed:
 3. Production secret handling needs an operational/CI sign-off. Current scripts
    keep dev configs in ignored files and `/tmp`, Dusk consensus passwords are
    no longer passed to `dusk-tx` in process argv, and `make secret-hygiene`
-   provides source/artifact guardrails. Production deployment must still define
-   signer custody and CI artifact policy.
+   provides source/artifact guardrails. `PRODUCTION_SIGNER_POLICY.md` records
+   the current `duskKey` raw-key implementation constraint plus acceptable v1
+   custody choices for Dusk review. Production deployment must still accept or
+   replace that signer custody and CI artifact policy.
 4. Upstream Hyperlane draft PRs should not be prepared until the internal Dusk
    PRs complete review.
 5. The Hyperlane monorepo PR has internal Dusk agent/runtime review requested

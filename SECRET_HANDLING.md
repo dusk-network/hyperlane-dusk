@@ -16,6 +16,10 @@ demo keys are not production keys.
   `/tmp/hyperlane-validator-*.json`, `demo/.env*`, `e2e/consensus.keys`,
   `*.keys`, or password files as CI artifacts.
 
+`PRODUCTION_SIGNER_POLICY.md` records the current `duskKey` raw-key
+implementation constraint and the signer-custody choices that Dusk must accept,
+change, or replace before production use.
+
 ## Manual Repro Workflow
 
 `.github/workflows/manual-repro-check.yml` is `workflow_dispatch` only and is
