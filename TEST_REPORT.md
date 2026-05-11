@@ -26,6 +26,10 @@ Notes:
   the optional block explorers.
 - The E2E scripts used ignored local files for dev keys and runtime config:
   `demo/.env.bridge` and `e2e/consensus.keys`.
+- `dusk-tx` accepts consensus key passwords through
+  `DUSK_CONSENSUS_PASSWORD_FILE`, `DUSK_CONSENSUS_PASSWORD`, or
+  `DUSK_CONSENSUS_KEYS_PASS`; demo scripts avoid passing Dusk consensus
+  passwords through process argv.
 
 ## Commands Run
 
@@ -44,7 +48,7 @@ Result:
 - `make all`: passed, all contract WASMs built.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
 - `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
-- `cargo test -p dusk-tx`: passed, 0 tests.
+- `cargo test -p dusk-tx`: passed, 3 tests.
 
 ### Hyperlane Rust Agent Checks
 
@@ -110,6 +114,34 @@ Artifacts:
 - `/tmp/hyperlane-relayer-testMock-1778520709.log`
 - `/tmp/hyperlane-relayer-testMock-1778520709.json`
 - `/tmp/hyperlane-db-relayer-testMock-1778520709/`
+- `/tmp/rusk-dev.log`
+
+### Clean Rusk Secret-Handling Smoke: TestMock ISM
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+SKIP_OTTERSCAN=true \
+SKIP_DUSK_EXPLORER=true \
+TIMEOUT_SECS=300 \
+bash demo/e2e-agents.sh --only testMock --timeout 300
+```
+
+Result:
+
+- Passed on detached Rusk commit `c0c64db4659500d077bb253ad13acba0e347d3fc`
+  after switching demo `dusk-tx` invocations from `--password` argv to
+  `DUSK_CONSENSUS_PASSWORD`.
+- EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
+- Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
+
+Artifacts:
+
+- `/tmp/hyperlane-start-env-testMock-1778530398.log`
+- `/tmp/hyperlane-deploy-testMock-1778530398.log`
+- `/tmp/hyperlane-relayer-testMock-1778530398.log`
+- `/tmp/hyperlane-relayer-testMock-1778530398.json`
+- `/tmp/hyperlane-db-relayer-testMock-1778530398/`
 - `/tmp/rusk-dev.log`
 
 ### Local EVM <-> Dusk Agent E2E: MessageIdMultisigISM
@@ -697,6 +729,10 @@ Result:
   before production readiness.
 - Have Dusk reviewers accept or change the open production review decisions
   recorded in `SECURITY_REVIEW.md`.
+- Production secret handling remains an operational gate. The local scripts use
+  ignored dev configs and `/tmp` runtime artifacts, and Dusk consensus
+  passwords are no longer passed through `dusk-tx` process argv. Production
+  signer/key handling and CI artifact policy still need explicit review.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
   containing the exact required changes if new Rusk-dependent scenarios are
   added. The current TestMock and MessageIdMultisig E2E paths, 50-transfer

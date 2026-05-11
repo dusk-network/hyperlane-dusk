@@ -289,7 +289,6 @@ else
         "$DUSK_TX" deploy-hyperlane
         --rues-url "$DUSK_RUES_URL"
         --keys "$CONSENSUS_KEYS"
-        --password "$CONSENSUS_PASSWORD"
         --domain "$DUSK_DOMAIN"
         --wasm-dir "$WASM_DIR"
         --deploy-warp-drc20
@@ -305,7 +304,7 @@ else
         )
     fi
 
-    "${DUSK_DEPLOY_CMD[@]}" > "$DUSK_DEPLOY_FILE" || {
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "${DUSK_DEPLOY_CMD[@]}" > "$DUSK_DEPLOY_FILE" || {
             # Error JSON goes to stdout (captured in deploy file) — show it
             err=$(jq -r '.error // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null || true)
             fail "Dusk deployment failed${err:+: $err}"
@@ -349,10 +348,9 @@ cast send "$EVM_TOKEN" \
 ok "EVM router enrolled"
 
 step "Dusk: Enrolling EVM HypERC20 (domain=$EVM_DOMAIN)..."
-ENROLL_OUT=$("$DUSK_TX" enroll-router \
+ENROLL_OUT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" \
     --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_TOKEN")" 2>&1) || {
@@ -371,10 +369,9 @@ sleep 20
 header "Register BLS Account on Warp Routes"
 
 step "Registering deployer's BLS key on WarpDrc20..."
-REGISTER_RESULT=$("$DUSK_TX" register-account \
+REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" 2>&1) || {
         echo "$REGISTER_RESULT" >&2
         fail "Failed to register account on WarpDrc20"
@@ -387,10 +384,9 @@ DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral // empty' "$DUSK_
 if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
     sleep 20 # Wait for block inclusion before next TX (nonce ordering)
     step "Registering deployer's BLS key on WarpDrc20Collateral..."
-    "$DUSK_TX" register-account \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --warp-contract "$DUSK_WARP_COLLATERAL" 2>&1 >/dev/null || {
             warn "Failed to register on WarpDrc20Collateral (non-fatal)"
         }
@@ -402,10 +398,9 @@ DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native // empty' "$DUSK_DEPLOY_FILE" 2
 if [ -n "$DUSK_WARP_NATIVE" ] && [ "$DUSK_WARP_NATIVE" != "null" ]; then
     sleep 20 # Wait for block inclusion before next TX (nonce ordering)
     step "Registering deployer's BLS key on WarpNative..."
-    "$DUSK_TX" register-account \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --warp-contract "$DUSK_WARP_NATIVE" 2>&1 >/dev/null || {
             warn "Failed to register on WarpNative (non-fatal)"
         }

@@ -9,7 +9,7 @@
 //!   encode-message     Encode a Hyperlane message (no TX, pure encoding)
 //!   enroll-router      Enroll a remote router on a warp route
 
-use std::io::Read;
+use std::{env, fs, io::Read};
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -458,9 +458,91 @@ fn load_keys(
         let path_str = path
             .to_str()
             .ok_or_else(|| "Invalid keys path".to_string())?;
-        keys::load_from_file(path_str, password)
+        let password = resolve_keys_password(password)?;
+        keys::load_from_file(path_str, &password)
     } else {
         Err("Provide --keys <path>, --secret-key <hex>, or --secret-key-stdin".into())
+    }
+}
+
+fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
+    if let Ok(path) = env::var("DUSK_CONSENSUS_PASSWORD_FILE") {
+        let password = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read DUSK_CONSENSUS_PASSWORD_FILE {path}: {e}"))?;
+        let password = password.trim_end_matches(&['\r', '\n'][..]).to_string();
+        if password.is_empty() {
+            return Err("DUSK_CONSENSUS_PASSWORD_FILE is empty".into());
+        }
+        return Ok(password);
+    }
+
+    if let Ok(password) = env::var("DUSK_CONSENSUS_PASSWORD")
+        .or_else(|_| env::var("DUSK_CONSENSUS_KEYS_PASS"))
+    {
+        if password.is_empty() {
+            return Err("Dusk consensus password environment variable is empty".into());
+        }
+        return Ok(password);
+    }
+
+    Ok(cli_password.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_keys_password;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_password_env() {
+        std::env::remove_var("DUSK_CONSENSUS_PASSWORD_FILE");
+        std::env::remove_var("DUSK_CONSENSUS_PASSWORD");
+        std::env::remove_var("DUSK_CONSENSUS_KEYS_PASS");
+    }
+
+    #[test]
+    fn password_file_has_precedence() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_password_env();
+
+        let path = std::env::temp_dir().join(format!(
+            "dusk-consensus-password-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, "from-file\n").unwrap();
+        std::env::set_var("DUSK_CONSENSUS_PASSWORD_FILE", &path);
+        std::env::set_var("DUSK_CONSENSUS_PASSWORD", "from-env");
+
+        let password = resolve_keys_password("from-cli").unwrap();
+
+        clear_password_env();
+        let _ = std::fs::remove_file(path);
+        assert_eq!(password, "from-file");
+    }
+
+    #[test]
+    fn password_env_has_precedence_over_cli() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_password_env();
+        std::env::set_var("DUSK_CONSENSUS_KEYS_PASS", "from-legacy-env");
+        std::env::set_var("DUSK_CONSENSUS_PASSWORD", "from-env");
+
+        let password = resolve_keys_password("from-cli").unwrap();
+
+        clear_password_env();
+        assert_eq!(password, "from-env");
+    }
+
+    #[test]
+    fn falls_back_to_cli_password() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_password_env();
+
+        let password = resolve_keys_password("from-cli").unwrap();
+
+        clear_password_env();
+        assert_eq!(password, "from-cli");
     }
 }
 

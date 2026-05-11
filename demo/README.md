@@ -71,6 +71,9 @@ Notes:
   fresh rusk state (the script handles this via `stop-env/start-env`).
 - The script generates temporary agent configs in `/tmp` with restrictive file
   permissions (they contain dev keys).
+- Dusk consensus key passwords are passed to `dusk-tx` through environment
+  variables instead of CLI arguments, so they do not appear in process argv.
+  For production-style local testing, prefer `DUSK_CONSENSUS_PASSWORD_FILE`.
 
 ### Dirty Redeploy Guard
 
@@ -233,6 +236,26 @@ All settings are in `demo/.env.bridge`. Key overrides:
 | `ANVIL_PORT` | `8545` | Anvil RPC port |
 | `DUSK_EXPLORER_PORT` | `5173` | Dusk Explorer port |
 | `EVM_EXPLORER_PORT` | `5100` | Otterscan port |
+
+### Secret Handling
+
+The demo and E2E scripts use deterministic local development keys. They are not
+production deployment scripts.
+
+`dusk-tx` resolves encrypted `consensus.keys` passwords in this order:
+
+1. `DUSK_CONSENSUS_PASSWORD_FILE`
+2. `DUSK_CONSENSUS_PASSWORD`
+3. `DUSK_CONSENSUS_KEYS_PASS`
+4. `--password` / the CLI default, intended for local demos only
+
+When a raw BLS secret key is unavoidable, pass it with `--secret-key-stdin` so
+it does not appear in shell history or process argv.
+
+`demo/gen-agent-configs.sh` writes temporary agent config files under `/tmp`
+with `umask 077`. Those files contain local dev signer material and must not be
+committed, uploaded as CI artifacts, or reused for production. The EVM private
+keys used by these scripts are Anvil dev keys only.
 
 ### Troubleshooting
 

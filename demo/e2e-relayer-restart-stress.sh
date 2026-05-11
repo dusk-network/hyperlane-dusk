@@ -277,10 +277,9 @@ mkdir -p "$dusk_transfer_log_dir"
 dusk_mailbox_nonce="$(query_dusk_mailbox_nonce "$dusk_mailbox")"
 for i in $(seq 1 "$TRANSFERS"); do
     dusk_transfer_log="${dusk_transfer_log_dir}/transfer-${i}.log"
-    "$DUSK_TX" transfer-remote \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
       --rues-url "$DUSK_RUES_URL" \
       --keys "$CONSENSUS_KEYS" \
-      --password "$CONSENSUS_PASSWORD" \
       --warp-contract "$dusk_warp" \
       --destination "$evm_domain" \
       --recipient "$evm_recipient_pad32" \

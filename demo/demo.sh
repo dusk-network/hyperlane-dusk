@@ -289,10 +289,9 @@ if [ "${1:-}" = "--skip-deploy" ] && [ -f "$DUSK_DEPLOY_OUTPUT" ]; then
     info "Skipping Dusk deployment (--skip-deploy)"
 else
     step "Deploying Hyperlane contracts on Dusk..."
-    "$DUSK_TX" deploy-hyperlane \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-hyperlane \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --domain "$DUSK_DOMAIN" \
         --wasm-dir "$WASM_DIR" \
         --deploy-warp-drc20 \
@@ -336,10 +335,9 @@ ok "EVM: Remote router enrolled (domain=$DUSK_DOMAIN -> $DUSK_WARP)"
 
 # Dusk side: enroll EVM HypERC20 as remote router for the EVM domain
 step "Dusk: Enrolling EVM HypERC20 as remote router (domain=$EVM_DOMAIN)..."
-"$DUSK_TX" enroll-router \
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" \
     --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_TOKEN")" \
@@ -349,10 +347,9 @@ ok "Dusk: Remote router enrolled (domain=$EVM_DOMAIN -> ${EVM_TOKEN})"
 # Register deployer's BLS key on WarpDrc20 so tokens can be minted to
 # an External account (required for transfer_remote in step 7)
 step "Dusk: Registering deployer BLS key on WarpDrc20..."
-REGISTER_RESULT=$("$DUSK_TX" register-account \
+REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" 2>/dev/null) || fail "Failed to register account on Dusk"
 DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
 ok "Dusk: Account registered (H256: ${DUSK_ACCOUNT_H256:0:16}...)"
@@ -448,10 +445,9 @@ RELAY_MSG_ID=$(echo "$ENCODE_RESULT" | jq -r '.message_id')
 ok "Relay message encoded (ID: ${RELAY_MSG_ID:0:16}...)"
 
 step "Dusk: Processing inbound message (EVM -> Dusk)..."
-PROCESS_RESULT=$("$DUSK_TX" process \
+PROCESS_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" process \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --mailbox "$DUSK_MAILBOX" \
     --message "$RELAY_MSG" 2>/dev/null) || fail "Failed to process message on Dusk"
 ok "Dusk: Message processed!"
@@ -489,10 +485,9 @@ DUSK_NONCE_BEFORE=$(echo "$DUSK_NONCE_BEFORE_JSON" | jq -r '.value // 0')
 
 # Call transfer_remote on WarpDrc20 — burns tokens from the deployer's External
 # account and dispatches a Hyperlane message to the EVM HypERC20.
-"$DUSK_TX" transfer-remote \
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" \
     --destination "$EVM_DOMAIN" \
     --recipient "$EVM_RECIPIENT_PAD32" \
