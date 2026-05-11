@@ -26,6 +26,9 @@ intended for a Dusk-controlled self-hosted runner. It needs
 checkout. It must not be a Dusk signer, validator key, consensus key password,
 or deployment secret.
 
+The workflow sets `persist-credentials: false` on checkout steps so the token is
+not left in local git config while the repro command runs.
+
 Do not enable artifact upload for the manual repro workflow unless the exact
 files are scanned first with `scripts/secret-hygiene-check.sh`.
 

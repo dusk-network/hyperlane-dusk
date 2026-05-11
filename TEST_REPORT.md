@@ -71,6 +71,10 @@ Result:
   a manual self-hosted workflow template for the same `make repro-check-agent`
   command. It requires Dusk to provide a `dusk-hyperlane` self-hosted runner and
   `DUSK_ORG_READ_TOKEN` secret for private cross-repo checkout.
+- `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
+  `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
+- `make secret-hygiene`: re-run after manual workflow secret-scope docs and
+  checkout credential hardening; passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log`:
   passed.
 - Negative artifact scan against `/tmp/hyperlane-relayer-testMock-1778530398.json`:
