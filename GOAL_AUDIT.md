@@ -31,8 +31,8 @@ open in `dusk-network/hyperlane-dusk#2`.
 
 | Component | Branch | Evidence | State |
 |---|---|---|---|
-| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; later commits refresh audit, CI/repro, signer, default-branch, and cross-repo handoff docs | Internal PR open, mergeable; review requested from `moCello`; labels `need:feedback`, `type:feature`; no status checks configured |
-| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility review documented in `docs/dusk-upstream-compatibility-review.md` | Internal PR open, mergeable; review requested from `Neotamandua`; labels `need:feedback`, `type:feature`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
+| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; later commits refresh audit, CI/repro, signer, default-branch, and cross-repo handoff docs; `TEST_REPORT.md` records a supplemental current-head `make repro-check-agent` run | Internal PR ready for review, open, mergeable; review requested from `moCello`; labels `need:feedback`, `type:feature`; no status checks configured |
+| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility review documented in `docs/dusk-upstream-compatibility-review.md`; companion `TEST_REPORT.md` records a supplemental current-head `make repro-check-agent` run | Internal PR ready for review, open, mergeable; review requested from `Neotamandua`; labels `need:feedback`, `type:feature`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
 
 Live verification on 2026-05-12:
@@ -48,10 +48,10 @@ git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstrea
 
 Observed:
 
-- Dusk PR is open and mergeable, review requested from `moCello`, with zero
-  status-check rollup entries.
-- Monorepo PR is open and mergeable, review requested from `Neotamandua`, with
-  zero status-check rollup entries.
+- Dusk PR is ready for review, open, and mergeable; review is requested from
+  `moCello`; it has zero status-check rollup entries.
+- Monorepo PR is ready for review, open, and mergeable; review is requested
+  from `Neotamandua`; it has zero status-check rollup entries.
 - The live PR head SHAs are intentionally checked through GitHub instead of
   pinned in this file; documentation-only commits on this branch would
   otherwise make the file stale immediately.
@@ -80,8 +80,8 @@ Observed:
 | Address arithmetic, replay/domain separation, malformed metadata, duplicate delivery, admin paths, dirty redeploys, and token accounting | `SECURITY_REVIEW.md`; `TEST_REPORT.md`; 67 integration tests; E2E/fault-injection runs listed below | Done for internal review |
 | Avoid runtime `todo!`, `unimplemented!`, and direct `panic!` paths | `TEST_REPORT.md` records the Dusk contract/runtime/tooling scan command and result for `rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'` with no matches in scoped production paths. The monorepo `docs/dusk-upstream-compatibility-review.md` records the Dusk agent scan: no matches in `rust/main/chains/hyperlane-dusk`, and no added placeholder macros in the Dusk diff against `upstream/main`. | Done |
 | Avoid leaking Dusk secrets through committed configs and process argv | Demo/E2E configs use ignored local files and `/tmp` artifacts; `dusk-tx` supports password file/env lookup and stdin raw-key loading; demo scripts avoid Dusk consensus passwords in CLI argv; `SECRET_HANDLING.md` and `make secret-hygiene` provide source/artifact guardrails; `SECURITY_REVIEW.md` keeps production signer/config handling as a release gate | Gated |
-| Dusk VM contract/type checks | `make all`; `cargo test -p hyperlane-dusk-types` -> 28 passed; `cargo test -p hyperlane-dusk-integration-tests` -> 67 passed; `cargo test -p dusk-tx` -> 3 passed | Done |
-| Hyperlane Rust agent checks | From monorepo `rust/main`: `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander` -> passed after rebasing onto upstream `f758a706` | Done |
+| Dusk VM contract/type checks | `make all`; `cargo test -p hyperlane-dusk-types` -> 28 passed; `cargo test -p hyperlane-dusk-integration-tests` -> 67 passed; `cargo test -p dusk-tx` -> 3 passed; supplemental current-head `make repro-check-agent` result is recorded in `TEST_REPORT.md` | Done |
+| Hyperlane Rust agent checks | From monorepo `rust/main`: `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander` -> passed after rebasing onto upstream `f758a706`; supplemental current-head `make repro-check-agent` result is recorded in `TEST_REPORT.md` | Done |
 | Local EVM <-> Dusk with TestMock/null-style ISM | Clean Rusk run `1778520709`: bidirectional E2E passed | Done |
 | Local EVM <-> Dusk with MessageIdMultisigISM | Clean Rusk run `1778521018`: bidirectional E2E with validator/checkpoint passed | Done |
 | Bidirectional DUSK/wDUSK bridge through relayer/validator, no manual process calls | `TEST_REPORT.md` records relayer/validator-driven EVM -> Dusk and Dusk -> EVM flows for TestMock and MessageIdMultisig | Done |
@@ -93,8 +93,8 @@ Observed:
 | Stress/reliability: origin RPC failure | Clean Rusk run `1778523772` | Done |
 | Stress/reliability: destination RPC failure | Clean Rusk run `1778524014` | Done |
 | Stress/reliability: duplicate relayer/no double-delivery | Clean Rusk run `1778524257` | Done |
-| Prepare internal Dusk PR for contracts/tooling/tests/audit notes | Dusk PR #1 is open and mergeable; body, handoff comments, and `PRODUCTION_REVIEW_DECISIONS.md` include current evidence and remaining gates | Done |
-| Prepare internal Dusk PR for Hyperlane agent/protocol integration | Monorepo PR #1 is open and mergeable; body, handoff comments, and `docs/dusk-upstream-compatibility-review.md` include companion Dusk evidence and remaining gates | Done |
+| Prepare internal Dusk PR for contracts/tooling/tests/audit notes | Dusk PR #1 is ready for review, open, and mergeable; body, handoff comments, and `PRODUCTION_REVIEW_DECISIONS.md` include current evidence and remaining gates | Done |
+| Prepare internal Dusk PR for Hyperlane agent/protocol integration | Monorepo PR #1 is ready for review, open, and mergeable; body, handoff comments, and `docs/dusk-upstream-compatibility-review.md` include companion Dusk evidence and remaining gates | Done |
 | Prepare upstream Hyperlane draft PRs only after internal review | Not started by design; PR bodies explicitly state upstream prep waits for internal Dusk review | Gated |
 
 ## Evidence Index
