@@ -19,8 +19,8 @@ Notes:
 
 - Most local agent E2E evidence used the dirty local `rusk-private` checkout.
   A clean detached Rusk worktree at `c0c64db4659500d077bb253ad13acba0e347d3fc`
-  has now passed the TestMock E2E path, but the multisig and stress scenarios
-  still need the same clean rerun.
+  has now passed the TestMock and MessageIdMultisig E2E paths, but stress and
+  reliability scenarios still need the same clean rerun.
 - Docker was unavailable in this WSL environment, so the agent E2E runs skipped
   the optional block explorers.
 - The E2E scripts used ignored local files for dev keys and runtime config:
@@ -140,6 +140,39 @@ Artifacts:
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778518318/0_with_id.json`
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778518318/announcement.json`
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778518318/metadata_latest.json`
+- `/tmp/rusk-dev.log`
+
+### Clean Rusk Reproduction Probe: MessageIdMultisigISM
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+SKIP_OTTERSCAN=true \
+SKIP_DUSK_EXPLORER=true \
+TIMEOUT_SECS=300 \
+bash demo/e2e-agents.sh --only messageIdMultisig --timeout 300
+```
+
+Result:
+
+- Passed on detached Rusk commit `c0c64db4659500d077bb253ad13acba0e347d3fc`
+  with a clean worktree and the regenerated `/tmp/example.state`.
+- Validator and relayer started successfully.
+- EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
+- Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
+
+Artifacts:
+
+- `/tmp/hyperlane-start-env-messageIdMultisig-1778521018.log`
+- `/tmp/hyperlane-deploy-messageIdMultisig-1778521018.log`
+- `/tmp/hyperlane-validator-messageIdMultisig-1778521018.log`
+- `/tmp/hyperlane-relayer-messageIdMultisig-1778521018.log`
+- `/tmp/hyperlane-validator-anvil-messageIdMultisig-1778521018.json`
+- `/tmp/hyperlane-relayer-messageIdMultisig-1778521018.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778521018/index.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778521018/0_with_id.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778521018/announcement.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778521018/metadata_latest.json`
 - `/tmp/rusk-dev.log`
 
 ### Dirty Redeploy Guard
@@ -434,11 +467,11 @@ an extensive local working tree rather than a small reproducibility patch, the
 earlier E2E evidence should be treated as **dirty-Rusk evidence**.
 
 A clean detached worktree at the same base commit has since passed the TestMock
-E2E path with a regenerated genesis state, which suggests the baseline
-bidirectional TestMock bridge does not depend on the dirty local Rusk patch.
-The MessageIdMultisig and stress/reliability runs still need clean-Rusk reruns,
-or a dedicated Rusk branch containing any exact required changes, before
-production readiness.
+and MessageIdMultisig E2E paths with a regenerated genesis state, which
+suggests the baseline bidirectional bridge and validator/relayer multisig path
+do not depend on the dirty local Rusk patch. The stress/reliability runs still
+need clean-Rusk reruns, or a dedicated Rusk branch containing any exact required
+changes, before production readiness.
 
 ## Compatibility Fixes Applied During E2E
 
@@ -504,7 +537,7 @@ Result:
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
-  containing the exact required changes. The TestMock E2E path now passes on a
-  clean detached `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree, but the
-  MessageIdMultisig and stress/reliability evidence still needs the same clean
-  rerun.
+  containing the exact required changes. The TestMock and MessageIdMultisig
+  E2E paths now pass on a clean detached
+  `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree, but stress/reliability
+  evidence still needs the same clean rerun.
