@@ -123,6 +123,20 @@ validator, corrupts the local checkpoint signature, starts the relayer, verifies
 delivery remains blocked while the metadata is corrupt, restores the checkpoint,
 and verifies delivery resumes.
 
+### Low Dusk Signer Balance E2E
+
+To verify EVM -> Dusk delivery does not complete when the relayer's Dusk
+destination signer cannot pay fees:
+
+```bash
+LOW_SIGNER_SECS=35 bash demo/e2e-low-dusk-signer-balance.sh
+```
+
+The script starts a TestMock deployment, rewrites a temporary relayer config to
+use a deterministic unfunded Dusk test key, verifies delivery remains blocked
+while Dusk rejects the relayer transaction for insufficient account balance,
+then restarts the relayer with the funded local dev key and verifies recovery.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |

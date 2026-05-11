@@ -366,3 +366,7 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
 - Corrupted MessageIdMultisig checkpoint metadata: relayer-side delivery remains
   blocked while local checkpoint signature fields are corrupt, then succeeds
   after the valid checkpoint is restored.
+- Low Dusk destination signer balance: EVM -> Dusk delivery remains blocked
+  when Dusk preverification rejects `process` transactions for insufficient
+  signer balance, and delivery succeeds after restarting with the funded local
+  signer.

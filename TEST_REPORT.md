@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `c000ac36a171f8ec6e77dda41213df34ec77529c` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `5951bbc523319907d395b5191c7e1196e882a21b` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -219,6 +219,41 @@ Artifacts:
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778514463/0_with_id.json`
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778514463/0_with_id.json.valid`
 
+### Low Dusk Relayer Signer Balance
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/rusk-private \
+TIMEOUT_SECS=300 \
+LOW_SIGNER_SECS=35 \
+bash demo/e2e-low-dusk-signer-balance.sh
+```
+
+Result:
+
+- Passed.
+- Deployed a fresh TestMock environment.
+- Generated relayer configs with separate databases for the low-balance and
+  funded-signer phases.
+- Rewrote the first relayer config to use a deterministic unfunded Dusk test
+  key (`0x11...11`) for the destination signer.
+- Submitted 1 EVM -> Dusk transfer and verified Dusk token supply did not
+  change during the 35 second low-balance window.
+- The low-balance relayer log showed Dusk preverification rejecting `process`
+  transactions with `Value spent larger than account holds`; the relayer stayed
+  alive and retried.
+- Restarted the relayer with the funded local dev signer and verified the same
+  message delivered.
+
+Artifacts:
+
+- `/tmp/hyperlane-low-signer-start-testMock-1778514942.log`
+- `/tmp/hyperlane-low-signer-deploy-testMock-1778514942.log`
+- `/tmp/hyperlane-low-signer-relayer-low-testMock-1778514942.log`
+- `/tmp/hyperlane-low-signer-relayer-funded-testMock-1778514942.log`
+- `/tmp/hyperlane-relayer-low-signer-testMock-1778514942.json`
+- `/tmp/hyperlane-relayer-funded-signer-testMock-1778514942.json`
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -240,10 +275,10 @@ Artifacts:
   paths, dirty redeploy refusal, and several token-accounting failures, but
   more cross-route failure cases remain.
 - Continue stress and reliability testing. Current coverage includes dirty
-  redeploy refusal, 5-message relayer burst delivery, and relayer
-  restart/backlog recovery, and delayed validator checkpoint recovery through
-  relayer metadata backoff. Remaining scenarios include explicit duplicate
-  relayer attempts, RPC failures, and low signer balance.
+  redeploy refusal, 5-message relayer burst delivery, relayer restart/backlog
+  recovery, and delayed validator checkpoint recovery through relayer metadata
+  backoff. Remaining scenarios include explicit duplicate relayer attempts and
+  RPC failures.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or document the exact local
