@@ -13,7 +13,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` |
-| Supplemental clean-layout current-head local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b0fdfffd1cdb5e7ee77809be52c450500216c12c`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
+| Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b0fdfffd1cdb5e7ee77809be52c450500216c12c`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -35,11 +35,12 @@ Notes:
 - `SECRET_HANDLING.md` documents the local/production boundary, and
   `make secret-hygiene` checks tracked source plus optional CI artifact paths
   for secret-handling regressions.
-- A 2026-05-12 supplemental `make repro-check-agent` run passed on the current
-  Dusk and monorepo PR branch heads using `RUSK_DIR` to point at the clean
-  detached Rusk worktree. `scripts/local-repro-check.sh` created the temporary
-  compatible layout automatically, so the non-E2E repro command no longer
-  depends on the dirty local `/home/hein_/projects/rusk-private` checkout.
+- A 2026-05-12 supplemental `make repro-check-agent` run passed on the Dusk
+  and monorepo review-branch heads at the time of the run, using `RUSK_DIR` to
+  point at the clean detached Rusk worktree. `scripts/local-repro-check.sh`
+  created the temporary compatible layout automatically, so the non-E2E repro
+  command no longer depends on the dirty local
+  `/home/hein_/projects/rusk-private` checkout.
 
 ## Commands Run
 
@@ -88,7 +89,7 @@ Result:
   failed as expected after detecting generated `hexKey` and `duskKey` signer
   config entries.
 
-### Supplemental Clean-Layout Current-Head Local Repro
+### Supplemental Clean-Layout Review-Branch Local Repro
 
 ```bash
 cd /home/hein_/projects/hyperlane/dusk
