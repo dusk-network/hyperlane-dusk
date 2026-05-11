@@ -94,6 +94,7 @@ mod protocol_fee {
         /// Called by the Mailbox after a message is dispatched.
         ///
         /// Records the protocol fee and emits a `ProtocolFeePaid` event.
+        #[contract(emits = [(events::ProtocolFeePaid::TOPIC, events::ProtocolFeePaid)])]
         pub fn post_dispatch(&mut self, _metadata: Vec<u8>, encoded_message: Vec<u8>) {
             let sender = message::sender(&encoded_message);
             self.collected_fees = self.collected_fees.saturating_add(self.protocol_fee);

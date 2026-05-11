@@ -67,6 +67,7 @@ mod merkle_tree_hook {
         /// Called by the Mailbox after a message is dispatched.
         ///
         /// Inserts the message ID into the Merkle tree and emits an event.
+        #[contract(emits = [(events::InsertedIntoTree::TOPIC, events::InsertedIntoTree)])]
         pub fn post_dispatch(&mut self, _metadata: Vec<u8>, encoded_message: Vec<u8>) {
             // Verify caller is the Mailbox.
             let caller = abi::caller().expect("MerkleTreeHook: no caller");

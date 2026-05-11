@@ -160,6 +160,7 @@ mod warp_native {
         /// The caller must include a Moonlight TX with `deposit >= amount`
         /// to fund this contract. The amount is recorded in the Hyperlane
         /// message and the remote router mints equivalent tokens.
+        #[contract(emits = [(events::SentTransferRemote::TOPIC, events::SentTransferRemote)])]
         pub fn transfer_remote(
             &mut self,
             destination: u32,
@@ -212,6 +213,7 @@ mod warp_native {
         /// Called by the Mailbox when a message is delivered. Sends DUSK
         /// from this contract's balance to the recipient's registered
         /// account via the transfer contract.
+        #[contract(emits = [(events::ReceivedTransferRemote::TOPIC, events::ReceivedTransferRemote)])]
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpNative: cannot determine caller");

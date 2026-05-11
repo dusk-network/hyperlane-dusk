@@ -366,11 +366,38 @@ Artifacts:
   and malformed signature metadata with trailing partial-signature bytes.
 - Added corrupted fixed-width multisig signature metadata coverage; the ISM
   rejects corrupt bytes at `secp256k1_recover`.
+- Replaced the misleading `#[contract(no_event)]` marker on Mailbox
+  `dispatch_default` and added explicit `#[contract(emits = ...)]`
+  annotations to protocol entrypoints that already emit Hyperlane events:
+  Mailbox dispatch/process/admin hook setters, MerkleTreeHook, ProtocolFee,
+  IGP, ValidatorAnnounce, and warp-route send/receive paths.
+- Reviewed remaining `#[contract(no_event)]` uses. They are currently limited
+  to initialization, query/test-only, registration, ownership/configuration,
+  and token/accounting methods that do not emit protocol events. Silent
+  production admin/registration paths are documented in `SECURITY_REVIEW.md`
+  as an explicit audit decision before production readiness.
+
+Event annotation verification:
+
+```bash
+make all
+cargo test -p hyperlane-dusk-integration-tests
+```
+
+Result:
+
+- `make all` passed for all contract WASM builds after adding explicit event
+  annotations.
+- `cargo test -p hyperlane-dusk-integration-tests` passed:
+  `61 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 
-- Replace or explicitly justify current `#[contract(no_event)]` suppressions in
-  production-facing contracts.
+- Decide whether to add dedicated events for silent production admin,
+  registration, initialization, and ownership paths that currently remain
+  `#[contract(no_event)]`. The current state is explicitly documented in
+  `SECURITY_REVIEW.md`; this is a release policy decision, not an unreviewed
+  source mismatch.
 - Continue expanding negative/security coverage; current coverage includes
   malformed mailbox messages, wrong domains, duplicate delivery, invalid
   multisig metadata, insufficient signatures, unauthorized multisig admin

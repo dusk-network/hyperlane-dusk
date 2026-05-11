@@ -100,6 +100,7 @@ mod igp {
         ///
         /// Calculates the gas payment for the message's destination,
         /// records the payment, and emits a `GasPayment` event.
+        #[contract(emits = [(events::GasPayment::TOPIC, events::GasPayment)])]
         pub fn post_dispatch(&mut self, hook_metadata: Vec<u8>, encoded_message: Vec<u8>) {
             let destination = message::destination(&encoded_message);
             let gas_limit = metadata::gas_limit(&hook_metadata);

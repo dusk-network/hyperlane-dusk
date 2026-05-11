@@ -239,6 +239,7 @@ mod warp_drc20 {
         ///
         /// Burns `amount` from the caller and dispatches a Hyperlane message
         /// to the enrolled router on the destination domain.
+        #[contract(emits = [(events::SentTransferRemote::TOPIC, events::SentTransferRemote)])]
         pub fn transfer_remote(
             &mut self,
             destination: u32,
@@ -288,6 +289,7 @@ mod warp_drc20 {
         ///
         /// Called by the Mailbox when a message is delivered. Mints tokens
         /// to the recipient specified in the token message body.
+        #[contract(emits = [(events::ReceivedTransferRemote::TOPIC, events::ReceivedTransferRemote)])]
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpDrc20: cannot determine caller");

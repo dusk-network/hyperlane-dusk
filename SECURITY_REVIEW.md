@@ -283,6 +283,41 @@ This follows checks-effects-interactions and prevents replay. A message ID canno
 
 Dusk VM does not support reentrancy. When contract A calls contract B, contract A's execution is suspended until B returns. B cannot call back into A during the same transaction. This eliminates an entire class of vulnerabilities.
 
+### Event surface and `no_event` annotations
+
+Production-facing methods that manually emit Hyperlane protocol events now have
+explicit `#[contract(emits = ...)]` annotations:
+
+- Mailbox `dispatch`, `dispatch_default`, `process`, `set_default_ism`,
+  `set_default_hook`, and `set_required_hook`.
+- MerkleTreeHook `post_dispatch`.
+- ProtocolFee `post_dispatch`.
+- InterchainGasPaymaster `post_dispatch`.
+- ValidatorAnnounce `announce`.
+- WarpDrc20, WarpDrc20Collateral, and WarpNative `transfer_remote`/`handle`.
+
+Remaining explicit `#[contract(no_event)]` uses were reviewed and fall into
+these categories:
+
+- Initialization methods. These are single-use and guarded by initialized-state
+  checks. They currently emit no `Initialized` event.
+- Read/query or interface methods that only return state or verify metadata.
+- Test-only mock/recipient methods.
+- Registration and token/accounting operations that do not currently define
+  DRC20-style or registration event types.
+- Production admin/configuration methods outside the Mailbox hook/ISM setters:
+  ProtocolFee fee/beneficiary/ownership changes, IGP gas config/beneficiary/
+  ownership changes, MessageIdMultisigISM validator-set changes, and warp-route
+  router/hook/ISM/ownership changes.
+
+**Release decision still required**: The silent production admin,
+registration, initialization, and ownership paths are now explicit rather than
+hidden behind misleading `no_event` usage, but they should be reviewed against
+Dusk event-indexing and operations requirements before production readiness.
+Adding dedicated events for those paths would improve auditability and should
+be preferred if downstream indexers or operational runbooks need a complete
+on-chain configuration history.
+
 ## Files Modified
 
 | File | Change |
@@ -294,6 +329,12 @@ Dusk VM does not support reentrancy. When contract A calls contract B, contract 
 | `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; `saturating_add` for accounting |
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
 | `contracts/protocol-fee/src/lib.rs` | `saturating_add` for `collected_fees` |
+| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process and Mailbox hook/ISM setter events |
+| `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotation for Merkle insertion events |
+| `contracts/validator-announce/src/lib.rs` | Explicit event annotation for validator announcement events |
+| `contracts/warp-native/src/lib.rs` | Explicit event annotations for remote send/receive events |
+| `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for remote send/receive events |
+| `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for remote send/receive events |
 | `tests/tests/integration.rs` | 14 new security tests (61 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
@@ -315,6 +356,16 @@ Dusk VM does not support reentrancy. When contract A calls contract B, contract 
 | `test_multisig_ism_verify_rejects_insufficient_signatures` | Verify fails when metadata contains fewer signatures than threshold |
 | `test_multisig_ism_verify_rejects_corrupt_signature_bytes` | Verify fails when fixed-width signature metadata is corrupt and cannot be recovered |
 | `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
+
+Additional event annotation verification:
+
+```bash
+make all
+cargo test -p hyperlane-dusk-integration-tests
+```
+
+Both commands passed after the explicit event annotation cleanup. The
+integration package reported `61 passed; 0 failed; 0 ignored`.
 
 ### Test Gaps
 

@@ -132,6 +132,10 @@ mod mailbox {
         /// hook and default hook's `post_dispatch` methods.
         ///
         /// Returns the message ID.
+        #[contract(emits = [
+            (events::Dispatch::TOPIC, events::Dispatch),
+            (events::DispatchId::TOPIC, events::DispatchId)
+        ])]
         pub fn dispatch(
             &mut self,
             destination: u32,
@@ -199,7 +203,10 @@ mod mailbox {
         }
 
         /// Dispatch with default hook and empty metadata.
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Dispatch::TOPIC, events::Dispatch),
+            (events::DispatchId::TOPIC, events::DispatchId)
+        ])]
         pub fn dispatch_default(
             &mut self,
             destination: u32,
@@ -217,6 +224,10 @@ mod mailbox {
         ///
         /// Verifies the message via the recipient's ISM (or the default
         /// ISM) and then calls `handle` on the recipient contract.
+        #[contract(emits = [
+            (events::Process::TOPIC, events::Process),
+            (events::ProcessId::TOPIC, events::ProcessId)
+        ])]
         pub fn process(&mut self, metadata: Vec<u8>, encoded_message: Vec<u8>) {
             // Decode and validate the message.
             let msg = message::decode(&encoded_message)
@@ -430,6 +441,7 @@ mod mailbox {
         // =================================================================
 
         /// Set the default ISM. Owner only.
+        #[contract(emits = [(events::DefaultIsmSet::TOPIC, events::DefaultIsmSet)])]
         pub fn set_default_ism(&mut self, module: ContractId) {
             self.only_owner();
             assert!(module != ZERO_CONTRACT, "Mailbox: ISM cannot be zero");
@@ -443,6 +455,7 @@ mod mailbox {
         }
 
         /// Set the default post-dispatch hook. Owner only.
+        #[contract(emits = [(events::DefaultHookSet::TOPIC, events::DefaultHookSet)])]
         pub fn set_default_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");
@@ -456,6 +469,7 @@ mod mailbox {
         }
 
         /// Set the required post-dispatch hook. Owner only.
+        #[contract(emits = [(events::RequiredHookSet::TOPIC, events::RequiredHookSet)])]
         pub fn set_required_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");

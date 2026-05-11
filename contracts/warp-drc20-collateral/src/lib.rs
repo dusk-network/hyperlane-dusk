@@ -188,6 +188,7 @@ mod warp_drc20_collateral {
         ///
         /// The caller must have approved this contract to spend `amount`
         /// of the wrapped DRC20 token via `approve()`.
+        #[contract(emits = [(events::SentTransferRemote::TOPIC, events::SentTransferRemote)])]
         pub fn transfer_remote(
             &mut self,
             destination: u32,
@@ -242,6 +243,7 @@ mod warp_drc20_collateral {
         ///
         /// Called by the Mailbox when a message is delivered. Unlocks
         /// wrapped DRC20 tokens to the recipient.
+        #[contract(emits = [(events::ReceivedTransferRemote::TOPIC, events::ReceivedTransferRemote)])]
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpCollateral: cannot determine caller");

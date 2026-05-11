@@ -83,6 +83,7 @@ mod validator_announce {
         ///
         /// The signature must be a valid ECDSA signature by the validator
         /// over the announcement digest.
+        #[contract(emits = [(events::ValidatorAnnouncement::TOPIC, events::ValidatorAnnouncement)])]
         pub fn announce(
             &mut self,
             validator: EthAddress,
