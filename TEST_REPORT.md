@@ -628,11 +628,11 @@ Result:
   report. The currently documented E2E and fault-injection paths have also
   passed on a clean Rusk worktree, but longer-duration soak runs are still
   needed before production readiness.
-- Complete contract hardening review against the Dusk standards references and
-  update `SECURITY_REVIEW.md` with final assumptions and deviations.
+- Have Dusk reviewers accept or resolve the open production review questions
+  recorded in `SECURITY_REVIEW.md`.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
   containing the exact required changes if new Rusk-dependent scenarios are
-  added. The current TestMock and MessageIdMultisig E2E paths, 20-transfer
+  added. The current TestMock and MessageIdMultisig E2E paths, 50-transfer
   relayer restart/backlog stress test, and documented fault-injection scenarios
   now pass on a clean detached
   `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree.

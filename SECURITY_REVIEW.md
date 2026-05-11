@@ -329,6 +329,25 @@ No matches remain. Mailbox sender resolution previously used a direct
 contracts. Other contract reverts still intentionally use `assert!` and
 `expect(...)` for invariant checks and failed external calls.
 
+## Security Assumptions and Solidity Deviations
+
+These Dusk contracts intentionally do not attempt to be byte-for-byte Solidity
+ports. The current implementation relies on the following assumptions and
+documented deviations:
+
+| Area | Dusk assumption/deviation | Security implication |
+|---|---|---|
+| Account model | Dusk uses BLS Moonlight senders and `ContractId`; there is no direct `msg.sender` equivalent. Contracts use `abi::caller()` for contract-call admin paths and `abi::public_sender()` where Moonlight account ownership is required. | Owner checks must be reviewed per contract because account owners and contract owners are different primitives. WarpDrc20 intentionally uses the Moonlight sender hash as owner; most infrastructure contracts use contract-owner IDs. |
+| Native value transfer | WarpNative uses the Dusk transfer contract's exact `deposit` check instead of Solidity `msg.value`. | Remote mint/burn accounting depends on Rusk transfer-contract semantics. The direct VM integration tests cannot simulate this transitory deposit state; live-Rusk E2E remains the relevant verification path. |
+| Reverts | Dusk contract errors are explicit `assert!`/`expect(...)` panics that revert the full transaction. | This matches Dusk VM behavior but differs from Solidity custom errors. Error strings are part of test evidence and should stay stable enough for diagnostics. |
+| Upgradeability | No proxy or in-place upgrade pattern is implemented for the Dusk contracts. Deterministic contract IDs are treated as immutable deployment identities. | Production upgrades require new deployments and routing/config migration. Dirty redeploy refusal is intentional and tested. |
+| Events/indexing | Production entrypoints now declare protocol and operational events explicitly. Test-only mock contracts still use `#[contract(no_event)]`. | Off-chain agents should rely on the exposed query surfaces and events documented here; no hidden production no-event path is expected. |
+| Address mapping | External Dusk recipients are represented by `keccak256(bls_public_key_bytes)` and must register their BLS public key on Dusk for account delivery. | The mapping is deterministic and non-updatable. Lost or compromised keys are a user/account-management issue, not recoverable by current contracts. |
+| Unregistered recipients | WarpNative escrows unregistered recipients; WarpDrc20Collateral falls back to treating the H256 as a contract account. | This is an intentional route-specific difference. Native DUSK has a pending-claim path; collateral DRC20 follows ERC20-like "send to address" behavior and can strand funds if users target an invalid/unregistered recipient. |
+| Multisig metadata | MessageIdMultisigISM requires sorted validator sets, a valid threshold, initialized state, and exact fixed-width signature metadata. | This is stricter than accepting trailing metadata bytes and is intended to prevent malformed metadata acceptance. |
+| Fee accounting | ProtocolFee and IGP lifetime counters saturate rather than panic. IGP fee quote conversion panics on `u64` overflow. | Saturating counters are informational only; fee undercharging is prevented by rejecting unrepresentable quotes. |
+| Secret handling | Demo/E2E configs use local dev keys and `/tmp` artifacts. Production use must avoid process argv, logs, committed config, and CI artifact leakage for Dusk secrets. | This is a release gate outside the WASM contracts. Current scripts are acceptable only for local deterministic dev/test environments. |
+
 ## Files Modified
 
 | File | Change |
@@ -393,7 +412,10 @@ reported `64 passed; 0 failed; 0 ignored`.
 | IGP `u64::try_from` panic path | Would need gas oracle config that produces a fee > `u64::MAX`. The `checked_mul` calls before it would panic first in practice. |
 | WarpDrc20 `checked_add` overflow panic path | Would need to mint > `u64::MAX` tokens, which requires > `u64::MAX` inbound messages. Not practically testable. |
 
-## Open Questions for Further Review
+## Open Production Review Questions
+
+These items are not hidden TODOs in runtime code, but they are decisions that
+should be accepted or resolved before any production release:
 
 1. **WarpDrc20 `burn()` subtraction**: `self.supply -= amount` in `burn()` does not use `checked_sub`. If supply somehow became desynced from the sum of balances (e.g., due to a bug in minting), this could wrap. Should it use `checked_sub`?
 
@@ -426,8 +448,8 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
 - EVM -> Dusk and Dusk -> EVM using the TestMock/null-style ISM.
 - EVM -> Dusk and Dusk -> EVM using MessageIdMultisigISM with validator output.
 - Dirty redeploy refusal against a non-reset local Dusk chain.
-- Relayer restart/backlog recovery with 5 EVM -> Dusk and 5 Dusk -> EVM
-  transfers.
+- Relayer restart/backlog recovery with clean-Rusk 50 EVM -> Dusk and 50
+  Dusk -> EVM transfers.
 - Delayed validator startup for MessageIdMultisigISM: relayer observes missing
   metadata, Dusk-side delivery remains blocked during the configured validator
   delay, and delivery succeeds after validator checkpoint output is available.
