@@ -14,6 +14,10 @@ setup to accept, change, or replace.
   private Dusk repository access.
 - Both internal PRs currently have empty GitHub status-check rollups; the
   evidence in `TEST_REPORT.md` is local/clean-Rusk evidence.
+- `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
+  repro workflow is currently introduced by the `feat/dusk-hardening-v2`
+  review branch, so it becomes normally discoverable in the GitHub Actions UI
+  after the workflow file is merged or otherwise added to the default branch.
 
 ## Proposed Runner
 
@@ -104,6 +108,13 @@ cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scrap
 
 The final `cargo check` runs from
 `hyperlane/hyperlane-monorepo/rust/main`.
+
+Until this workflow file exists on the default branch, reviewers should treat it
+as a branch-proposed runner definition and use the local equivalent:
+
+```bash
+make repro-check-agent
+```
 
 ## Artifact Policy
 

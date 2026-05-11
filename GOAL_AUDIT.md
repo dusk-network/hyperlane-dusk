@@ -58,6 +58,9 @@ Observed:
 - `git ls-files --others --exclude-standard` is empty in both active repos, so
   the Dusk contract/tooling repo and the Hyperlane monorepo fork do not have
   untracked source paths as their source of truth.
+- `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
+  prototype archive branch remains available as
+  `archive/dusk-hyperlane-prototype-20260511`.
 
 ## Deliverable Checklist
 
@@ -141,9 +144,9 @@ Observed:
    subset, and `.github/workflows/manual-repro-check.yml` defines a manual
    self-hosted workflow that preserves the private dependency checkout layout.
    `CI_REPRO_STRATEGY.md` records the proposed runner labels, checkout layout,
-   read-only token scope, artifact policy, and promotion path. The workflow
-   still needs a Dusk runner/secret decision before it can replace local
-   evidence.
+   read-only token scope, artifact policy, promotion path, and default-branch
+   visibility caveat. The workflow still needs a Dusk runner/secret decision
+   and must land on the default branch before it can replace local evidence.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2 and summarized for
    PR review in `PRODUCTION_REVIEW_DECISIONS.md`.
