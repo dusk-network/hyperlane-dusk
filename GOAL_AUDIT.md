@@ -82,7 +82,11 @@ submission or production claims.
 5. The Hyperlane monorepo PR has internal Dusk agent/runtime review requested
    from `Neotamandua`, based on recent Rusk HTTP/RUES/GraphQL route ownership.
    No `CODEOWNERS`, `OWNERS`, or `MAINTAINERS` file was found in either repo.
-6. The remaining production sign-off work is tracked in
+6. CI/repro runner strategy remains a release gate. Both internal PRs currently
+   have empty status-check rollups, and the Dusk workspace depends on an
+   adjacent private `rusk-private` checkout; current evidence is local and
+   clean-Rusk documented in `TEST_REPORT.md`, not automated PR CI.
+7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
 ## Completion Decision
