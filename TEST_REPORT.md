@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `eec3c0f6a593bc73aab760a9a27689eeb9916869` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
