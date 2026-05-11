@@ -12,7 +12,7 @@ submission or production claims.
 | Component | Branch | Evidence commit | State |
 |---|---|---|---|
 | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` | Internal PR open, mergeable; latest pushed evidence commit before this metadata refresh |
-| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` | Internal PR open, mergeable |
+| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` | Internal PR open, mergeable; rebased onto upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
 
 ## Deliverable Checklist
@@ -23,7 +23,7 @@ submission or production claims.
 | Fork `hyperlane-xyz/hyperlane-monorepo` into Dusk org | `dusk-network/hyperlane-monorepo`, PR #1: https://github.com/dusk-network/hyperlane-monorepo/pull/1 | Done |
 | Create Dusk-specific Hyperlane contract/tooling repo | `dusk-network/hyperlane-dusk`, PR #1: https://github.com/dusk-network/hyperlane-dusk/pull/1 | Done |
 | Put local `~/projects/hyperlane/dusk` under git and push | Dusk repo branch `feat/dusk-hardening-v2`, latest evidence commit `e4d3f2a` | Done |
-| Re-port Hyperlane integration on current upstream main | Monorepo branch `feat/dusk-support-v2`, current head `e4a759c5`; branch contains the clean Dusk chain crate/config/protocol integration commit `feat: re-port Dusk Hyperlane agent support` | Done for internal review |
+| Re-port Hyperlane integration on current upstream main | Monorepo branch `feat/dusk-support-v2`, current head `f0df7aa`; branch contains the clean Dusk chain crate/config/protocol integration commit `feat: re-port Dusk Hyperlane agent support` and is based on upstream `f758a706` | Done for internal review |
 | Keep work off `hyperlane-xyz` origin/main | Work is in Dusk forks and Dusk feature branches; both PRs target Dusk org repos | Done |
 | Reapply integration in reviewable slices | Monorepo PR includes Dusk chain crate wiring, parser/config/protocol support, relayer/validator/scraper/lander checks; Dusk PR separates contract/tooling/security/test evidence | Done for internal review |
 | Harden Mailbox, MerkleTreeHook, ValidatorAnnounce, MessageIdMultisigISM, IGP/protocol-fee, WarpDrc20, WarpDrc20Collateral, and WarpNative | `SECURITY_REVIEW.md` lists issue-by-issue fixes, assumptions, Solidity deviations, and file-level changes | Done for internal review |
@@ -31,7 +31,7 @@ submission or production claims.
 | Avoid runtime `todo!`, `unimplemented!`, and direct `panic!` paths | `TEST_REPORT.md` records scan command and result for `rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'` with no matches in scoped production paths | Done |
 | Avoid leaking Dusk secrets through committed configs and process argv | Demo/E2E configs use ignored local files and `/tmp` artifacts; `dusk-tx` supports password file/env lookup and stdin raw-key loading; demo scripts avoid Dusk consensus passwords in CLI argv; `SECRET_HANDLING.md` and `make secret-hygiene` provide source/artifact guardrails; `SECURITY_REVIEW.md` keeps production signer/config handling as a release gate | Gated |
 | Dusk VM contract/type checks | `make all`; `cargo test -p hyperlane-dusk-types` -> 28 passed; `cargo test -p hyperlane-dusk-integration-tests` -> 67 passed; `cargo test -p dusk-tx` -> 3 passed | Done |
-| Hyperlane Rust agent checks | From monorepo `rust/main`: `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander` -> passed | Done |
+| Hyperlane Rust agent checks | From monorepo `rust/main`: `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander` -> passed after rebasing onto upstream `f758a706` | Done |
 | Local EVM <-> Dusk with TestMock/null-style ISM | Clean Rusk run `1778520709`: bidirectional E2E passed | Done |
 | Local EVM <-> Dusk with MessageIdMultisigISM | Clean Rusk run `1778521018`: bidirectional E2E with validator/checkpoint passed | Done |
 | Bidirectional DUSK/wDUSK bridge through relayer/validator, no manual process calls | `TEST_REPORT.md` records relayer/validator-driven EVM -> Dusk and Dusk -> EVM flows for TestMock and MessageIdMultisig | Done |
