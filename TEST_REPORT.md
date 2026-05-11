@@ -585,7 +585,7 @@ documented recovery/failure modes do not depend on the dirty local Rusk patch.
   account registration, validator-set updates, IGP domain gas config updates,
   native/collateral pending-transfer claims, and WarpDrc20 transfer/mint/burn
   accounting.
-- Added negative tests for WarpDrc20 non-owner admin rejection, WarpNative
+- Added tests for WarpDrc20 owner/non-owner admin resolution, WarpNative
   zero-amount remote sends, and WarpDrc20Collateral unlock attempts without
   sufficient locked wrapped-token balance.
 - Added WarpDrc20Collateral escrow tests for unregistered recipients and
@@ -615,7 +615,7 @@ Result:
 - `cargo test -p hyperlane-dusk-types` passed:
   `28 passed; 0 failed; 0 ignored`.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:
-  `66 passed; 0 failed; 0 ignored`.
+  `67 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 

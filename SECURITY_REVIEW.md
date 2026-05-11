@@ -351,7 +351,7 @@ documented deviations:
 
 | Area | Dusk assumption/deviation | Security implication |
 |---|---|---|
-| Account model | Dusk uses BLS Moonlight senders and `ContractId`; there is no direct `msg.sender` equivalent. Contracts use `abi::caller()` for contract-call admin paths and `abi::public_sender()` where Moonlight account ownership is required. | Owner checks must be reviewed per contract because account owners and contract owners are different primitives. WarpDrc20 intentionally uses the Moonlight sender hash as owner; most infrastructure contracts use contract-owner IDs. |
+| Account model | Dusk uses BLS Moonlight senders and `ContractId`; there is no direct `msg.sender` equivalent. Contracts resolve direct Moonlight calls through the transfer contract to `keccak256(public_sender)` and resolve inter-contract calls to the immediate caller `ContractId`. | Owner checks must be reviewed per contract because account owners and contract owners are different primitives. WarpDrc20 stores owner as `H256`, so it can represent either a Moonlight account hash or a contract ID. |
 | Native value transfer | WarpNative uses the Dusk transfer contract's exact `deposit` check instead of Solidity `msg.value`. | Remote mint/burn accounting depends on Rusk transfer-contract semantics. The direct VM integration tests cannot simulate this transitory deposit state; live-Rusk E2E remains the relevant verification path. |
 | Reverts | Dusk contract errors are explicit `assert!`/`expect(...)` panics that revert the full transaction. | This matches Dusk VM behavior but differs from Solidity custom errors. Error strings are part of test evidence and should stay stable enough for diagnostics. |
 | Upgradeability | No proxy or in-place upgrade pattern is implemented for the Dusk contracts. Deterministic contract IDs are treated as immutable deployment identities. | Production upgrades require new deployments and routing/config migration. Dirty redeploy refusal is intentional and tested. |
@@ -367,7 +367,7 @@ documented deviations:
 | File | Change |
 |---|---|
 | `contracts/warp-native/src/lib.rs` | Added deposit verification, escrow pattern (`pending_transfers`, `claim_pending`, `pending_balance`) |
-| `contracts/warp-drc20/src/lib.rs` | `checked_add` in `mint`/`do_transfer`, zero-amount check in `transfer_remote` |
+| `contracts/warp-drc20/src/lib.rs` | `checked_add` in `mint`/`do_transfer`, `checked_sub` in `burn`, zero-amount check in `transfer_remote`, immediate-caller-aware owner resolution |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, collateral escrow, `claim_pending`, `pending_balance`, and registered-recipient resolution in `handle` |
 | `contracts/warp-drc20-collateral/Cargo.toml` | Added `dusk-bytes = "0.1.7"` dependency |
 | `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; `saturating_add` for accounting |
@@ -380,7 +380,7 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 19 new security tests (66 total, up from 47) |
+| `tests/tests/integration.rs` | 20 new security tests (67 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -389,6 +389,7 @@ documented deviations:
 |---|---|
 | `test_warp_drc20_transfer_remote_rejects_zero_amount` | Zero-amount assertion fires before any state mutation |
 | `test_warp_drc20_admin_rejects_non_owner` | WarpDrc20 admin path rejects a Moonlight sender that is not the configured owner |
+| `test_warp_drc20_admin_accepts_owner_moonlight_sender` | WarpDrc20 direct Moonlight owner admin path still succeeds after caller-aware sender resolution |
 | `test_warp_native_transfer_remote_rejects_zero_amount` | Native warp send rejects zero amounts before deposit handling |
 | `test_warp_native_handle_escrows_unregistered_recipient` | Unregistered recipient goes to escrow instead of panicking; `pending_balance` returns correct amount |
 | `test_warp_native_escrow_accumulates` | Multiple inbound messages to same unregistered recipient accumulate correctly |
@@ -417,7 +418,7 @@ cargo test -p hyperlane-dusk-integration-tests
 
 All commands passed after the explicit event annotation cleanup. The type
 package reported `28 passed; 0 failed; 0 ignored`; the integration package
-reported `64 passed; 0 failed; 0 ignored`.
+reported `67 passed; 0 failed; 0 ignored`.
 
 ### Test Gaps
 
@@ -433,13 +434,11 @@ reported `64 passed; 0 failed; 0 ignored`.
 These items are not hidden TODOs in runtime code, but they are decisions that
 should be accepted or resolved before any production release:
 
-1. **WarpDrc20 `only_owner` uses `public_sender()`**: The owner check in WarpDrc20 uses `abi::public_sender()` (BLS key from Moonlight TX), while WarpNative and WarpDrc20Collateral use `abi::caller()` (contract ID). This means WarpDrc20 admin functions can only be called via direct Moonlight TX, not from other contracts. Is this intentional asymmetry acceptable?
+1. **Mailbox `resolve_sender` when called from transfer contract**: When a Moonlight TX targets the Mailbox directly, `abi::caller()` returns `TRANSFER_CONTRACT`. The Mailbox special-cases this to derive the sender from `public_sender()`. But if the transfer contract ever calls the Mailbox for non-user-initiated reasons, this would misattribute the sender. Is this a concern?
 
-2. **Mailbox `resolve_sender` when called from transfer contract**: When a Moonlight TX targets the Mailbox directly, `abi::caller()` returns `TRANSFER_CONTRACT`. The Mailbox special-cases this to derive the sender from `public_sender()`. But if the transfer contract ever calls the Mailbox for non-user-initiated reasons, this would misattribute the sender. Is this a concern?
+2. **`registered_accounts` has no deregistration**: Once a BLS key is registered, it cannot be unregistered or updated. If a user's key is compromised, they cannot re-register with a new key for the same H256 (since H256 = keccak256(pk) is deterministic). Is this acceptable?
 
-3. **`registered_accounts` has no deregistration**: Once a BLS key is registered, it cannot be unregistered or updated. If a user's key is compromised, they cannot re-register with a new key for the same H256 (since H256 = keccak256(pk) is deterministic). Is this acceptable?
-
-4. **WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain**: If a user loses their private key after funds are escrowed, the funds are locked forever. There is no admin function to recover stuck escrow. Is this intentional?
+3. **WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain**: If a user loses their private key after funds are escrowed, the funds are locked forever. There is no admin function to recover stuck escrow. Is this intentional?
 
 ## Build & Test Verification
 
@@ -450,7 +449,7 @@ make all    # in dusk/ directory
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 66 integration tests pass (47 pre-existing + 19 new)
+# 67 integration tests pass (47 pre-existing + 20 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
 

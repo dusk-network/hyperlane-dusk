@@ -1595,6 +1595,21 @@ fn test_warp_drc20_admin_rejects_non_owner() {
     assert_contract_panic(result, "WarpDrc20: caller is not the owner");
 }
 
+#[test]
+fn test_warp_drc20_admin_accepts_owner_moonlight_sender() {
+    let mut session = session_with_warp_drc20();
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "set_ism", &(TEST_MOCK_ID,))
+        .expect("set_ism should succeed for owner");
+
+    let ism: ContractId = session
+        .direct_call::<_, ContractId>(WARP_DRC20_ID, "interchain_security_module", &())
+        .expect("ism should succeed")
+        .data;
+    assert_eq!(ism, TEST_MOCK_ID);
+}
+
 // =============================================================================
 // Tests: WarpNative
 // =============================================================================

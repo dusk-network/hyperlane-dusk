@@ -31,6 +31,7 @@ mod warp_drc20 {
     use bytecheck::CheckBytes;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
+    use dusk_core::transfer::TRANSFER_CONTRACT;
     use rkyv::{Archive, Deserialize, Serialize};
 
     use dusk_bytes::Serializable;
@@ -519,11 +520,16 @@ mod warp_drc20 {
             );
         }
 
-        /// Panics if the Moonlight TX sender is not the owner.
+        /// Panics if the resolved admin sender is not the owner.
         fn only_owner(&self) {
-            let sender = abi::public_sender().expect("WarpDrc20: no Moonlight sender");
-            let sender_h = message::keccak256(&sender.to_bytes());
             let owner = self.owner.expect("WarpDrc20: no owner set");
+            let caller = abi::caller().expect("WarpDrc20: cannot determine caller");
+            let sender_h = if caller == TRANSFER_CONTRACT {
+                let sender = abi::public_sender().expect("WarpDrc20: no Moonlight sender");
+                message::keccak256(&sender.to_bytes())
+            } else {
+                caller.to_bytes()
+            };
             assert!(sender_h == owner, "WarpDrc20: caller is not the owner");
         }
     }
