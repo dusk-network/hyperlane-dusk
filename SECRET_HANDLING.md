@@ -22,6 +22,10 @@ demo keys are not production keys.
 intended for a Dusk-controlled self-hosted runner. It needs
 `DUSK_ORG_READ_TOKEN` only to checkout private Dusk repositories.
 
+`CI_REPRO_STRATEGY.md` records the proposed runner labels, checkout layout,
+token scope, artifact policy, and promotion path for reviewers to accept,
+change, or replace.
+
 `DUSK_ORG_READ_TOKEN` must be a read-only repository/org token scoped to source
 checkout. It must not be a Dusk signer, validator key, consensus key password,
 or deployment secret.

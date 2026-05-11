@@ -95,6 +95,7 @@ Observed:
 |---|---|
 | Security assumptions, fixes, Solidity deviations, reviewer decisions | `SECURITY_REVIEW.md` |
 | Secret handling policy and source/artifact guardrail | `SECRET_HANDLING.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
+| CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent` |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Repeatable local E2E scripts | `demo/e2e-agents.sh`, `demo/e2e-relayer-restart-stress.sh`, `demo/e2e-soak-restart-stress.sh`, `demo/e2e-*.sh` |
 | Demo and E2E command documentation | `demo/README.md` |
@@ -130,8 +131,10 @@ Observed:
    `make repro-check-agent` now wrap the repeatable local non-E2E verification
    subset, and `.github/workflows/manual-repro-check.yml` defines a manual
    self-hosted workflow that preserves the private dependency checkout layout.
-   The workflow still needs a Dusk runner/secret decision before it can replace
-   local evidence.
+   `CI_REPRO_STRATEGY.md` records the proposed runner labels, checkout layout,
+   read-only token scope, artifact policy, and promotion path. The workflow
+   still needs a Dusk runner/secret decision before it can replace local
+   evidence.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
