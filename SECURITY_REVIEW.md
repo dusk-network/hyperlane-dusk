@@ -356,3 +356,4 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
 
 - EVM -> Dusk and Dusk -> EVM using the TestMock/null-style ISM.
 - EVM -> Dusk and Dusk -> EVM using MessageIdMultisigISM with validator output.
+- Dirty redeploy refusal against a non-reset local Dusk chain.

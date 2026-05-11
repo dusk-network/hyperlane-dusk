@@ -72,6 +72,19 @@ Notes:
 - The script generates temporary agent configs in `/tmp` with restrictive file
   permissions (they contain dev keys).
 
+### Dirty Redeploy Guard
+
+To verify deterministic Dusk contract IDs are not silently reused on a non-reset
+chain, run:
+
+```bash
+bash demo/e2e-dirty-redeploy.sh
+```
+
+The script starts a fresh local environment, deploys once, attempts a second
+deployment without resetting Rusk state, and expects `deploy-hyperlane` to
+refuse with recovery guidance.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |

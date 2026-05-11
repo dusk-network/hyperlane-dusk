@@ -105,6 +105,29 @@ Artifacts:
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778510216/metadata_latest.json`
 - `/tmp/rusk-dev.log`
 
+### Dirty Redeploy Guard
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/rusk-private \
+TIMEOUT_SECS=300 \
+bash demo/e2e-dirty-redeploy.sh
+```
+
+Result:
+
+- Passed.
+- Initial deterministic Dusk deployment succeeded.
+- Second deployment against the same non-reset Rusk state failed as expected.
+- Failure log contained `Refusing to deploy: contract IDs already exist on-chain`
+  and recovery guidance to restart Rusk with fresh state.
+
+Artifacts:
+
+- `/tmp/hyperlane-dirty-redeploy-start-testMock-1778510813.log`
+- `/tmp/hyperlane-dirty-redeploy-first-testMock-1778510813.log`
+- `/tmp/hyperlane-dirty-redeploy-second-testMock-1778510813.log`
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -121,8 +144,8 @@ Artifacts:
 - Continue expanding negative/security coverage; current coverage includes
   malformed mailbox messages, wrong domains, duplicate delivery, invalid
   multisig metadata, insufficient signatures, unauthorized multisig admin
-  paths, and several token-accounting failures, but dirty redeploy and more
-  cross-route failure cases remain.
+  paths, dirty redeploy refusal, and several token-accounting failures, but
+  more cross-route failure cases remain.
 - Run stress and reliability tests for restarts, duplicate messages, RPC
   failures, delayed checkpoints, high message volume, low signer balance, and
   metadata corruption.
