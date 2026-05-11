@@ -54,6 +54,17 @@ by local development:
 This layout matches `scripts/local-repro-check.sh`, whose default Rusk path is
 `../../rusk-private` relative to `hyperlane/dusk`.
 
+For local reviewer repros that already have a clean Rusk checkout somewhere
+else, the same script accepts an override and creates a temporary compatible
+layout automatically:
+
+```bash
+RUSK_DIR=/path/to/clean/rusk-private make repro-check-agent
+```
+
+Set `HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/some-dir` to keep that temporary layout
+and its logs after the run.
+
 ## Access Token
 
 Use one GitHub secret:

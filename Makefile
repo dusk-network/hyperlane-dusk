@@ -121,5 +121,6 @@ help:
 	@echo "  secret-hygiene     Check source secret-handling guardrails"
 	@echo "  repro-check        Run repeatable local pre-review checks"
 	@echo "  repro-check-agent  Run repro-check plus Hyperlane agent cargo check"
+	@echo "                     Set RUSK_DIR=/path/to/rusk-private to use a clean checkout"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"
