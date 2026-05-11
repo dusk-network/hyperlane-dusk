@@ -20,7 +20,7 @@ Notes:
 - Most local agent E2E evidence used the dirty local `rusk-private` checkout.
   A clean detached Rusk worktree at `c0c64db4659500d077bb253ad13acba0e347d3fc`
   has now passed the TestMock and MessageIdMultisig E2E paths plus the
-  20-transfer relayer restart/backlog stress test and the currently documented
+  50-transfer relayer restart/backlog stress test and the currently documented
   fault-injection scenarios.
 - Docker was unavailable in this WSL environment, so the agent E2E runs skipped
   the optional block explorers.
@@ -253,6 +253,30 @@ bash demo/e2e-relayer-restart-stress.sh
 - Final balances matched the starting state:
   EVM account returned to 10 wDUSK and Dusk wrapped supply returned to 0.
 
+Larger clean Rusk rerun:
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+SKIP_OTTERSCAN=true \
+SKIP_DUSK_EXPLORER=true \
+TIMEOUT_SECS=1200 \
+TRANSFERS=50 \
+TRANSFER_AMOUNT_WEI=100000000000000000 \
+bash demo/e2e-relayer-restart-stress.sh
+```
+
+- Passed on the same clean detached Rusk commit
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- EVM -> Dusk burst: 50 transfers at 0.1 wDUSK each delivered, reaching
+  5 wDUSK Dusk wrapped supply.
+- Dusk -> EVM backlog: 50 transfers queued while the relayer was stopped and
+  delivered after restart with the same config and DB.
+- The EVM -> Dusk burst again hit repeated `spendId exists in the mempool`
+  preverify responses under high fan-out, then recovered.
+- Final balances matched the starting state:
+  EVM account returned to 10 wDUSK and Dusk wrapped supply returned to 0.
+
 Artifacts:
 
 - `/tmp/hyperlane-restart-stress-start-testMock-1778518816.log`
@@ -265,6 +289,11 @@ Artifacts:
 - `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778521340.log`
 - `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778521340.log`
 - `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778521340/`
+- `/tmp/hyperlane-restart-stress-start-testMock-1778524643.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778524643.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778524643.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778524643.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778524643/`
 
 ### Validator Delay and Checkpoint Backoff
 
@@ -531,7 +560,7 @@ an extensive local working tree rather than a small reproducibility patch, the
 earlier E2E evidence should be treated as **dirty-Rusk evidence**.
 
 A clean detached worktree at the same base commit has since passed the TestMock
-and MessageIdMultisig E2E paths plus the 20-transfer relayer restart/backlog
+and MessageIdMultisig E2E paths plus the 50-transfer relayer restart/backlog
 stress test and the documented fault-injection scenarios with a regenerated
 genesis state. This suggests the baseline bidirectional bridge,
 validator/relayer multisig path, restart/backlog stress path, and currently
@@ -593,12 +622,12 @@ Result:
   paths, dirty redeploy refusal, and several token-accounting/cross-route
   failures, but broader route-matrix coverage remains useful.
 - Continue stress and reliability testing. Current coverage includes dirty
-  redeploy refusal, 20-message relayer burst delivery, relayer restart/backlog
+  redeploy refusal, 50-message relayer burst delivery, relayer restart/backlog
   recovery, and delayed validator checkpoint recovery through relayer metadata
   backoff. No currently listed reliability scenario remains untested in this
   report. The currently documented E2E and fault-injection paths have also
-  passed on a clean Rusk worktree, but longer-duration/larger-volume runs are
-  still needed before production readiness.
+  passed on a clean Rusk worktree, but longer-duration soak runs are still
+  needed before production readiness.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
