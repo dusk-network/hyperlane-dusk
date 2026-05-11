@@ -30,6 +30,9 @@ Notes:
   `DUSK_CONSENSUS_PASSWORD_FILE`, `DUSK_CONSENSUS_PASSWORD`, or
   `DUSK_CONSENSUS_KEYS_PASS`; demo scripts avoid passing Dusk consensus
   passwords through process argv.
+- `SECRET_HANDLING.md` documents the local/production boundary, and
+  `make secret-hygiene` checks tracked source plus optional CI artifact paths
+  for secret-handling regressions.
 
 ## Commands Run
 
@@ -41,6 +44,12 @@ make all
 cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
+make secret-hygiene
+bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log
+if bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.json \
+  >/tmp/hyperlane-secret-hygiene-negative.log 2>&1; then
+  exit 1
+fi
 ```
 
 Result:
@@ -49,6 +58,12 @@ Result:
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
 - `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
 - `cargo test -p dusk-tx`: passed, 3 tests.
+- `make secret-hygiene`: passed.
+- `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log`:
+  passed.
+- Negative artifact scan against `/tmp/hyperlane-relayer-testMock-1778530398.json`:
+  failed as expected after detecting generated `hexKey` and `duskKey` signer
+  config entries.
 
 ### Hyperlane Rust Agent Checks
 
@@ -775,7 +790,8 @@ Result:
   recorded in `SECURITY_REVIEW.md`.
 - Production secret handling remains an operational gate. The local scripts use
   ignored dev configs and `/tmp` runtime artifacts, and Dusk consensus
-  passwords are no longer passed through `dusk-tx` process argv. Production
+  passwords are no longer passed through `dusk-tx` process argv. `make
+  secret-hygiene` provides a source and artifact-scan guardrail, but production
   signer/key handling and CI artifact policy still need explicit review.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
   containing the exact required changes if new Rusk-dependent scenarios are

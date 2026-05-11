@@ -257,6 +257,10 @@ with `umask 077`. Those files contain local dev signer material and must not be
 committed, uploaded as CI artifacts, or reused for production. The EVM private
 keys used by these scripts are Anvil dev keys only.
 
+Run `make secret-hygiene` before review. Before uploading CI or E2E artifacts,
+scan the exact artifact paths with `bash scripts/secret-hygiene-check.sh
+<paths...>`. See `SECRET_HANDLING.md` for the release guardrail.
+
 ### Troubleshooting
 
 **Rusk won't start**: Check `/tmp/rusk-dev.log`. Ensure genesis state exists at

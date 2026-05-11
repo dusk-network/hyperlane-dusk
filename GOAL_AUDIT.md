@@ -29,7 +29,7 @@ submission or production claims.
 | Harden Mailbox, MerkleTreeHook, ValidatorAnnounce, MessageIdMultisigISM, IGP/protocol-fee, WarpDrc20, WarpDrc20Collateral, and WarpNative | `SECURITY_REVIEW.md` lists issue-by-issue fixes, assumptions, Solidity deviations, and file-level changes | Done for internal review |
 | Address arithmetic, replay/domain separation, malformed metadata, duplicate delivery, admin paths, dirty redeploys, and token accounting | `SECURITY_REVIEW.md`; `TEST_REPORT.md`; 67 integration tests; E2E/fault-injection runs listed below | Done for internal review |
 | Avoid runtime `todo!`, `unimplemented!`, and direct `panic!` paths | `TEST_REPORT.md` records scan command and result for `rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'` with no matches in scoped production paths | Done |
-| Avoid leaking Dusk secrets through committed configs and process argv | Demo/E2E configs use ignored local files and `/tmp` artifacts; `dusk-tx` supports password file/env lookup and stdin raw-key loading; demo scripts avoid Dusk consensus passwords in CLI argv; `SECURITY_REVIEW.md` keeps production signer/config handling as a release gate | Gated |
+| Avoid leaking Dusk secrets through committed configs and process argv | Demo/E2E configs use ignored local files and `/tmp` artifacts; `dusk-tx` supports password file/env lookup and stdin raw-key loading; demo scripts avoid Dusk consensus passwords in CLI argv; `SECRET_HANDLING.md` and `make secret-hygiene` provide source/artifact guardrails; `SECURITY_REVIEW.md` keeps production signer/config handling as a release gate | Gated |
 | Dusk VM contract/type checks | `make all`; `cargo test -p hyperlane-dusk-types` -> 28 passed; `cargo test -p hyperlane-dusk-integration-tests` -> 67 passed; `cargo test -p dusk-tx` -> 3 passed | Done |
 | Hyperlane Rust agent checks | From monorepo `rust/main`: `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander` -> passed | Done |
 | Local EVM <-> Dusk with TestMock/null-style ISM | Clean Rusk run `1778520709`: bidirectional E2E passed | Done |
@@ -52,6 +52,7 @@ submission or production claims.
 | Evidence | Location |
 |---|---|
 | Security assumptions, fixes, Solidity deviations, reviewer decisions | `SECURITY_REVIEW.md` |
+| Secret handling policy and source/artifact guardrail | `SECRET_HANDLING.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Repeatable local E2E scripts | `demo/e2e-agents.sh`, `demo/e2e-relayer-restart-stress.sh`, `demo/e2e-soak-restart-stress.sh`, `demo/e2e-*.sh` |
 | Demo and E2E command documentation | `demo/README.md` |
@@ -71,10 +72,10 @@ submission or production claims.
    3102-second 3-cycle clean-Rusk soak with 20 transfers each direction per
    cycle.
 3. Production secret handling needs an operational/CI sign-off. Current scripts
-   keep dev configs in ignored files and `/tmp`, and Dusk consensus passwords
-   are no longer passed to `dusk-tx` in process argv. Production deployment
-   must still avoid secret material in logs, committed configs, generated agent
-   configs, and CI artifacts.
+   keep dev configs in ignored files and `/tmp`, Dusk consensus passwords are
+   no longer passed to `dusk-tx` in process argv, and `make secret-hygiene`
+   provides source/artifact guardrails. Production deployment must still define
+   signer custody and CI artifact policy.
 4. Upstream Hyperlane draft PRs should not be prepared until the internal Dusk
    PRs complete review.
 

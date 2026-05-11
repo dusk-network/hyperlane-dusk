@@ -75,6 +75,11 @@ dusk-tx:
 .PHONY: test
 test: test-types test-integration
 
+# Check source and optional CI artifacts for secret-handling regressions.
+.PHONY: secret-hygiene
+secret-hygiene:
+	bash scripts/secret-hygiene-check.sh
+
 # Run cross-chain demo (requires rusk-duskevm Docker + Foundry)
 .PHONY: demo
 demo: all dusk-tx
@@ -104,5 +109,6 @@ help:
 	@echo "  data-driver        Build data-driver WASM (for explorer)"
 	@echo "  dusk-tx            Build dusk-tx CLI tool"
 	@echo "  test               Run all tests"
+	@echo "  secret-hygiene     Check source secret-handling guardrails"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"
