@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `3e1f8c06f4310db4b2723c37cf937357c9fff4e0` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `7d92b1d4e6dc16d1f61cecc8605f17c68401d445` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -50,7 +50,7 @@ cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scrap
 
 Result:
 
-- Passed.
+- Passed. Re-run after Dusk event/type changes also passed.
 
 ### Local EVM <-> Dusk Agent E2E: TestMock ISM
 
