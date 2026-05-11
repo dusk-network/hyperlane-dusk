@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e5582a55157a3ade27950927d14d7868416e9925` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `8f4e5c67b4d29ce26a3db11408f0b9aef1a02bfb` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -128,6 +128,35 @@ Artifacts:
 - `/tmp/hyperlane-dirty-redeploy-first-testMock-1778510813.log`
 - `/tmp/hyperlane-dirty-redeploy-second-testMock-1778510813.log`
 
+### Relayer Restart and Backlog Stress
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/rusk-private \
+TIMEOUT_SECS=420 \
+TRANSFERS=5 \
+bash demo/e2e-relayer-restart-stress.sh
+```
+
+Result:
+
+- Passed.
+- Submitted 5 EVM -> Dusk transfers through a live relayer.
+- Stopped the relayer after the EVM -> Dusk burst was delivered.
+- Submitted 5 Dusk -> EVM transfers while the relayer was down, waiting for
+  Dusk Mailbox nonce inclusion after each submission.
+- Restarted the relayer with the same config/database.
+- Verified EVM balance returned to `10000000000000000000` and Dusk supply
+  returned to `0`.
+
+Artifacts:
+
+- `/tmp/hyperlane-restart-stress-start-testMock-1778512771.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778512771.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778512771.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778512771.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778512771/`
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -146,8 +175,10 @@ Artifacts:
   multisig metadata, insufficient signatures, unauthorized multisig admin
   paths, dirty redeploy refusal, and several token-accounting failures, but
   more cross-route failure cases remain.
-- Run stress and reliability tests for restarts, duplicate messages, RPC
-  failures, delayed checkpoints, high message volume, low signer balance, and
+- Continue stress and reliability testing. Current coverage includes dirty
+  redeploy refusal, 5-message relayer burst delivery, and relayer
+  restart/backlog recovery. Remaining scenarios include explicit duplicate
+  relayer attempts, RPC failures, delayed checkpoints, low signer balance, and
   metadata corruption.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.

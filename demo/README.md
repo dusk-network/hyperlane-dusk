@@ -85,6 +85,18 @@ The script starts a fresh local environment, deploys once, attempts a second
 deployment without resetting Rusk state, and expects `deploy-hyperlane` to
 refuse with recovery guidance.
 
+### Relayer Restart Stress
+
+To exercise repeated message delivery plus relayer restart/backlog recovery:
+
+```bash
+TRANSFERS=5 bash demo/e2e-relayer-restart-stress.sh
+```
+
+The script sends a burst of EVM -> Dusk transfers through a live relayer, stops
+the relayer, queues the same number of Dusk -> EVM transfers, restarts the
+relayer with the same config/database, and verifies final balances.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |
