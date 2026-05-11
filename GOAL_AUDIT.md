@@ -79,7 +79,10 @@ submission or production claims.
    signer custody and CI artifact policy.
 4. Upstream Hyperlane draft PRs should not be prepared until the internal Dusk
    PRs complete review.
-5. The remaining production sign-off work is tracked in
+5. The Hyperlane monorepo PR needs an explicit internal Dusk agent/runtime
+   reviewer assignment before upstream preparation. No `CODEOWNERS`, `OWNERS`,
+   or `MAINTAINERS` file was found in either repo.
+6. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
 ## Completion Decision
