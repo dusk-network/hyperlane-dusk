@@ -55,6 +55,9 @@ Observed:
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
   `f758a70630fd72d4749c3afb79454e725b8081a8`.
 - Both local worktrees are clean and track their pushed origin branches.
+- `git ls-files --others --exclude-standard` is empty in both active repos, so
+  the Dusk contract/tooling repo and the Hyperlane monorepo fork do not have
+  untracked source paths as their source of truth.
 
 ## Deliverable Checklist
 
@@ -84,8 +87,8 @@ Observed:
 | Stress/reliability: origin RPC failure | Clean Rusk run `1778523772` | Done |
 | Stress/reliability: destination RPC failure | Clean Rusk run `1778524014` | Done |
 | Stress/reliability: duplicate relayer/no double-delivery | Clean Rusk run `1778524257` | Done |
-| Prepare internal Dusk PR for contracts/tooling/tests/audit notes | Dusk PR #1 is open and mergeable at `8329fb1`; body and latest handoff comment include current evidence and remaining gates | Done |
-| Prepare internal Dusk PR for Hyperlane agent/protocol integration | Monorepo PR #1 is open and mergeable at `30652aa`; body and latest handoff comment include companion Dusk evidence and remaining gates | Done |
+| Prepare internal Dusk PR for contracts/tooling/tests/audit notes | Dusk PR #1 is open and mergeable; body, handoff comments, and `PRODUCTION_REVIEW_DECISIONS.md` include current evidence and remaining gates | Done |
+| Prepare internal Dusk PR for Hyperlane agent/protocol integration | Monorepo PR #1 is open and mergeable; body, handoff comments, and `docs/dusk-upstream-compatibility-review.md` include companion Dusk evidence and remaining gates | Done |
 | Prepare upstream Hyperlane draft PRs only after internal review | Not started by design; PR bodies explicitly state upstream prep waits for internal Dusk review | Gated |
 
 ## Evidence Index
