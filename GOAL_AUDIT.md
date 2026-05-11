@@ -29,10 +29,10 @@ open in `dusk-network/hyperlane-dusk#2`.
 
 ## Branches And Evidence Commits
 
-| Component | Branch | Current head / evidence | State |
+| Component | Branch | Evidence | State |
 |---|---|---|---|
-| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Current head `20f369de2ce970a1b8fbf59c4273dd3d124e89b0`; implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633` | Internal PR open, mergeable; review requested from `moCello`; no status checks configured |
-| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Current head `85415ba98c9c83a3bdb04ae987361cc42b82614e`; rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` | Internal PR open, mergeable; review requested from `Neotamandua`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8`; upstream compatibility review documented |
+| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; later commits refresh audit, CI/repro, signer, and cross-repo handoff docs | Internal PR open, mergeable; review requested from `moCello`; no status checks configured |
+| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility review documented in `docs/dusk-upstream-compatibility-review.md` | Internal PR open, mergeable; review requested from `Neotamandua`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
 
 Live verification on 2026-05-12:
@@ -48,11 +48,10 @@ git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstrea
 
 Observed:
 
-- Dusk PR head `20f369de2ce970a1b8fbf59c4273dd3d124e89b0`, open,
-  mergeable, review requested from `moCello`, zero status-check rollup entries.
-- Monorepo PR head `85415ba98c9c83a3bdb04ae987361cc42b82614e`, open,
-  mergeable, review requested from `Neotamandua`, zero status-check rollup
-  entries.
+- Dusk PR is open and mergeable, review requested from `moCello`, with zero
+  status-check rollup entries.
+- Monorepo PR is open and mergeable, review requested from `Neotamandua`, with
+  zero status-check rollup entries.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
   `f758a70630fd72d4749c3afb79454e725b8081a8`.
 - Both local worktrees are clean and track their pushed origin branches.
