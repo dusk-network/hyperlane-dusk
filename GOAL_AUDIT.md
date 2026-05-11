@@ -1,19 +1,61 @@
 # Dusk Hyperlane Revival Goal Audit
 
-Date: 2026-05-11
+Date: 2026-05-12
 
 This audit maps the original revival/hardening goal to concrete artifacts. It
 is intentionally not a production-readiness sign-off. Items marked `Gated`
 need Dusk reviewer acceptance or additional release evidence before upstream
 submission or production claims.
 
+## Completion Audit Summary
+
+Objective restated as concrete success criteria:
+
+1. Preserve the existing local prototype before any rebase or cleanup.
+2. Put all Dusk-specific source under Dusk org GitHub repositories.
+3. Re-port the Hyperlane agent integration on top of current upstream
+   Hyperlane `main` without developing on `hyperlane-xyz` directly.
+4. Harden the Dusk contracts against the known Dusk/OpenZeppelin-equivalent and
+   DuskEVM audit patterns.
+5. Prove contract, agent, bidirectional bridge, fault-injection, and stress
+   behavior with repeatable commands and artifact paths.
+6. Prepare internal Dusk PRs and stop before upstream Hyperlane PRs until Dusk
+   review/sign-off gates are closed.
+
+Audit result: criteria 1-5 have concrete repository, command, and artifact
+evidence. Criterion 6 is intentionally incomplete because internal Dusk review,
+production signer/CI policy, CI runner strategy, and soak acceptance are still
+open in `dusk-network/hyperlane-dusk#2`.
+
 ## Branches And Evidence Commits
 
-| Component | Branch | Evidence commit | State |
+| Component | Branch | Current head / evidence | State |
 |---|---|---|---|
-| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` | Internal PR open, mergeable; latest pushed evidence commit before this metadata refresh |
-| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` | Internal PR open, mergeable; rebased onto upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
+| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Current head `8329fb1180898980608192aac4620c1404a70598`; implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633` | Internal PR open, mergeable; review requested from `moCello`; no status checks configured |
+| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Current head `30652aa11d09714d2df2055cb1741482f36ce163`; rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` | Internal PR open, mergeable; review requested from `Neotamandua`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
+
+Live verification on 2026-05-12:
+
+```bash
+gh pr view 1 --repo dusk-network/hyperlane-dusk \
+  --json state,mergeable,headRefOid,reviewRequests,statusCheckRollup
+gh pr view 1 --repo dusk-network/hyperlane-monorepo \
+  --json state,mergeable,headRefOid,reviewRequests,statusCheckRollup
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-parse upstream/main
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstream/main
+```
+
+Observed:
+
+- Dusk PR head `8329fb1180898980608192aac4620c1404a70598`, open,
+  mergeable, review requested from `moCello`, zero status-check rollup entries.
+- Monorepo PR head `30652aa11d09714d2df2055cb1741482f36ce163`, open,
+  mergeable, review requested from `Neotamandua`, zero status-check rollup
+  entries.
+- Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
+  `f758a70630fd72d4749c3afb79454e725b8081a8`.
+- Both local worktrees are clean and track their pushed origin branches.
 
 ## Deliverable Checklist
 
@@ -22,7 +64,7 @@ submission or production claims.
 | Preserve current local prototype before rebasing | Backup directory: `/home/hein_/projects/hyperlane/.codex-backups/dusk-hyperlane-20260511T133907Z`; artifacts: `hyperlane-monorepo-tracked.diff`, `dusk-tree.tgz`, `hyperlane-dusk-untracked.tgz`; archive branch: `archive/dusk-prototype-20260511` commit `8e399103b` | Done |
 | Fork `hyperlane-xyz/hyperlane-monorepo` into Dusk org | `dusk-network/hyperlane-monorepo`, PR #1: https://github.com/dusk-network/hyperlane-monorepo/pull/1 | Done |
 | Create Dusk-specific Hyperlane contract/tooling repo | `dusk-network/hyperlane-dusk`, PR #1: https://github.com/dusk-network/hyperlane-dusk/pull/1 | Done |
-| Put local `~/projects/hyperlane/dusk` under git and push | Dusk repo branch `feat/dusk-hardening-v2`, latest evidence commit `e4d3f2a` | Done |
+| Put local `~/projects/hyperlane/dusk` under git and push | Dusk repo branch `feat/dusk-hardening-v2`, current pushed head `8329fb1`, latest implementation/test evidence commit `e4d3f2a` | Done |
 | Re-port Hyperlane integration on current upstream main | Monorepo branch `feat/dusk-support-v2`; rebase/check evidence commit `f0df7aa`; branch contains the clean Dusk chain crate/config/protocol integration commit `feat: re-port Dusk Hyperlane agent support` and is based on upstream `f758a706` | Done for internal review |
 | Keep work off `hyperlane-xyz` origin/main | Work is in Dusk forks and Dusk feature branches; both PRs target Dusk org repos | Done |
 | Reapply integration in reviewable slices | Monorepo PR includes Dusk chain crate wiring, parser/config/protocol support, relayer/validator/scraper/lander checks; Dusk PR separates contract/tooling/security/test evidence | Done for internal review |
@@ -43,8 +85,8 @@ submission or production claims.
 | Stress/reliability: origin RPC failure | Clean Rusk run `1778523772` | Done |
 | Stress/reliability: destination RPC failure | Clean Rusk run `1778524014` | Done |
 | Stress/reliability: duplicate relayer/no double-delivery | Clean Rusk run `1778524257` | Done |
-| Prepare internal Dusk PR for contracts/tooling/tests/audit notes | Dusk PR #1 is open and mergeable; body includes current evidence through `e4d3f2a` | Done |
-| Prepare internal Dusk PR for Hyperlane agent/protocol integration | Monorepo PR #1 is open and mergeable; body includes companion Dusk evidence through `e4d3f2a` | Done |
+| Prepare internal Dusk PR for contracts/tooling/tests/audit notes | Dusk PR #1 is open and mergeable at `8329fb1`; body and latest handoff comment include current evidence and remaining gates | Done |
+| Prepare internal Dusk PR for Hyperlane agent/protocol integration | Monorepo PR #1 is open and mergeable at `30652aa`; body and latest handoff comment include companion Dusk evidence and remaining gates | Done |
 | Prepare upstream Hyperlane draft PRs only after internal review | Not started by design; PR bodies explicitly state upstream prep waits for internal Dusk review | Gated |
 
 ## Evidence Index
