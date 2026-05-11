@@ -58,6 +58,7 @@ submission or production claims.
 | Demo and E2E command documentation | `demo/README.md` |
 | Dusk contract/tooling PR | https://github.com/dusk-network/hyperlane-dusk/pull/1 |
 | Hyperlane monorepo integration PR | https://github.com/dusk-network/hyperlane-monorepo/pull/1 |
+| Production sign-off tracker | https://github.com/dusk-network/hyperlane-dusk/issues/2 |
 
 ## Remaining Gates
 
@@ -78,6 +79,8 @@ submission or production claims.
    signer custody and CI artifact policy.
 4. Upstream Hyperlane draft PRs should not be prepared until the internal Dusk
    PRs complete review.
+5. The remaining production sign-off work is tracked in
+   https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
 ## Completion Decision
 
