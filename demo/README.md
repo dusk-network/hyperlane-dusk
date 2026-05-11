@@ -151,6 +151,20 @@ message through the healthy Anvil RPC, verifies Dusk-side delivery remains
 blocked during the RPC failure window, then restarts the relayer with the
 healthy RPC config and verifies delivery.
 
+### Destination RPC Failure E2E
+
+To verify EVM -> Dusk delivery recovers after a Dusk RUES outage:
+
+```bash
+RPC_FAILURE_SECS=35 bash demo/e2e-destination-rpc-failure.sh
+```
+
+The script starts a TestMock deployment, rewrites a temporary relayer config to
+point Dusk RPC reads/submissions at an unreachable local port, submits an EVM ->
+Dusk message, verifies delivery remains blocked during the RPC failure window,
+then restarts the relayer with the healthy Dusk RPC config and verifies
+delivery.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |

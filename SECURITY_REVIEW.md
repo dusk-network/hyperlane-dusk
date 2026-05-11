@@ -373,3 +373,6 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
 - Origin RPC failure: EVM -> Dusk delivery remains blocked while the relayer's
   Anvil RPC endpoint is unreachable, and delivery succeeds after restarting the
   relayer with the healthy origin RPC config.
+- Destination RPC failure: EVM -> Dusk delivery remains blocked while the
+  relayer's Dusk RUES endpoint is unreachable, and delivery succeeds after
+  restarting the relayer with the healthy destination RPC config.

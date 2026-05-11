@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `876a5883c99610796c0fd0980e52abaedb00d88f` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e8efd878b570f7ba0427012d6c588671e26c27f3` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -289,6 +289,40 @@ Artifacts:
 - `/tmp/hyperlane-relayer-bad-origin-rpc-testMock-1778515388.json`
 - `/tmp/hyperlane-relayer-healthy-origin-rpc-testMock-1778515388.json`
 
+### Destination RPC Failure Recovery
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/rusk-private \
+TIMEOUT_SECS=300 \
+RPC_FAILURE_SECS=35 \
+bash demo/e2e-destination-rpc-failure.sh
+```
+
+Result:
+
+- Passed.
+- Deployed a fresh TestMock environment.
+- Generated relayer configs with separate databases for the bad-destination-RPC
+  and healthy-destination-RPC phases.
+- Rewrote the first relayer config to point Dusk RUES reads/submissions at
+  `http://127.0.0.1:18080`, an unreachable local port.
+- Submitted 1 EVM -> Dusk transfer and verified Dusk token supply did not
+  change during the 35 second bad-RPC window.
+- The bad-RPC relayer log showed repeated `Connection refused` errors against
+  `127.0.0.1:18080` when checking Dusk Mailbox delivery status.
+- Restarted the relayer with the healthy Dusk RPC config and verified the same
+  message delivered.
+
+Artifacts:
+
+- `/tmp/hyperlane-destination-rpc-failure-start-testMock-1778515791.log`
+- `/tmp/hyperlane-destination-rpc-failure-deploy-testMock-1778515791.log`
+- `/tmp/hyperlane-destination-rpc-failure-relayer-bad-rpc-testMock-1778515791.log`
+- `/tmp/hyperlane-destination-rpc-failure-relayer-healthy-testMock-1778515791.log`
+- `/tmp/hyperlane-relayer-bad-destination-rpc-testMock-1778515791.json`
+- `/tmp/hyperlane-relayer-healthy-destination-rpc-testMock-1778515791.json`
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -312,8 +346,7 @@ Artifacts:
 - Continue stress and reliability testing. Current coverage includes dirty
   redeploy refusal, 5-message relayer burst delivery, relayer restart/backlog
   recovery, and delayed validator checkpoint recovery through relayer metadata
-  backoff. Remaining scenarios include explicit duplicate relayer attempts and
-  destination-side RPC failure/recovery.
+  backoff. Remaining scenarios include explicit duplicate relayer attempts.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or document the exact local
