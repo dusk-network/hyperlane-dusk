@@ -67,6 +67,10 @@ Result:
   same repeatable non-E2E checks plus the Hyperlane Rust agent check. It still
   requires local/private Rusk path dependencies and does not replace the
   E2E/fault-injection runs below.
+- `.github/workflows/manual-repro-check.yml`: added after the local repro run as
+  a manual self-hosted workflow template for the same `make repro-check-agent`
+  command. It requires Dusk to provide a `dusk-hyperlane` self-hosted runner and
+  `DUSK_ORG_READ_TOKEN` secret for private cross-repo checkout.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log`:
   passed.
 - Negative artifact scan against `/tmp/hyperlane-relayer-testMock-1778530398.json`:

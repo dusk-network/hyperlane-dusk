@@ -1,0 +1,50 @@
+name: Dusk Hyperlane Manual Repro Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      rusk_ref:
+        description: "dusk-network/rusk-private ref to checkout"
+        required: true
+        default: "c0c64db4659500d077bb253ad13acba0e347d3fc"
+      monorepo_ref:
+        description: "dusk-network/hyperlane-monorepo ref to checkout"
+        required: true
+        default: "feat/dusk-support-v2"
+
+permissions:
+  contents: read
+
+jobs:
+  local-repro:
+    name: Local repro wrapper
+    runs-on: [self-hosted, linux, dusk-hyperlane]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout Dusk Hyperlane
+        uses: actions/checkout@v4
+        with:
+          path: hyperlane/dusk
+
+      - name: Checkout private Rusk dependency
+        uses: actions/checkout@v4
+        with:
+          repository: dusk-network/rusk-private
+          ref: ${{ inputs.rusk_ref }}
+          path: rusk-private
+          token: ${{ secrets.DUSK_ORG_READ_TOKEN }}
+
+      - name: Checkout Dusk Hyperlane monorepo fork
+        uses: actions/checkout@v4
+        with:
+          repository: dusk-network/hyperlane-monorepo
+          ref: ${{ inputs.monorepo_ref }}
+          path: hyperlane/hyperlane-monorepo
+          token: ${{ secrets.DUSK_ORG_READ_TOKEN }}
+
+      - name: Run local repro check
+        working-directory: hyperlane/dusk
+        env:
+          CARGO_TERM_COLOR: always
+        run: make repro-check-agent

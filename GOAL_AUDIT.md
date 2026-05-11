@@ -86,8 +86,10 @@ submission or production claims.
    have empty status-check rollups, and the Dusk workspace depends on an
    adjacent private `rusk-private` checkout. `make repro-check` and
    `make repro-check-agent` now wrap the repeatable local non-E2E verification
-   subset, but current evidence is still local and clean-Rusk documented in
-   `TEST_REPORT.md`, not automated PR CI.
+   subset, and `.github/workflows/manual-repro-check.yml` defines a manual
+   self-hosted workflow that preserves the private dependency checkout layout.
+   The workflow still needs a Dusk runner/secret decision before it can replace
+   local evidence.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
