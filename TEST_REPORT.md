@@ -13,10 +13,14 @@ stress, fault-injection, and full security-review items are listed at the end.
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `4ef03fbda45a17173e2e6f05679d6e496a3939eb` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
 Notes:
 
-- The local `rusk-private` checkout was dirty during verification.
+- Most local agent E2E evidence used the dirty local `rusk-private` checkout.
+  A clean detached Rusk worktree at `c0c64db4659500d077bb253ad13acba0e347d3fc`
+  has now passed the TestMock E2E path, but the multisig and stress scenarios
+  still need the same clean rerun.
 - Docker was unavailable in this WSL environment, so the agent E2E runs skipped
   the optional block explorers.
 - The E2E scripts used ignored local files for dev keys and runtime config:
@@ -74,6 +78,37 @@ Artifacts:
 - `/tmp/hyperlane-deploy-testMock-1778517850.log`
 - `/tmp/hyperlane-relayer-testMock-1778517850.log`
 - `/tmp/hyperlane-relayer-testMock-1778517850.json`
+- `/tmp/rusk-dev.log`
+
+### Clean Rusk Reproduction Probe: TestMock ISM
+
+```bash
+cd /home/hein_/projects/hyperlane/rusk-private-clean-c0c64db
+cargo build --release -p dusk-rusk --features archive
+make prepare-dev
+
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+SKIP_OTTERSCAN=true \
+SKIP_DUSK_EXPLORER=true \
+TIMEOUT_SECS=300 \
+bash demo/e2e-agents.sh --only testMock --timeout 300
+```
+
+Result:
+
+- Passed on detached Rusk commit `c0c64db4659500d077bb253ad13acba0e347d3fc`
+  with a clean worktree and freshly regenerated `/tmp/example.state`.
+- EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
+- Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
+
+Artifacts:
+
+- `/tmp/hyperlane-start-env-testMock-1778520709.log`
+- `/tmp/hyperlane-deploy-testMock-1778520709.log`
+- `/tmp/hyperlane-relayer-testMock-1778520709.log`
+- `/tmp/hyperlane-relayer-testMock-1778520709.json`
+- `/tmp/hyperlane-db-relayer-testMock-1778520709/`
 - `/tmp/rusk-dev.log`
 
 ### Local EVM <-> Dusk Agent E2E: MessageIdMultisigISM
@@ -366,15 +401,16 @@ Artifacts:
 
 ## Rusk Checkout Reproduction Caveat
 
-The local agent E2E evidence in this report used:
+Most local agent E2E evidence in this report used:
 
 - Rusk checkout: `/home/hein_/projects/rusk-private`
 - Branch: `hein/boreas-wallet-transfer-gas-50m`
 - Base commit: `c0c64db4659500d077bb253ad13acba0e347d3fc`
 
-The checkout was not clean during the E2E runs. At the time of the latest
-TestMock rerun, `git diff --name-only` reported 49 modified tracked files and
-`git ls-files --others --exclude-standard` reported 14263 untracked paths.
+That checkout was not clean during the earlier E2E runs. At the time of the
+latest dirty-checkout TestMock rerun, `git diff --name-only` reported 49
+modified tracked files and `git ls-files --others --exclude-standard` reported
+14263 untracked paths.
 The untracked paths are dominated by generated `dedup-*`/state/database
 artifacts and local target/output directories, but the checkout also contains
 untracked source/docs/scripts such as:
@@ -395,9 +431,14 @@ untracked source/docs/scripts such as:
 The tracked modifications span Rusk node/archive/VM configuration, wallet,
 wallet-core, node-data, CI, and example genesis/wallet files. Because this is
 an extensive local working tree rather than a small reproducibility patch, the
-current E2E evidence should be treated as **dirty-Rusk evidence**. A clean Rusk
-checkout rerun, or a dedicated Rusk branch containing the exact required
-changes, remains a production-readiness gate.
+earlier E2E evidence should be treated as **dirty-Rusk evidence**.
+
+A clean detached worktree at the same base commit has since passed the TestMock
+E2E path with a regenerated genesis state, which suggests the baseline
+bidirectional TestMock bridge does not depend on the dirty local Rusk patch.
+The MessageIdMultisig and stress/reliability runs still need clean-Rusk reruns,
+or a dedicated Rusk branch containing any exact required changes, before
+production readiness.
 
 ## Compatibility Fixes Applied During E2E
 
@@ -463,6 +504,7 @@ Result:
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
-  containing the exact required changes. The current report documents the
-  dirty local Rusk state, but does not convert it into a minimal reproduction
-  branch.
+  containing the exact required changes. The TestMock E2E path now passes on a
+  clean detached `c0c64db4659500d077bb253ad13acba0e347d3fc` worktree, but the
+  MessageIdMultisig and stress/reliability evidence still needs the same clean
+  rerun.
