@@ -105,6 +105,17 @@ TRANSFERS=20 TRANSFER_AMOUNT_WEI=500000000000000000 \
   bash demo/e2e-relayer-restart-stress.sh
 ```
 
+For soak-style repetition of the same restart/backlog scenario, run:
+
+```bash
+SOAK_CYCLES=3 TRANSFERS=20 TRANSFER_AMOUNT_WEI=500000000000000000 \
+  bash demo/e2e-soak-restart-stress.sh
+```
+
+Set `SOAK_MINUTES` to time-box the soak. The wrapper starts a fresh local
+environment for each cycle and writes a summary log plus per-cycle logs under
+`/tmp`.
+
 ### Validator Delay E2E
 
 To verify MessageIdMultisig delivery waits for validator checkpoint metadata:

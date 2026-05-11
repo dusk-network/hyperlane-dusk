@@ -277,6 +277,27 @@ bash demo/e2e-relayer-restart-stress.sh
 - Final balances matched the starting state:
   EVM account returned to 10 wDUSK and Dusk wrapped supply returned to 0.
 
+Soak wrapper smoke on clean Rusk:
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+SKIP_OTTERSCAN=true \
+SKIP_DUSK_EXPLORER=true \
+SOAK_CYCLES=1 \
+TRANSFERS=1 \
+TRANSFER_AMOUNT_WEI=100000000000000000 \
+TIMEOUT_SECS=300 \
+bash demo/e2e-soak-restart-stress.sh
+```
+
+- Passed on the same clean detached Rusk commit
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Completed 1 full restart/backlog cycle in 277 seconds.
+- EVM -> Dusk delivered 0.1 wDUSK, the relayer stopped, Dusk -> EVM queued
+  0.1 wDUSK, the relayer restarted with the same config/DB, and final
+  accounting returned to the starting state.
+
 Artifacts:
 
 - `/tmp/hyperlane-restart-stress-start-testMock-1778518816.log`
@@ -294,6 +315,13 @@ Artifacts:
 - `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778524643.log`
 - `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778524643.log`
 - `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778524643/`
+- `/tmp/hyperlane-soak-restart-stress-1778528713.log`
+- `/tmp/hyperlane-soak-restart-stress-1778528713-cycle-1.log`
+- `/tmp/hyperlane-restart-stress-start-testMock-1778528713.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778528713.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778528713.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778528713.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778528713/`
 
 ### Validator Delay and Checkpoint Backoff
 
@@ -629,8 +657,10 @@ Result:
   recovery, and delayed validator checkpoint recovery through relayer metadata
   backoff. No currently listed reliability scenario remains untested in this
   report. The currently documented E2E and fault-injection paths have also
-  passed on a clean Rusk worktree, but longer-duration soak runs are still
-  needed before production readiness.
+  passed on a clean Rusk worktree. `demo/e2e-soak-restart-stress.sh` provides
+  repeatable restart/backlog soak cycles and has passed a 1-cycle clean-Rusk
+  smoke run, but longer multi-cycle or time-boxed soak runs are still needed
+  before production readiness.
 - Have Dusk reviewers accept or change the open production review decisions
   recorded in `SECURITY_REVIEW.md`.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
