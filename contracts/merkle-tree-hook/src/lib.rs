@@ -51,13 +51,22 @@ mod merkle_tree_hook {
         }
 
         /// Initialize with the Mailbox contract ID.
-        #[contract(no_event)]
+        #[contract(emits = [(events::Initialized::TOPIC, events::Initialized)])]
         pub fn init(&mut self, mailbox: ContractId) {
             assert!(
                 self.mailbox == ZERO_CONTRACT,
                 "MerkleTreeHook: already initialized"
             );
             self.mailbox = mailbox;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_MERKLE_TREE_HOOK,
+                    owner: ZERO_CONTRACT.to_bytes(),
+                    mailbox: mailbox.to_bytes(),
+                    local_domain: 0,
+                },
+            );
         }
 
         // =================================================================

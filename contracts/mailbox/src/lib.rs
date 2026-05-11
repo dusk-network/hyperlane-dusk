@@ -104,7 +104,12 @@ mod mailbox {
         ///
         /// Must be called once after deployment. Panics if already
         /// initialized (owner is set).
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Initialized::TOPIC, events::Initialized),
+            (events::DefaultIsmSet::TOPIC, events::DefaultIsmSet),
+            (events::DefaultHookSet::TOPIC, events::DefaultHookSet),
+            (events::RequiredHookSet::TOPIC, events::RequiredHookSet)
+        ])]
         pub fn init(
             &mut self,
             local_domain: u32,
@@ -119,6 +124,33 @@ mod mailbox {
             self.default_ism = default_ism;
             self.default_hook = default_hook;
             self.required_hook = required_hook;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_MAILBOX,
+                    owner: owner.to_bytes(),
+                    mailbox: ZERO_CONTRACT.to_bytes(),
+                    local_domain,
+                },
+            );
+            abi::emit(
+                events::DefaultIsmSet::TOPIC,
+                events::DefaultIsmSet {
+                    module: default_ism.to_bytes(),
+                },
+            );
+            abi::emit(
+                events::DefaultHookSet::TOPIC,
+                events::DefaultHookSet {
+                    hook: default_hook.to_bytes(),
+                },
+            );
+            abi::emit(
+                events::RequiredHookSet::TOPIC,
+                events::RequiredHookSet {
+                    hook: required_hook.to_bytes(),
+                },
+            );
         }
 
         // =================================================================
@@ -483,17 +515,32 @@ mod mailbox {
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
+            let previous_owner = self.owner.expect("Mailbox: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner: previous_owner.to_bytes(),
+                    new_owner: new_owner.to_bytes(),
+                },
+            );
         }
 
         /// Renounce ownership. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::OwnershipRenounced::TOPIC, events::OwnershipRenounced)])]
         pub fn renounce_ownership(&mut self) {
             self.only_owner();
+            let previous_owner = self.owner.expect("Mailbox: no owner set");
             self.owner = None;
+            abi::emit(
+                events::OwnershipRenounced::TOPIC,
+                events::OwnershipRenounced {
+                    previous_owner: previous_owner.to_bytes(),
+                },
+            );
         }
 
         // =================================================================

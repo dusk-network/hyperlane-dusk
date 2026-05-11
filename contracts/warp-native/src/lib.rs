@@ -87,7 +87,10 @@ mod warp_native {
         // =================================================================
 
         /// Initialize the native DUSK warp route.
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Initialized::TOPIC, events::Initialized),
+            (events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)
+        ])]
         pub fn init(
             &mut self,
             mailbox: ContractId,
@@ -99,7 +102,20 @@ mod warp_native {
             self.owner = Some(owner);
             for (domain, router) in enrolled_routers {
                 self.enrolled_routers.insert(domain, router);
+                abi::emit(
+                    events::RemoteRouterEnrolled::TOPIC,
+                    events::RemoteRouterEnrolled { domain, router },
+                );
             }
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_WARP_NATIVE,
+                    owner: owner.to_bytes(),
+                    mailbox: mailbox.to_bytes(),
+                    local_domain: 0,
+                },
+            );
         }
 
         // =================================================================
@@ -111,12 +127,16 @@ mod warp_native {
         ///
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
-        #[contract(no_event)]
+        #[contract(emits = [(events::AccountRegistered::TOPIC, events::AccountRegistered)])]
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpNative: register_account requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
             self.registered_accounts.insert(h, pk);
+            abi::emit(
+                events::AccountRegistered::TOPIC,
+                events::AccountRegistered { account_hash: h },
+            );
         }
 
         /// Check whether an H256 has a registered account.
@@ -128,7 +148,7 @@ mod warp_native {
         ///
         /// The caller must have previously called `register_account`.
         /// Transfers any escrowed DUSK to the caller's account.
-        #[contract(no_event)]
+        #[contract(emits = [(events::PendingTransferClaimed::TOPIC, events::PendingTransferClaimed)])]
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpNative: claim_pending requires Moonlight TX");
@@ -144,6 +164,13 @@ mod warp_native {
             let _: () =
                 abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
                     .expect("WarpNative: contract_to_account failed");
+            abi::emit(
+                events::PendingTransferClaimed::TOPIC,
+                events::PendingTransferClaimed {
+                    recipient: h,
+                    amount,
+                },
+            );
         }
 
         /// Returns the pending (escrowed) balance for an H256 recipient.
@@ -302,31 +329,55 @@ mod warp_native {
         // =================================================================
 
         /// Enroll a remote router for a domain. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)])]
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
             self.enrolled_routers.insert(domain, router);
+            abi::emit(
+                events::RemoteRouterEnrolled::TOPIC,
+                events::RemoteRouterEnrolled { domain, router },
+            );
         }
 
         /// Set the hook override. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::HookSet::TOPIC, events::HookSet)])]
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
+            abi::emit(
+                events::HookSet::TOPIC,
+                events::HookSet {
+                    hook: hook.to_bytes(),
+                },
+            );
         }
 
         /// Set the ISM override. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::IsmSet::TOPIC, events::IsmSet)])]
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
+            abi::emit(
+                events::IsmSet::TOPIC,
+                events::IsmSet {
+                    ism: ism.to_bytes(),
+                },
+            );
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
+            let previous_owner = self.owner.expect("WarpNative: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner: previous_owner.to_bytes(),
+                    new_owner: new_owner.to_bytes(),
+                },
+            );
         }
 
         // =================================================================

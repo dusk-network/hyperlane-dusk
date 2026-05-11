@@ -79,6 +79,14 @@ mod warp_drc20 {
         }
     }
 
+    /// Convert a DRC20 account into an indexable H256.
+    fn account_id(account: Account) -> H256 {
+        match account {
+            Account::External(pk) => message::keccak256(&pk.to_bytes()),
+            Account::Contract(id) => id.to_bytes(),
+        }
+    }
+
     /// Resolve the caller as an Account.
     fn sender_account() -> Account {
         if abi::callstack().len() == 1 {
@@ -151,7 +159,10 @@ mod warp_drc20 {
         // =================================================================
 
         /// Initialize the warp route.
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Initialized::TOPIC, events::Initialized),
+            (events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)
+        ])]
         pub fn init(
             &mut self,
             mailbox: ContractId,
@@ -169,7 +180,20 @@ mod warp_drc20 {
             self.decimals = decimals;
             for (domain, router) in enrolled_routers {
                 self.enrolled_routers.insert(domain, router);
+                abi::emit(
+                    events::RemoteRouterEnrolled::TOPIC,
+                    events::RemoteRouterEnrolled { domain, router },
+                );
             }
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_WARP_DRC20,
+                    owner,
+                    mailbox: mailbox.to_bytes(),
+                    local_domain: 0,
+                },
+            );
         }
 
         // =================================================================
@@ -182,12 +206,16 @@ mod warp_drc20 {
         ///
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
-        #[contract(no_event)]
+        #[contract(emits = [(events::AccountRegistered::TOPIC, events::AccountRegistered)])]
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpDrc20: register_account requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
             self.registered_accounts.insert(h, pk);
+            abi::emit(
+                events::AccountRegistered::TOPIC,
+                events::AccountRegistered { account_hash: h },
+            );
         }
 
         /// Check whether an H256 has a registered account.
@@ -225,7 +253,7 @@ mod warp_drc20 {
         }
 
         /// Transfer tokens from the caller to a recipient.
-        #[contract(no_event)]
+        #[contract(emits = [(events::Drc20Transfer::TOPIC, events::Drc20Transfer)])]
         pub fn transfer(&mut self, to: Account, value: u64) {
             let from = sender_account();
             self.do_transfer(from, to, value);
@@ -239,7 +267,10 @@ mod warp_drc20 {
         ///
         /// Burns `amount` from the caller and dispatches a Hyperlane message
         /// to the enrolled router on the destination domain.
-        #[contract(emits = [(events::SentTransferRemote::TOPIC, events::SentTransferRemote)])]
+        #[contract(emits = [
+            (events::SentTransferRemote::TOPIC, events::SentTransferRemote),
+            (events::Drc20Transfer::TOPIC, events::Drc20Transfer)
+        ])]
         pub fn transfer_remote(
             &mut self,
             destination: u32,
@@ -289,7 +320,10 @@ mod warp_drc20 {
         ///
         /// Called by the Mailbox when a message is delivered. Mints tokens
         /// to the recipient specified in the token message body.
-        #[contract(emits = [(events::ReceivedTransferRemote::TOPIC, events::ReceivedTransferRemote)])]
+        #[contract(emits = [
+            (events::ReceivedTransferRemote::TOPIC, events::ReceivedTransferRemote),
+            (events::Drc20Transfer::TOPIC, events::Drc20Transfer)
+        ])]
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpDrc20: cannot determine caller");
@@ -369,31 +403,55 @@ mod warp_drc20 {
         // =================================================================
 
         /// Enroll a remote router for a domain. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)])]
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
             self.enrolled_routers.insert(domain, router);
+            abi::emit(
+                events::RemoteRouterEnrolled::TOPIC,
+                events::RemoteRouterEnrolled { domain, router },
+            );
         }
 
         /// Set the hook override. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::HookSet::TOPIC, events::HookSet)])]
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
+            abi::emit(
+                events::HookSet::TOPIC,
+                events::HookSet {
+                    hook: hook.to_bytes(),
+                },
+            );
         }
 
         /// Set the ISM override. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::IsmSet::TOPIC, events::IsmSet)])]
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
+            abi::emit(
+                events::IsmSet::TOPIC,
+                events::IsmSet {
+                    ism: ism.to_bytes(),
+                },
+            );
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            let previous_owner = self.owner.expect("WarpDrc20: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner,
+                    new_owner,
+                },
+            );
         }
 
         // =================================================================
@@ -412,6 +470,14 @@ mod warp_drc20 {
             *to_balance = to_balance
                 .checked_add(value)
                 .expect("WarpDrc20: balance overflow");
+            abi::emit(
+                events::Drc20Transfer::TOPIC,
+                events::Drc20Transfer {
+                    from: account_id(from),
+                    to: account_id(to),
+                    amount: value,
+                },
+            );
         }
 
         /// Mint tokens to an account.
@@ -424,6 +490,14 @@ mod warp_drc20 {
                 .supply
                 .checked_add(amount)
                 .expect("WarpDrc20: supply overflow");
+            abi::emit(
+                events::Drc20Transfer::TOPIC,
+                events::Drc20Transfer {
+                    from: ZERO_CONTRACT.to_bytes(),
+                    to: account_id(account),
+                    amount,
+                },
+            );
         }
 
         /// Burn tokens from an account.
@@ -432,6 +506,14 @@ mod warp_drc20 {
             assert!(balance >= amount, "WarpDrc20: insufficient balance to burn");
             *self.balances.entry(account).or_insert(0) -= amount;
             self.supply -= amount;
+            abi::emit(
+                events::Drc20Transfer::TOPIC,
+                events::Drc20Transfer {
+                    from: account_id(account),
+                    to: ZERO_CONTRACT.to_bytes(),
+                    amount,
+                },
+            );
         }
 
         /// Panics if the Moonlight TX sender is not the owner.

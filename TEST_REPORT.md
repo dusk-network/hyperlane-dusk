@@ -66,13 +66,14 @@ Result:
 - Passed.
 - EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
 - Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
+- Re-run after operational event-surface expansion also passed.
 
 Artifacts:
 
-- `/tmp/hyperlane-start-env-testMock-1778508966.log`
-- `/tmp/hyperlane-deploy-testMock-1778508966.log`
-- `/tmp/hyperlane-relayer-testMock-1778508966.log`
-- `/tmp/hyperlane-relayer-testMock-1778508966.json`
+- `/tmp/hyperlane-start-env-testMock-1778517850.log`
+- `/tmp/hyperlane-deploy-testMock-1778517850.log`
+- `/tmp/hyperlane-relayer-testMock-1778517850.log`
+- `/tmp/hyperlane-relayer-testMock-1778517850.json`
 - `/tmp/rusk-dev.log`
 
 ### Local EVM <-> Dusk Agent E2E: MessageIdMultisigISM
@@ -371,11 +372,12 @@ Artifacts:
   annotations to protocol entrypoints that already emit Hyperlane events:
   Mailbox dispatch/process/admin hook setters, MerkleTreeHook, ProtocolFee,
   IGP, ValidatorAnnounce, and warp-route send/receive paths.
-- Reviewed remaining `#[contract(no_event)]` uses. They are currently limited
-  to initialization, query/test-only, registration, ownership/configuration,
-  and token/accounting methods that do not emit protocol events. Silent
-  production admin/registration paths are documented in `SECURITY_REVIEW.md`
-  as an explicit audit decision before production readiness.
+- Added operational events for initialization, ownership/configuration changes,
+  account registration, validator-set updates, IGP domain gas config updates,
+  native pending-transfer claims, and WarpDrc20 transfer/mint/burn accounting.
+- Reviewed remaining `#[contract(no_event)]` uses. They are now limited to
+  test-only contracts (`TestMock` and `TestRecipient`); production contracts no
+  longer use `#[contract(no_event)]`.
 - Removed the remaining direct `panic!` invocation from production contract
   code by rewriting Mailbox sender resolution to use the same explicit
   `expect(...)` revert style used elsewhere.
@@ -385,6 +387,7 @@ Event annotation verification:
 ```bash
 rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'
 make all
+cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
@@ -394,16 +397,13 @@ Result:
   scanned production contract/runtime/tooling paths.
 - `make all` passed for all contract WASM builds after adding explicit event
   annotations.
+- `cargo test -p hyperlane-dusk-types` passed:
+  `28 passed; 0 failed; 0 ignored`.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:
   `61 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 
-- Decide whether to add dedicated events for silent production admin,
-  registration, initialization, and ownership paths that currently remain
-  `#[contract(no_event)]`. The current state is explicitly documented in
-  `SECURITY_REVIEW.md`; this is a release policy decision, not an unreviewed
-  source mismatch.
 - Continue expanding negative/security coverage; current coverage includes
   malformed mailbox messages, wrong domains, duplicate delivery, invalid
   multisig metadata, insufficient signatures, unauthorized multisig admin

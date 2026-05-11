@@ -43,6 +43,7 @@ mod ism_multisig {
 
     use dusk_core::abi;
 
+    use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message::{self, keccak256};
     use hyperlane_dusk_types::EthAddress;
 
@@ -80,7 +81,10 @@ mod ism_multisig {
         ///
         /// Validators must be sorted by address (ascending). The threshold
         /// must be > 0 and <= number of validators.
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Initialized::TOPIC, events::Initialized),
+            (events::ValidatorsAndThresholdSet::TOPIC, events::ValidatorsAndThresholdSet)
+        ])]
         pub fn init(&mut self, owner: [u8; 32], validators: Vec<EthAddress>, threshold: u8) {
             assert!(self.owner.is_none(), "MultisigISM: already initialized");
             assert!(!validators.is_empty(), "MultisigISM: no validators");
@@ -100,6 +104,22 @@ mod ism_multisig {
             self.owner = Some(owner);
             self.validators = validators;
             self.threshold = threshold;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_ISM_MULTISIG,
+                    owner,
+                    mailbox: [0u8; 32],
+                    local_domain: 0,
+                },
+            );
+            abi::emit(
+                events::ValidatorsAndThresholdSet::TOPIC,
+                events::ValidatorsAndThresholdSet {
+                    validators: self.validators.clone(),
+                    threshold,
+                },
+            );
         }
 
         // =================================================================
@@ -200,7 +220,7 @@ mod ism_multisig {
         // =================================================================
 
         /// Update validators and threshold. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::ValidatorsAndThresholdSet::TOPIC, events::ValidatorsAndThresholdSet)])]
         pub fn set_validators_and_threshold(&mut self, validators: Vec<EthAddress>, threshold: u8) {
             self.only_owner();
 
@@ -219,6 +239,13 @@ mod ism_multisig {
 
             self.validators = validators;
             self.threshold = threshold;
+            abi::emit(
+                events::ValidatorsAndThresholdSet::TOPIC,
+                events::ValidatorsAndThresholdSet {
+                    validators: self.validators.clone(),
+                    threshold,
+                },
+            );
         }
 
         /// Panics if the caller is not the owner.

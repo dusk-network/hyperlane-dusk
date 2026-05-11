@@ -65,7 +65,7 @@ mod validator_announce {
         }
 
         /// Initialize with domain and mailbox.
-        #[contract(no_event)]
+        #[contract(emits = [(events::Initialized::TOPIC, events::Initialized)])]
         pub fn init(&mut self, local_domain: u32, mailbox: ContractId) {
             assert!(
                 self.mailbox == ZERO_CONTRACT,
@@ -73,6 +73,15 @@ mod validator_announce {
             );
             self.local_domain = local_domain;
             self.mailbox = mailbox;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_VALIDATOR_ANNOUNCE,
+                    owner: ZERO_CONTRACT.to_bytes(),
+                    mailbox: mailbox.to_bytes(),
+                    local_domain,
+                },
+            );
         }
 
         // =================================================================

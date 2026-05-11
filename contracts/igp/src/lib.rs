@@ -73,7 +73,11 @@ mod igp {
         ///
         /// Must be called once after deployment. Optionally accepts initial
         /// gas configurations for known domains.
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Initialized::TOPIC, events::Initialized),
+            (events::BeneficiarySet::TOPIC, events::BeneficiarySet),
+            (events::DomainGasConfigSet::TOPIC, events::DomainGasConfigSet)
+        ])]
         pub fn init(
             &mut self,
             owner: ContractId,
@@ -89,7 +93,26 @@ mod igp {
             self.beneficiary = beneficiary;
             for (domain, config) in initial_configs {
                 self.domain_gas_configs.insert(domain, config);
+                abi::emit(
+                    events::DomainGasConfigSet::TOPIC,
+                    events::DomainGasConfigSet { domain, config },
+                );
             }
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_IGP,
+                    owner: owner.to_bytes(),
+                    mailbox: ZERO_CONTRACT.to_bytes(),
+                    local_domain: 0,
+                },
+            );
+            abi::emit(
+                events::BeneficiarySet::TOPIC,
+                events::BeneficiarySet {
+                    beneficiary: beneficiary.to_bytes(),
+                },
+            );
         }
 
         // =================================================================
@@ -213,7 +236,7 @@ mod igp {
         // =================================================================
 
         /// Set the gas configuration for a single domain. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::DomainGasConfigSet::TOPIC, events::DomainGasConfigSet)])]
         pub fn set_domain_gas_config(
             &mut self,
             domain: u32,
@@ -221,10 +244,14 @@ mod igp {
         ) {
             self.only_owner();
             self.domain_gas_configs.insert(domain, config);
+            abi::emit(
+                events::DomainGasConfigSet::TOPIC,
+                events::DomainGasConfigSet { domain, config },
+            );
         }
 
         /// Set gas configurations for multiple domains. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::DomainGasConfigSet::TOPIC, events::DomainGasConfigSet)])]
         pub fn set_domain_gas_configs(
             &mut self,
             configs: Vec<(u32, DomainGasConfig)>,
@@ -232,11 +259,15 @@ mod igp {
             self.only_owner();
             for (domain, config) in configs {
                 self.domain_gas_configs.insert(domain, config);
+                abi::emit(
+                    events::DomainGasConfigSet::TOPIC,
+                    events::DomainGasConfigSet { domain, config },
+                );
             }
         }
 
         /// Set the beneficiary. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::BeneficiarySet::TOPIC, events::BeneficiarySet)])]
         pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
             self.only_owner();
             assert!(
@@ -244,13 +275,27 @@ mod igp {
                 "IGP: beneficiary cannot be zero"
             );
             self.beneficiary = beneficiary;
+            abi::emit(
+                events::BeneficiarySet::TOPIC,
+                events::BeneficiarySet {
+                    beneficiary: beneficiary.to_bytes(),
+                },
+            );
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
+            let previous_owner = self.owner.expect("IGP: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner: previous_owner.to_bytes(),
+                    new_owner: new_owner.to_bytes(),
+                },
+            );
         }
 
         // =================================================================

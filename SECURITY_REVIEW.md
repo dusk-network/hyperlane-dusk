@@ -285,38 +285,34 @@ Dusk VM does not support reentrancy. When contract A calls contract B, contract 
 
 ### Event surface and `no_event` annotations
 
-Production-facing methods that manually emit Hyperlane protocol events now have
+Production-facing methods that emit protocol or operational events now have
 explicit `#[contract(emits = ...)]` annotations:
 
 - Mailbox `dispatch`, `dispatch_default`, `process`, `set_default_ism`,
-  `set_default_hook`, and `set_required_hook`.
-- MerkleTreeHook `post_dispatch`.
-- ProtocolFee `post_dispatch`.
-- InterchainGasPaymaster `post_dispatch`.
-- ValidatorAnnounce `announce`.
-- WarpDrc20, WarpDrc20Collateral, and WarpNative `transfer_remote`/`handle`.
+  `set_default_hook`, `set_required_hook`, initialization, ownership transfer,
+  and ownership renunciation.
+- MerkleTreeHook initialization and `post_dispatch`.
+- ProtocolFee initialization, fee updates, beneficiary updates, ownership
+  transfer, and `post_dispatch`.
+- InterchainGasPaymaster initialization, domain gas config updates,
+  beneficiary updates, ownership transfer, and `post_dispatch`.
+- MessageIdMultisigISM initialization and validator-set/threshold updates.
+- ValidatorAnnounce initialization and announcements.
+- WarpDrc20, WarpDrc20Collateral, and WarpNative initialization, account
+  registration, remote-router enrollment, hook/ISM updates, ownership transfer,
+  and remote send/receive paths.
+- WarpNative pending-transfer claims.
+- WarpDrc20 balance changes through regular transfer, remote-send burn, and
+  remote-receive mint paths.
 
-Remaining explicit `#[contract(no_event)]` uses were reviewed and fall into
-these categories:
+Initial operational config now emits the same config events used for later
+updates: Mailbox initial hook/ISM values, ProtocolFee initial fee/beneficiary,
+IGP initial domain gas configs and beneficiary, MessageIdMultisigISM initial
+validator set, and initially enrolled warp routers.
 
-- Initialization methods. These are single-use and guarded by initialized-state
-  checks. They currently emit no `Initialized` event.
-- Read/query or interface methods that only return state or verify metadata.
-- Test-only mock/recipient methods.
-- Registration and token/accounting operations that do not currently define
-  DRC20-style or registration event types.
-- Production admin/configuration methods outside the Mailbox hook/ISM setters:
-  ProtocolFee fee/beneficiary/ownership changes, IGP gas config/beneficiary/
-  ownership changes, MessageIdMultisigISM validator-set changes, and warp-route
-  router/hook/ISM/ownership changes.
-
-**Release decision still required**: The silent production admin,
-registration, initialization, and ownership paths are now explicit rather than
-hidden behind misleading `no_event` usage, but they should be reviewed against
-Dusk event-indexing and operations requirements before production readiness.
-Adding dedicated events for those paths would improve auditability and should
-be preferred if downstream indexers or operational runbooks need a complete
-on-chain configuration history.
+Remaining explicit `#[contract(no_event)]` uses are limited to test-only
+contracts (`TestMock` and `TestRecipient`). Production contracts no longer use
+`#[contract(no_event)]`.
 
 ### Placeholder panic scan
 
@@ -344,12 +340,13 @@ contracts. Other contract reverts still intentionally use `assert!` and
 | `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; `saturating_add` for accounting |
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
 | `contracts/protocol-fee/src/lib.rs` | `saturating_add` for `collected_fees` |
-| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process and Mailbox hook/ISM setter events |
-| `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotation for Merkle insertion events |
-| `contracts/validator-announce/src/lib.rs` | Explicit event annotation for validator announcement events |
-| `contracts/warp-native/src/lib.rs` | Explicit event annotations for remote send/receive events |
-| `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for remote send/receive events |
-| `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for remote send/receive events |
+| `types/src/events.rs` | Added operational/admin, account registration, gas config, validator-set, pending-claim, and WarpDrc20 transfer events |
+| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events |
+| `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotations for initialization and Merkle insertion events |
+| `contracts/validator-announce/src/lib.rs` | Explicit event annotations for initialization and validator announcement events |
+| `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
+| `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
+| `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
 | `tests/tests/integration.rs` | 14 new security tests (61 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
@@ -376,11 +373,13 @@ Additional event annotation verification:
 
 ```bash
 make all
+cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
-Both commands passed after the explicit event annotation cleanup. The
-integration package reported `61 passed; 0 failed; 0 ignored`.
+All commands passed after the explicit event annotation cleanup. The type
+package reported `28 passed; 0 failed; 0 ignored`; the integration package
+reported `61 passed; 0 failed; 0 ignored`.
 
 ### Test Gaps
 

@@ -134,7 +134,10 @@ mod warp_drc20_collateral {
         // =================================================================
 
         /// Initialize the collateral warp route.
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Initialized::TOPIC, events::Initialized),
+            (events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)
+        ])]
         pub fn init(
             &mut self,
             wrapped_token: ContractId,
@@ -155,7 +158,20 @@ mod warp_drc20_collateral {
             self.owner = Some(owner);
             for (domain, router) in enrolled_routers {
                 self.enrolled_routers.insert(domain, router);
+                abi::emit(
+                    events::RemoteRouterEnrolled::TOPIC,
+                    events::RemoteRouterEnrolled { domain, router },
+                );
             }
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_WARP_DRC20_COLLATERAL,
+                    owner: owner.to_bytes(),
+                    mailbox: mailbox.to_bytes(),
+                    local_domain: 0,
+                },
+            );
         }
 
         // =================================================================
@@ -167,12 +183,16 @@ mod warp_drc20_collateral {
         ///
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
-        #[contract(no_event)]
+        #[contract(emits = [(events::AccountRegistered::TOPIC, events::AccountRegistered)])]
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpCollateral: register_account requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
             self.registered_accounts.insert(h, pk);
+            abi::emit(
+                events::AccountRegistered::TOPIC,
+                events::AccountRegistered { account_hash: h },
+            );
         }
 
         /// Check whether an H256 has a registered account.
@@ -331,31 +351,55 @@ mod warp_drc20_collateral {
         // =================================================================
 
         /// Enroll a remote router for a domain. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)])]
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
             self.enrolled_routers.insert(domain, router);
+            abi::emit(
+                events::RemoteRouterEnrolled::TOPIC,
+                events::RemoteRouterEnrolled { domain, router },
+            );
         }
 
         /// Set the hook override. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::HookSet::TOPIC, events::HookSet)])]
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
+            abi::emit(
+                events::HookSet::TOPIC,
+                events::HookSet {
+                    hook: hook.to_bytes(),
+                },
+            );
         }
 
         /// Set the ISM override. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::IsmSet::TOPIC, events::IsmSet)])]
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
+            abi::emit(
+                events::IsmSet::TOPIC,
+                events::IsmSet {
+                    ism: ism.to_bytes(),
+                },
+            );
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
+            let previous_owner = self.owner.expect("WarpCollateral: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner: previous_owner.to_bytes(),
+                    new_owner: new_owner.to_bytes(),
+                },
+            );
         }
 
         // =================================================================

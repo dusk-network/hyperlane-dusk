@@ -64,7 +64,11 @@ mod protocol_fee {
         ///
         /// Must be called once after deployment. Panics if already
         /// initialized.
-        #[contract(no_event)]
+        #[contract(emits = [
+            (events::Initialized::TOPIC, events::Initialized),
+            (events::ProtocolFeeSet::TOPIC, events::ProtocolFeeSet),
+            (events::BeneficiarySet::TOPIC, events::BeneficiarySet)
+        ])]
         pub fn init(
             &mut self,
             protocol_fee: u64,
@@ -85,6 +89,25 @@ mod protocol_fee {
             self.max_protocol_fee = max_protocol_fee;
             self.beneficiary = beneficiary;
             self.owner = Some(owner);
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_PROTOCOL_FEE,
+                    owner: owner.to_bytes(),
+                    mailbox: ZERO_CONTRACT.to_bytes(),
+                    local_domain: 0,
+                },
+            );
+            abi::emit(
+                events::ProtocolFeeSet::TOPIC,
+                events::ProtocolFeeSet { fee: protocol_fee },
+            );
+            abi::emit(
+                events::BeneficiarySet::TOPIC,
+                events::BeneficiarySet {
+                    beneficiary: beneficiary.to_bytes(),
+                },
+            );
         }
 
         // =================================================================
@@ -156,7 +179,7 @@ mod protocol_fee {
         /// Set the protocol fee. Owner only.
         ///
         /// Panics if the new fee exceeds `max_protocol_fee`.
-        #[contract(no_event)]
+        #[contract(emits = [(events::ProtocolFeeSet::TOPIC, events::ProtocolFeeSet)])]
         pub fn set_protocol_fee(&mut self, fee: u64) {
             self.only_owner();
             assert!(
@@ -164,10 +187,14 @@ mod protocol_fee {
                 "ProtocolFee: fee exceeds maximum"
             );
             self.protocol_fee = fee;
+            abi::emit(
+                events::ProtocolFeeSet::TOPIC,
+                events::ProtocolFeeSet { fee },
+            );
         }
 
         /// Set the beneficiary. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::BeneficiarySet::TOPIC, events::BeneficiarySet)])]
         pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
             self.only_owner();
             assert!(
@@ -175,13 +202,27 @@ mod protocol_fee {
                 "ProtocolFee: beneficiary cannot be zero"
             );
             self.beneficiary = beneficiary;
+            abi::emit(
+                events::BeneficiarySet::TOPIC,
+                events::BeneficiarySet {
+                    beneficiary: beneficiary.to_bytes(),
+                },
+            );
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(no_event)]
+        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
+            let previous_owner = self.owner.expect("ProtocolFee: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner: previous_owner.to_bytes(),
+                    new_owner: new_owner.to_bytes(),
+                },
+            );
         }
 
         // =================================================================

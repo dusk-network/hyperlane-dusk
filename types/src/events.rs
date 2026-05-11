@@ -14,7 +14,218 @@ use alloc::vec::Vec;
 use bytecheck::CheckBytes;
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{EthAddress, H256, MessageId};
+use crate::{DomainGasConfig, EthAddress, H256, MessageId};
+
+// =========================================================================
+// Contract identifiers for generic operational events
+// =========================================================================
+
+/// Mailbox contract type identifier.
+pub const CONTRACT_MAILBOX: u8 = 1;
+/// MerkleTreeHook contract type identifier.
+pub const CONTRACT_MERKLE_TREE_HOOK: u8 = 2;
+/// ValidatorAnnounce contract type identifier.
+pub const CONTRACT_VALIDATOR_ANNOUNCE: u8 = 3;
+/// ProtocolFee contract type identifier.
+pub const CONTRACT_PROTOCOL_FEE: u8 = 4;
+/// InterchainGasPaymaster contract type identifier.
+pub const CONTRACT_IGP: u8 = 5;
+/// MessageIdMultisigISM contract type identifier.
+pub const CONTRACT_ISM_MULTISIG: u8 = 6;
+/// WarpDrc20 contract type identifier.
+pub const CONTRACT_WARP_DRC20: u8 = 7;
+/// WarpDrc20Collateral contract type identifier.
+pub const CONTRACT_WARP_DRC20_COLLATERAL: u8 = 8;
+/// WarpNative contract type identifier.
+pub const CONTRACT_WARP_NATIVE: u8 = 9;
+
+// =========================================================================
+// Operational/admin events
+// =========================================================================
+
+/// Emitted when a contract is initialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Initialized {
+    /// Contract type identifier, using the `CONTRACT_*` constants above.
+    pub contract_type: u8,
+    /// Initial owner address, or zero if the contract has no owner.
+    pub owner: H256,
+    /// Initial mailbox contract ID, or zero if not applicable.
+    pub mailbox: H256,
+    /// Local domain, or zero if not applicable.
+    pub local_domain: u32,
+}
+
+impl Initialized {
+    /// Event topic.
+    pub const TOPIC: &'static str = "initialized";
+}
+
+/// Emitted when contract ownership changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct OwnershipTransferred {
+    /// Previous owner.
+    pub previous_owner: H256,
+    /// New owner.
+    pub new_owner: H256,
+}
+
+impl OwnershipTransferred {
+    /// Event topic.
+    pub const TOPIC: &'static str = "ownership_transferred";
+}
+
+/// Emitted when ownership is renounced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct OwnershipRenounced {
+    /// Previous owner.
+    pub previous_owner: H256,
+}
+
+impl OwnershipRenounced {
+    /// Event topic.
+    pub const TOPIC: &'static str = "ownership_renounced";
+}
+
+/// Emitted when an account key is registered for an H256 recipient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AccountRegistered {
+    /// Keccak256 hash of the registered public key.
+    pub account_hash: H256,
+}
+
+impl AccountRegistered {
+    /// Event topic.
+    pub const TOPIC: &'static str = "account_registered";
+}
+
+/// Emitted when a remote router is enrolled for a domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RemoteRouterEnrolled {
+    /// Remote domain.
+    pub domain: u32,
+    /// Remote router address.
+    pub router: H256,
+}
+
+impl RemoteRouterEnrolled {
+    /// Event topic.
+    pub const TOPIC: &'static str = "remote_router_enrolled";
+}
+
+/// Emitted when a warp route hook override changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HookSet {
+    /// New hook contract ID.
+    pub hook: H256,
+}
+
+impl HookSet {
+    /// Event topic.
+    pub const TOPIC: &'static str = "hook_set";
+}
+
+/// Emitted when a warp route ISM override changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct IsmSet {
+    /// New ISM contract ID.
+    pub ism: H256,
+}
+
+impl IsmSet {
+    /// Event topic.
+    pub const TOPIC: &'static str = "ism_set";
+}
+
+/// Emitted when a fee beneficiary changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BeneficiarySet {
+    /// New beneficiary contract ID.
+    pub beneficiary: H256,
+}
+
+impl BeneficiarySet {
+    /// Event topic.
+    pub const TOPIC: &'static str = "beneficiary_set";
+}
+
+/// Emitted when the fixed protocol fee changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProtocolFeeSet {
+    /// New protocol fee.
+    pub fee: u64,
+}
+
+impl ProtocolFeeSet {
+    /// Event topic.
+    pub const TOPIC: &'static str = "protocol_fee_set";
+}
+
+/// Emitted when an IGP domain gas configuration changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DomainGasConfigSet {
+    /// Remote domain.
+    pub domain: u32,
+    /// New gas configuration.
+    pub config: DomainGasConfig,
+}
+
+impl DomainGasConfigSet {
+    /// Event topic.
+    pub const TOPIC: &'static str = "domain_gas_config_set";
+}
+
+/// Emitted when the multisig validator set or threshold changes.
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ValidatorsAndThresholdSet {
+    /// New validator set.
+    pub validators: Vec<EthAddress>,
+    /// New threshold.
+    pub threshold: u8,
+}
+
+impl ValidatorsAndThresholdSet {
+    /// Event topic.
+    pub const TOPIC: &'static str = "validators_and_threshold_set";
+}
+
+/// Emitted when a pending native transfer is claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PendingTransferClaimed {
+    /// Recipient hash that held the pending transfer.
+    pub recipient: H256,
+    /// Claimed amount.
+    pub amount: u64,
+}
+
+impl PendingTransferClaimed {
+    /// Event topic.
+    pub const TOPIC: &'static str = "pending_transfer_claimed";
+}
 
 // =========================================================================
 // Mailbox events
@@ -225,6 +436,24 @@ impl GasPayment {
 // =========================================================================
 // Warp Route events
 // =========================================================================
+
+/// Emitted when WarpDrc20 balances change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Drc20Transfer {
+    /// Source account hash or contract ID. Zero means mint.
+    pub from: H256,
+    /// Destination account hash or contract ID. Zero means burn.
+    pub to: H256,
+    /// Transfer amount.
+    pub amount: u64,
+}
+
+impl Drc20Transfer {
+    /// Event topic.
+    pub const TOPIC: &'static str = "drc20_transfer";
+}
 
 /// Emitted when a warp route transfer is sent to a remote chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
