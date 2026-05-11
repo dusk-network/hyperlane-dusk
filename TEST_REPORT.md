@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `8f4e5c67b4d29ce26a3db11408f0b9aef1a02bfb` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `654eae00c5ac2e1bbdec67cbb00d822ce4d68fcf` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -38,7 +38,7 @@ Result:
 
 - `make all`: passed, all contract WASMs built.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
-- `cargo test -p hyperlane-dusk-integration-tests`: passed, 60 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: passed, 61 tests.
 - `cargo test -p dusk-tx`: passed, 0 tests.
 
 ### Hyperlane Rust Agent Checks
@@ -165,6 +165,8 @@ Artifacts:
   missing contracts are treated as "not deployed" during idempotent deploys.
 - Tightened `MessageIdMultisigISM` verification to reject uninitialized state
   and malformed signature metadata with trailing partial-signature bytes.
+- Added corrupted fixed-width multisig signature metadata coverage; the ISM
+  rejects corrupt bytes at `secp256k1_recover`.
 
 ## Remaining Work Before Production Readiness
 
@@ -179,7 +181,7 @@ Artifacts:
   redeploy refusal, 5-message relayer burst delivery, and relayer
   restart/backlog recovery. Remaining scenarios include explicit duplicate
   relayer attempts, RPC failures, delayed checkpoints, low signer balance, and
-  metadata corruption.
+  E2E metadata corruption.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or document the exact local

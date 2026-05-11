@@ -294,7 +294,7 @@ Dusk VM does not support reentrancy. When contract A calls contract B, contract 
 | `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; `saturating_add` for accounting |
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
 | `contracts/protocol-fee/src/lib.rs` | `saturating_add` for `collected_fees` |
-| `tests/tests/integration.rs` | 13 new security tests (60 total, up from 47) |
+| `tests/tests/integration.rs` | 14 new security tests (61 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -313,6 +313,7 @@ Dusk VM does not support reentrancy. When contract A calls contract B, contract 
 | `test_multisig_ism_verify_rejects_short_metadata` | Verify fails before parsing metadata shorter than the fixed header |
 | `test_multisig_ism_verify_rejects_partial_signature_bytes` | Verify fails when signature metadata has trailing partial bytes |
 | `test_multisig_ism_verify_rejects_insufficient_signatures` | Verify fails when metadata contains fewer signatures than threshold |
+| `test_multisig_ism_verify_rejects_corrupt_signature_bytes` | Verify fails when fixed-width signature metadata is corrupt and cannot be recovered |
 | `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
 
 ### Test Gaps
@@ -347,7 +348,7 @@ make all    # in dusk/ directory
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 60 integration tests pass (47 pre-existing + 13 new)
+# 61 integration tests pass (47 pre-existing + 14 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
