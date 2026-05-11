@@ -5,6 +5,12 @@
 #
 # Exercises repeated relayer-driven transfers and verifies that queued Dusk
 # messages are delivered after a relayer restart.
+#
+# Environment:
+# - TRANSFERS: number of transfers in each direction (default: 5).
+# - TRANSFER_AMOUNT_WEI: per-transfer amount in wei. Defaults to 1 DUSK.
+#   Lower this for high-count runs when the local EVM test balance is limited.
+# - TIMEOUT_SECS: wait timeout for each balance/nonce checkpoint.
 
 set -euo pipefail
 
@@ -16,6 +22,7 @@ info() { echo "[INFO] $*" >&2; }
 
 TRANSFERS="${TRANSFERS:-5}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-300}"
+TRANSFER_AMOUNT_WEI="${TRANSFER_AMOUNT_WEI:-}"
 
 CURRENT_RELAYER_PID=""
 
@@ -183,7 +190,14 @@ if ! [[ "$TRANSFERS" =~ ^[1-9][0-9]*$ ]]; then
     fail "TRANSFERS must be a positive integer"
 fi
 
-amount_wei="$(to_wei 1)"
+if [ -n "$TRANSFER_AMOUNT_WEI" ]; then
+    if ! [[ "$TRANSFER_AMOUNT_WEI" =~ ^[1-9][0-9]*$ ]]; then
+        fail "TRANSFER_AMOUNT_WEI must be a positive integer"
+    fi
+    amount_wei="$TRANSFER_AMOUNT_WEI"
+else
+    amount_wei="$(to_wei 1)"
+fi
 total_wei="$(python3 - <<PY
 print(int(${TRANSFERS}) * int(${amount_wei}))
 PY
@@ -234,7 +248,7 @@ evm_balance_before="$(cast call "$evm_token" "balanceOf(address)(uint256)" \
 info "Starting relayer for EVM -> Dusk burst..."
 start_relayer "$relayer_cfg" "$relayer_log_1"
 
-info "Dispatching ${TRANSFERS} EVM -> Dusk transfers..."
+info "Dispatching ${TRANSFERS} EVM -> Dusk transfers (${amount_wei} wei each)..."
 for i in $(seq 1 "$TRANSFERS"); do
     cast send "$evm_token" \
       "transferRemote(uint32,bytes32,uint256)" \
@@ -258,7 +272,7 @@ CURRENT_RELAYER_PID=""
 evm_balance_mid="$(cast call "$evm_token" "balanceOf(address)(uint256)" \
     "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
 
-info "Dispatching ${TRANSFERS} Dusk -> EVM transfers while relayer is down..."
+info "Dispatching ${TRANSFERS} Dusk -> EVM transfers while relayer is down (${amount_wei} wei each)..."
 mkdir -p "$dusk_transfer_log_dir"
 dusk_mailbox_nonce="$(query_dusk_mailbox_nonce "$dusk_mailbox")"
 for i in $(seq 1 "$TRANSFERS"); do

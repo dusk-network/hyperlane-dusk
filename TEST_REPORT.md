@@ -91,19 +91,20 @@ Result:
 - Validator and relayer started successfully.
 - EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
 - Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
+- Re-run after operational event-surface expansion also passed.
 
 Artifacts:
 
-- `/tmp/hyperlane-start-env-messageIdMultisig-1778510216.log`
-- `/tmp/hyperlane-deploy-messageIdMultisig-1778510216.log`
-- `/tmp/hyperlane-validator-messageIdMultisig-1778510216.log`
-- `/tmp/hyperlane-relayer-messageIdMultisig-1778510216.log`
-- `/tmp/hyperlane-validator-anvil-messageIdMultisig-1778510216.json`
-- `/tmp/hyperlane-relayer-messageIdMultisig-1778510216.json`
-- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778510216/index.json`
-- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778510216/0_with_id.json`
-- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778510216/announcement.json`
-- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778510216/metadata_latest.json`
+- `/tmp/hyperlane-start-env-messageIdMultisig-1778518318.log`
+- `/tmp/hyperlane-deploy-messageIdMultisig-1778518318.log`
+- `/tmp/hyperlane-validator-messageIdMultisig-1778518318.log`
+- `/tmp/hyperlane-relayer-messageIdMultisig-1778518318.log`
+- `/tmp/hyperlane-validator-anvil-messageIdMultisig-1778518318.json`
+- `/tmp/hyperlane-relayer-messageIdMultisig-1778518318.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778518318/index.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778518318/0_with_id.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778518318/announcement.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778518318/metadata_latest.json`
 - `/tmp/rusk-dev.log`
 
 ### Dirty Redeploy Guard
@@ -134,29 +135,35 @@ Artifacts:
 ```bash
 cd /home/hein_/projects/hyperlane/dusk
 RUSK_DIR=/home/hein_/projects/rusk-private \
-TIMEOUT_SECS=420 \
-TRANSFERS=5 \
+TIMEOUT_SECS=600 \
+TRANSFERS=20 \
+TRANSFER_AMOUNT_WEI=500000000000000000 \
 bash demo/e2e-relayer-restart-stress.sh
 ```
 
 Result:
 
 - Passed.
-- Submitted 5 EVM -> Dusk transfers through a live relayer.
+- Submitted 20 EVM -> Dusk transfers through a live relayer
+  (`500000000000000000` wei each).
 - Stopped the relayer after the EVM -> Dusk burst was delivered.
-- Submitted 5 Dusk -> EVM transfers while the relayer was down, waiting for
+- Submitted 20 Dusk -> EVM transfers while the relayer was down, waiting for
   Dusk Mailbox nonce inclusion after each submission.
 - Restarted the relayer with the same config/database.
 - Verified EVM balance returned to `10000000000000000000` and Dusk supply
   returned to `0`.
+- A prior `TRANSFERS=20` attempt using the default 1 DUSK amount failed at
+  EVM -> Dusk transfer 11 with `ERC20: burn amount exceeds balance`, which was
+  a local test-account funding limit. The script now supports
+  `TRANSFER_AMOUNT_WEI` so high-count runs can stay within the funded balance.
 
 Artifacts:
 
-- `/tmp/hyperlane-restart-stress-start-testMock-1778512771.log`
-- `/tmp/hyperlane-restart-stress-deploy-testMock-1778512771.log`
-- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778512771.log`
-- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778512771.log`
-- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778512771/`
+- `/tmp/hyperlane-restart-stress-start-testMock-1778518816.log`
+- `/tmp/hyperlane-restart-stress-deploy-testMock-1778518816.log`
+- `/tmp/hyperlane-restart-stress-relayer-a-testMock-1778518816.log`
+- `/tmp/hyperlane-restart-stress-relayer-b-testMock-1778518816.log`
+- `/tmp/hyperlane-restart-stress-dusk-transfers-testMock-1778518816/`
 
 ### Validator Delay and Checkpoint Backoff
 
@@ -445,7 +452,7 @@ Result:
   paths, dirty redeploy refusal, and several token-accounting failures, but
   more cross-route failure cases remain.
 - Continue stress and reliability testing. Current coverage includes dirty
-  redeploy refusal, 5-message relayer burst delivery, relayer restart/backlog
+  redeploy refusal, 20-message relayer burst delivery, relayer restart/backlog
   recovery, and delayed validator checkpoint recovery through relayer metadata
   backoff. No currently listed reliability scenario remains untested in this
   report, but longer-duration and larger-volume runs are still needed before

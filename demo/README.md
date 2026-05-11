@@ -97,6 +97,14 @@ The script sends a burst of EVM -> Dusk transfers through a live relayer, stops
 the relayer, queues the same number of Dusk -> EVM transfers, restarts the
 relayer with the same config/database, and verifies final balances.
 
+For higher-count local runs, lower the per-transfer amount so the funded local
+EVM test account can cover every burn:
+
+```bash
+TRANSFERS=20 TRANSFER_AMOUNT_WEI=500000000000000000 \
+  bash demo/e2e-relayer-restart-stress.sh
+```
+
 ### Validator Delay E2E
 
 To verify MessageIdMultisig delivery waits for validator checkpoint metadata:
