@@ -583,10 +583,13 @@ documented recovery/failure modes do not depend on the dirty local Rusk patch.
   IGP, ValidatorAnnounce, and warp-route send/receive paths.
 - Added operational events for initialization, ownership/configuration changes,
   account registration, validator-set updates, IGP domain gas config updates,
-  native pending-transfer claims, and WarpDrc20 transfer/mint/burn accounting.
+  native/collateral pending-transfer claims, and WarpDrc20 transfer/mint/burn
+  accounting.
 - Added negative tests for WarpDrc20 non-owner admin rejection, WarpNative
   zero-amount remote sends, and WarpDrc20Collateral unlock attempts without
   sufficient locked wrapped-token balance.
+- Added WarpDrc20Collateral escrow tests for unregistered recipients and
+  post-registration pending-claim release.
 - Reviewed remaining `#[contract(no_event)]` uses. They are now limited to
   test-only contracts (`TestMock` and `TestRecipient`); production contracts no
   longer use `#[contract(no_event)]`.
@@ -612,7 +615,7 @@ Result:
 - `cargo test -p hyperlane-dusk-types` passed:
   `28 passed; 0 failed; 0 ignored`.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:
-  `64 passed; 0 failed; 0 ignored`.
+  `66 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 

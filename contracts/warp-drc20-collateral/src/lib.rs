@@ -113,6 +113,11 @@ mod warp_drc20_collateral {
         /// fit in a 32-byte H256. Users must call `register_account` once
         /// so that inbound transfers can resolve to External accounts.
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
+        /// Pending transfers for recipients who haven't registered yet.
+        ///
+        /// The recipient can call `claim_pending` after registering to
+        /// receive their wrapped DRC20 tokens.
+        pending_transfers: BTreeMap<H256, u64>,
     }
 
     impl WarpDrc20Collateral {
@@ -126,6 +131,7 @@ mod warp_drc20_collateral {
                 owner: None,
                 enrolled_routers: BTreeMap::new(),
                 registered_accounts: BTreeMap::new(),
+                pending_transfers: BTreeMap::new(),
             }
         }
 
@@ -198,6 +204,39 @@ mod warp_drc20_collateral {
         /// Check whether an H256 has a registered account.
         pub fn is_registered(&self, h: H256) -> bool {
             self.registered_accounts.contains_key(&h)
+        }
+
+        /// Claim pending wrapped DRC20 tokens that arrived before the caller
+        /// registered.
+        ///
+        /// The caller must have previously called `register_account`.
+        #[contract(emits = [(events::PendingTransferClaimed::TOPIC, events::PendingTransferClaimed)])]
+        pub fn claim_pending(&mut self) {
+            let pk = abi::public_sender()
+                .expect("WarpCollateral: claim_pending requires Moonlight TX");
+            let h = message::keccak256(&pk.to_bytes());
+
+            let amount = self.pending_transfers.remove(&h).unwrap_or(0);
+            assert!(amount > 0, "WarpCollateral: no pending transfers");
+
+            let _: () = abi::call(
+                self.wrapped_token,
+                "transfer",
+                &(Account::External(pk), amount),
+            )
+            .expect("WarpCollateral: transfer failed");
+            abi::emit(
+                events::PendingTransferClaimed::TOPIC,
+                events::PendingTransferClaimed {
+                    recipient: h,
+                    amount,
+                },
+            );
+        }
+
+        /// Returns the pending (escrowed) balance for an H256 recipient.
+        pub fn pending_balance(&self, h: H256) -> u64 {
+            self.pending_transfers.get(&h).copied().unwrap_or(0)
         }
 
         // =================================================================
@@ -283,21 +322,22 @@ mod warp_drc20_collateral {
             let msg = token_message::decode(&body)
                 .expect("WarpCollateral: invalid token message");
 
-            // Resolve the recipient: if a BLS key is registered for this H256,
-            // unlock to the External account; otherwise treat as Contract.
-            let recipient_account =
-                if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
-                    Account::External(*pk)
-                } else {
-                    Account::Contract(ContractId::from_bytes(msg.recipient))
-                };
-
-            let _: () = abi::call(
-                self.wrapped_token,
-                "transfer",
-                &(recipient_account, msg.amount),
-            )
-            .expect("WarpCollateral: transfer failed");
+            // If the recipient is registered, transfer immediately.
+            // Otherwise, hold the wrapped tokens in this contract's DRC20
+            // balance until the recipient registers and claims them.
+            if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
+                let _: () = abi::call(
+                    self.wrapped_token,
+                    "transfer",
+                    &(Account::External(*pk), msg.amount),
+                )
+                .expect("WarpCollateral: transfer failed");
+            } else {
+                let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
+                *pending = pending
+                    .checked_add(msg.amount)
+                    .expect("WarpCollateral: pending overflow");
+            }
 
             abi::emit(
                 events::ReceivedTransferRemote::TOPIC,

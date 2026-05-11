@@ -211,7 +211,7 @@ impl ValidatorsAndThresholdSet {
     pub const TOPIC: &'static str = "validators_and_threshold_set";
 }
 
-/// Emitted when a pending native transfer is claimed.
+/// Emitted when a pending warp transfer is claimed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

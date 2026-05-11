@@ -18,6 +18,7 @@ dusk-vm = { workspace = true, default-features = false }
 
 # Test utilities
 ff = { workspace = true }
+bytecheck = { workspace = true }
 rand = { workspace = true }
 rkyv = { workspace = true, features = ["validation"] }
 rusk-prover = { workspace = true }

@@ -1428,6 +1428,22 @@ const WARP_DRC20_ID: ContractId = ContractId::from_bytes([20; 32]);
 const WARP_DRC20_COLLATERAL_ID: ContractId = ContractId::from_bytes([21; 32]);
 const WARP_NATIVE_ID: ContractId = ContractId::from_bytes([22; 32]);
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[archive_attr(derive(rkyv::bytecheck::CheckBytes))]
+enum Drc20Account {
+    External(AccountPublicKey),
+    Contract(ContractId),
+}
+
+fn warp_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u64 {
+    session
+        .direct_call::<_, u64>(WARP_DRC20_ID, "balance_of", &(account,))
+        .expect("balance_of should succeed")
+        .data
+}
+
 /// Deploy a WarpDrc20 alongside Mailbox with TestMock hooks.
 fn session_with_warp_drc20() -> TestSession {
     let mut session = TestSession::instantiate(vec![
@@ -2544,10 +2560,17 @@ fn test_warp_collateral_register_account() {
 fn test_warp_collateral_handle_rejects_insufficient_locked_balance() {
     let (mut session, remote_router) = session_with_warp_collateral_flow();
 
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        TEST_RECIPIENT_ID.to_bytes(),
-        500_000,
-    );
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "register_account",
+            &(),
+        )
+        .expect("register_account should succeed");
+
+    let recipient_h256 = message::keccak256(&OWNER_PK.to_bytes());
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient_h256, 500_000);
 
     let encoded = message::encode(
         VERSION,
@@ -2722,4 +2745,105 @@ fn test_warp_collateral_handle_resolves_registered_external() {
     session
         .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
         .expect("process should succeed — collateral unlocks to External account");
+}
+
+#[test]
+fn test_warp_collateral_handle_escrows_unregistered_recipient() {
+    let (mut session, remote_router) = session_with_warp_collateral_funded_flow();
+
+    let unregistered: H256 = [0xEE; 32];
+    let unlock_amount = 500_000u64;
+    let contract_balance_before = warp_drc20_balance_of(
+        &mut session,
+        Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+    );
+
+    let token_body = hyperlane_dusk_types::token_message::encode(unregistered, unlock_amount);
+    let encoded = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &token_body,
+    );
+
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("process should succeed — unregistered collateral recipient goes to escrow");
+
+    let pending: u64 = session
+        .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_balance", &(unregistered,))
+        .expect("pending_balance should succeed")
+        .data;
+    assert_eq!(pending, unlock_amount);
+
+    let contract_balance_after = warp_drc20_balance_of(
+        &mut session,
+        Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+    );
+    assert_eq!(contract_balance_after, contract_balance_before);
+}
+
+#[test]
+fn test_warp_collateral_claim_pending_transfers_after_registration() {
+    let (mut session, remote_router) = session_with_warp_collateral_funded_flow();
+
+    let recipient_h256 = message::keccak256(&OWNER_PK.to_bytes());
+    let unlock_amount = 500_000u64;
+    let contract_balance_before = warp_drc20_balance_of(
+        &mut session,
+        Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+    );
+
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient_h256, unlock_amount);
+    let encoded = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &token_body,
+    );
+
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("process should escrow before registration");
+
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "register_account",
+            &(),
+        )
+        .expect("register_account should succeed");
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "claim_pending", &())
+        .expect("claim_pending should succeed");
+
+    let pending: u64 = session
+        .direct_call::<_, u64>(
+            WARP_DRC20_COLLATERAL_ID,
+            "pending_balance",
+            &(recipient_h256,),
+        )
+        .expect("pending_balance should succeed")
+        .data;
+    assert_eq!(pending, 0);
+
+    let external_balance =
+        warp_drc20_balance_of(&mut session, Drc20Account::External(*OWNER_PK));
+    assert_eq!(external_balance, unlock_amount);
+
+    let contract_balance_after = warp_drc20_balance_of(
+        &mut session,
+        Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+    );
+    assert_eq!(
+        contract_balance_after,
+        contract_balance_before - unlock_amount
+    );
 }

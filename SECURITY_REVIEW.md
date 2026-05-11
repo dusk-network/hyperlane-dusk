@@ -87,9 +87,9 @@ pub fn pending_balance(&self, h: H256) -> u64  // Query escrow balance
 
 **What was NOT changed**: The registered-path (`contract_to_account`) still panics if the transfer contract rejects the transfer (e.g., contract has insufficient balance). This is correct — if the contract doesn't have enough DUSK locked, something is fundamentally broken.
 
-### HIGH-3: WarpDrc20Collateral had no External account support
+### HIGH-3: WarpDrc20Collateral had no External account escrow
 
-**File**: `contracts/warp-drc20-collateral/src/lib.rs` (entire account registration section, lines 160-179) and `handle()` (lines 262-269)
+**File**: `contracts/warp-drc20-collateral/src/lib.rs`
 
 **Before**: The collateral contract's `handle()` always treated the recipient H256 as a `ContractId`:
 ```rust
@@ -97,34 +97,41 @@ let recipient = Account::Contract(ContractId::from_bytes(msg.recipient));
 ```
 If the recipient was an external Dusk account (identified by `keccak256(bls_public_key)`), the unlock would go to a non-existent contract address, effectively burning the tokens.
 
-WarpDrc20 and WarpNative already had `register_account` / `registered_accounts` support, but WarpDrc20Collateral was missing it entirely.
+WarpDrc20 and WarpNative already had `register_account` / `registered_accounts`
+support, but WarpDrc20Collateral was missing the registration and escrow path.
 
-**After**: Added the full account registration pattern (identical to WarpDrc20/WarpNative):
+**After**: Added the full account registration pattern and a pending-transfer
+escrow path:
 
 ```rust
 registered_accounts: BTreeMap<H256, AccountPublicKey>,
+pending_transfers: BTreeMap<H256, u64>,
 
 pub fn register_account(&mut self) { ... }
 pub fn is_registered(&self, h: H256) -> bool { ... }
+pub fn claim_pending(&mut self) { ... }
+pub fn pending_balance(&self, h: H256) -> u64 { ... }
 ```
 
-Updated `handle()` to resolve the recipient:
+Updated `handle()` to deliver registered recipients immediately and escrow
+unregistered recipients:
 ```rust
-let recipient_account =
-    if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
-        Account::External(*pk)
-    } else {
-        Account::Contract(ContractId::from_bytes(msg.recipient))
-    };
+if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
+    abi::call(self.wrapped_token, "transfer", &(Account::External(*pk), msg.amount))
+        .expect("WarpCollateral: transfer failed");
+} else {
+    let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
+    *pending = pending.checked_add(msg.amount).expect("WarpCollateral: pending overflow");
+}
 ```
 
 Also added `dusk-bytes = "0.1.7"` to `Cargo.toml` (needed for `Serializable` trait on `AccountPublicKey`).
 
-**Trade-off**: Unlike WarpNative (HIGH-2), the collateral contract does NOT have an escrow pattern for unregistered recipients. If tokens are sent to an unregistered H256 that is not a valid contract, the DRC20 `transfer` call will succeed (DRC20 doesn't validate contract existence), but the tokens will sit in an `Account::Contract(some_address)` that nobody controls. This is the same behavior as ERC20 transfers to non-existent addresses on EVM. We chose not to add escrow here because:
-1. The collateral contract delegates token transfers to the wrapped DRC20 via `abi::call(wrapped_token, "transfer", ...)`. Adding escrow would mean holding DRC20 tokens in a separate internal ledger, duplicating accounting logic.
-2. The fix ensures the happy path works (registered external accounts get tokens). The edge case (unregistered H256 that isn't a contract) is a user error, same as sending ERC20 to a wrong address.
-
-**Potential follow-up**: Consider adding an escrow pattern similar to WarpNative for the collateral contract. This would require the collateral to hold DRC20 tokens in its own balance and release them on claim, rather than calling `transfer` immediately. This is more complex because it involves cross-contract DRC20 accounting.
+**Trade-off**: Unregistered collateral recipients now require a second step:
+the recipient must call `register_account()` and then `claim_pending()`. This
+keeps tokens in the collateral contract's DRC20 balance instead of transferring
+to a possibly nonexistent `ContractId`, which is safer for Dusk's BLS-account
+addressing model.
 
 ### HIGH-4: WarpDrc20 arithmetic overflow in `mint`, `burn`, and `do_transfer`
 
@@ -350,7 +357,7 @@ documented deviations:
 | Upgradeability | No proxy or in-place upgrade pattern is implemented for the Dusk contracts. Deterministic contract IDs are treated as immutable deployment identities. | Production upgrades require new deployments and routing/config migration. Dirty redeploy refusal is intentional and tested. |
 | Events/indexing | Production entrypoints now declare protocol and operational events explicitly. Test-only mock contracts still use `#[contract(no_event)]`. | Off-chain agents should rely on the exposed query surfaces and events documented here; no hidden production no-event path is expected. |
 | Address mapping | External Dusk recipients are represented by `keccak256(bls_public_key_bytes)` and must register their BLS public key on Dusk for account delivery. | The mapping is deterministic and non-updatable. Lost or compromised keys are a user/account-management issue, not recoverable by current contracts. |
-| Unregistered recipients | WarpNative escrows unregistered recipients; WarpDrc20Collateral falls back to treating the H256 as a contract account. | This is an intentional route-specific difference. Native DUSK has a pending-claim path; collateral DRC20 follows ERC20-like "send to address" behavior and can strand funds if users target an invalid/unregistered recipient. |
+| Unregistered recipients | WarpNative and WarpDrc20Collateral escrow unregistered recipients. | Inbound funds are not stranded at a synthetic contract account. Recipients must register the matching BLS key and call `claim_pending()`. |
 | Multisig metadata | MessageIdMultisigISM requires sorted validator sets, a valid threshold, initialized state, and exact fixed-width signature metadata. | This is stricter than accepting trailing metadata bytes and is intended to prevent malformed metadata acceptance. |
 | Fee accounting | ProtocolFee and IGP lifetime counters saturate rather than panic. IGP fee quote conversion panics on `u64` overflow. | Saturating counters are informational only; fee undercharging is prevented by rejecting unrepresentable quotes. |
 | Secret handling | Demo/E2E configs use local dev keys and `/tmp` artifacts. Production use must avoid process argv, logs, committed config, and CI artifact leakage for Dusk secrets. | This is a release gate outside the WASM contracts. Current scripts are acceptable only for local deterministic dev/test environments. |
@@ -361,7 +368,7 @@ documented deviations:
 |---|---|
 | `contracts/warp-native/src/lib.rs` | Added deposit verification, escrow pattern (`pending_transfers`, `claim_pending`, `pending_balance`) |
 | `contracts/warp-drc20/src/lib.rs` | `checked_add` in `mint`/`do_transfer`, zero-amount check in `transfer_remote` |
-| `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, recipient resolution in `handle` |
+| `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, collateral escrow, `claim_pending`, `pending_balance`, and registered-recipient resolution in `handle` |
 | `contracts/warp-drc20-collateral/Cargo.toml` | Added `dusk-bytes = "0.1.7"` dependency |
 | `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; `saturating_add` for accounting |
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
@@ -373,7 +380,7 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 17 new security tests (64 total, up from 47) |
+| `tests/tests/integration.rs` | 19 new security tests (66 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -388,6 +395,8 @@ documented deviations:
 | `test_warp_native_claim_pending_requires_pending` | `claim_pending` panics if no pending balance exists |
 | `test_warp_collateral_register_account` | Registration round-trip: `is_registered` returns false before, true after |
 | `test_warp_collateral_handle_rejects_insufficient_locked_balance` | Collateral unlock fails if the route does not hold enough wrapped-token balance |
+| `test_warp_collateral_handle_escrows_unregistered_recipient` | Unregistered collateral recipient goes to escrow instead of a synthetic contract account |
+| `test_warp_collateral_claim_pending_transfers_after_registration` | Registered recipient can claim escrowed collateral tokens and the collateral balance decreases exactly once |
 | `test_warp_collateral_handle_resolves_registered_external` | End-to-end: pre-fund collateral with DRC20, register BLS key, process inbound message, verify DRC20 tokens unlock to External account |
 | `test_multisig_ism_init_rejects_no_validators` | Init fails if validator set is empty |
 | `test_multisig_ism_init_rejects_invalid_threshold` | Init fails if threshold exceeds validator count |
@@ -424,15 +433,13 @@ reported `64 passed; 0 failed; 0 ignored`.
 These items are not hidden TODOs in runtime code, but they are decisions that
 should be accepted or resolved before any production release:
 
-1. **WarpDrc20Collateral escrow**: Should WarpDrc20Collateral have an escrow pattern for unregistered recipients (like WarpNative), or is the current "treat as Contract address" fallback acceptable?
+1. **WarpDrc20 `only_owner` uses `public_sender()`**: The owner check in WarpDrc20 uses `abi::public_sender()` (BLS key from Moonlight TX), while WarpNative and WarpDrc20Collateral use `abi::caller()` (contract ID). This means WarpDrc20 admin functions can only be called via direct Moonlight TX, not from other contracts. Is this intentional asymmetry acceptable?
 
-2. **WarpDrc20 `only_owner` uses `public_sender()`**: The owner check in WarpDrc20 uses `abi::public_sender()` (BLS key from Moonlight TX), while WarpNative and WarpDrc20Collateral use `abi::caller()` (contract ID). This means WarpDrc20 admin functions can only be called via direct Moonlight TX, not from other contracts. Is this intentional asymmetry acceptable?
+2. **Mailbox `resolve_sender` when called from transfer contract**: When a Moonlight TX targets the Mailbox directly, `abi::caller()` returns `TRANSFER_CONTRACT`. The Mailbox special-cases this to derive the sender from `public_sender()`. But if the transfer contract ever calls the Mailbox for non-user-initiated reasons, this would misattribute the sender. Is this a concern?
 
-3. **Mailbox `resolve_sender` when called from transfer contract**: When a Moonlight TX targets the Mailbox directly, `abi::caller()` returns `TRANSFER_CONTRACT`. The Mailbox special-cases this to derive the sender from `public_sender()`. But if the transfer contract ever calls the Mailbox for non-user-initiated reasons, this would misattribute the sender. Is this a concern?
+3. **`registered_accounts` has no deregistration**: Once a BLS key is registered, it cannot be unregistered or updated. If a user's key is compromised, they cannot re-register with a new key for the same H256 (since H256 = keccak256(pk) is deterministic). Is this acceptable?
 
-4. **`registered_accounts` has no deregistration**: Once a BLS key is registered, it cannot be unregistered or updated. If a user's key is compromised, they cannot re-register with a new key for the same H256 (since H256 = keccak256(pk) is deterministic). Is this acceptable?
-
-5. **WarpNative `pending_transfers` has no admin drain**: If a user loses their private key after funds are escrowed, the funds are locked forever. There is no admin function to recover stuck escrow. Is this intentional?
+4. **WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain**: If a user loses their private key after funds are escrowed, the funds are locked forever. There is no admin function to recover stuck escrow. Is this intentional?
 
 ## Build & Test Verification
 
@@ -443,7 +450,7 @@ make all    # in dusk/ directory
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 64 integration tests pass (47 pre-existing + 17 new)
+# 66 integration tests pass (47 pre-existing + 19 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
 

@@ -2014,6 +2014,7 @@ name = "hyperlane-dusk-integration-tests"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "bytecheck",
  "constant_time_eq",
  "dusk-bytes",
  "dusk-core",
