@@ -36,4 +36,5 @@ kept on the runner and deleted after the run, not archived.
 
 The check is conservative: it is meant to guard release packaging and CI
 artifact upload steps, not to bless production custody. Production signer
-storage still needs an explicit Dusk operational decision.
+storage still needs an explicit Dusk operational decision tracked in
+https://github.com/dusk-network/hyperlane-dusk/issues/2.

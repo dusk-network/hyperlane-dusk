@@ -432,7 +432,8 @@ reported `67 passed; 0 failed; 0 ignored`.
 ## Open Production Review Decisions
 
 These items are not hidden TODOs in runtime code, but they are decisions that
-should be explicitly accepted or changed before any production release:
+should be explicitly accepted or changed before any production release. Track
+the final sign-off in https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
 | Decision | Recommended release stance | Rationale and evidence | Reviewer action |
 |---|---|---|---|
