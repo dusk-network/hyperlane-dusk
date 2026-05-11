@@ -631,7 +631,7 @@ Result:
   report. The currently documented E2E and fault-injection paths have also
   passed on a clean Rusk worktree, but longer-duration soak runs are still
   needed before production readiness.
-- Have Dusk reviewers accept or resolve the open production review questions
+- Have Dusk reviewers accept or change the open production review decisions
   recorded in `SECURITY_REVIEW.md`.
 - Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
   containing the exact required changes if new Rusk-dependent scenarios are

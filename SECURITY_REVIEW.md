@@ -429,16 +429,16 @@ reported `67 passed; 0 failed; 0 ignored`.
 | IGP `u64::try_from` panic path | Would need gas oracle config that produces a fee > `u64::MAX`. The `checked_mul` calls before it would panic first in practice. |
 | WarpDrc20 checked arithmetic panic paths | Would need to mint or burn an amount that desyncs total supply beyond `u64` bounds, which requires either > `u64::MAX` inbound messages or a pre-existing impossible supply/balance invariant violation. Not practically testable. |
 
-## Open Production Review Questions
+## Open Production Review Decisions
 
 These items are not hidden TODOs in runtime code, but they are decisions that
-should be accepted or resolved before any production release:
+should be explicitly accepted or changed before any production release:
 
-1. **Mailbox `resolve_sender` when called from transfer contract**: When a Moonlight TX targets the Mailbox directly, `abi::caller()` returns `TRANSFER_CONTRACT`. The Mailbox special-cases this to derive the sender from `public_sender()`. But if the transfer contract ever calls the Mailbox for non-user-initiated reasons, this would misattribute the sender. Is this a concern?
-
-2. **`registered_accounts` has no deregistration**: Once a BLS key is registered, it cannot be unregistered or updated. If a user's key is compromised, they cannot re-register with a new key for the same H256 (since H256 = keccak256(pk) is deterministic). Is this acceptable?
-
-3. **WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain**: If a user loses their private key after funds are escrowed, the funds are locked forever. There is no admin function to recover stuck escrow. Is this intentional?
+| Decision | Recommended release stance | Rationale and evidence | Reviewer action |
+|---|---|---|---|
+| Mailbox `resolve_sender` when called from the transfer contract | Accept the current special case for Moonlight contract-call transactions. | In the current Rusk execution model, a Moonlight transaction that targets a contract reaches the target through `TRANSFER_CONTRACT`, while `abi::public_sender()` exposes the BLS key that signed the transaction. The Mailbox maps that direct-user path to `keccak256(public_sender)` and maps every other immediate caller to the caller `ContractId`. `test_dispatch_via_transaction` asserts the exact account hash; `test_dispatch_via_recipient_proxy` asserts an inter-contract dispatch uses the proxy contract ID. | Confirm with Rusk maintainers that `TRANSFER_CONTRACT` cannot call arbitrary user contracts for non-user-initiated reasons with an unrelated `public_sender`, or request a Rusk-level discriminator before release. |
+| `registered_accounts` has no deregistration | Accept immutable registration for v1. | The registered key is stored under `keccak256(pk.to_bytes())`, so replacing a compromised key at the same H256 is not meaningful: a new key produces a new H256/recipient. Deleting a registration would not recover funds already addressed to the old hash. Keeping registrations append-only avoids admin-controlled recipient remapping. | Confirm product/docs will tell users that Dusk recipients are bound to the BLS key hash used as the remote recipient. |
+| WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain | Accept no admin drain for v1. | Escrow is keyed by the recipient hash and can only be claimed by the matching BLS key. An admin drain would add a privileged path that can seize pending user funds and would require a governance/timelock/dispute process that is out of scope for this minimal bridge. If a user loses the private key after bridging to that hash, the funds remain locked. | Confirm Dusk wants this non-custodial failure mode, or design a separate governed recovery mechanism before production. |
 
 ## Build & Test Verification
 
