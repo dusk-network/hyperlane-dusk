@@ -137,10 +137,10 @@ impl RuesClient {
             return Ok(true);
         }
 
-        // Rusk reports non-existent contracts as a 500 with a descriptive error body.
-        // The exact wording has varied across versions.
+        // Rusk reports non-existent contracts with a descriptive error body.
+        // The status code and exact wording have varied across versions.
         let body_lc = body.to_lowercase();
-        if status.as_u16() == 500
+        if (status.as_u16() == 404 || status.as_u16() == 500)
             && (body.contains("ContractDoesNotExist")
                 || body_lc.contains("contract does not exist")
                 || body_lc.contains("contract owner not found"))

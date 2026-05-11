@@ -232,7 +232,7 @@ else
 
     step "Deploying HypERC20 ($TOKEN_SYMBOL, ${TOKEN_DECIMALS} decimals, scale=1)..."
     EVM_TOKEN=$(forge create contracts/token/HypERC20.sol:HypERC20 \
-        --constructor-args "$TOKEN_DECIMALS" 1 "$EVM_MAILBOX" \
+        --constructor-args "$TOKEN_DECIMALS" 1 1 "$EVM_MAILBOX" \
         --rpc-url "$ANVIL_RPC" \
         --private-key "$ANVIL_PRIVATE_KEY" \
         --json 2>/dev/null | jq -r '.deployedTo') || fail "Failed to deploy HypERC20"

@@ -248,7 +248,7 @@ else
     EVM_TOKEN=$(forge_deploy contracts/token/HypERC20.sol:HypERC20 \
         --rpc-url "$ANVIL_RPC" \
         --private-key "$ANVIL_PRIVATE_KEY" \
-        --constructor-args "$TOKEN_DECIMALS" 1 "$EVM_MAILBOX") || fail "Failed to deploy HypERC20"
+        --constructor-args "$TOKEN_DECIMALS" 1 1 "$EVM_MAILBOX") || fail "Failed to deploy HypERC20"
     ok "HypERC20: $EVM_TOKEN"
 
     step "Initializing HypERC20 (supply=$INITIAL_SUPPLY)..."
