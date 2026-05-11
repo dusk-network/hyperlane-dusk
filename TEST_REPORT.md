@@ -13,7 +13,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` |
-| Supplemental current-head local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `47d0b5cffd9765fa01335e90565f9d7011388f24`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
+| Supplemental clean-layout current-head local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `c22f009f85460dd42195a6618492b75449377f09`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -36,11 +36,12 @@ Notes:
   `make secret-hygiene` checks tracked source plus optional CI artifact paths
   for secret-handling regressions.
 - A 2026-05-12 supplemental `make repro-check-agent` run passed on the current
-  Dusk and monorepo PR branch heads. It used the fixed Cargo path dependency
-  layout at `../../rusk-private`; that Rusk checkout was at commit
-  `c0c64db4659500d077bb253ad13acba0e347d3fc` but had unrelated dirty local
-  changes, so this run is current-head supplemental evidence and not a
-  replacement for the clean-Rusk E2E/stress evidence below.
+  Dusk and monorepo PR branch heads from a temporary clean-layout workspace:
+  `/tmp/hyperlane-clean-repro-1778539796`. In that workspace,
+  `../../rusk-private` is a symlink to the clean detached Rusk worktree at
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`, so the non-E2E repro command no
+  longer depends on the dirty local `/home/hein_/projects/rusk-private`
+  checkout.
 
 ## Commands Run
 
@@ -89,19 +90,29 @@ Result:
   failed as expected after detecting generated `hexKey` and `duskKey` signer
   config entries.
 
-### Supplemental Current-Head Local Repro
+### Supplemental Clean-Layout Current-Head Local Repro
 
 ```bash
-cd /home/hein_/projects/hyperlane/dusk
-make repro-check-agent
+run_dir=/tmp/hyperlane-clean-repro-1778539796
+mkdir -p "$run_dir/hyperlane"
+ln -s /home/hein_/projects/hyperlane/rusk-private-clean-c0c64db "$run_dir/rusk-private"
+git -C /home/hein_/projects/hyperlane/dusk worktree add --detach \
+  "$run_dir/hyperlane/dusk" c22f009f85460dd42195a6618492b75449377f09
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo worktree add --detach \
+  "$run_dir/hyperlane/hyperlane-monorepo" 09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2
+cd "$run_dir/hyperlane/dusk"
+make repro-check-agent 2>&1 | tee "$run_dir/repro-check-agent.log"
 ```
 
 Refs:
 
-- Dusk PR branch: `47d0b5cffd9765fa01335e90565f9d7011388f24`
+- Dusk PR branch: `c22f009f85460dd42195a6618492b75449377f09`
 - Hyperlane monorepo branch: `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
-- Rusk path dependency checkout: `/home/hein_/projects/rusk-private` at
-  `c0c64db4659500d077bb253ad13acba0e347d3fc`
+- Rusk path dependency checkout in the temporary layout:
+  `/tmp/hyperlane-clean-repro-1778539796/rusk-private`, symlinked to clean
+  detached worktree `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db`
+  at `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Log: `/tmp/hyperlane-clean-repro-1778539796/repro-check-agent.log`
 
 Result:
 
@@ -119,11 +130,8 @@ cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scrap
 
 Caveat:
 
-- `scripts/local-repro-check.sh` currently expects the private Rusk path
-  dependencies at `../../rusk-private`, so this run used the dirty local Rusk
-  worktree. The commit was the same Rusk commit used by the earlier clean
-  reproduction evidence, but the clean-Rusk E2E/stress runs below remain the
-  stronger release evidence.
+- This is still a local non-E2E repro command, not a replacement for the live
+  clean-Rusk E2E/stress runs below or the pending Dusk CI/runner decision.
 
 ### Hyperlane Rust Agent Checks
 
