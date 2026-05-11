@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `fa643a0fc3090cba507ef4778e0649fa1cc59fb6` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `3e1f8c06f4310db4b2723c37cf937357c9fff4e0` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -357,6 +357,41 @@ Artifacts:
 - `/tmp/hyperlane-relayer-duplicate-a-testMock-1778516191.json`
 - `/tmp/hyperlane-relayer-duplicate-b-testMock-1778516191.json`
 
+## Rusk Checkout Reproduction Caveat
+
+The local agent E2E evidence in this report used:
+
+- Rusk checkout: `/home/hein_/projects/rusk-private`
+- Branch: `hein/boreas-wallet-transfer-gas-50m`
+- Base commit: `c0c64db4659500d077bb253ad13acba0e347d3fc`
+
+The checkout was not clean during the E2E runs. At the time of the latest
+TestMock rerun, `git diff --name-only` reported 49 modified tracked files and
+`git ls-files --others --exclude-standard` reported 14263 untracked paths.
+The untracked paths are dominated by generated `dedup-*`/state/database
+artifacts and local target/output directories, but the checkout also contains
+untracked source/docs/scripts such as:
+
+- `.github/CODEOWNERS`
+- `docs/`
+- `node/src/chain/acceptor/`
+- `node/src/database/rocksdb/`
+- `rusk-wallet/src/wallet/metadata.rs`
+- `rusk/src/lib/http/graphql_http.rs`
+- `rusk/src/lib/http/rues_http.rs`
+- `rusk/src/lib/node/policy.rs`
+- `scripts/*startup*`
+- `startup-slowdown-report.md`
+- `wallet-core/src/keys/{eip2334,legacy,phoenix_hd}.rs`
+- `wallet-core/src/keystore.rs`
+
+The tracked modifications span Rusk node/archive/VM configuration, wallet,
+wallet-core, node-data, CI, and example genesis/wallet files. Because this is
+an extensive local working tree rather than a small reproducibility patch, the
+current E2E evidence should be treated as **dirty-Rusk evidence**. A clean Rusk
+checkout rerun, or a dedicated Rusk branch containing the exact required
+changes, remains a production-readiness gate.
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -417,5 +452,7 @@ Result:
   production readiness.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
-- Re-run the full report on a clean Rusk checkout or document the exact local
-  Rusk changes required for reproduction.
+- Re-run the full report on a clean Rusk checkout or a dedicated Rusk branch
+  containing the exact required changes. The current report documents the
+  dirty local Rusk state, but does not convert it into a minimal reproduction
+  branch.
