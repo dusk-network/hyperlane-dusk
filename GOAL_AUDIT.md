@@ -84,9 +84,10 @@ submission or production claims.
    No `CODEOWNERS`, `OWNERS`, or `MAINTAINERS` file was found in either repo.
 6. CI/repro runner strategy remains a release gate. Both internal PRs currently
    have empty status-check rollups, and the Dusk workspace depends on an
-   adjacent private `rusk-private` checkout. `make repro-check` now wraps the
-   repeatable local non-E2E verification subset, but current evidence is still
-   local and clean-Rusk documented in `TEST_REPORT.md`, not automated PR CI.
+   adjacent private `rusk-private` checkout. `make repro-check` and
+   `make repro-check-agent` now wrap the repeatable local non-E2E verification
+   subset, but current evidence is still local and clean-Rusk documented in
+   `TEST_REPORT.md`, not automated PR CI.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2.
 

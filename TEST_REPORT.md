@@ -45,6 +45,7 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
+make repro-check-agent
 bash scripts/local-repro-check.sh --agent-check
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log
 if bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.json \
@@ -60,6 +61,8 @@ Result:
 - `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
 - `cargo test -p dusk-tx`: passed, 3 tests.
 - `make secret-hygiene`: passed.
+- `make repro-check-agent`: added as a Makefile wrapper for the full local
+  non-E2E repro command, including the Hyperlane Rust agent check.
 - `bash scripts/local-repro-check.sh --agent-check`: passed. This wraps the
   same repeatable non-E2E checks plus the Hyperlane Rust agent check. It still
   requires local/private Rusk path dependencies and does not replace the

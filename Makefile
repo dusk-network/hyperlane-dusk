@@ -85,6 +85,10 @@ secret-hygiene:
 repro-check:
 	bash scripts/local-repro-check.sh
 
+.PHONY: repro-check-agent
+repro-check-agent:
+	bash scripts/local-repro-check.sh --agent-check
+
 # Run cross-chain demo (requires rusk-duskevm Docker + Foundry)
 .PHONY: demo
 demo: all dusk-tx
@@ -116,5 +120,6 @@ help:
 	@echo "  test               Run all tests"
 	@echo "  secret-hygiene     Check source secret-handling guardrails"
 	@echo "  repro-check        Run repeatable local pre-review checks"
+	@echo "  repro-check-agent  Run repro-check plus Hyperlane agent cargo check"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"
