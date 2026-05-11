@@ -126,9 +126,9 @@ Also added `dusk-bytes = "0.1.7"` to `Cargo.toml` (needed for `Serializable` tra
 
 **Potential follow-up**: Consider adding an escrow pattern similar to WarpNative for the collateral contract. This would require the collateral to hold DRC20 tokens in its own balance and release them on claim, rather than calling `transfer` immediately. This is more complex because it involves cross-contract DRC20 accounting.
 
-### HIGH-4: WarpDrc20 arithmetic overflow in `mint` and `do_transfer`
+### HIGH-4: WarpDrc20 arithmetic overflow in `mint`, `burn`, and `do_transfer`
 
-**File**: `contracts/warp-drc20/src/lib.rs`, `mint()` (lines 409-418) and `do_transfer()` (lines 395-406)
+**File**: `contracts/warp-drc20/src/lib.rs`, `mint()`, `burn()`, and `do_transfer()`
 
 **Before**: Both functions used plain `+=` for balance and supply updates:
 ```rust
@@ -139,7 +139,7 @@ fn mint(&mut self, account: Account, amount: u64) {
 ```
 In release WASM builds, `u64` overflow wraps silently (Rust release mode does not panic on overflow for `wasm32-unknown-unknown`). An attacker could mint tokens in a way that wraps the balance or supply counter back to a small number, breaking accounting invariants.
 
-**After**: All additions now use `checked_add`:
+**After**: Additions use `checked_add`; supply burn uses `checked_sub`:
 ```rust
 fn mint(&mut self, account: Account, amount: u64) {
     let balance = self.balances.entry(account).or_insert(0);
@@ -154,13 +154,20 @@ fn do_transfer(&mut self, from: Account, to: Account, value: u64) {
     let to_balance = self.balances.entry(to).or_insert(0);
     *to_balance = to_balance.checked_add(value).expect("WarpDrc20: balance overflow");
 }
+
+fn burn(&mut self, account: Account, amount: u64) {
+    let balance = self.balances.get(&account).copied().unwrap_or(0);
+    assert!(balance >= amount, "WarpDrc20: insufficient balance to burn");
+    *self.balances.entry(account).or_insert(0) -= amount;
+    self.supply = self.supply.checked_sub(amount).expect("WarpDrc20: supply underflow");
+}
 ```
 
 **Trade-off**: `checked_add` adds a branch per operation. In WASM this is negligible — a single comparison and conditional branch, costing a few gas units at most. The alternative (wrapping) is unacceptable.
 
-**Note**: `burn()` uses subtraction (`-= amount`) which is safe because it's preceded by `assert!(balance >= amount)`. The subtraction cannot underflow given the assert passes. We did not change `burn()`.
-
-**Note**: `supply -= amount` in `burn()` also cannot underflow in practice because supply >= balance >= amount. However, if there were ever a bug in the minting logic that desynced supply from balances, this could theoretically underflow. We did not add `checked_sub` here because it would mask a more fundamental invariant violation that should be caught earlier.
+**Note**: The balance subtraction in `burn()` remains guarded by
+`assert!(balance >= amount)`. The supply subtraction also uses `checked_sub` so
+a future accounting invariant bug cannot wrap supply downward in release WASM.
 
 ### MEDIUM-1: IGP `quote_gas_payment` used `cost as u64` truncation
 
@@ -410,24 +417,22 @@ reported `64 passed; 0 failed; 0 ignored`.
 | WarpNative `transfer_remote` deposit verification | Cannot test with `direct_call` — requires real Moonlight TX with `deposit` field. The transfer contract's deposit validation logic is tested in Dusk's own test suite. Needs e2e test against live rusk. |
 | WarpNative `claim_pending` happy path (actual DUSK transfer) | Requires the contract to hold DUSK balance, which requires a prior successful `transfer_remote` with real deposit. Same limitation as above. |
 | IGP `u64::try_from` panic path | Would need gas oracle config that produces a fee > `u64::MAX`. The `checked_mul` calls before it would panic first in practice. |
-| WarpDrc20 `checked_add` overflow panic path | Would need to mint > `u64::MAX` tokens, which requires > `u64::MAX` inbound messages. Not practically testable. |
+| WarpDrc20 checked arithmetic panic paths | Would need to mint or burn an amount that desyncs total supply beyond `u64` bounds, which requires either > `u64::MAX` inbound messages or a pre-existing impossible supply/balance invariant violation. Not practically testable. |
 
 ## Open Production Review Questions
 
 These items are not hidden TODOs in runtime code, but they are decisions that
 should be accepted or resolved before any production release:
 
-1. **WarpDrc20 `burn()` subtraction**: `self.supply -= amount` in `burn()` does not use `checked_sub`. If supply somehow became desynced from the sum of balances (e.g., due to a bug in minting), this could wrap. Should it use `checked_sub`?
+1. **WarpDrc20Collateral escrow**: Should WarpDrc20Collateral have an escrow pattern for unregistered recipients (like WarpNative), or is the current "treat as Contract address" fallback acceptable?
 
-2. **WarpDrc20Collateral escrow**: Should WarpDrc20Collateral have an escrow pattern for unregistered recipients (like WarpNative), or is the current "treat as Contract address" fallback acceptable?
+2. **WarpDrc20 `only_owner` uses `public_sender()`**: The owner check in WarpDrc20 uses `abi::public_sender()` (BLS key from Moonlight TX), while WarpNative and WarpDrc20Collateral use `abi::caller()` (contract ID). This means WarpDrc20 admin functions can only be called via direct Moonlight TX, not from other contracts. Is this intentional asymmetry acceptable?
 
-3. **WarpDrc20 `only_owner` uses `public_sender()`**: The owner check in WarpDrc20 uses `abi::public_sender()` (BLS key from Moonlight TX), while WarpNative and WarpDrc20Collateral use `abi::caller()` (contract ID). This means WarpDrc20 admin functions can only be called via direct Moonlight TX, not from other contracts. Is this intentional asymmetry acceptable?
+3. **Mailbox `resolve_sender` when called from transfer contract**: When a Moonlight TX targets the Mailbox directly, `abi::caller()` returns `TRANSFER_CONTRACT`. The Mailbox special-cases this to derive the sender from `public_sender()`. But if the transfer contract ever calls the Mailbox for non-user-initiated reasons, this would misattribute the sender. Is this a concern?
 
-4. **Mailbox `resolve_sender` when called from transfer contract**: When a Moonlight TX targets the Mailbox directly, `abi::caller()` returns `TRANSFER_CONTRACT`. The Mailbox special-cases this to derive the sender from `public_sender()`. But if the transfer contract ever calls the Mailbox for non-user-initiated reasons, this would misattribute the sender. Is this a concern?
+4. **`registered_accounts` has no deregistration**: Once a BLS key is registered, it cannot be unregistered or updated. If a user's key is compromised, they cannot re-register with a new key for the same H256 (since H256 = keccak256(pk) is deterministic). Is this acceptable?
 
-5. **`registered_accounts` has no deregistration**: Once a BLS key is registered, it cannot be unregistered or updated. If a user's key is compromised, they cannot re-register with a new key for the same H256 (since H256 = keccak256(pk) is deterministic). Is this acceptable?
-
-6. **WarpNative `pending_transfers` has no admin drain**: If a user loses their private key after funds are escrowed, the funds are locked forever. There is no admin function to recover stuck escrow. Is this intentional?
+5. **WarpNative `pending_transfers` has no admin drain**: If a user loses their private key after funds are escrowed, the funds are locked forever. There is no admin function to recover stuck escrow. Is this intentional?
 
 ## Build & Test Verification
 

@@ -505,7 +505,10 @@ mod warp_drc20 {
             let balance = self.balances.get(&account).copied().unwrap_or(0);
             assert!(balance >= amount, "WarpDrc20: insufficient balance to burn");
             *self.balances.entry(account).or_insert(0) -= amount;
-            self.supply -= amount;
+            self.supply = self
+                .supply
+                .checked_sub(amount)
+                .expect("WarpDrc20: supply underflow");
             abi::emit(
                 events::Drc20Transfer::TOPIC,
                 events::Drc20Transfer {
