@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# =============================================================================
+# E2E: Low Dusk Destination Signer Balance
+# =============================================================================
+#
+# Runs an EVM -> Dusk delivery with an unfunded Dusk relayer signer, verifies
+# the message does not deliver while the signer cannot pay Dusk fees, then
+# restarts the relayer with the funded local dev signer and verifies recovery.
+
+set -euo pipefail
+umask 077
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/.env.bridge"
+
+fail() { echo "[FAIL] $*" >&2; exit 1; }
+info() { echo "[INFO] $*" >&2; }
+
+TIMEOUT_SECS="${TIMEOUT_SECS:-300}"
+LOW_SIGNER_SECS="${LOW_SIGNER_SECS:-35}"
+AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-1}"
+
+# A deterministic non-production BLS secret scalar below the BLS12-381 scalar
+# field modulus. The corresponding Dusk account is intentionally unfunded in
+# the local dev chain.
+UNFUNDED_DUSK_SECRET_KEY="${UNFUNDED_DUSK_SECRET_KEY:-0x1111111111111111111111111111111111111111111111111111111111111111}"
+
+CURRENT_RELAYER_PID=""
+
+require_tools() {
+    command -v jq >/dev/null 2>&1 || fail "jq not found"
+    command -v cast >/dev/null 2>&1 || fail "cast not found (foundry)"
+    command -v forge >/dev/null 2>&1 || fail "forge not found (foundry)"
+    command -v python3 >/dev/null 2>&1 || fail "python3 not found"
+}
+
+to_wei() {
+    local amount="$1"
+    if ! [[ "$amount" =~ ^[1-9][0-9]*$ ]]; then
+        fail "Invalid amount '$amount' (expected whole positive integer)"
+    fi
+    echo "${amount}000000000000000000"
+}
+
+kill_pid() {
+    local pid="$1"
+    if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            kill -0 "$pid" 2>/dev/null || return 0
+            sleep 1
+        done
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    kill_pid "$CURRENT_RELAYER_PID"
+    bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT
+
+tail_logs_on_fail() {
+    local relayer_log="$1"
+    echo "" >&2
+    echo "=== relayer log (tail) ===" >&2
+    tail -n 160 "$relayer_log" 2>/dev/null || true
+}
+
+query_dusk_supply() {
+    local dusk_warp="$1"
+    "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+        --contract "$dusk_warp" --method total_supply --return-type u64 \
+        2>/dev/null | jq -r '.value // 0'
+}
+
+start_relayer() {
+    local cfg="$1"
+    local log="$2"
+
+    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" ./target/debug/relayer \
+      >"$log" 2>&1) &
+    CURRENT_RELAYER_PID="$!"
+    sleep 2
+    kill -0 "$CURRENT_RELAYER_PID" 2>/dev/null || {
+        tail_logs_on_fail "$log"
+        fail "relayer failed to start"
+    }
+}
+
+assert_not_delivered_with_low_signer() {
+    local dusk_warp="$1"
+    local expected="$2"
+    local relayer_log="$3"
+    local start_ts now supply
+
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -ge "$LOW_SIGNER_SECS" ]; then
+            return 0
+        fi
+        kill -0 "$CURRENT_RELAYER_PID" 2>/dev/null || {
+            tail_logs_on_fail "$relayer_log"
+            fail "relayer exited while using unfunded Dusk signer"
+        }
+        supply="$(query_dusk_supply "$dusk_warp")"
+        if [ "$supply" = "$expected" ]; then
+            fail "message delivered with unfunded Dusk signer"
+        fi
+        sleep 5
+    done
+}
+
+wait_for_dusk_supply() {
+    local dusk_warp="$1"
+    local expected="$2"
+    local relayer_log="$3"
+    local start_ts now supply
+
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log"
+            fail "timeout waiting for Dusk supply $expected"
+        fi
+        kill -0 "$CURRENT_RELAYER_PID" 2>/dev/null || {
+            tail_logs_on_fail "$relayer_log"
+            fail "relayer exited unexpectedly"
+        }
+        supply="$(query_dusk_supply "$dusk_warp")"
+        if [ "$supply" = "$expected" ]; then
+            return 0
+        fi
+        sleep 5
+    done
+}
+
+require_tools
+
+run_id="$(date +%s)"
+start_env_log="/tmp/hyperlane-low-signer-start-testMock-${run_id}.log"
+deploy_log="/tmp/hyperlane-low-signer-deploy-testMock-${run_id}.log"
+low_relayer_log="/tmp/hyperlane-low-signer-relayer-low-testMock-${run_id}.log"
+funded_relayer_log="/tmp/hyperlane-low-signer-relayer-funded-testMock-${run_id}.log"
+
+info "Starting fresh local environment..."
+bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+SKIP_OTTERSCAN=true SKIP_DUSK_EXPLORER=true bash "$SCRIPT_DIR/start-env.sh" \
+    >"$start_env_log" 2>&1 || {
+        tail -n 200 "$start_env_log" >&2 || true
+        fail "start-env.sh failed (log: $start_env_log)"
+    }
+
+info "Deploying TestMock environment..."
+bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism testMock >"$deploy_log" 2>&1 || {
+    tail -n 200 "$deploy_log" >&2 || true
+    fail "deploy.sh failed (log: $deploy_log)"
+}
+
+cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$run_id")"
+relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
+low_relayer_cfg="/tmp/hyperlane-relayer-low-signer-testMock-${run_id}.json"
+funded_relayer_cfg="/tmp/hyperlane-relayer-funded-signer-testMock-${run_id}.json"
+
+jq \
+  --arg key "$UNFUNDED_DUSK_SECRET_KEY" \
+  --arg db "/tmp/hyperlane-db-relayer-low-signer-testMock-${run_id}" \
+  '.db = $db | .chains.dusk.signer.key = $key' \
+  "$relayer_cfg" > "$low_relayer_cfg"
+
+jq \
+  --arg db "/tmp/hyperlane-db-relayer-funded-signer-testMock-${run_id}" \
+  '.db = $db' \
+  "$relayer_cfg" > "$funded_relayer_cfg"
+
+info "Building relayer binary..."
+(cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer >/dev/null)
+
+state="$BRIDGE_STATE_FILE"
+evm_token="$(jq -r '.evm.token' "$state")"
+dusk_warp="$(jq -r '.dusk.warp_drc20' "$state")"
+account_h256="$(jq -r '.account_h256' "$state")"
+dusk_domain="$(jq -r '.dusk_domain' "$state")"
+
+amount_wei="$(to_wei "$AMOUNT_TO_DUSK")"
+dusk_supply_before="$(query_dusk_supply "$dusk_warp")"
+expected_dusk_supply="$(python3 - <<PY
+print(int(${dusk_supply_before}) + int(${amount_wei}))
+PY
+)"
+
+info "Starting relayer with unfunded Dusk signer..."
+start_relayer "$low_relayer_cfg" "$low_relayer_log"
+
+info "Dispatching EVM -> Dusk ($AMOUNT_TO_DUSK wDUSK)..."
+cast send "$evm_token" \
+    "transferRemote(uint32,bytes32,uint256)" \
+    "$dusk_domain" "0x${account_h256}" "$amount_wei" \
+    --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+
+info "Verifying delivery is blocked for ${LOW_SIGNER_SECS}s with unfunded signer..."
+assert_not_delivered_with_low_signer "$dusk_warp" "$expected_dusk_supply" "$low_relayer_log"
+
+info "Restarting relayer with funded Dusk signer..."
+kill_pid "$CURRENT_RELAYER_PID"
+CURRENT_RELAYER_PID=""
+start_relayer "$funded_relayer_cfg" "$funded_relayer_log"
+
+info "Waiting for delivery after funded signer restart..."
+wait_for_dusk_supply "$dusk_warp" "$expected_dusk_supply" "$funded_relayer_log"
+
+info "Stopping relayer..."
+kill_pid "$CURRENT_RELAYER_PID"
+CURRENT_RELAYER_PID=""
+
+info "Stopping environment..."
+bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
+
+info "Low Dusk signer balance flow recovered after funded signer restart."
+info "Logs:"
+info "  start:          $start_env_log"
+info "  deploy:         $deploy_log"
+info "  low relayer:    $low_relayer_log"
+info "  funded relayer: $funded_relayer_log"
