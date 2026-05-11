@@ -93,6 +93,7 @@ Observed:
 | Evidence | Location |
 |---|---|
 | Security assumptions, fixes, Solidity deviations, reviewer decisions | `SECURITY_REVIEW.md` |
+| Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
 | CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent` |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
@@ -138,7 +139,8 @@ Observed:
    still needs a Dusk runner/secret decision before it can replace local
    evidence.
 7. The remaining production sign-off work is tracked in
-   https://github.com/dusk-network/hyperlane-dusk/issues/2.
+   https://github.com/dusk-network/hyperlane-dusk/issues/2 and summarized for
+   PR review in `PRODUCTION_REVIEW_DECISIONS.md`.
 
 ## Completion Decision
 
