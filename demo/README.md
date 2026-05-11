@@ -137,6 +137,20 @@ use a deterministic unfunded Dusk test key, verifies delivery remains blocked
 while Dusk rejects the relayer transaction for insufficient account balance,
 then restarts the relayer with the funded local dev key and verifies recovery.
 
+### Origin RPC Failure E2E
+
+To verify EVM -> Dusk delivery recovers after an origin RPC outage:
+
+```bash
+RPC_FAILURE_SECS=35 bash demo/e2e-origin-rpc-failure.sh
+```
+
+The script starts a TestMock deployment, rewrites a temporary relayer config to
+point Anvil RPC reads at an unreachable local port, submits an EVM -> Dusk
+message through the healthy Anvil RPC, verifies Dusk-side delivery remains
+blocked during the RPC failure window, then restarts the relayer with the
+healthy RPC config and verifies delivery.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |

@@ -370,3 +370,6 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
   when Dusk preverification rejects `process` transactions for insufficient
   signer balance, and delivery succeeds after restarting with the funded local
   signer.
+- Origin RPC failure: EVM -> Dusk delivery remains blocked while the relayer's
+  Anvil RPC endpoint is unreachable, and delivery succeeds after restarting the
+  relayer with the healthy origin RPC config.
