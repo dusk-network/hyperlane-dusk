@@ -45,6 +45,7 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
+bash scripts/local-repro-check.sh --agent-check
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log
 if bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.json \
   >/tmp/hyperlane-secret-hygiene-negative.log 2>&1; then
@@ -59,6 +60,10 @@ Result:
 - `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
 - `cargo test -p dusk-tx`: passed, 3 tests.
 - `make secret-hygiene`: passed.
+- `bash scripts/local-repro-check.sh --agent-check`: passed. This wraps the
+  same repeatable non-E2E checks plus the Hyperlane Rust agent check. It still
+  requires local/private Rusk path dependencies and does not replace the
+  E2E/fault-injection runs below.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log`:
   passed.
 - Negative artifact scan against `/tmp/hyperlane-relayer-testMock-1778530398.json`:

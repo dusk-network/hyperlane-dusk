@@ -80,6 +80,11 @@ test: test-types test-integration
 secret-hygiene:
 	bash scripts/secret-hygiene-check.sh
 
+# Run the repeatable local verification subset used before review.
+.PHONY: repro-check
+repro-check:
+	bash scripts/local-repro-check.sh
+
 # Run cross-chain demo (requires rusk-duskevm Docker + Foundry)
 .PHONY: demo
 demo: all dusk-tx
@@ -110,5 +115,6 @@ help:
 	@echo "  dusk-tx            Build dusk-tx CLI tool"
 	@echo "  test               Run all tests"
 	@echo "  secret-hygiene     Check source secret-handling guardrails"
+	@echo "  repro-check        Run repeatable local pre-review checks"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"
