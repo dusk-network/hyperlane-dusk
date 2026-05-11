@@ -13,7 +13,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` |
-| Supplemental clean-layout current-head local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `c22f009f85460dd42195a6618492b75449377f09`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
+| Supplemental clean-layout current-head local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b0fdfffd1cdb5e7ee77809be52c450500216c12c`; monorepo `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -36,12 +36,10 @@ Notes:
   `make secret-hygiene` checks tracked source plus optional CI artifact paths
   for secret-handling regressions.
 - A 2026-05-12 supplemental `make repro-check-agent` run passed on the current
-  Dusk and monorepo PR branch heads from a temporary clean-layout workspace:
-  `/tmp/hyperlane-clean-repro-1778539796`. In that workspace,
-  `../../rusk-private` is a symlink to the clean detached Rusk worktree at
-  `c0c64db4659500d077bb253ad13acba0e347d3fc`, so the non-E2E repro command no
-  longer depends on the dirty local `/home/hein_/projects/rusk-private`
-  checkout.
+  Dusk and monorepo PR branch heads using `RUSK_DIR` to point at the clean
+  detached Rusk worktree. `scripts/local-repro-check.sh` created the temporary
+  compatible layout automatically, so the non-E2E repro command no longer
+  depends on the dirty local `/home/hein_/projects/rusk-private` checkout.
 
 ## Commands Run
 
@@ -93,26 +91,22 @@ Result:
 ### Supplemental Clean-Layout Current-Head Local Repro
 
 ```bash
-run_dir=/tmp/hyperlane-clean-repro-1778539796
-mkdir -p "$run_dir/hyperlane"
-ln -s /home/hein_/projects/hyperlane/rusk-private-clean-c0c64db "$run_dir/rusk-private"
-git -C /home/hein_/projects/hyperlane/dusk worktree add --detach \
-  "$run_dir/hyperlane/dusk" c22f009f85460dd42195a6618492b75449377f09
-git -C /home/hein_/projects/hyperlane/hyperlane-monorepo worktree add --detach \
-  "$run_dir/hyperlane/hyperlane-monorepo" 09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2
-cd "$run_dir/hyperlane/dusk"
-make repro-check-agent 2>&1 | tee "$run_dir/repro-check-agent.log"
+cd /home/hein_/projects/hyperlane/dusk
+run_dir=/tmp/hyperlane-dusk-repro-rusk-dir-1778540326
+HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+make repro-check-agent 2>&1 | tee "$run_dir.log"
 ```
 
 Refs:
 
-- Dusk PR branch: `c22f009f85460dd42195a6618492b75449377f09`
+- Dusk PR branch: `b0fdfffd1cdb5e7ee77809be52c450500216c12c`
 - Hyperlane monorepo branch: `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
 - Rusk path dependency checkout in the temporary layout:
-  `/tmp/hyperlane-clean-repro-1778539796/rusk-private`, symlinked to clean
+  `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
   detached worktree `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db`
   at `c0c64db4659500d077bb253ad13acba0e347d3fc`.
-- Log: `/tmp/hyperlane-clean-repro-1778539796/repro-check-agent.log`
+- Log: `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326.log`
 
 Result:
 
