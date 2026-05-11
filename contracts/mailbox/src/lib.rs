@@ -507,20 +507,18 @@ mod mailbox {
         ///   caller; we look up the BLS public key of the transaction origin
         ///   via `abi::public_sender()` and keccak256-hash it to H256.
         fn resolve_sender(&self) -> H256 {
-            match abi::caller() {
-                Some(id) if id == TRANSFER_CONTRACT => {
+            let caller = abi::caller().expect("Mailbox: cannot determine sender");
+            match caller {
+                id if id == TRANSFER_CONTRACT => {
                     // Direct Moonlight transaction — derive sender from
                     // the BLS public key of the account that signed the TX.
                     let pk = abi::public_sender()
                         .expect("Mailbox: shielded transactions not supported");
                     message::keccak256(&pk.to_bytes())
                 }
-                Some(id) => {
+                id => {
                     // Inter-contract call — sender is the calling contract.
                     id.to_bytes()
-                }
-                None => {
-                    panic!("Mailbox: cannot determine sender")
                 }
             }
         }

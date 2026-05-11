@@ -376,16 +376,22 @@ Artifacts:
   and token/accounting methods that do not emit protocol events. Silent
   production admin/registration paths are documented in `SECURITY_REVIEW.md`
   as an explicit audit decision before production readiness.
+- Removed the remaining direct `panic!` invocation from production contract
+  code by rewriting Mailbox sender resolution to use the same explicit
+  `expect(...)` revert style used elsewhere.
 
 Event annotation verification:
 
 ```bash
+rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'
 make all
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
 Result:
 
+- No `todo!`, `unimplemented!`, or direct `panic!` invocations remain in the
+  scanned production contract/runtime/tooling paths.
 - `make all` passed for all contract WASM builds after adding explicit event
   annotations.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:

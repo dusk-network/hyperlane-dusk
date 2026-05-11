@@ -318,6 +318,21 @@ Adding dedicated events for those paths would improve auditability and should
 be preferred if downstream indexers or operational runbooks need a complete
 on-chain configuration history.
 
+### Placeholder panic scan
+
+The production contract/runtime/tooling paths were scanned for placeholder or
+direct panic macros:
+
+```bash
+rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'
+```
+
+No matches remain. Mailbox sender resolution previously used a direct
+`panic!("Mailbox: cannot determine sender")`; it now uses the same explicit
+`expect("Mailbox: cannot determine sender")` revert style as the rest of the
+contracts. Other contract reverts still intentionally use `assert!` and
+`expect(...)` for invariant checks and failed external calls.
+
 ## Files Modified
 
 | File | Change |
