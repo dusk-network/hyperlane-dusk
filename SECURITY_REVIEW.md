@@ -306,3 +306,9 @@ cargo test -p hyperlane-dusk-types
 # 53 integration tests pass (47 pre-existing + 6 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
+
+Agent-based local E2E evidence is tracked in `TEST_REPORT.md`, including exact
+commands, commit SHAs, and `/tmp` log/artifact paths for:
+
+- EVM -> Dusk and Dusk -> EVM using the TestMock/null-style ISM.
+- EVM -> Dusk and Dusk -> EVM using MessageIdMultisigISM with validator output.
