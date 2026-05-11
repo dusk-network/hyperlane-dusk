@@ -376,3 +376,6 @@ commands, commit SHAs, and `/tmp` log/artifact paths for:
 - Destination RPC failure: EVM -> Dusk delivery remains blocked while the
   relayer's Dusk RUES endpoint is unreachable, and delivery succeeds after
   restarting the relayer with the healthy destination RPC config.
+- Duplicate relayer attempt: two relayers observe the same EVM -> Dusk message,
+  Dusk rejects duplicate transaction submissions at preverification/mempool
+  level, and token supply remains single-delivery stable.

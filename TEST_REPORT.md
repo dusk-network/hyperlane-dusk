@@ -10,7 +10,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 
 | Component | Repository | Branch | Commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e8efd878b570f7ba0427012d6c588671e26c27f3` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `fa643a0fc3090cba507ef4778e0649fa1cc59fb6` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `e4a759c5a60ef01978f49c4aebf0fbe1fe57d639` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -323,6 +323,39 @@ Artifacts:
 - `/tmp/hyperlane-relayer-bad-destination-rpc-testMock-1778515791.json`
 - `/tmp/hyperlane-relayer-healthy-destination-rpc-testMock-1778515791.json`
 
+### Duplicate Relayer Attempt
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/rusk-private \
+TIMEOUT_SECS=300 \
+STABILITY_SECS=30 \
+bash demo/e2e-duplicate-relayer-attempt.sh
+```
+
+Result:
+
+- Passed.
+- Deployed a fresh TestMock environment.
+- Started two relayer instances with separate RocksDB paths and metrics ports.
+- Submitted 1 EVM -> Dusk transfer.
+- Verified first delivery by waiting for Dusk token supply to increase by the
+  transferred amount.
+- Kept both relayers running for a 30 second stability window and verified Dusk
+  token supply did not increase again.
+- Relayer B log showed it also picked up and attempted the same message; Dusk
+  rejected repeated transaction submissions with `this transaction's spendId
+  exists in the mempool`.
+
+Artifacts:
+
+- `/tmp/hyperlane-duplicate-relayer-start-testMock-1778516191.log`
+- `/tmp/hyperlane-duplicate-relayer-deploy-testMock-1778516191.log`
+- `/tmp/hyperlane-duplicate-relayer-a-testMock-1778516191.log`
+- `/tmp/hyperlane-duplicate-relayer-b-testMock-1778516191.log`
+- `/tmp/hyperlane-relayer-duplicate-a-testMock-1778516191.json`
+- `/tmp/hyperlane-relayer-duplicate-b-testMock-1778516191.json`
+
 ## Compatibility Fixes Applied During E2E
 
 - Updated local EVM token deployment scripts for the current upstream
@@ -346,7 +379,9 @@ Artifacts:
 - Continue stress and reliability testing. Current coverage includes dirty
   redeploy refusal, 5-message relayer burst delivery, relayer restart/backlog
   recovery, and delayed validator checkpoint recovery through relayer metadata
-  backoff. Remaining scenarios include explicit duplicate relayer attempts.
+  backoff. No currently listed reliability scenario remains untested in this
+  report, but longer-duration and larger-volume runs are still needed before
+  production readiness.
 - Complete contract hardening review against the Dusk standards references and
   update `SECURITY_REVIEW.md` with final assumptions and deviations.
 - Re-run the full report on a clean Rusk checkout or document the exact local

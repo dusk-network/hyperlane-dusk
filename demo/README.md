@@ -165,6 +165,18 @@ Dusk message, verifies delivery remains blocked during the RPC failure window,
 then restarts the relayer with the healthy Dusk RPC config and verifies
 delivery.
 
+### Duplicate Relayer Attempt E2E
+
+To verify concurrent relayers do not double-deliver an EVM -> Dusk message:
+
+```bash
+STABILITY_SECS=30 bash demo/e2e-duplicate-relayer-attempt.sh
+```
+
+The script starts two relayers with separate databases and metrics ports,
+submits one EVM -> Dusk transfer, waits for the first delivery, then keeps both
+relayers running and verifies Dusk-side token supply remains stable.
+
 ### Services & Ports
 
 | Service        | Port | URL                     |
