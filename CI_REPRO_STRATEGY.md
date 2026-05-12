@@ -18,6 +18,11 @@ setup to accept, change, or replace.
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
   after the workflow file is merged or otherwise added to the default branch.
+- A narrow default-branch dispatcher PR exists as
+  dusk-network/hyperlane-dusk#3. It contains only
+  `.github/workflows/manual-repro-check.yml` and `.github/actionlint.yaml`, so
+  Dusk can make the workflow visible without first merging the full Hyperlane
+  implementation PR.
 
 ## Proposed Runner
 
@@ -117,8 +122,10 @@ Set `dusk_ref` to a PR branch or exact commit SHA when running the workflow
 from the default branch, so the repro checks the review head rather than the
 default branch contents.
 
-Once the workflow exists on the default branch and the runner/token are
-available, a reviewer can dispatch the current internal review shape with:
+Once the workflow exists on the default branch, either by merging
+dusk-network/hyperlane-dusk#3 or by another Dusk-approved equivalent, and the
+runner/token are available, a reviewer can dispatch the current internal
+review shape with:
 
 ```bash
 gh workflow run manual-repro-check.yml \
@@ -153,7 +160,8 @@ The final `cargo check` runs from
 `hyperlane/hyperlane-monorepo/rust/main`.
 
 Until this workflow file exists on the default branch, reviewers should treat it
-as a branch-proposed runner definition and use the local equivalent:
+as a branch-proposed runner definition plus default-branch dispatcher PR and
+use the local equivalent:
 
 ```bash
 make repro-check-agent

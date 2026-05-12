@@ -129,6 +129,7 @@ Evidence:
 
 - `CI_REPRO_STRATEGY.md`.
 - `.github/workflows/manual-repro-check.yml`.
+- dusk-network/hyperlane-dusk#3, the narrow default-branch dispatcher PR.
 - `scripts/local-repro-check.sh`.
 - `make repro-check-agent`.
 - `make gate-status`.

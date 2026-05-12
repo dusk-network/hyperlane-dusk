@@ -73,6 +73,10 @@ Observed:
   returns no discoverable workflows, matching the documented caveat that
   `.github/workflows/manual-repro-check.yml` must land on the default branch
   before it can replace local repro evidence.
+- Default-branch dispatcher PR dusk-network/hyperlane-dusk#3 now exists with
+  only the manual workflow and actionlint config. It can make the workflow
+  visible independently from the full Dusk Hyperlane implementation PR once
+  Dusk accepts the runner/token setup.
 - `make gate-status` prints the current machine-checkable gate status:
   7 unchecked sign-off items, 1 checked item, zero status checks on both PRs,
   no visible workflow, upstream drift `16 0`, and no placeholder macro matches
@@ -120,7 +124,7 @@ Observed:
 | Dusk reference traceability | `REFERENCE_TRACEABILITY.md` |
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
-| CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status` |
+| CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, dusk-network/hyperlane-dusk#3 |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Repeatable local E2E scripts | `demo/e2e-agents.sh`, `demo/e2e-relayer-restart-stress.sh`, `demo/e2e-soak-restart-stress.sh`, `demo/e2e-*.sh` |
 | Demo and E2E command documentation | `demo/README.md` |
@@ -166,6 +170,8 @@ Observed:
    read-only token scope, artifact policy, promotion path, and default-branch
    visibility caveat. The workflow still needs a Dusk runner/secret decision
    and must land on the default branch before it can replace local evidence.
+   The narrow default-branch dispatcher PR is
+   https://github.com/dusk-network/hyperlane-dusk/pull/3.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2 and summarized for
    PR review in `PRODUCTION_REVIEW_DECISIONS.md`.
