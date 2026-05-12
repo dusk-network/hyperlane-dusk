@@ -102,6 +102,12 @@ Observed:
   only the manual workflow and actionlint config. It can make the workflow
   visible independently from the full Dusk Hyperlane implementation PR once
   Dusk accepts the runner/token setup.
+- `.github/workflows/production-readiness-gate.yml` is now proposed on the
+  implementation branch as a lightweight status-check candidate. It checks out
+  a full-history Dusk copy, reports the Dusk head, uses GitHub's compare API
+  for monorepo upstream freshness, then runs `make production-readiness-guard`;
+  it is expected to fail until the known machine-checkable production blockers
+  close.
 - `make gate-status` prints the current machine-checkable gate status:
   7 unchecked sign-off items, 1 checked item, zero status checks on the
   implementation PRs, active-repo untracked source status, the manual workflow

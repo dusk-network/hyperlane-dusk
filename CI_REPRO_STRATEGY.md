@@ -35,6 +35,12 @@ setup to accept, change, or replace.
   `.github/workflows/manual-repro-check.yml` and `.github/actionlint.yaml`, so
   Dusk can make the workflow visible without first merging the full Hyperlane
   implementation PR.
+- The implementation branch now also proposes
+  `.github/workflows/production-readiness-gate.yml`. This is a lightweight
+  GitHub-hosted status-check candidate that runs
+  `make production-readiness-guard`; it is expected to fail until the known
+  review, sign-off, required-check, workflow, runner, and secret blockers are
+  closed.
 
 ## Proposed Runner
 
@@ -117,6 +123,43 @@ Hyperlane upstream drift, latest clean-layout repro path delta, and Dusk runtime
 placeholder scans.
 `make gate-status-fresh` first fetches Hyperlane `upstream/main` before
 reporting drift. These commands do not close any production gates.
+
+## Production Readiness Workflow
+
+The implementation branch includes:
+
+```text
+.github/workflows/production-readiness-gate.yml
+```
+
+It runs on pull requests to `main` and through `workflow_dispatch`. The job is:
+
+```text
+Production readiness guard
+```
+
+The job checks out a full-history copy of `dusk-network/hyperlane-dusk`,
+reports the Dusk head, and asks `make production-readiness-guard` to use
+GitHub's compare API for monorepo upstream freshness:
+
+```bash
+make production-readiness-guard
+```
+
+For manual dispatch, set `monorepo_ref` to the monorepo PR branch or ref. On
+pull requests, the default monorepo ref is `feat/dusk-support-v2`. Local
+reviewers should still use `make gate-status-fresh` when they have the adjacent
+monorepo checkout; the workflow avoids cloning the full Hyperlane monorepo just
+to produce a policy status check.
+
+`make review-gates` remains the local reviewer bundle because it verifies
+preserved backup archives under `.codex-backups`, which are intentionally not
+uploaded to GitHub-hosted runners.
+
+This workflow is intentionally a negative release gate. A failing run means at
+least one machine-checkable blocker remains open. A passing run would still
+need Dusk reviewer approval, fresh E2E evidence, and the production sign-off
+issue to be complete before any production-readiness claim.
 
 ## Access Token
 

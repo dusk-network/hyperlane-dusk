@@ -17,6 +17,10 @@ UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo Cargo.toml Cargo.lock}"
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-016eaa89e1afce0ef9a7534fe285d9aa16e26183}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-1}"
+MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
+MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monorepo}"
+MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
+MONOREPO_COMPARE_HEAD="${MONOREPO_COMPARE_HEAD:-dusk-network:feat/dusk-support-v2}"
 
 blockers=()
 
@@ -192,7 +196,26 @@ fi
 rm -f /tmp/hyperlane-readiness-secrets.$$.err
 
 section "Freshness"
-if [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1; then
+if [ "$MONOREPO_COMPARE_VIA_GH" = "1" ]; then
+    if compare_json="$(gh api "repos/$MONOREPO_UPSTREAM_REPO/compare/$MONOREPO_COMPARE_BASE...$MONOREPO_COMPARE_HEAD" 2>/tmp/hyperlane-readiness-compare.$$.err)"; then
+        upstream_head="$(printf '%s\n' "$compare_json" | jq -r .base_commit.sha)"
+        merge_base="$(printf '%s\n' "$compare_json" | jq -r .merge_base_commit.sha)"
+        ahead_count="$(printf '%s\n' "$compare_json" | jq -r .ahead_by)"
+        behind_count="$(printf '%s\n' "$compare_json" | jq -r .behind_by)"
+        ahead_behind="$ahead_count	$behind_count"
+        printf 'upstreamHead: %s\n' "$upstream_head"
+        printf 'mergeBase: %s\n' "$merge_base"
+        printf 'aheadBehind: %s\n' "$ahead_behind"
+        if [ "$behind_count" != "0" ]; then
+            add_blocker "monorepo branch is behind $MONOREPO_UPSTREAM_REPO/$MONOREPO_COMPARE_BASE by $behind_count commits"
+        fi
+    else
+        echo "compareApi: unavailable"
+        sed 's/^/  /' /tmp/hyperlane-readiness-compare.$$.err
+        add_blocker "monorepo upstream freshness compare is unavailable"
+    fi
+    rm -f /tmp/hyperlane-readiness-compare.$$.err
+elif [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1; then
     git -C "$MONOREPO_DIR" fetch "$UPSTREAM_REMOTE" main
     upstream_ref="$UPSTREAM_REMOTE/main"
     merge_base="$(git -C "$MONOREPO_DIR" merge-base HEAD "$upstream_ref")"

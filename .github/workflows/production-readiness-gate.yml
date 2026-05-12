@@ -1,0 +1,56 @@
+name: Dusk Hyperlane Production Readiness Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "dusk-network/hyperlane-monorepo branch or ref to compare"
+        required: true
+        default: "feat/dusk-support-v2"
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  readiness-guard:
+    name: Production readiness guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.DUSK_ORG_READ_TOKEN || github.token }}
+      DUSK_DIR: ${{ github.workspace }}/hyperlane/dusk
+      MONOREPO_REF: ${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
+      MONOREPO_COMPARE_VIA_GH: "1"
+      MONOREPO_COMPARE_HEAD: dusk-network:${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
+
+    steps:
+      - name: Checkout Dusk Hyperlane
+        uses: actions/checkout@v4
+        with:
+          path: hyperlane/dusk
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Report resolved check refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'dusk_ref=%s\n' "$GITHUB_SHA"
+          git -C "$DUSK_DIR" rev-parse HEAD
+          printf 'monorepo_ref=%s\n' "$MONOREPO_REF"
+          printf 'monorepo_compare_head=%s\n' "$MONOREPO_COMPARE_HEAD"
+
+      - name: Run production readiness guard
+        working-directory: ${{ env.DUSK_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          make production-readiness-guard

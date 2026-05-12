@@ -156,11 +156,14 @@ Evidence:
 
 - `CI_REPRO_STRATEGY.md`.
 - `.github/workflows/manual-repro-check.yml`.
+- `.github/workflows/production-readiness-gate.yml`, the lightweight
+  status-check candidate for `make production-readiness-guard`.
 - dusk-network/hyperlane-dusk#3, the narrow default-branch dispatcher PR.
 - `scripts/local-repro-check.sh`.
 - `make repro-check-agent`.
 - `make gate-status`.
 - `actionlint .github/workflows/manual-repro-check.yml`.
+- `actionlint .github/workflows/production-readiness-gate.yml`.
 - `make production-readiness-guard`, which blocks while the Dusk repos have
   open/unapproved PRs, no required status checks, or missing CI/default-branch
   workflow visibility. The default branches now have protected-branch review

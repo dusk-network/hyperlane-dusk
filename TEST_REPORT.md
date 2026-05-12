@@ -383,6 +383,12 @@ Result:
   independently from the full implementation PR.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
+- `.github/workflows/production-readiness-gate.yml`: added as a lightweight
+  GitHub-hosted status-check candidate. It runs
+  `make production-readiness-guard` with GitHub compare API freshness checks,
+  and is expected to fail until the known review, sign-off, required-check,
+  workflow, runner, and secret blockers close.
+- `actionlint .github/workflows/production-readiness-gate.yml`: passed.
 - `make secret-hygiene`: re-run after manual workflow secret-scope docs and
   checkout credential hardening; passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log`:
