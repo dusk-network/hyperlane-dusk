@@ -41,7 +41,8 @@ while IFS= read -r script; do
     if [ "$script" = "demo/gen-agent-configs.sh" ]; then
         continue
     fi
-    if ! rg -q 'GENERATED_DUSK_SIGNER_KEY_FILES' "$script"; then
+    if ! rg -q 'GENERATED_DUSK_SIGNER_KEY_FILES' "$script" ||
+       ! rg -q 'rm -f "\$\{GENERATED_DUSK_SIGNER_KEY_FILES\[@\]\}"' "$script"; then
         echo "$script" >&2
         fail "E2E scripts that generate agent configs must clean up Dusk signer key files"
     fi

@@ -138,8 +138,8 @@ Result:
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now
-  fails if a future E2E wrapper calls `gen-agent-configs.sh` without this
-  cleanup tracking.
+  fails if a future E2E wrapper calls `gen-agent-configs.sh` without both the
+  cleanup tracking variable and the generated-key `rm -f` cleanup call.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 
