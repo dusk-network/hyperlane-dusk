@@ -23,6 +23,7 @@ LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
 GATE_STATUS_FRESH_TEXT="${GATE_STATUS_FRESH_TEXT:-make gate-status-fresh}"
 DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-alert-status}"
+COMPLETION_AUDIT_STATUS_TEXT="${COMPLETION_AUDIT_STATUS_TEXT:-make completion-audit-status}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
 FETCH_UPSTREAM=0
 
@@ -39,8 +40,8 @@ Prints the current machine-checkable review status:
   - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
   - workflow visibility for dusk-network/hyperlane-dusk
   - repo-level Actions secret and self-hosted runner visibility for CI gate #8
-  - reviewer-facing evidence, routing, fresh-gate, and dependency-alert handoff
-    visibility
+  - reviewer-facing evidence, routing, fresh-gate, dependency-alert, and
+    completion-audit handoff visibility
   - Dusk Dependabot open-alert visibility and local Cargo.lock vulnerable-range
     comparison
   - Hyperlane upstream/main drift for the local monorepo checkout
@@ -102,6 +103,10 @@ Environment:
                        Text expected in active implementation PR and sign-off
                        bodies to expose the dependency alert comparison.
                        Default: $DEPENDENCY_ALERT_STATUS_TEXT
+  COMPLETION_AUDIT_STATUS_TEXT
+                       Text expected in active implementation PR and sign-off
+                       bodies to expose the preservation audit check.
+                       Default: $COMPLETION_AUDIT_STATUS_TEXT
   REPRO_PATH_DELTA_TEXT
                        Text expected in active implementation PR and sign-off
                        bodies to expose latest clean-layout repro path delta.
@@ -273,6 +278,12 @@ print_link_presence() {
         echo "  dependencyAlertHandoff: present"
     else
         echo "  dependencyAlertHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$COMPLETION_AUDIT_STATUS_TEXT"; then
+        echo "  completionAuditHandoff: present"
+    else
+        echo "  completionAuditHandoff: missing"
     fi
 
     if printf '%s\n' "$body" | grep -Fq "$REPRO_PATH_DELTA_TEXT"; then
