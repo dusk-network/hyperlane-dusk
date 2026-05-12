@@ -122,12 +122,17 @@ Notes:
   SHA256:
   `cc34e8e31abcab6ef3ef05587f38ce7963257586c30375d59b46c25296e0b2a1`.
   `scripts/secret-hygiene-check.sh` passed over the repro log and tarball.
-- The live Dusk PR head after that repro is
-  `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`. From tested source ref
+- The live Dusk PR head is checked through GitHub and `make gate-status`. From
+  tested source ref
   `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253` to that live head,
   `git diff --name-status` reports only `GOAL_AUDIT.md`, `TEST_REPORT.md`, and
-  `scripts/github-review-hygiene.sh`. The intervening commits are evidence
-  docs, review-hygiene stale-link guard, and evidence wording clarification.
+  `scripts/github-review-hygiene.sh` as of the latest gate refresh. The
+  intervening commits are evidence docs, review-hygiene stale-link guard
+  updates, evidence wording clarification, live-head E2E/archive documentation,
+  and reviewer-facing live-head E2E link enforcement. Current live-head E2E runs
+  `1778609411` and `1778609697` tested Dusk
+  `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8` directly before the later
+  docs/tooling-only commits.
 
 ## Commands Run
 
