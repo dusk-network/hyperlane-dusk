@@ -291,7 +291,7 @@ for file in "$EXPORT_DIR"/*-comments.txt; do
     ' "$file" >>"$active_review_text"
 done
 
-stale_active_patterns='Current-head agent check refresh|Current monorepo agent-check evidence refresh|Latest clean-layout repro evidence for the tested Dusk commit|Latest local clean-layout repro run `1778582787`|Latest local clean-layout repro evidence is https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427472641|current-head repro evidence|Final-head clean-layout repro evidence|Latest local final-head repro evidence'
+stale_active_patterns='Current-head agent check refresh|Current monorepo agent-check evidence refresh|Latest clean-layout repro evidence for the tested Dusk commit|Latest local clean-layout repro run `1778582787`|Latest local clean-layout repro evidence is https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427472641|Latest clean-layout repro evidence: `1778596710`|clean-layout repro run `1778596710` tested Dusk source ref `6ac9a2bc0c3cbdb1d9994335b23f06189d355f40`|Latest clean-layout repro evidence: https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4431719578|current-head repro evidence|Final-head clean-layout repro evidence|Latest local final-head repro evidence'
 stale_active_hits="$EXPORT_DIR/stale-active-review-wording.txt"
 if rg -n -e "$stale_active_patterns" "$active_review_text" >"$stale_active_hits"; then
     cat "$stale_active_hits" >&2
