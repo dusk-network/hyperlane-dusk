@@ -23,6 +23,7 @@ Prints the current machine-checkable review status:
   - local Dusk and Hyperlane worktree state
   - untracked source status for both active repositories
   - Dusk and monorepo PR state, labels, mergeability, reviews, and status checks
+  - default-branch protection and merge method settings for the internal repos
   - production sign-off checklist counts from dusk-network/hyperlane-dusk#2
   - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
   - workflow visibility for dusk-network/hyperlane-dusk
@@ -128,6 +129,34 @@ print_issue() {
         '
 }
 
+print_repo_merge_policy() {
+    local repo="$1"
+    local default_branch
+    local protection_json
+
+    gh api "repos/$repo" \
+        --jq '
+            "repo: \(.full_name)\n" +
+            "defaultBranch: \(.default_branch)\n" +
+            "allowMergeCommit: \(.allow_merge_commit)\n" +
+            "allowSquashMerge: \(.allow_squash_merge)\n" +
+            "allowRebaseMerge: \(.allow_rebase_merge)"
+        '
+
+    default_branch="$(gh api "repos/$repo" --jq .default_branch)"
+    if protection_json="$(gh api "repos/$repo/branches/$default_branch/protection" --jq '{requiredStatusChecks: (.required_status_checks.contexts // []), requiresReviews: (.required_pull_request_reviews != null)}' 2>/tmp/hyperlane-dusk-protection.$$.err)"; then
+        echo "branchProtection: enabled"
+        printf '%s\n' "$protection_json" | sed 's/^/  /'
+    else
+        echo "branchProtection: none"
+        if [ -n "$protection_json" ]; then
+            printf '%s\n' "$protection_json" | sed 's/^/  /'
+        fi
+        sed 's/^/  /' /tmp/hyperlane-dusk-protection.$$.err
+    fi
+    rm -f /tmp/hyperlane-dusk-protection.$$.err
+}
+
 unchecked_count() {
     grep -c '^- \[ \]' || true
 }
@@ -145,6 +174,10 @@ if [ -d "$MONOREPO_DIR/.git" ] || git -C "$MONOREPO_DIR" rev-parse --git-dir >/d
 else
     echo "monorepo: missing checkout at $MONOREPO_DIR"
 fi
+
+section "Branch Protection And Merge Settings"
+print_repo_merge_policy "$DUSK_REPO"
+print_repo_merge_policy "$MONOREPO_REPO"
 
 section "Untracked Source Check"
 dusk_untracked="$(git -C "$ROOT" ls-files --others --exclude-standard)"

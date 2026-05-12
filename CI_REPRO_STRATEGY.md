@@ -80,9 +80,10 @@ make gate-status
 This calls `scripts/release-gate-status.sh`, which reports local worktree
 state, untracked source status, implementation PR and workflow-dispatcher PR
 mergeability/review/status state, production sign-off checklist counts, split
-decision issue states, workflow visibility, repo-level Actions secret and
-self-hosted runner visibility, Hyperlane upstream drift, and the Dusk agent
-runtime placeholder scan. It does not close any production gates.
+decision issue states, default-branch protection and merge method settings,
+workflow visibility, repo-level Actions secret and self-hosted runner
+visibility, Hyperlane upstream drift, and the Dusk agent runtime placeholder
+scan. It does not close any production gates.
 
 ## Access Token
 
