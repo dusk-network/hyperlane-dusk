@@ -331,6 +331,8 @@ for file in \
         || fail "$file is missing make dependency-alert-status handoff text"
     rg -q -F 'make completion-audit-status' "$file" \
         || fail "$file is missing make completion-audit-status handoff text"
+    rg -q -F 'make review-gates' "$file" \
+        || fail "$file is missing make review-gates handoff text"
     rg -q -F 'latest clean-layout repro path delta' "$file" \
         || fail "$file is missing latest clean-layout repro path delta handoff text"
 done

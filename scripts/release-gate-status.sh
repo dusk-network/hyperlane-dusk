@@ -24,6 +24,7 @@ REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hy
 GATE_STATUS_FRESH_TEXT="${GATE_STATUS_FRESH_TEXT:-make gate-status-fresh}"
 DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-alert-status}"
 COMPLETION_AUDIT_STATUS_TEXT="${COMPLETION_AUDIT_STATUS_TEXT:-make completion-audit-status}"
+REVIEW_GATES_TEXT="${REVIEW_GATES_TEXT:-make review-gates}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
 FETCH_UPSTREAM=0
 
@@ -40,8 +41,8 @@ Prints the current machine-checkable review status:
   - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
   - workflow visibility for dusk-network/hyperlane-dusk
   - repo-level Actions secret and self-hosted runner visibility for CI gate #8
-  - reviewer-facing evidence, routing, fresh-gate, dependency-alert, and
-    completion-audit handoff visibility
+  - reviewer-facing evidence, routing, fresh-gate, dependency-alert,
+    completion-audit, and review-gates handoff visibility
   - Dusk Dependabot open-alert visibility and local Cargo.lock vulnerable-range
     comparison
   - Hyperlane upstream/main drift for the local monorepo checkout
@@ -107,6 +108,9 @@ Environment:
                        Text expected in active implementation PR and sign-off
                        bodies to expose the preservation audit check.
                        Default: $COMPLETION_AUDIT_STATUS_TEXT
+  REVIEW_GATES_TEXT    Text expected in active implementation PR and sign-off
+                       bodies to expose the lightweight gate bundle.
+                       Default: $REVIEW_GATES_TEXT
   REPRO_PATH_DELTA_TEXT
                        Text expected in active implementation PR and sign-off
                        bodies to expose latest clean-layout repro path delta.
@@ -284,6 +288,12 @@ print_link_presence() {
         echo "  completionAuditHandoff: present"
     else
         echo "  completionAuditHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$REVIEW_GATES_TEXT"; then
+        echo "  reviewGatesHandoff: present"
+    else
+        echo "  reviewGatesHandoff: missing"
     fi
 
     if printf '%s\n' "$body" | grep -Fq "$REPRO_PATH_DELTA_TEXT"; then

@@ -80,9 +80,14 @@ Reviewers can also print the current machine-checkable gate state without
 running the heavy build/test repro:
 
 ```bash
+make review-gates
 make gate-status
 make gate-status-fresh
 ```
+
+`make review-gates` runs the lightweight non-E2E gate bundle:
+`make completion-audit-status`, `make dependency-alert-status`,
+`make review-hygiene`, and `make gate-status-fresh`.
 
 `make gate-status` calls `scripts/release-gate-status.sh`, which reports local
 worktree state, untracked source status, implementation PR and
@@ -92,10 +97,11 @@ merge method settings, workflow visibility, CI provisioning visibility,
 reviewer-facing evidence-link visibility, Dusk Dependabot open-alert
 visibility, local `Cargo.lock` vulnerable-range comparison through
 `make dependency-alert-status`, reviewer-facing `make gate-status-fresh` and
-`make dependency-alert-status` handoff visibility, Hyperlane upstream drift,
-latest clean-layout repro path delta, and Dusk runtime placeholder scans.
+`make dependency-alert-status`, `make completion-audit-status`, and
+`make review-gates` handoff visibility, Hyperlane upstream drift, latest
+clean-layout repro path delta, and Dusk runtime placeholder scans.
 `make gate-status-fresh` first fetches Hyperlane `upstream/main` before
-reporting drift. Neither command closes any production gates.
+reporting drift. These commands do not close any production gates.
 
 ## Access Token
 

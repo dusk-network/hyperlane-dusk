@@ -337,8 +337,8 @@ Result:
   visibility, Dusk Dependabot open-alert visibility plus local lockfile
   vulnerable-range comparison, reviewer-facing `make gate-status-fresh`,
   `make dependency-alert-status`, and `make completion-audit-status` handoff
-  text, reviewer-facing latest clean-layout repro path delta handoff text,
-  current Hyperlane upstream drift,
+  text, reviewer-facing `make review-gates` handoff text, reviewer-facing
+  latest clean-layout repro path delta handoff text, current Hyperlane upstream drift,
   no covered-path delta since latest clean-layout repro source ref
   `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, and no placeholder matches in
   tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
