@@ -107,7 +107,7 @@ Result:
 - `make gate-status`: passed; reported the implementation PRs and manual
   workflow dispatcher PR, zero status checks on the implementation PRs,
   7 unchecked production sign-off items, all six split decision issues open,
-  no visible GitHub workflow, Hyperlane upstream drift `16 0`, and no
+  no visible GitHub workflow, Hyperlane upstream drift `17 0`, and no
   placeholder matches in
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
@@ -350,8 +350,8 @@ bash demo/e2e-agents.sh --only testMock --timeout 300
 Result:
 
 - Passed on detached Rusk commit `c0c64db4659500d077bb253ad13acba0e347d3fc`
-  after switching demo `dusk-tx` invocations from `--password` argv to
-  `DUSK_CONSENSUS_PASSWORD`.
+  after switching demo `dusk-tx` invocations from CLI password-flag handling
+  to `DUSK_CONSENSUS_PASSWORD`.
 - EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
 - Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
 
