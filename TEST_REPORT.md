@@ -5,7 +5,7 @@ Last updated: 2026-05-12
 
 This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
-stress, fault-injection, and full security-review items are listed at the end.
+production-review gates and useful follow-up test areas are listed at the end.
 
 ## Repository State
 
