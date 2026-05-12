@@ -14,6 +14,7 @@ stress, fault-injection, and full security-review items are listed at the end.
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | `e4d3f2ab704286fe89e43b24543f8104b8838633` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | `f0df7aa522c65c4a7cf94c677c9573bd353c9b72` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
+| Current review-head clean-layout local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `fc9ed45f9661a843d053ebddcc89666ef187e5c2`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Local Rusk reference | `/home/hein_/projects/rusk-private` | local checkout | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Clean Rusk reproduction probe | `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 
@@ -164,6 +165,11 @@ run_dir=/tmp/hyperlane-dusk-repro-keyperms-1778550420
 HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
 RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
 make repro-check-agent 2>&1 | tee "$run_dir.log"
+
+run_dir=/tmp/hyperlane-dusk-repro-current-1778552618
+HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+make repro-check-agent 2>&1 | tee "$run_dir.log"
 ```
 
 Refs:
@@ -176,11 +182,15 @@ Refs:
   `7de48ea3897d6d7956cedc9c3f32fc7062cf39c6`
 - Key-file permission enforcement run Dusk PR branch:
   `06e9bd2c05607eb922ea476ea25feb334f0656a6`
+- Current review-head run Dusk PR branch before this report update:
+  `fc9ed45f9661a843d053ebddcc89666ef187e5c2`
 - Earlier Hyperlane monorepo branch:
   `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
 - File-backed signer run Hyperlane monorepo branch:
   `760efedeb2d93729d853d5f577be89e27ea8f22d`
 - Key-file permission enforcement run Hyperlane monorepo branch:
+  `ecb11359747dce240a24c50fa229afd4479919b5`
+- Current review-head run Hyperlane monorepo branch:
   `ecb11359747dce240a24c50fa229afd4479919b5`
 - Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
@@ -202,11 +212,18 @@ Refs:
   clean detached worktree
   `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Current review-head run Rusk path dependency checkout in the temporary
+  layout:
+  `/tmp/hyperlane-dusk-repro-current-1778552618/rusk-private`, symlinked to
+  clean detached worktree
+  `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 - Logs:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326.log`,
   `/tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170.log`,
   `/tmp/hyperlane-dusk-repro-keyfile-1778549721.log`,
-  `/tmp/hyperlane-dusk-repro-keyperms-1778550420.log`
+  `/tmp/hyperlane-dusk-repro-keyperms-1778550420.log`,
+  `/tmp/hyperlane-dusk-repro-current-1778552618.log`
 
 Result:
 
@@ -221,6 +238,8 @@ Result:
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-keyfile-1778549721.log`:
   passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-keyperms-1778550420.log`:
+  passed.
+- `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-current-1778552618.log`:
   passed.
 - Hyperlane Rust agent check from the adjacent monorepo passed:
 
