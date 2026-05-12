@@ -10,6 +10,8 @@ Do not treat unchecked items as production approval.
 
 ### Mailbox Moonlight Sender Resolution
 
+Tracking issue: dusk-network/hyperlane-dusk#4.
+
 Decision:
 
 - [ ] Accept current implementation.
@@ -37,6 +39,8 @@ call arbitrary user contracts for non-user-initiated reasons with an unrelated
 
 ### Immutable Account Registration
 
+Tracking issue: dusk-network/hyperlane-dusk#5.
+
 Decision:
 
 - [ ] Accept immutable `registered_accounts` for v1.
@@ -61,6 +65,8 @@ different recipient hash, and admin-controlled remapping would introduce a
 privileged path over user recipient identity.
 
 ### Pending Escrow Without Admin Drain
+
+Tracking issue: dusk-network/hyperlane-dusk#6.
 
 Decision:
 
@@ -92,6 +98,8 @@ with governance, timelock, audit, and user-dispute rules.
 
 ### Production Signer Custody
 
+Tracking issue: dusk-network/hyperlane-dusk#7.
+
 Decision:
 
 - [ ] Accept `PRODUCTION_SIGNER_POLICY.md` Option A for internal/testnet use.
@@ -118,6 +126,8 @@ group/world-readable `keyFile` paths before reading key material; that hardening
 does not replace a custody decision.
 
 ### CI/Repro Runner Strategy
+
+Tracking issue: dusk-network/hyperlane-dusk#8.
 
 Decision:
 
@@ -146,6 +156,8 @@ the PR branch or exact commit SHAs under review. Promote it to required PR CI
 only after one stable manual run is recorded in `TEST_REPORT.md`.
 
 ### Soak Acceptance
+
+Tracking issue: dusk-network/hyperlane-dusk#9.
 
 Decision:
 

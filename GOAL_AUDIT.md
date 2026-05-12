@@ -175,7 +175,12 @@ Observed:
    https://github.com/dusk-network/hyperlane-dusk/pull/3.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2 and summarized for
-   PR review in `PRODUCTION_REVIEW_DECISIONS.md`.
+   PR review in `PRODUCTION_REVIEW_DECISIONS.md`. The individual decision
+   issues are dusk-network/hyperlane-dusk#4 through
+   dusk-network/hyperlane-dusk#9:
+   Mailbox sender resolution, immutable account registration, pending escrow
+   recovery, production signer custody, CI/repro runner policy, and soak
+   acceptance.
 
 ## Completion Decision
 
