@@ -303,8 +303,9 @@ if rg -n -e "$stale_active_patterns" "$active_review_text" >"$stale_active_hits"
 fi
 rm -f "$stale_active_hits"
 
-latest_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
-latest_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
+post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
+post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
+dependency_remediated_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389'
 latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572'
 for file in \
     "$EXPORT_DIR/dusk-pr-1-body.txt" \
@@ -316,10 +317,12 @@ for file in \
         cat "$EXPORT_DIR/stale-repro-body.txt" >&2
         fail "$file contains stale clean-layout repro body evidence"
     fi
-    rg -q -F "$latest_e2e_comment" "$file" \
-        || fail "$file is missing current live-head E2E evidence link"
-    rg -q -F "$latest_e2e_archive_comment" "$file" \
-        || fail "$file is missing current live-head E2E archive link"
+    rg -q -F "$post_rebase_e2e_comment" "$file" \
+        || fail "$file is missing post-rebase E2E evidence link"
+    rg -q -F "$post_rebase_e2e_archive_comment" "$file" \
+        || fail "$file is missing post-rebase E2E archive link"
+    rg -q -F "$dependency_remediated_e2e_comment" "$file" \
+        || fail "$file is missing dependency-remediated E2E evidence link"
     rg -q -F "$REVIEWER_ROUTING_URL" "$file" \
         || fail "$file is missing advisory reviewer routing link"
 done

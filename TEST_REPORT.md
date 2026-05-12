@@ -319,8 +319,9 @@ Result:
   active-repo untracked source status, default-branch protection and merge
   method settings, no visible GitHub workflow, repo-level Actions secret and
   self-hosted runner visibility for CI gate #8, latest clean-layout repro link
-  visibility, current live-head E2E/archive link visibility, advisory reviewer
-  routing link visibility, Dusk Dependabot open-alert visibility, current
+  visibility, post-rebase E2E/archive link visibility,
+  dependency-remediated E2E link visibility, advisory reviewer routing link
+  visibility, Dusk Dependabot open-alert visibility, current
   Hyperlane upstream drift, and no placeholder matches in tracked Dusk repo
   runtime paths or
   `rust/main/chains/hyperlane-dusk`.
@@ -389,7 +390,10 @@ Result:
   evidence note to avoid pinning a moving PR head, the wrapper was rerun and
   passed against the updated GitHub review surface.
 - `make review-hygiene` now also requires the latest clean-layout repro
-  evidence link `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572`
+  evidence link
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572`,
+  dependency-remediated E2E link
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389`,
   and advisory reviewer routing link
   `https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md`
   in Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies. It also requires

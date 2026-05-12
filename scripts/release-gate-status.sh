@@ -14,8 +14,9 @@ WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_PLACEHOLDER_PATHS="${DUSK_PLACEHOLDER_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo}"
-CURRENT_E2E_URL="${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}"
-CURRENT_E2E_ARCHIVE_URL="${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}"
+POST_REBASE_E2E_URL="${POST_REBASE_E2E_URL:-${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}}"
+POST_REBASE_E2E_ARCHIVE_URL="${POST_REBASE_E2E_ARCHIVE_URL:-${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}}"
+DEPENDENCY_REMEDIATED_E2E_URL="${DEPENDENCY_REMEDIATED_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389}"
 LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572}"
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
 FETCH_UPSTREAM=0
@@ -58,13 +59,17 @@ Environment:
                        Space-separated tracked Dusk repo paths scanned for
                        runtime placeholder macros.
                        Default: $DUSK_PLACEHOLDER_PATHS
-  CURRENT_E2E_URL      Current live-head E2E evidence URL expected in active
+  POST_REBASE_E2E_URL  Post-rebase E2E evidence URL expected in active
                        reviewer-facing bodies.
-                       Default: $CURRENT_E2E_URL
-  CURRENT_E2E_ARCHIVE_URL
-                       Current live-head E2E archive URL expected in active
+                       Default: $POST_REBASE_E2E_URL
+  POST_REBASE_E2E_ARCHIVE_URL
+                       Post-rebase E2E archive URL expected in active
                        reviewer-facing bodies.
-                       Default: $CURRENT_E2E_ARCHIVE_URL
+                       Default: $POST_REBASE_E2E_ARCHIVE_URL
+  DEPENDENCY_REMEDIATED_E2E_URL
+                       Dependency-remediated E2E evidence URL expected in
+                       active reviewer-facing bodies.
+                       Default: $DEPENDENCY_REMEDIATED_E2E_URL
   LATEST_REPRO_URL     Latest clean-layout repro evidence URL expected in
                        active reviewer-facing bodies.
                        Default: $LATEST_REPRO_URL
@@ -204,16 +209,22 @@ print_link_presence() {
         echo "  latestCleanLayoutRepro: missing"
     fi
 
-    if printf '%s\n' "$body" | grep -Fq "$CURRENT_E2E_URL"; then
-        echo "  currentLiveHeadE2E: present"
+    if printf '%s\n' "$body" | grep -Fq "$POST_REBASE_E2E_URL"; then
+        echo "  postRebaseE2E: present"
     else
-        echo "  currentLiveHeadE2E: missing"
+        echo "  postRebaseE2E: missing"
     fi
 
-    if printf '%s\n' "$body" | grep -Fq "$CURRENT_E2E_ARCHIVE_URL"; then
-        echo "  currentLiveHeadE2EArchive: present"
+    if printf '%s\n' "$body" | grep -Fq "$POST_REBASE_E2E_ARCHIVE_URL"; then
+        echo "  postRebaseE2EArchive: present"
     else
-        echo "  currentLiveHeadE2EArchive: missing"
+        echo "  postRebaseE2EArchive: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$DEPENDENCY_REMEDIATED_E2E_URL"; then
+        echo "  dependencyRemediatedE2E: present"
+    else
+        echo "  dependencyRemediatedE2E: missing"
     fi
 
     if printf '%s\n' "$body" | grep -Fq "$REVIEWER_ROUTING_URL"; then
