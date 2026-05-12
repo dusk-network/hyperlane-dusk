@@ -172,9 +172,12 @@ Observed:
    must still accept or replace that signer custody and CI artifact policy.
 4. Upstream Hyperlane draft PRs should not be prepared until the internal Dusk
    PRs complete review.
-5. The Hyperlane monorepo PR has internal Dusk agent/runtime review requested
-   from `Neotamandua`, based on recent Rusk HTTP/RUES/GraphQL route ownership.
-   No `CODEOWNERS`, `OWNERS`, or `MAINTAINERS` file was found in either repo.
+5. The Hyperlane monorepo fork has upstream `.github/CODEOWNERS` routing
+   `rust/` to Hyperlane's `@tkporter`; the companion Dusk repo has no
+   `CODEOWNERS`, `OWNERS`, or `MAINTAINERS` file. Internal Dusk agent/runtime
+   review is still requested from `Neotamandua`, based on recent Rusk
+   HTTP/RUES/GraphQL route ownership, because the remaining decisions are
+   Dusk/Rusk-specific and not covered by upstream Hyperlane ownership alone.
 6. CI/repro runner strategy remains a release gate. Both internal PRs currently
    have empty status-check rollups, and the Dusk workspace depends on an
    adjacent private `rusk-private` checkout. `make repro-check` and
