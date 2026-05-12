@@ -1,4 +1,5 @@
 name: Dusk Hyperlane Manual Repro Check
+run-name: Dusk Hyperlane repro dusk=${{ inputs.dusk_ref }} rusk=${{ inputs.rusk_ref }} monorepo=${{ inputs.monorepo_ref }}
 
 on:
   workflow_dispatch:
@@ -50,6 +51,17 @@ jobs:
           path: hyperlane/hyperlane-monorepo
           token: ${{ secrets.DUSK_ORG_READ_TOKEN }}
           persist-credentials: false
+
+      - name: Report resolved checkout heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'dusk_ref=%s\n' '${{ inputs.dusk_ref }}'
+          git -C hyperlane/dusk rev-parse HEAD
+          printf 'rusk_ref=%s\n' '${{ inputs.rusk_ref }}'
+          git -C rusk-private rev-parse HEAD
+          printf 'monorepo_ref=%s\n' '${{ inputs.monorepo_ref }}'
+          git -C hyperlane/hyperlane-monorepo rev-parse HEAD
 
       - name: Run local repro check
         working-directory: hyperlane/dusk
