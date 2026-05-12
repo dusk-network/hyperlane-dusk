@@ -144,6 +144,31 @@ the resolved heads in `TEST_REPORT.md`. The workflow prints each requested ref
 and resolved checkout head before running the repro command so reviewers can
 copy the exact Dusk, Rusk, and monorepo SHAs from the Actions log.
 
+As of the latest review refresh on 2026-05-12, the exact current internal
+review heads are:
+
+```bash
+gh workflow run manual-repro-check.yml \
+  --repo dusk-network/hyperlane-dusk \
+  --ref main \
+  -f dusk_ref=11f6744bb3514f96db846de1108378e43d161a3e \
+  -f rusk_ref=c0c64db4659500d077bb253ad13acba0e347d3fc \
+  -f monorepo_ref=a44020dc998b7fe868254a5d1a349b9eb8ded899
+```
+
+Expected resolved heads:
+
+- Dusk: `11f6744bb3514f96db846de1108378e43d161a3e`.
+- Rusk: `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Monorepo: `a44020dc998b7fe868254a5d1a349b9eb8ded899`.
+
+Earlier local review-head E2E evidence tested Dusk
+`2ac225175b15aac465d100e748ba68f8b14bd545`; commit
+`11f6744bb3514f96db846de1108378e43d161a3e` is the docs-only follow-up that
+records that evidence in `TEST_REPORT.md` and `GOAL_AUDIT.md`. The manual
+workflow should still be dispatched against `11f6744...` so CI evidence matches
+the PR header exactly.
+
 It runs:
 
 ```bash
