@@ -88,6 +88,13 @@ Notes:
   `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk
   `c0c64db4659500d077bb253ad13acba0e347d3fc`. These runs cover the
   post-rebase TestMock and MessageIdMultisig paths in both directions.
+- The current live-head clean-Rusk E2E logs were copied into durable local
+  handoff archive
+  `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-live-head-e2e-1778609411-1778609697.tgz`.
+  SHA256:
+  `3e5303799e0def227988e0ac66db9d021e94bd39df054629137896c5d7b07ccc`.
+  `scripts/secret-hygiene-check.sh` passed over both the archive staging
+  directory and the tarball.
 - The latest review-head repro/E2E logs and the 7282-second high-volume soak
   logs were copied from `/tmp` into durable local handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`.
