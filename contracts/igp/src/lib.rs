@@ -130,7 +130,10 @@ mod igp {
             let payment = self.quote_gas_payment(destination, gas_limit);
             let message_id = message::id(&encoded_message);
 
-            self.total_gas_payments = self.total_gas_payments.saturating_add(payment);
+            self.total_gas_payments = self
+                .total_gas_payments
+                .checked_add(payment)
+                .expect("IGP: total gas payment overflow");
             self.gas_payments.push(GasPaymentRecord {
                 message_id,
                 destination,
@@ -221,7 +224,7 @@ mod igp {
 
         /// Returns the number of gas payment records stored.
         pub fn gas_payment_count(&self) -> u32 {
-            self.gas_payments.len() as u32
+            u32::try_from(self.gas_payments.len()).expect("IGP: gas payment count overflow")
         }
 
         /// Returns the Nth gas payment record.

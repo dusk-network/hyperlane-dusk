@@ -395,7 +395,7 @@ mod mailbox {
 
         /// Returns the number of messages that have been processed (delivered).
         pub fn processed_count(&self) -> u32 {
-            self.processed_ids.len() as u32
+            u32::try_from(self.processed_ids.len()).expect("Mailbox: processed count overflow")
         }
 
         /// Returns the default ISM contract ID.

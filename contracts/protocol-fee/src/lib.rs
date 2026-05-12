@@ -120,7 +120,10 @@ mod protocol_fee {
         #[contract(emits = [(events::ProtocolFeePaid::TOPIC, events::ProtocolFeePaid)])]
         pub fn post_dispatch(&mut self, _metadata: Vec<u8>, encoded_message: Vec<u8>) {
             let sender = message::sender(&encoded_message);
-            self.collected_fees = self.collected_fees.saturating_add(self.protocol_fee);
+            self.collected_fees = self
+                .collected_fees
+                .checked_add(self.protocol_fee)
+                .expect("ProtocolFee: collected fee overflow");
 
             abi::emit(
                 events::ProtocolFeePaid::TOPIC,

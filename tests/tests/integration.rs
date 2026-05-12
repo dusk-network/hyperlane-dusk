@@ -1206,6 +1206,49 @@ fn test_protocol_fee_charges_on_dispatch() {
 }
 
 #[test]
+fn test_protocol_fee_rejects_collected_fee_overflow() {
+    let mut s = HyperlaneSession::new();
+
+    s.session
+        .deploy(
+            PROTOCOL_FEE_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(u64::MAX, u64::MAX, MAILBOX_ID, TEST_MOCK_ID))
+                .contract_id(PROTOCOL_FEE_ID),
+        )
+        .expect("Deploying ProtocolFee should succeed");
+
+    let encoded = message::encode(
+        VERSION,
+        0,
+        LOCAL_DOMAIN,
+        [0xAAu8; 32],
+        REMOTE_DOMAIN,
+        [0xBBu8; 32],
+        b"protocol fee overflow",
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            PROTOCOL_FEE_ID,
+            "post_dispatch",
+            &(Vec::<u8>::new(), encoded.clone()),
+        )
+        .expect("first post_dispatch should succeed");
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        PROTOCOL_FEE_ID,
+        "post_dispatch",
+        &(Vec::<u8>::new(), encoded),
+    );
+
+    assert_contract_panic(result, "ProtocolFee: collected fee overflow");
+}
+
+#[test]
 fn test_protocol_fee_init_rejects_fee_above_max() {
     let mut s = HyperlaneSession::new();
 
@@ -1373,6 +1416,60 @@ fn test_igp_records_payment_on_dispatch() {
         .expect("total_gas_payments should succeed")
         .data;
     assert_eq!(total, 50_000);
+}
+
+#[test]
+fn test_igp_rejects_total_gas_payment_overflow() {
+    let mut s = HyperlaneSession::new();
+
+    s.session
+        .deploy(
+            IGP_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    MAILBOX_ID,
+                    MERKLE_TREE_HOOK_ID,
+                    vec![(
+                        REMOTE_DOMAIN,
+                        DomainGasConfig {
+                            gas_overhead: 0,
+                            token_exchange_rate: 10_000_000_000u64,
+                            gas_price: 1u64,
+                        },
+                    )],
+                ))
+                .contract_id(IGP_ID),
+        )
+        .expect("Deploying IGP should succeed");
+
+    let encoded = message::encode(
+        VERSION,
+        0,
+        LOCAL_DOMAIN,
+        [0xAAu8; 32],
+        REMOTE_DOMAIN,
+        [0xBBu8; 32],
+        b"igp overflow",
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "post_dispatch",
+            &(u64::MAX.to_le_bytes().to_vec(), encoded.clone()),
+        )
+        .expect("first post_dispatch should succeed");
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        IGP_ID,
+        "post_dispatch",
+        &(1u64.to_le_bytes().to_vec(), encoded),
+    );
+
+    assert_contract_panic(result, "IGP: total gas payment overflow");
 }
 
 // =============================================================================

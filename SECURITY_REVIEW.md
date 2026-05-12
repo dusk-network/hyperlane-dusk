@@ -210,16 +210,32 @@ self.total_gas_payments += payment;
 ```
 These accumulators are append-only counters tracking total fees/payments over the lifetime of the contract. With enough dispatches, they could wrap in release builds.
 
-**After**: Changed to `saturating_add`:
+**After**: Changed to `checked_add`:
 ```rust
 // ProtocolFee
-self.collected_fees = self.collected_fees.saturating_add(self.protocol_fee);
+self.collected_fees = self
+    .collected_fees
+    .checked_add(self.protocol_fee)
+    .expect("ProtocolFee: collected fee overflow");
 
 // IGP
-self.total_gas_payments = self.total_gas_payments.saturating_add(payment);
+self.total_gas_payments = self
+    .total_gas_payments
+    .checked_add(payment)
+    .expect("IGP: total gas payment overflow");
 ```
 
-**Trade-off**: We chose `saturating_add` over `checked_add` here because these are accounting-only counters. They are not used in any security-critical logic — no funds are gated on these values. If they saturate at `u64::MAX`, the only consequence is that the counter stops incrementing, which is an acceptable degradation for a field that would require ~18.4 quintillion dispatches to overflow. Using `checked_add` would panic and prevent message dispatch, which is worse.
+**Trade-off**: Earlier review accepted `saturating_add` because the fields are
+informational counters. The production-hardening pass now fails closed instead:
+a lifetime accounting total that cannot represent the next payment rejects the
+dispatch rather than silently pinning at `u64::MAX`. The overflow point still
+requires pathological settings or practically unreachable volume, but explicit
+rejection is easier for operators and auditors to reason about.
+
+**Related query hardening**: `Mailbox::processed_count()` and
+`InterchainGasPaymaster::gas_payment_count()` now use
+`u32::try_from(...).expect(...)` instead of `len() as u32`, avoiding silent
+count truncation if a future deployment ever exceeds the `u32` query surface.
 
 ### MEDIUM-2B: Mailbox quote total fee overflow
 
@@ -415,7 +431,7 @@ documented deviations:
 | Address mapping | External Dusk recipients are represented by `keccak256(bls_public_key_bytes)` and must register their BLS public key on Dusk for account delivery. | The mapping is deterministic and non-updatable. Lost or compromised keys are a user/account-management issue, not recoverable by current contracts. |
 | Unregistered recipients | WarpNative and WarpDrc20Collateral escrow unregistered recipients. | Inbound funds are not stranded at a synthetic contract account. Recipients must register the matching BLS key and call `claim_pending()`. |
 | Multisig metadata | MessageIdMultisigISM requires sorted validator sets, a valid threshold, initialized state, and exact fixed-width signature metadata. | This is stricter than accepting trailing metadata bytes and is intended to prevent malformed metadata acceptance. |
-| Fee accounting | ProtocolFee and IGP lifetime counters saturate rather than panic. IGP fee quote conversion and Mailbox total-fee addition panic on `u64` overflow. | Saturating counters are informational only; fee undercharging is prevented by rejecting unrepresentable quotes. |
+| Fee accounting | ProtocolFee and IGP lifetime counters, IGP fee quote conversion, Mailbox total-fee addition, and fixed-width query counts fail closed on overflow/truncation. | Fee undercharging and silent accounting pinning/truncation are prevented by rejecting unrepresentable values. |
 | Secret handling | Demo/E2E configs use local dev keys and `/tmp` artifacts. `dusk-tx` supports `DUSK_CONSENSUS_PASSWORD_FILE`, password environment variables, and `--secret-key-stdin`; demo scripts no longer pass Dusk consensus passwords through CLI argv. `SECRET_HANDLING.md` and `make secret-hygiene` add source/artifact guardrails. Production use must still avoid logs, committed config, and CI artifact leakage for Dusk secrets. | This is a release gate outside the WASM contracts. Current scripts are acceptable only for local deterministic dev/test environments, and production signer storage/config generation needs operational sign-off. |
 
 ## Files Modified
@@ -426,17 +442,17 @@ documented deviations:
 | `contracts/warp-drc20/src/lib.rs` | `checked_add` in `mint`/`do_transfer`, `checked_sub` in `burn`, zero-amount check in `transfer_remote`, immediate-caller-aware owner resolution |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, collateral escrow, `claim_pending`, `pending_balance`, and registered-recipient resolution in `handle` |
 | `contracts/warp-drc20-collateral/Cargo.toml` | Added `dusk-bytes = "0.1.7"` dependency |
-| `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; `saturating_add` for accounting |
+| `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; checked total gas payment accounting; checked `gas_payment_count` conversion |
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
-| `contracts/protocol-fee/src/lib.rs` | `saturating_add` for `collected_fees` |
+| `contracts/protocol-fee/src/lib.rs` | Checked `collected_fees` accounting |
 | `types/src/events.rs` | Added operational/admin, account registration, gas config, validator-set, pending-claim, and WarpDrc20 transfer events |
-| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events; checked total-fee quotes; checked nonce increment |
+| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events; checked total-fee quotes; checked nonce increment; checked `processed_count` conversion |
 | `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotations for initialization and Merkle insertion events |
 | `contracts/validator-announce/src/lib.rs` | Explicit event annotations for initialization and validator announcement events |
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 21 new security tests (68 total, up from 47) |
+| `tests/tests/integration.rs` | 23 new security tests (70 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -464,6 +480,8 @@ documented deviations:
 | `test_multisig_ism_verify_rejects_corrupt_signature_bytes` | Verify fails when fixed-width signature metadata is corrupt and cannot be recovered |
 | `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
 | `test_mailbox_quote_dispatch_rejects_fee_overflow` | Mailbox rejects a combined required-hook plus default-hook quote that would overflow `u64` |
+| `test_protocol_fee_rejects_collected_fee_overflow` | ProtocolFee rejects lifetime collected-fee accounting overflow instead of saturating silently |
+| `test_igp_rejects_total_gas_payment_overflow` | IGP rejects lifetime gas-payment accounting overflow instead of saturating silently |
 
 Additional event annotation verification:
 
@@ -473,9 +491,10 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
-All commands passed after the explicit event annotation cleanup and Mailbox fee
-overflow regression. The type package reported `28 passed; 0 failed; 0 ignored`;
-the integration package reported `68 passed; 0 failed; 0 ignored`.
+All commands passed after the explicit event annotation cleanup, Mailbox fee
+overflow regression, and fee-accounting overflow regression. The type package
+reported `28 passed; 0 failed; 0 ignored`; the integration package reported
+`70 passed; 0 failed; 0 ignored`.
 
 ### Test Gaps
 

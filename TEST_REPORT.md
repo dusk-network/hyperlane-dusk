@@ -325,9 +325,9 @@ Result:
 - Passed in all listed successful runs.
 - Contract WASM build via `make all`: passed.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
-- `cargo test -p hyperlane-dusk-integration-tests`: passed, 68 tests in the
+- `cargo test -p hyperlane-dusk-integration-tests`: passed, 70 tests in the
   latest run; earlier runs passed 67 tests before the Mailbox fee-overflow
-  regression was added.
+  and fee-accounting overflow regressions were added.
 - `cargo test -p dusk-tx`: passed, 3 tests.
 - `make secret-hygiene`: passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170.log`:
@@ -1097,6 +1097,12 @@ documented recovery/failure modes do not depend on the dirty local Rusk patch.
   `test_mailbox_quote_dispatch_rejects_fee_overflow`.
 - Changed Mailbox dispatch nonce increment to `checked_add` so release WASM
   rejects nonce exhaustion instead of wrapping the fixed-width Hyperlane nonce.
+- Changed ProtocolFee and IGP lifetime accounting counters from saturating to
+  checked additions so impossible totals reject instead of silently pinning at
+  `u64::MAX`; added `test_protocol_fee_rejects_collected_fee_overflow` and
+  `test_igp_rejects_total_gas_payment_overflow`.
+- Changed Mailbox `processed_count` and IGP `gas_payment_count` to use checked
+  `u32` conversions instead of truncating query lengths.
 
 Event annotation verification:
 
