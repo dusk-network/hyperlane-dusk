@@ -387,6 +387,20 @@ for issue in 4 5 6; do
     fi
 done
 
+if [ -f "$EXPORT_DIR/dusk-issue-9-body.txt" ]; then
+    rg -q -F '1778541618' "$EXPORT_DIR/dusk-issue-9-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak run id"
+    rg -q -F '7282 seconds' "$EXPORT_DIR/dusk-issue-9-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak duration"
+    rg -q -F '280 total completed transfers' "$EXPORT_DIR/dusk-issue-9-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak transfer count"
+    rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$EXPORT_DIR/dusk-issue-9-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing clean Rusk ref"
+    rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430670295' \
+        "$EXPORT_DIR/dusk-issue-9-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak archive evidence link"
+fi
+
 if rg -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
     -e 'E2E was not rerun for the docs-only post-rebase head' \

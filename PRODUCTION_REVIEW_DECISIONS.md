@@ -206,6 +206,8 @@ Current evidence:
   been reached.
 - Clean detached Rusk reference
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Durable local evidence archive with the 7282-second soak logs:
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430670295.
 
 Recommended stance:
 
