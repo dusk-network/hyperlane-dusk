@@ -24,6 +24,7 @@ use crate::H256;
 const MIN_LEN: usize = 64;
 
 /// Encode a token message body (EVM-compatible uint256 amount).
+#[must_use]
 pub fn encode(recipient: H256, amount: u64) -> Vec<u8> {
     let mut buf = Vec::with_capacity(MIN_LEN);
     buf.extend_from_slice(&recipient);
@@ -35,6 +36,7 @@ pub fn encode(recipient: H256, amount: u64) -> Vec<u8> {
 }
 
 /// Encode a token message body with metadata.
+#[must_use]
 pub fn encode_with_metadata(recipient: H256, amount: u64, metadata: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(MIN_LEN + metadata.len());
     buf.extend_from_slice(&recipient);
@@ -56,6 +58,7 @@ pub struct TokenMessage<'a> {
 }
 
 /// Decode a token message body. Returns `None` if the body is too short.
+#[must_use]
 pub fn decode(body: &[u8]) -> Option<TokenMessage<'_>> {
     if body.len() < MIN_LEN {
         return None;

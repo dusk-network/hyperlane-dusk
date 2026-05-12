@@ -51,6 +51,17 @@ Notes:
 ```bash
 cd /home/hein_/projects/hyperlane/dusk
 make all
+cargo clippy --target wasm32-unknown-unknown --features contract \
+  -p hyperlane-dusk-types \
+  -p hyperlane-dusk-mailbox \
+  -p hyperlane-dusk-merkle-tree-hook \
+  -p hyperlane-dusk-ism-multisig \
+  -p hyperlane-dusk-validator-announce \
+  -p hyperlane-dusk-protocol-fee \
+  -p hyperlane-dusk-igp \
+  -p hyperlane-dusk-warp-drc20 \
+  -p hyperlane-dusk-warp-drc20-collateral \
+  -p hyperlane-dusk-warp-native
 cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
@@ -101,6 +112,13 @@ bash -n demo/e2e-agents.sh demo/e2e-low-dusk-signer-balance.sh \
 Result:
 
 - `make all`: passed, all contract WASMs built.
+- `cargo clippy --target wasm32-unknown-unknown --features contract ...`:
+  passed for `hyperlane-dusk-types` and the production contract crates:
+  Mailbox, MerkleTreeHook, MessageIdMultisigISM, ValidatorAnnounce,
+  ProtocolFee, IGP, WarpDrc20, WarpDrc20Collateral, and WarpNative. The broader
+  workspace wasm clippy command is intentionally not used because non-contract
+  host/test dependencies pull wasm-unsupported `getrandom` paths before
+  reaching the contract surface.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
 - `cargo test -p hyperlane-dusk-integration-tests`: passed, 70 tests in the
   latest run. Earlier runs in this section passed 67 tests before the Mailbox
@@ -1132,6 +1150,17 @@ Event annotation verification:
 ```bash
 rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'
 make all
+cargo clippy --target wasm32-unknown-unknown --features contract \
+  -p hyperlane-dusk-types \
+  -p hyperlane-dusk-mailbox \
+  -p hyperlane-dusk-merkle-tree-hook \
+  -p hyperlane-dusk-ism-multisig \
+  -p hyperlane-dusk-validator-announce \
+  -p hyperlane-dusk-protocol-fee \
+  -p hyperlane-dusk-igp \
+  -p hyperlane-dusk-warp-drc20 \
+  -p hyperlane-dusk-warp-drc20-collateral \
+  -p hyperlane-dusk-warp-native
 cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 ```
@@ -1142,6 +1171,8 @@ Result:
   scanned production contract/runtime/tooling paths.
 - `make all` passed for all contract WASM builds after adding explicit event
   annotations.
+- Targeted wasm clippy passed for the production contract/type surface listed
+  above.
 - `cargo test -p hyperlane-dusk-types` passed:
   `28 passed; 0 failed; 0 ignored`.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:

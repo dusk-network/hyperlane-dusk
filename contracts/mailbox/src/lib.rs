@@ -19,6 +19,8 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::used_underscore_binding)]
 #![allow(clippy::module_name_repetitions)]
 
@@ -183,7 +185,7 @@ mod mailbox {
             };
 
             // Determine the sender: the contract that called us.
-            let sender = self.resolve_sender();
+            let sender = Self::resolve_sender();
 
             // Build the packed message.
             let encoded = message::encode(
@@ -435,7 +437,7 @@ mod mailbox {
                 hook
             };
 
-            let sender = self.resolve_sender();
+            let sender = Self::resolve_sender();
             let encoded = message::encode(
                 VERSION,
                 self.nonce,
@@ -558,7 +560,7 @@ mod mailbox {
         /// - **Direct Moonlight TX**: the transfer contract is the immediate
         ///   caller; we look up the BLS public key of the transaction origin
         ///   via `abi::public_sender()` and keccak256-hash it to H256.
-        fn resolve_sender(&self) -> H256 {
+        fn resolve_sender() -> H256 {
             let caller = abi::caller().expect("Mailbox: cannot determine sender");
             match caller {
                 id if id == TRANSFER_CONTRACT => {

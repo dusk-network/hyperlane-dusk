@@ -22,21 +22,21 @@ use crate::{DomainGasConfig, EthAddress, H256, MessageId};
 
 /// Mailbox contract type identifier.
 pub const CONTRACT_MAILBOX: u8 = 1;
-/// MerkleTreeHook contract type identifier.
+/// `MerkleTreeHook` contract type identifier.
 pub const CONTRACT_MERKLE_TREE_HOOK: u8 = 2;
-/// ValidatorAnnounce contract type identifier.
+/// `ValidatorAnnounce` contract type identifier.
 pub const CONTRACT_VALIDATOR_ANNOUNCE: u8 = 3;
-/// ProtocolFee contract type identifier.
+/// `ProtocolFee` contract type identifier.
 pub const CONTRACT_PROTOCOL_FEE: u8 = 4;
-/// InterchainGasPaymaster contract type identifier.
+/// `InterchainGasPaymaster` contract type identifier.
 pub const CONTRACT_IGP: u8 = 5;
-/// MessageIdMultisigISM contract type identifier.
+/// `MessageIdMultisigISM` contract type identifier.
 pub const CONTRACT_ISM_MULTISIG: u8 = 6;
-/// WarpDrc20 contract type identifier.
+/// `WarpDrc20` contract type identifier.
 pub const CONTRACT_WARP_DRC20: u8 = 7;
-/// WarpDrc20Collateral contract type identifier.
+/// `WarpDrc20Collateral` contract type identifier.
 pub const CONTRACT_WARP_DRC20_COLLATERAL: u8 = 8;
-/// WarpNative contract type identifier.
+/// `WarpNative` contract type identifier.
 pub const CONTRACT_WARP_NATIVE: u8 = 9;
 
 // =========================================================================
@@ -437,7 +437,7 @@ impl GasPayment {
 // Warp Route events
 // =========================================================================
 
-/// Emitted when WarpDrc20 balances change.
+/// Emitted when `WarpDrc20` balances change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

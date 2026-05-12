@@ -503,14 +503,31 @@ Additional event annotation verification:
 
 ```bash
 make all
+cargo clippy --target wasm32-unknown-unknown --features contract \
+  -p hyperlane-dusk-types \
+  -p hyperlane-dusk-mailbox \
+  -p hyperlane-dusk-merkle-tree-hook \
+  -p hyperlane-dusk-ism-multisig \
+  -p hyperlane-dusk-validator-announce \
+  -p hyperlane-dusk-protocol-fee \
+  -p hyperlane-dusk-igp \
+  -p hyperlane-dusk-warp-drc20 \
+  -p hyperlane-dusk-warp-drc20-collateral \
+  -p hyperlane-dusk-warp-native
 cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
 All commands passed after the explicit event annotation cleanup, Mailbox fee
-overflow regression, and fee-accounting overflow regression. The type package
-reported `28 passed; 0 failed; 0 ignored`; the integration package reported
+overflow regression, fee-accounting overflow regression, and targeted clippy
+cleanup for the production contract/type surface. The type package reported
+`28 passed; 0 failed; 0 ignored`; the integration package reported
 `70 passed; 0 failed; 0 ignored`.
+
+The production contract crates allow Clippy's `needless_pass_by_value` lint at
+crate level because Dusk ABI entrypoints and cross-contract call payloads use
+owned `Vec` values. This keeps the public contract ABI stable while still
+running the rest of the pedantic lint set for the wasm contract surface.
 
 ### Test Gaps
 
@@ -539,6 +556,19 @@ the final sign-off in https://github.com/dusk-network/hyperlane-dusk/issues/2.
 ```
 # All 11 contract WASMs compile
 make all    # in dusk/ directory
+
+# Static lint pass for the production wasm contract/type surface
+cargo clippy --target wasm32-unknown-unknown --features contract \
+  -p hyperlane-dusk-types \
+  -p hyperlane-dusk-mailbox \
+  -p hyperlane-dusk-merkle-tree-hook \
+  -p hyperlane-dusk-ism-multisig \
+  -p hyperlane-dusk-validator-announce \
+  -p hyperlane-dusk-protocol-fee \
+  -p hyperlane-dusk-igp \
+  -p hyperlane-dusk-warp-drc20 \
+  -p hyperlane-dusk-warp-drc20-collateral \
+  -p hyperlane-dusk-warp-native
 
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types

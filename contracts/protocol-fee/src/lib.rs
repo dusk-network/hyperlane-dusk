@@ -13,6 +13,9 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::struct_field_names)]
 #![allow(clippy::used_underscore_binding)]
 
 /// Hyperlane ProtocolFee hook contract.

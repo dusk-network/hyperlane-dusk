@@ -30,6 +30,8 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::used_underscore_binding)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::cast_possible_truncation)]
@@ -140,7 +142,7 @@ mod ism_multisig {
                 "MultisigISM: metadata too short"
             );
             assert!(
-                (metadata.len() - SIGNATURES_OFFSET) % SIGNATURE_LENGTH == 0,
+                (metadata.len() - SIGNATURES_OFFSET).is_multiple_of(SIGNATURE_LENGTH),
                 "MultisigISM: metadata signature length mismatch"
             );
 
