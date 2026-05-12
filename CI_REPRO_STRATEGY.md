@@ -104,9 +104,9 @@ make gate-status-fresh
 
 `make production-readiness-guard` is expected to fail while production blockers
 remain open. It reports machine-checkable blockers such as open internal PRs,
-unchecked sign-off items, open split decision issues, missing review/status
-check requirements, missing workflow/runner visibility, upstream drift, and
-latest clean-layout repro covered-path delta.
+review gates, unchecked sign-off items, open split decision issues, missing
+repo-level runner/secret visibility, upstream drift, and latest clean-layout
+repro covered-path delta.
 
 `make gate-status` calls `scripts/release-gate-status.sh`, which reports local
 worktree state, untracked source status, implementation PR and
@@ -334,9 +334,10 @@ Recommended sequence:
    in `TEST_REPORT.md`.
 4. Only after the manual run is stable, decide whether to make the non-E2E
    repro check required on internal PRs.
-5. Protect `main` on `dusk-network/hyperlane-dusk` and
-   `dusk-network/hyperlane-monorepo`, require PR review, and require the
-   accepted CI check before treating either repo as production-ready.
+5. Keep protected `main` settings on `dusk-network/hyperlane-dusk` and
+   `dusk-network/hyperlane-monorepo`; both already require PR review and the
+   shared `Dusk review policy gate`. Require the accepted CI/repro check after
+   runner/token provisioning before treating either repo as production-ready.
 6. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides
    a runner specifically intended for long-running local network tests.
 
