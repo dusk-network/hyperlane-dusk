@@ -195,7 +195,7 @@ check_pr_head_claims() {
             {
                 if (id != "") {
                     line_no++
-                    if (line_no <= 5 && $0 ~ /^Superseded historical status snapshot\./) {
+                    if (line_no <= 5 && $0 ~ /^(Superseded|Historical) /) {
                         superseded = 1
                     }
                     body = body $0 "\n"
@@ -228,7 +228,7 @@ check_pr_head_claims \
     "Dusk PR #1" \
     "$DUSK_REPO" \
     1 \
-    "(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Dusk PR #1 head: .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
+    "(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Dusk PR #1 head: .?[0-9a-f]{40}|Dusk PR #1 head .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
 
 check_pr_head_claims \
     "monorepo PR #1" \
