@@ -21,6 +21,8 @@ MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
 MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monorepo}"
 MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
 MONOREPO_COMPARE_HEAD="${MONOREPO_COMPARE_HEAD:-dusk-network:feat/dusk-support-v2}"
+REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
+REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 
 blockers=()
 
@@ -171,25 +173,67 @@ else
     echo "workflowVisibility: present"
 fi
 
-if repo_runners_count="$(gh api "repos/$DUSK_REPO/actions/runners" --jq .total_count 2>/tmp/hyperlane-readiness-runners.$$.err)"; then
+runner_has_label() {
+    jq --arg label "$REQUIRED_RUNNER_LABEL" \
+        '[.runners[]? | select(any(.labels[]?; .name == $label))] | length > 0'
+}
+
+repo_runner_has_label="unknown"
+org_runner_has_label="unknown"
+
+if repo_runners_json="$(gh api "repos/$DUSK_REPO/actions/runners" 2>/tmp/hyperlane-readiness-runners.$$.err)"; then
+    repo_runners_count="$(printf '%s\n' "$repo_runners_json" | jq .total_count)"
+    repo_runner_has_label="$(printf '%s\n' "$repo_runners_json" | runner_has_label)"
     printf 'repoSelfHostedRunnersVisible: %s\n' "$repo_runners_count"
-    if [ "$repo_runners_count" -lt 1 ]; then
-        add_blocker "no repo-level self-hosted runners are visible"
-    fi
+    printf 'repoRunnerWithRequiredLabelVisible: %s\n' "$repo_runner_has_label"
 else
     echo "repoSelfHostedRunnersVisible: unknown"
+    echo "repoRunnerWithRequiredLabelVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-readiness-runners.$$.err
-    add_blocker "repo-level self-hosted runner visibility is unknown"
 fi
 rm -f /tmp/hyperlane-readiness-runners.$$.err
 
-if repo_secrets_count="$(gh api "repos/$DUSK_REPO/actions/secrets" --jq .total_count 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
+org_name="${DUSK_REPO%%/*}"
+if org_runners_json="$(gh api "orgs/$org_name/actions/runners" 2>/tmp/hyperlane-readiness-org-runners.$$.err)"; then
+    org_runners_count="$(printf '%s\n' "$org_runners_json" | jq .total_count)"
+    org_runner_has_label="$(printf '%s\n' "$org_runners_json" | runner_has_label)"
+    printf 'orgSelfHostedRunnersVisible: %s\n' "$org_runners_count"
+    printf 'orgRunnerWithRequiredLabelVisible: %s\n' "$org_runner_has_label"
+else
+    echo "orgSelfHostedRunnersVisible: unknown"
+    echo "orgRunnerWithRequiredLabelVisible: unknown"
+    sed 's/^/  /' /tmp/hyperlane-readiness-org-runners.$$.err
+fi
+rm -f /tmp/hyperlane-readiness-org-runners.$$.err
+
+case "$repo_runner_has_label:$org_runner_has_label" in
+    true:*|*:true)
+        ;;
+    false:false)
+        add_blocker "no repo-level or org-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible"
+        ;;
+    false:unknown)
+        add_blocker "no repo-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible and org runner visibility is unknown"
+        ;;
+    unknown:false)
+        add_blocker "repo-level runner visibility is unknown and no org-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible"
+        ;;
+    *)
+        add_blocker "self-hosted runner visibility for label $REQUIRED_RUNNER_LABEL is unknown"
+        ;;
+esac
+
+if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
+    repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
+    required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
     printf 'repoSecretsVisible: %s\n' "$repo_secrets_count"
-    if [ "$repo_secrets_count" -lt 1 ]; then
-        add_blocker "no repo-level Actions secrets are visible"
+    printf 'repoRequiredSecretVisible: %s\n' "$required_secret_visible"
+    if [ "$required_secret_visible" != "true" ]; then
+        add_blocker "repo-level Actions secret $REQUIRED_SECRET_NAME is not visible"
     fi
 else
     echo "repoSecretsVisible: unknown"
+    echo "repoRequiredSecretVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-readiness-secrets.$$.err
     add_blocker "repo-level Actions secret visibility is unknown"
 fi

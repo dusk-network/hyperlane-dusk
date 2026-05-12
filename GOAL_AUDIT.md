@@ -117,8 +117,9 @@ Observed:
   PRs, active-repo untracked source status, the manual workflow dispatcher PR
   state, all six split decision issues open, workflow visibility,
   default-branch protection and merge method settings, required status-check
-  policy enabled for `Dusk review policy gate`, repo-level Actions secret and
-  self-hosted runner visibility, Dusk Dependabot open-alert
+  policy enabled for `Dusk review policy gate`, repo-level Actions secret
+  visibility, exact `DUSK_ORG_READ_TOKEN` visibility, self-hosted runner
+  visibility, exact `dusk-hyperlane` runner-label visibility, Dusk Dependabot open-alert
   visibility with local `Cargo.lock` vulnerable-range comparison, current
   upstream drift, and no placeholder macro matches in the Dusk repo runtime
   paths or monorepo Dusk agent crate. It also reports whether active

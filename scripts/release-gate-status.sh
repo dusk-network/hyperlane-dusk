@@ -29,6 +29,8 @@ REVIEW_GATES_TEXT="${REVIEW_GATES_TEXT:-make review-gates}"
 PRODUCTION_READINESS_GUARD_TEXT="${PRODUCTION_READINESS_GUARD_TEXT:-make production-readiness-guard}"
 BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-required status-check policy enabled}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
+REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
+REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 FETCH_UPSTREAM=0
 
 usage() {
@@ -433,30 +435,44 @@ else
 fi
 
 section "CI Provisioning Visibility"
-if repo_secrets_count="$(gh api "repos/$DUSK_REPO/actions/secrets" --jq .total_count 2>/tmp/hyperlane-dusk-secrets.$$.err)"; then
+if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-dusk-secrets.$$.err)"; then
+    repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
+    repo_required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
     echo "repoSecretsVisible: $repo_secrets_count"
+    echo "repoRequiredSecretVisible: $repo_required_secret_visible"
 else
     echo "repoSecretsVisible: unknown"
+    echo "repoRequiredSecretVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-dusk-secrets.$$.err
 fi
 rm -f /tmp/hyperlane-dusk-secrets.$$.err
 
-if repo_runners_count="$(gh api "repos/$DUSK_REPO/actions/runners" --jq .total_count 2>/tmp/hyperlane-dusk-runners.$$.err)"; then
+runner_has_label() {
+    jq --arg label "$REQUIRED_RUNNER_LABEL" \
+        '[.runners[]? | select(any(.labels[]?; .name == $label))] | length > 0'
+}
+
+if repo_runners_json="$(gh api "repos/$DUSK_REPO/actions/runners" 2>/tmp/hyperlane-dusk-runners.$$.err)"; then
+    repo_runners_count="$(printf '%s\n' "$repo_runners_json" | jq .total_count)"
+    repo_runner_with_label="$(printf '%s\n' "$repo_runners_json" | runner_has_label)"
     echo "repoSelfHostedRunnersVisible: $repo_runners_count"
+    echo "repoRunnerWithRequiredLabelVisible: $repo_runner_with_label"
 else
     echo "repoSelfHostedRunnersVisible: unknown"
+    echo "repoRunnerWithRequiredLabelVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-dusk-runners.$$.err
 fi
 rm -f /tmp/hyperlane-dusk-runners.$$.err
 
 org_name="${DUSK_REPO%%/*}"
-if org_runners_count="$(gh api "orgs/$org_name/actions/runners" --jq .total_count 2>/tmp/hyperlane-dusk-org-runners.$$.err)"; then
+if org_runners_json="$(gh api "orgs/$org_name/actions/runners" 2>/tmp/hyperlane-dusk-org-runners.$$.err)"; then
+    org_runners_count="$(printf '%s\n' "$org_runners_json" | jq .total_count)"
+    org_runner_with_label="$(printf '%s\n' "$org_runners_json" | runner_has_label)"
     echo "orgSelfHostedRunnersVisible: $org_runners_count"
+    echo "orgRunnerWithRequiredLabelVisible: $org_runner_with_label"
 else
     echo "orgSelfHostedRunnersVisible: unknown"
-    if [ -n "$org_runners_count" ]; then
-        printf '%s\n' "$org_runners_count" | sed 's/^/  /'
-    fi
+    echo "orgRunnerWithRequiredLabelVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-dusk-org-runners.$$.err
 fi
 rm -f /tmp/hyperlane-dusk-org-runners.$$.err
