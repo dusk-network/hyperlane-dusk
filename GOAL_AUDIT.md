@@ -71,8 +71,9 @@ Observed:
   `type:rfc` labels.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
   `f758a70630fd72d4749c3afb79454e725b8081a8`.
-- The monorepo Dusk branch is `20 0` relative to `upstream/main`, so it is not
-  behind current upstream as of this check.
+- The monorepo Dusk branch is checked live with `git rev-list --left-right
+  --count HEAD...upstream/main` and `make gate-status`; it is not behind
+  current upstream as of the latest gate refresh.
 - Both local worktrees are clean and track their pushed origin branches.
 - `git ls-files --others --exclude-standard` is empty in both active repos, so
   the Dusk contract/tooling repo and the Hyperlane monorepo fork do not have
@@ -91,7 +92,7 @@ Observed:
 - `make gate-status` prints the current machine-checkable gate status:
   7 unchecked sign-off items, 1 checked item, zero status checks on the
   implementation PRs, the manual workflow dispatcher PR state, all six split
-  decision issues open, no visible workflow, upstream drift `20 0`, and no
+  decision issues open, no visible workflow, current upstream drift, and no
   placeholder macro matches in `rust/main/chains/hyperlane-dusk`.
 
 ## Prompt-To-Artifact Deliverable Checklist
