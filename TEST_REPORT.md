@@ -52,6 +52,13 @@ Notes:
   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430201984
   and
   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430343619.
+- The latest review-head repro/E2E logs and the 7282-second high-volume soak
+  logs were copied from `/tmp` into durable local handoff archive
+  `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`.
+  SHA256:
+  `53bc99b30624471b145731b92896b442c3a88c97f8217c8a7cd12be4ab7476fc`.
+  `scripts/secret-hygiene-check.sh` passed over both the archive staging
+  directory and the tarball.
 
 ## Commands Run
 
