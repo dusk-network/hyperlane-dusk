@@ -19,6 +19,7 @@ POST_REBASE_E2E_ARCHIVE_URL="${POST_REBASE_E2E_ARCHIVE_URL:-${CURRENT_E2E_ARCHIV
 DEPENDENCY_REMEDIATED_E2E_URL="${DEPENDENCY_REMEDIATED_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389}"
 LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572}"
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
+GATE_STATUS_FRESH_TEXT="${GATE_STATUS_FRESH_TEXT:-make gate-status-fresh}"
 FETCH_UPSTREAM=0
 
 usage() {
@@ -76,6 +77,10 @@ Environment:
   REVIEWER_ROUTING_URL Advisory reviewer routing URL expected in active
                        reviewer-facing bodies.
                        Default: $REVIEWER_ROUTING_URL
+  GATE_STATUS_FRESH_TEXT
+                       Text expected in active implementation PR and sign-off
+                       bodies to expose the fresh upstream gate command.
+                       Default: $GATE_STATUS_FRESH_TEXT
 EOF
 }
 
@@ -231,6 +236,12 @@ print_link_presence() {
         echo "  reviewerRouting: present"
     else
         echo "  reviewerRouting: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$GATE_STATUS_FRESH_TEXT"; then
+        echo "  freshGateHandoff: present"
+    else
+        echo "  freshGateHandoff: missing"
     fi
 }
 
