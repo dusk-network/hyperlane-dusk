@@ -34,7 +34,7 @@ repositories; it records how they shaped this branch.
 | Value custody and bridge accounting failures | WarpNative deposit verification, WarpDrc20 checked arithmetic, WarpDrc20Collateral escrow, dirty redeploy refusal, low-signer-balance recovery, duplicate-delivery checks, and bridge accounting E2E are recorded in `TEST_REPORT.md`. |
 | Fail-open remote reads or retry/finality ambiguity | E2E/fault-injection runs cover validator delay, corrupt metadata, origin/destination RPC failures, duplicate relayer attempts, and relayer restart/backlog behavior. |
 | Pause/recovery design should be explicit, not accidental | `PRODUCTION_REVIEW_DECISIONS.md` separates contract-policy decisions from implementation evidence so Dusk can accept v1 behavior or request governed recovery paths. |
-| Long-running local network proof matters | Clean-Rusk TestMock/MessageIdMultisig E2E, 50-transfer restart/backlog stress, and the 3102-second high-volume soak mirror the DuskEVM emphasis on local stack lifecycle and soak evidence. |
+| Long-running local network proof matters | Clean-Rusk TestMock/MessageIdMultisig E2E, 50-transfer restart/backlog stress, the 3102-second high-volume soak, and the later 7282-second/280-transfer clean-Rusk soak mirror the DuskEVM emphasis on local stack lifecycle and soak evidence. |
 
 ## Rusk Wiring Mapping
 
