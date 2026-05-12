@@ -592,9 +592,9 @@ Refs:
   `06dbf75e2d67b0bbc5aa450066bfb5743f79bdd2`
 - Historical clean-layout repro tested Dusk PR branch:
   `889a00bb11d589d268ee928d0855e3724dfab0fe`
-- Previous current-head clean-layout repro tested Dusk PR branch:
+- Previous clean-layout repro tested Dusk PR branch:
   `de9b7fa3c832fb60982d3dbd22c8a59114d37732`
-- Current-head clean-layout repro tested Dusk PR branch:
+- Clean-layout repro tested Dusk PR branch:
   `aa278208b2c2b5f4abc38c32ec792295080014a9`
 - Earlier Hyperlane monorepo branch:
   `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
@@ -618,11 +618,11 @@ Refs:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
 - Historical clean-layout repro tested Hyperlane monorepo branch:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
-- Previous current-head clean-layout repro tested Hyperlane monorepo branch:
+- Previous clean-layout repro tested Hyperlane monorepo branch:
   `a2db5731e385634268071d39b0554883d11d8ac5`
-- Current-head clean-layout repro tested Hyperlane monorepo branch:
+- Clean-layout repro tested Hyperlane monorepo branch:
   `09e62be2e55ecd87d3931f6f10623086befd7848`
-- Latest current-head clean-layout repro tested Hyperlane monorepo branch:
+- Later clean-layout repro tested Hyperlane monorepo branch:
   `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`
 - Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
@@ -633,7 +633,7 @@ Refs:
   symlinked to clean detached worktree
   `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
-- Previous current-head run Rusk path dependency checkout in the temporary layout:
+- Previous clean-layout run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-current-head-1778599935/rusk-private`, symlinked
   to clean detached worktree
   `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
