@@ -15,6 +15,7 @@ SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 CURRENT_E2E_URL="${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}"
 CURRENT_E2E_ARCHIVE_URL="${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}"
+LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572}"
 FETCH_UPSTREAM=0
 
 usage() {
@@ -58,6 +59,9 @@ Environment:
                        Current live-head E2E archive URL expected in active
                        reviewer-facing bodies.
                        Default: $CURRENT_E2E_ARCHIVE_URL
+  LATEST_REPRO_URL     Latest clean-layout repro evidence URL expected in
+                       active reviewer-facing bodies.
+                       Default: $LATEST_REPRO_URL
 EOF
 }
 
@@ -185,6 +189,12 @@ print_link_presence() {
     local body="$2"
 
     echo "$label:"
+    if printf '%s\n' "$body" | grep -Fq "$LATEST_REPRO_URL"; then
+        echo "  latestCleanLayoutRepro: present"
+    else
+        echo "  latestCleanLayoutRepro: missing"
+    fi
+
     if printf '%s\n' "$body" | grep -Fq "$CURRENT_E2E_URL"; then
         echo "  currentLiveHeadE2E: present"
     else

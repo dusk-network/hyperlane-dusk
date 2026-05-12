@@ -318,8 +318,9 @@ Result:
   7 unchecked production sign-off items, all six split decision issues open,
   active-repo untracked source status, default-branch protection and merge
   method settings, no visible GitHub workflow, repo-level Actions secret and
-  self-hosted runner visibility for CI gate #8, current Hyperlane upstream
-  drift, and no placeholder matches in
+  self-hosted runner visibility for CI gate #8, latest clean-layout repro link
+  visibility, current live-head E2E/archive link visibility, current Hyperlane
+  upstream drift, and no placeholder matches in
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
