@@ -176,8 +176,12 @@ heads resolved above so CI evidence matches the PR headers exactly.
 It runs:
 
 ```bash
+set -euo pipefail
 make repro-check-agent
 ```
+
+The workflow explicitly uses `shell: bash` for this final repro step so the
+strict shell flags are applied consistently on the self-hosted runner.
 
 That wraps:
 
