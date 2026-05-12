@@ -81,6 +81,7 @@ running the heavy build/test repro:
 
 ```bash
 make review-gates
+make production-readiness-guard
 make gate-status
 make gate-status-fresh
 ```
@@ -88,6 +89,11 @@ make gate-status-fresh
 `make review-gates` runs the lightweight non-E2E gate bundle:
 `make completion-audit-status`, `make dependency-alert-status`,
 `make review-hygiene`, and `make gate-status-fresh`.
+
+`make production-readiness-guard` is expected to fail while production blockers
+remain open. It reports machine-checkable blockers such as open internal PRs,
+unchecked sign-off items, open split decision issues, missing workflow/runner
+visibility, upstream drift, and latest clean-layout repro covered-path delta.
 
 `make gate-status` calls `scripts/release-gate-status.sh`, which reports local
 worktree state, untracked source status, implementation PR and
@@ -98,8 +104,9 @@ reviewer-facing evidence-link visibility, Dusk Dependabot open-alert
 visibility, local `Cargo.lock` vulnerable-range comparison through
 `make dependency-alert-status`, reviewer-facing `make gate-status-fresh` and
 `make dependency-alert-status`, `make completion-audit-status`, and
-`make review-gates` handoff visibility, Hyperlane upstream drift, latest
-clean-layout repro path delta, and Dusk runtime placeholder scans.
+`make review-gates`, and `make production-readiness-guard` handoff visibility,
+Hyperlane upstream drift, latest clean-layout repro path delta, and Dusk
+runtime placeholder scans.
 `make gate-status-fresh` first fetches Hyperlane `upstream/main` before
 reporting drift. These commands do not close any production gates.
 
