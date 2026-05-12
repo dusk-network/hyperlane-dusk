@@ -90,7 +90,7 @@ workflow-dispatcher PR mergeability/review/status state, production sign-off
 checklist counts, split decision issue states, default-branch protection and
 merge method settings, workflow visibility, CI provisioning visibility,
 reviewer-facing evidence-link visibility, Dusk Dependabot open-alert
-visibility, local `Cargo.lock` first-patched-floor comparison through
+visibility, local `Cargo.lock` vulnerable-range comparison through
 `make dependency-alert-status`, reviewer-facing `make gate-status-fresh` and
 `make dependency-alert-status` handoff visibility, Hyperlane upstream drift,
 and Dusk runtime placeholder scans.

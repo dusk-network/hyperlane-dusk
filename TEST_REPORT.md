@@ -316,8 +316,8 @@ Result:
   and the archive listed above.
 - `make secret-hygiene`: passed.
 - `make dependency-alert-status`: passed; queried 27 open GitHub Dependabot
-  `Cargo.lock` alerts and confirmed all 27 first-patched version floors are
-  satisfied by the current local lockfile package versions. This is a
+  `Cargo.lock` alerts and confirmed all 27 have no current local lockfile
+  package versions within the alert vulnerable ranges. This is a
   feature-branch triage aid and does not replace GitHub closing alerts after a
   default-branch rescan.
 - `make gate-status`: passed; reported the implementation PRs and manual
@@ -329,7 +329,7 @@ Result:
   visibility, post-rebase E2E/archive link visibility,
   dependency-remediated E2E link visibility, advisory reviewer routing link
   visibility, Dusk Dependabot open-alert visibility plus local lockfile
-  first-patched-floor comparison, reviewer-facing `make gate-status-fresh` and
+  vulnerable-range comparison, reviewer-facing `make gate-status-fresh` and
   `make dependency-alert-status` handoff text, current Hyperlane upstream
   drift, and no placeholder matches in tracked Dusk repo runtime paths or
   `rust/main/chains/hyperlane-dusk`.

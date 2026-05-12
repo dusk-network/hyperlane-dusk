@@ -38,7 +38,7 @@ Prints the current machine-checkable review status:
   - repo-level Actions secret and self-hosted runner visibility for CI gate #8
   - reviewer-facing evidence, routing, fresh-gate, and dependency-alert handoff
     visibility
-  - Dusk Dependabot open-alert visibility and local Cargo.lock patched-floor
+  - Dusk Dependabot open-alert visibility and local Cargo.lock vulnerable-range
     comparison
   - Hyperlane upstream/main drift for the local monorepo checkout
   - Dusk agent placeholder scan in rust/main/chains/hyperlane-dusk
