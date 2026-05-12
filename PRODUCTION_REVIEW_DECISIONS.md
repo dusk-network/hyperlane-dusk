@@ -153,8 +153,10 @@ Recommended stance:
 
 Accept the manual self-hosted runner proposal for internal review once Dusk
 provides the `dusk-hyperlane` runner and read-only `DUSK_ORG_READ_TOKEN`.
-When running it from the default branch, set `dusk_ref` and `monorepo_ref` to
-the PR branch or exact commit SHAs under review. Record the workflow URL,
+When running it from the default branch, resolve the live Dusk and monorepo PR
+heads immediately before dispatch and pass those exact SHAs as `dusk_ref` and
+`monorepo_ref`; keep `rusk_ref` pinned to the reviewed clean Rusk commit unless
+Dusk explicitly chooses a different Rusk reference. Record the workflow URL,
 requested refs, resolved checkout heads, and pass/fail result in
 `TEST_REPORT.md`. Promote it to required PR CI only after one stable manual run
 is recorded there.
