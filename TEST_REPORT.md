@@ -320,8 +320,9 @@ Result:
   method settings, no visible GitHub workflow, repo-level Actions secret and
   self-hosted runner visibility for CI gate #8, latest clean-layout repro link
   visibility, current live-head E2E/archive link visibility, advisory reviewer
-  routing link visibility, current Hyperlane upstream drift, and no placeholder
-  matches in tracked Dusk repo runtime paths or
+  routing link visibility, Dusk Dependabot open-alert visibility, current
+  Hyperlane upstream drift, and no placeholder matches in tracked Dusk repo
+  runtime paths or
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest

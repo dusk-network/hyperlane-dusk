@@ -348,6 +348,37 @@ else
 fi
 rm -f /tmp/hyperlane-dusk-org-runners.$$.err
 
+section "Dusk Dependency Alert Visibility"
+dependabot_alerts="/tmp/hyperlane-dusk-dependabot-alerts.$$"
+if gh api "repos/$DUSK_REPO/dependabot/alerts?state=open&per_page=100" --paginate \
+    --jq '.[] | "\(.dependency.package.name)\t\(.dependency.manifest_path)\t\(.security_advisory.severity)\t\(.security_advisory.ghsa_id)"' \
+    >"$dependabot_alerts" 2>/tmp/hyperlane-dusk-dependabot.$$.err; then
+    echo "openAlerts: $(wc -l <"$dependabot_alerts" | tr -d ' ')"
+    if [ -s "$dependabot_alerts" ]; then
+        awk -F '\t' '
+            {
+                key = $1 " (" $2 ")"
+                count[key]++
+                if (sev[key] == "") {
+                    sev[key] = $3
+                } else if (sev[key] !~ "(^|, )" $3 "(,|$)") {
+                    sev[key] = sev[key] ", " $3
+                }
+            }
+
+            END {
+                for (key in count) {
+                    print "  " key ": " count[key] " open; severities: " sev[key]
+                }
+            }
+        ' "$dependabot_alerts" | sort
+    fi
+else
+    echo "openAlerts: unknown"
+    sed 's/^/  /' /tmp/hyperlane-dusk-dependabot.$$.err
+fi
+rm -f "$dependabot_alerts" /tmp/hyperlane-dusk-dependabot.$$.err
+
 section "Hyperlane Upstream Drift"
 if [ -d "$MONOREPO_DIR" ]; then
     if git -C "$MONOREPO_DIR" remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1; then
