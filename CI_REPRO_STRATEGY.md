@@ -147,6 +147,24 @@ as a branch-proposed runner definition and use the local equivalent:
 make repro-check-agent
 ```
 
+This default-branch requirement was checked explicitly on 2026-05-12. A direct
+dispatch attempt against the feature branch failed before scheduling a run:
+
+```bash
+gh workflow run manual-repro-check.yml \
+  --repo dusk-network/hyperlane-dusk \
+  --ref feat/dusk-hardening-v2 \
+  -f dusk_ref=2de3d22b811eda9762599bbbb5c07d2f2fdad52e \
+  -f rusk_ref=c0c64db4659500d077bb253ad13acba0e347d3fc \
+  -f monorepo_ref=ecb11359747dce240a24c50fa229afd4479919b5
+```
+
+Result:
+
+```text
+HTTP 404: Not Found (https://api.github.com/repos/dusk-network/hyperlane-dusk/actions/workflows/manual-repro-check.yml)
+```
+
 ## Artifact Policy
 
 Default policy: upload no artifacts.
