@@ -104,13 +104,18 @@ Evidence:
 - `SECRET_HANDLING.md`.
 - `scripts/secret-hygiene-check.sh`.
 - `make secret-hygiene`.
+- `cargo test -p hyperlane-base dusk` in the companion monorepo, including the
+  Unix loose-permission rejection case for `duskKey.keyFile`.
 
 Recommended stance:
 
 Accept Option A only for internal review and testnet-style validation. Mainnet
 production should explicitly decide whether raw-key presence in a local
 `keyFile` or `keyEnv` source on relayer or validator hosts is acceptable. If it
-is not acceptable, require external signer work before production.
+is not acceptable, require external signer work before production. The current
+branch reduces local-file risk by rejecting non-regular files and, on Unix,
+group/world-readable `keyFile` paths before reading key material; that hardening
+does not replace a custody decision.
 
 ### CI/Repro Runner Strategy
 
@@ -127,13 +132,16 @@ Evidence:
 - `scripts/local-repro-check.sh`.
 - `make repro-check-agent`.
 - `actionlint .github/workflows/manual-repro-check.yml`.
+- Workflow inputs for exact review heads: `dusk_ref`, `rusk_ref`, and
+  `monorepo_ref`.
 
 Recommended stance:
 
 Accept the manual self-hosted runner proposal for internal review once Dusk
 provides the `dusk-hyperlane` runner and read-only `DUSK_ORG_READ_TOKEN`.
-Promote it to required PR CI only after one stable manual run is recorded in
-`TEST_REPORT.md`.
+When running it from the default branch, set `dusk_ref` and `monorepo_ref` to
+the PR branch or exact commit SHAs under review. Promote it to required PR CI
+only after one stable manual run is recorded in `TEST_REPORT.md`.
 
 ### Soak Acceptance
 
