@@ -12,7 +12,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778604592` tested Dusk source ref `aa278208b2c2b5f4abc38c32ec792295080014a9`, monorepo `09e62be2e55ecd87d3931f6f10623086befd7848`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
-| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778604592` tested monorepo `09e62be2e55ecd87d3931f6f10623086befd7848` after rebasing onto upstream `7a362a093d622b69d6c55d47992c9490ec33fb1a`, with Dusk source ref `aa278208b2c2b5f4abc38c32ec792295080014a9` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest live monorepo branch was rebased onto upstream `c6bce706316206ac7b5652155c9ea92e96f78c39` and checked at `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; latest clean-layout repro run `1778604592` tested monorepo `09e62be2e55ecd87d3931f6f10623086befd7848` after rebasing onto upstream `7a362a093d622b69d6c55d47992c9490ec33fb1a`, with Dusk source ref `aa278208b2c2b5f4abc38c32ec792295080014a9` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -68,6 +68,17 @@ Notes:
   Dusk branch changes after the clean-layout repro monorepo ref are Dusk
   upstream compatibility/PR-plan docs. `git diff --check`, the Dusk agent
   placeholder scan, and the targeted Rust agent check passed after the rebase.
+- After upstream Hyperlane advanced to
+  `c6bce706316206ac7b5652155c9ea92e96f78c39`, the monorepo PR branch was
+  rebased again and pushed at
+  `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`. The upstream change reduces a
+  Rust relayer CCIP-read retry interval. Dusk still returns explicit
+  unsupported errors for CCIP-read ISMs in this branch, so this does not expand
+  the supported Dusk behavior. `git diff --check`, the Dusk agent placeholder
+  scan, and
+  `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander`
+  passed after the rebase. The full clean-layout repro was not rerun for this
+  post-rebase head.
 - The latest review-head repro/E2E logs and the 7282-second high-volume soak
   logs were copied from `/tmp` into durable local handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`.
@@ -431,6 +442,9 @@ Refs:
   `a2db5731e385634268071d39b0554883d11d8ac5`
 - Current-head clean-layout repro tested Hyperlane monorepo branch:
   `09e62be2e55ecd87d3931f6f10623086befd7848`
+- Latest post-rebase Hyperlane monorepo branch checked with targeted Rust agent
+  `cargo check`:
+  `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`
 - Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
   detached worktree `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db`
@@ -606,6 +620,9 @@ Result:
 - Passed again after rebasing `feat/dusk-support-v2` onto upstream Hyperlane
   `main` at `7a362a093d622b69d6c55d47992c9490ec33fb1a`; post-rebase head
   `09e62be2e55ecd87d3931f6f10623086befd7848`.
+- Passed again after rebasing `feat/dusk-support-v2` onto upstream Hyperlane
+  `main` at `c6bce706316206ac7b5652155c9ea92e96f78c39`; post-rebase head
+  `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`.
 - Passed after adding file/env-backed `duskKey` signer sources.
 
 ### Local EVM <-> Dusk Agent E2E: TestMock ISM
