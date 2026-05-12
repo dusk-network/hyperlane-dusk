@@ -96,9 +96,9 @@ Observed:
   default-branch protection and merge method settings, repo-level Actions
   secret and self-hosted runner visibility, current upstream drift, and no
   placeholder macro matches in the Dusk agent crate. It also reports whether
-  active reviewer-facing PR/issue bodies include the current live-head E2E
-  evidence and archive links for
-  `rust/main/chains/hyperlane-dusk`.
+  active reviewer-facing PR/issue bodies include post-rebase E2E/archive links,
+  dependency-remediated E2E, latest clean-layout repro, and reviewer-routing
+  links.
 
 ## Prompt-To-Artifact Deliverable Checklist
 
