@@ -151,13 +151,63 @@ check_pr_head_claims() {
     local patterns="$4"
     local live_head
     local claims
+    local filtered
     local mismatches
 
     live_head="$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)"
     claims="$EXPORT_DIR/pr-head-claims-$pr.txt"
+    filtered="$EXPORT_DIR/pr-head-filtered-$pr.txt"
     mismatches="$EXPORT_DIR/pr-head-mismatches-$pr.txt"
 
-    if rg -n -o -e "$patterns" "$EXPORT_DIR" >"$claims"; then
+    for file in "$EXPORT_DIR"/*-body.txt; do
+        printf 'FILE=%s\n' "$file" >>"$filtered"
+        cat "$file" >>"$filtered"
+        printf '\n---END---\n' >>"$filtered"
+    done
+
+    for file in "$EXPORT_DIR"/*-comments.txt; do
+        awk -v file="$file" '
+            function flush_comment() {
+                if (id != "" && !superseded) {
+                    print "FILE=" file ":COMMENT_ID=" id
+                    printf "%s", body
+                    print "\n---END---"
+                }
+            }
+
+            /^COMMENT_ID=/ {
+                flush_comment()
+                id = substr($0, 12)
+                line_no = 0
+                superseded = 0
+                body = ""
+                next
+            }
+
+            /^---END---$/ {
+                flush_comment()
+                id = ""
+                body = ""
+                next
+            }
+
+            {
+                if (id != "") {
+                    line_no++
+                    if (line_no <= 5 && $0 ~ /^Superseded historical status snapshot\./) {
+                        superseded = 1
+                    }
+                    body = body $0 "\n"
+                }
+            }
+
+            END {
+                flush_comment()
+            }
+        ' "$file" >>"$filtered"
+    done
+
+    if rg -n -o -e "$patterns" "$filtered" >"$claims"; then
         while IFS= read -r claim; do
             claim_sha="$(printf '%s\n' "$claim" | rg -o '[0-9a-f]{40}' | head -n1)"
             if [ "$claim_sha" != "$live_head" ]; then
@@ -170,26 +220,26 @@ check_pr_head_claims() {
             fail "stale $label current-head claim found; live head is $live_head"
         fi
     fi
-    rm -f "$claims" "$mismatches"
+    rm -f "$claims" "$filtered" "$mismatches"
 }
 
 check_pr_head_claims \
     "Dusk PR #1" \
     "$DUSK_REPO" \
     1 \
-    "(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
+    "(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Dusk PR #1 head: .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
 
 check_pr_head_claims \
     "monorepo PR #1" \
     "$MONOREPO_REPO" \
     1 \
-    "Monorepo PR #1 current head: .?[0-9a-f]{40}|Monorepo PR #1: .?[0-9a-f]{40}"
+    "Monorepo PR #1 current head: .?[0-9a-f]{40}|Monorepo PR #1 head: .?[0-9a-f]{40}|Monorepo PR #1: .?[0-9a-f]{40}"
 
 check_pr_head_claims \
     "workflow dispatcher PR #3" \
     "$DUSK_REPO" \
     3 \
-    "Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
+    "Manual workflow dispatcher PR #3 head: .?[0-9a-f]{40}|Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
 
 snapshot_markers="Current output after push|Cross-repo handoff refresh on 2026-05-12|Pushed two docs/workflow-only updates|Docs-only wording refresh pushed"
 snapshot_mismatches="$EXPORT_DIR/unsuperseded-status-snapshots.txt"
