@@ -13,6 +13,9 @@ In `hyperlane-base`, `SignerConf::DuskKey` accepts exactly one of:
 - `keyFile`: path to a file containing the raw BLS key.
 - `keyEnv`: environment variable containing the raw BLS key.
 
+On Unix, `keyFile` is accepted only when it points at a regular file with no
+group or world permissions.
+
 Current implication:
 
 - Dusk relayer/validator transaction signing can work from generated local agent
@@ -50,8 +53,8 @@ production-readiness claim:
 - Runtime config files should use `keyFile` or `keyEnv`, not inline `key`, for
   Dusk signer material. The underlying secret source must still be approved by
   Dusk operations.
-- Files containing signer material must be readable only by the agent user
-  (`0600` file mode or stricter equivalent).
+- Files containing signer material must be regular files readable only by the
+  agent user (`0600` file mode or stricter equivalent).
 - Relayer and validator keys should be distinct unless Dusk explicitly accepts
   shared-key operation for a test environment.
 - Mainnet keys should be distinct from testnet/devnet keys.

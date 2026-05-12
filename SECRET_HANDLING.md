@@ -15,6 +15,8 @@ demo keys are not production keys.
 - Do not upload `/tmp/hyperlane-relayer-*.json`,
   `/tmp/hyperlane-validator-*.json`, `demo/.env*`, `e2e/consensus.keys`,
   `*.key`, `*.keys`, or password files as CI artifacts.
+- Dusk `duskKey.keyFile` paths must point at regular files with no group/world
+  permissions on Unix.
 
 `PRODUCTION_SIGNER_POLICY.md` records the current `duskKey` signer-file/env
 support and the signer-custody choices that Dusk must accept, change, or
