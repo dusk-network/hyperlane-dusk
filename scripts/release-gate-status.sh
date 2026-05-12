@@ -14,6 +14,8 @@ WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_PLACEHOLDER_PATHS="${DUSK_PLACEHOLDER_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo}"
+DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo Cargo.toml Cargo.lock}"
+LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-016eaa89e1afce0ef9a7534fe285d9aa16e26183}"
 POST_REBASE_E2E_URL="${POST_REBASE_E2E_URL:-${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}}"
 POST_REBASE_E2E_ARCHIVE_URL="${POST_REBASE_E2E_ARCHIVE_URL:-${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}}"
 DEPENDENCY_REMEDIATED_E2E_URL="${DEPENDENCY_REMEDIATED_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389}"
@@ -41,6 +43,7 @@ Prints the current machine-checkable review status:
   - Dusk Dependabot open-alert visibility and local Cargo.lock vulnerable-range
     comparison
   - Hyperlane upstream/main drift for the local monorepo checkout
+  - Dusk path delta since the latest clean-layout repro source ref
   - Dusk agent placeholder scan in rust/main/chains/hyperlane-dusk
 
 Options:
@@ -65,6 +68,14 @@ Environment:
                        Space-separated tracked Dusk repo paths scanned for
                        runtime placeholder macros.
                        Default: $DUSK_PLACEHOLDER_PATHS
+  DUSK_REPRO_COVERED_PATHS
+                       Space-separated Dusk repo paths whose changes would make
+                       the latest clean-layout repro stale for runtime/test
+                       source coverage.
+                       Default: $DUSK_REPRO_COVERED_PATHS
+  LATEST_REPRO_DUSK_REF
+                       Dusk source ref covered by the latest clean-layout repro.
+                       Default: $LATEST_REPRO_DUSK_REF
   POST_REBASE_E2E_URL  Post-rebase E2E evidence URL expected in active
                        reviewer-facing bodies.
                        Default: $POST_REBASE_E2E_URL
@@ -464,6 +475,32 @@ if [ -d "$MONOREPO_DIR/rust/main/chains/hyperlane-dusk" ]; then
     fi
 else
     echo "missing Dusk chain crate in monorepo checkout"
+fi
+
+section "Latest Clean Repro Delta"
+echo "latestReproDuskRef: $LATEST_REPRO_DUSK_REF"
+echo "reproCoveredPaths: $DUSK_REPRO_COVERED_PATHS"
+if git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/null 2>&1; then
+    all_delta="/tmp/hyperlane-dusk-latest-repro-all-delta.$$"
+    covered_delta="/tmp/hyperlane-dusk-latest-repro-covered-delta.$$"
+    git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF"..HEAD >"$all_delta"
+    git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF"..HEAD -- $DUSK_REPRO_COVERED_PATHS >"$covered_delta"
+    echo "changedPathsSinceLatestRepro: $(wc -l <"$all_delta" | tr -d ' ')"
+    if [ -s "$covered_delta" ]; then
+        echo "coveredPathDelta: present"
+        sed 's/^/  /' "$covered_delta"
+    else
+        echo "coveredPathDelta: none"
+    fi
+    if [ -s "$all_delta" ]; then
+        echo "allPathDelta:"
+        sed 's/^/  /' "$all_delta"
+    else
+        echo "allPathDelta: none"
+    fi
+    rm -f "$all_delta" "$covered_delta"
+else
+    echo "latestReproDuskRefStatus: missing"
 fi
 
 section "Summary"

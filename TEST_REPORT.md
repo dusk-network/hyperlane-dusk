@@ -332,8 +332,9 @@ Result:
   visibility, Dusk Dependabot open-alert visibility plus local lockfile
   vulnerable-range comparison, reviewer-facing `make gate-status-fresh` and
   `make dependency-alert-status` handoff text, current Hyperlane upstream
-  drift, and no placeholder matches in tracked Dusk repo runtime paths or
-  `rust/main/chains/hyperlane-dusk`.
+  drift, no covered-path delta since latest clean-layout repro source ref
+  `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, and no placeholder matches in
+  tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   current-head run `1778615349` passed against Dusk source ref
