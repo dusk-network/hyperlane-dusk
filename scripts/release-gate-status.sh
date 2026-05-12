@@ -20,6 +20,7 @@ DEPENDENCY_REMEDIATED_E2E_URL="${DEPENDENCY_REMEDIATED_E2E_URL:-https://github.c
 LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572}"
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
 GATE_STATUS_FRESH_TEXT="${GATE_STATUS_FRESH_TEXT:-make gate-status-fresh}"
+DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-alert-status}"
 FETCH_UPSTREAM=0
 
 usage() {
@@ -81,6 +82,10 @@ Environment:
                        Text expected in active implementation PR and sign-off
                        bodies to expose the fresh upstream gate command.
                        Default: $GATE_STATUS_FRESH_TEXT
+  DEPENDENCY_ALERT_STATUS_TEXT
+                       Text expected in active implementation PR and sign-off
+                       bodies to expose the dependency alert comparison.
+                       Default: $DEPENDENCY_ALERT_STATUS_TEXT
 EOF
 }
 
@@ -242,6 +247,12 @@ print_link_presence() {
         echo "  freshGateHandoff: present"
     else
         echo "  freshGateHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$DEPENDENCY_ALERT_STATUS_TEXT"; then
+        echo "  dependencyAlertHandoff: present"
+    else
+        echo "  dependencyAlertHandoff: missing"
     fi
 }
 
