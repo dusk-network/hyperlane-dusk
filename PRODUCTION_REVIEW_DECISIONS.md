@@ -139,23 +139,26 @@ Promote it to required PR CI only after one stable manual run is recorded in
 
 Decision:
 
-- [ ] Accept the current 3102-second clean-Rusk high-volume soak.
-- [ ] Require an hours-long time-boxed soak before internal release.
+- [ ] Accept the current 7282-second clean-Rusk high-volume soak.
+- [ ] Require a longer or differently shaped soak before internal release.
 
 Current evidence:
 
-- `TEST_REPORT.md`, run id `1778530903`.
-- 3 cycles.
+- `TEST_REPORT.md`, run id `1778541618`.
+- 7 cycles.
 - 20 EVM -> Dusk and 20 Dusk -> EVM transfers per cycle.
-- 120 total transfers.
-- 3102 seconds.
+- 280 total transfers.
+- 7282 seconds.
+- The wrapper stopped before cycle 8 because the 120-minute time budget had
+  been reached.
 - Clean detached Rusk reference
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 
 Recommended stance:
 
-Accept for internal review evidence. Require an hours-long soak only if Dusk
-wants a formal release gate before production claims.
+Accept for internal review evidence. Require a longer or differently shaped
+soak only if Dusk wants a stricter formal release gate before production
+claims.
 
 ## Upstream Preparation Decision
 
