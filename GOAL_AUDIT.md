@@ -143,6 +143,7 @@ Observed:
 | Security assumptions, fixes, Solidity deviations, reviewer decisions | `SECURITY_REVIEW.md` |
 | Dusk reference traceability | `REFERENCE_TRACEABILITY.md` |
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
+| Advisory reviewer routing | `REVIEWERS.md`; routes Dusk contract/tooling/security review to `moCello`, Hyperlane agent/runtime review to `Neotamandua`, split decision issues #4 through #9 to the named Dusk reviewers, and keeps production sign-off in dusk-network/hyperlane-dusk#2 |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `scripts/github-review-hygiene.sh`, `make secret-hygiene`, `make review-hygiene` |
 | Latest repro link guardrail | `scripts/github-review-hygiene.sh`, `scripts/release-gate-status.sh`, `make review-hygiene`, `make gate-status`; Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies must include or visibly report https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572 and must not include the superseded `1778607202`/`4433179148` clean-layout repro evidence |
 | CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, dusk-network/hyperlane-dusk#3, dusk-network/hyperlane-dusk#8 |
@@ -193,11 +194,12 @@ Observed:
 4. Upstream Hyperlane draft PRs should not be prepared until the internal Dusk
    PRs complete review.
 5. The Hyperlane monorepo fork has upstream `.github/CODEOWNERS` routing
-   `rust/` to Hyperlane's `@tkporter`; the companion Dusk repo has no
-   `CODEOWNERS`, `OWNERS`, or `MAINTAINERS` file. Internal Dusk agent/runtime
-   review is still requested from `Neotamandua`, based on recent Rusk
-   HTTP/RUES/GraphQL route ownership, because the remaining decisions are
-   Dusk/Rusk-specific and not covered by upstream Hyperlane ownership alone.
+   `rust/` to Hyperlane's `@tkporter`. The companion Dusk repo now has
+   advisory reviewer routing in `REVIEWERS.md`, but no enforced `CODEOWNERS`
+   or branch-protection ownership. Internal Dusk agent/runtime review is still
+   requested from `Neotamandua`, based on recent Rusk HTTP/RUES/GraphQL route
+   ownership, because the remaining decisions are Dusk/Rusk-specific and not
+   covered by upstream Hyperlane ownership alone.
 6. CI/repro runner strategy remains a release gate. Both internal PRs currently
    have empty status-check rollups, and the Dusk workspace depends on an
    adjacent private `rusk-private` checkout. `make repro-check` and

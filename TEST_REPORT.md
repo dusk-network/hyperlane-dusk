@@ -1691,7 +1691,9 @@ Result:
   Dusk reviewers should decide whether that hours-long soak evidence is enough
   for the intended release gate.
 - Have Dusk reviewers accept or change the open production review decisions
-  recorded in `SECURITY_REVIEW.md`.
+  recorded in `SECURITY_REVIEW.md`. `REVIEWERS.md` records advisory routing for
+  the active PRs and split decision issues, but does not replace Dusk
+  production sign-off.
 - Production secret handling remains an operational gate. The local scripts use
   ignored dev configs and `/tmp` runtime artifacts, and Dusk consensus
   passwords are no longer passed through `dusk-tx` process argv. `make
