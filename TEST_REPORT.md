@@ -11,8 +11,8 @@ production-review gates and useful follow-up test areas are listed at the end.
 
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778599935` tested Dusk PR head `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
-| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778599935` tested monorepo `a2db5731e385634268071d39b0554883d11d8ac5` after rebasing onto upstream `66e8c1f4644cea0392b33007225e6611b8f06804`, with Dusk PR head `de9b7fa3c832fb60982d3dbd22c8a59114d37732` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778599935` tested Dusk source ref `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778599935` tested monorepo `a2db5731e385634268071d39b0554883d11d8ac5` after rebasing onto upstream `66e8c1f4644cea0392b33007225e6611b8f06804`, with Dusk source ref `de9b7fa3c832fb60982d3dbd22c8a59114d37732` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -75,7 +75,7 @@ Notes:
   `e8c17cb43da130091a52b2c711aa64d0fef000b599997a372c968970c52dfa7e`.
   `scripts/secret-hygiene-check.sh` passed over both the archive staging
   directory and the tarball.
-- The latest clean-layout repro for Dusk PR head `de9b7fa` was copied into
+- The latest clean-layout repro for Dusk source ref `de9b7fa` was copied into
   durable local handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778599935.tgz`.
   SHA256:
@@ -166,7 +166,7 @@ Result:
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
-  current-head run `1778599935` passed against Dusk PR head
+  current-head run `1778599935` passed against Dusk source ref
   `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo
   `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
@@ -252,7 +252,7 @@ Result:
   `lander`. Local log:
   `/tmp/hyperlane-dusk-repro-final-head-1778596710.log`. Durable archive:
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-final-head-repro-20260512T144314Z.tgz`.
-- Current-head clean-layout repro run `1778599935` passed against Dusk PR head
+- Current-head clean-layout repro run `1778599935` passed against Dusk source ref
   `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo
   `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk
   `c0c64db4659500d077bb253ad13acba0e347d3fc`. It covered Dusk contract WASM
