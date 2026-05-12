@@ -61,18 +61,18 @@ if bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-17785303
   exit 1
 fi
 gh api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .body \
-  >/tmp/hyperlane-gh-review-text-1778551243/dusk-pr-1-body.txt
+  >/tmp/hyperlane-gh-review-text-1778551437/dusk-pr-1-body.txt
 gh api repos/dusk-network/hyperlane-monorepo/pulls/1 --jq .body \
-  >/tmp/hyperlane-gh-review-text-1778551243/monorepo-pr-1-body.txt
+  >/tmp/hyperlane-gh-review-text-1778551437/monorepo-pr-1-body.txt
 gh api repos/dusk-network/hyperlane-dusk/issues/2 --jq .body \
-  >/tmp/hyperlane-gh-review-text-1778551243/dusk-issue-2-body.txt
+  >/tmp/hyperlane-gh-review-text-1778551437/dusk-issue-2-body.txt
 gh api repos/dusk-network/hyperlane-dusk/issues/1/comments --paginate --jq '.[].body' \
-  >/tmp/hyperlane-gh-review-text-1778551243/dusk-pr-1-comments.txt
+  >/tmp/hyperlane-gh-review-text-1778551437/dusk-pr-1-comments.txt
 gh api repos/dusk-network/hyperlane-monorepo/issues/1/comments --paginate --jq '.[].body' \
-  >/tmp/hyperlane-gh-review-text-1778551243/monorepo-pr-1-comments.txt
+  >/tmp/hyperlane-gh-review-text-1778551437/monorepo-pr-1-comments.txt
 gh api repos/dusk-network/hyperlane-dusk/issues/2/comments --paginate --jq '.[].body' \
-  >/tmp/hyperlane-gh-review-text-1778551243/dusk-issue-2-comments.txt
-bash scripts/secret-hygiene-check.sh /tmp/hyperlane-gh-review-text-1778551243
+  >/tmp/hyperlane-gh-review-text-1778551437/dusk-issue-2-comments.txt
+bash scripts/secret-hygiene-check.sh /tmp/hyperlane-gh-review-text-1778551437
 ```
 
 Result:
@@ -105,9 +105,9 @@ Result:
   generated configs use `duskKey.keyFile` for the Dusk side, while the local EVM
   side still uses Anvil `hexKey` material.
 - Exported GitHub-facing PR and sign-off tracker text under
-  `/tmp/hyperlane-gh-review-text-1778551243` and scanned it with
+  `/tmp/hyperlane-gh-review-text-1778551437` and scanned it with
   `scripts/secret-hygiene-check.sh`: passed after removing literal password
-  flag text from PR body prose.
+  flag text from PR body prose and correcting tested-SHA wording for repro `1778550420`.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 
