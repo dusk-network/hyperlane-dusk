@@ -106,8 +106,9 @@ visibility, local `Cargo.lock` vulnerable-range comparison through
 `make dependency-alert-status`, reviewer-facing `make gate-status-fresh` and
 `make dependency-alert-status`, `make completion-audit-status`, and
 `make review-gates`, and `make production-readiness-guard` handoff visibility,
-Hyperlane upstream drift, latest clean-layout repro path delta, and Dusk
-runtime placeholder scans.
+reviewer-facing branch protection/status-check policy handoff visibility,
+Hyperlane upstream drift, latest clean-layout repro path delta, and Dusk runtime
+placeholder scans.
 `make gate-status-fresh` first fetches Hyperlane `upstream/main` before
 reporting drift. These commands do not close any production gates.
 

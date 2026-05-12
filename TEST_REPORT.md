@@ -339,7 +339,8 @@ Result:
   vulnerable-range comparison, reviewer-facing `make gate-status-fresh`,
   `make dependency-alert-status`, and `make completion-audit-status` handoff
   text, reviewer-facing `make review-gates` and
-  `make production-readiness-guard` handoff text, reviewer-facing latest
+  `make production-readiness-guard` handoff text, reviewer-facing branch
+  protection/status-check policy handoff text, reviewer-facing latest
   clean-layout repro path delta handoff text, current Hyperlane upstream drift,
   no covered-path delta since latest clean-layout repro source ref
   `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, and no placeholder matches in

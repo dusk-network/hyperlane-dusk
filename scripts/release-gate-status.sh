@@ -26,6 +26,7 @@ DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-al
 COMPLETION_AUDIT_STATUS_TEXT="${COMPLETION_AUDIT_STATUS_TEXT:-make completion-audit-status}"
 REVIEW_GATES_TEXT="${REVIEW_GATES_TEXT:-make review-gates}"
 PRODUCTION_READINESS_GUARD_TEXT="${PRODUCTION_READINESS_GUARD_TEXT:-make production-readiness-guard}"
+BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-branch protection/status-check policy}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
 FETCH_UPSTREAM=0
 
@@ -116,6 +117,10 @@ Environment:
                        Text expected in active implementation PR and sign-off
                        bodies to expose the blocking production readiness guard.
                        Default: $PRODUCTION_READINESS_GUARD_TEXT
+  BRANCH_PROTECTION_STATUS_TEXT
+                       Text expected in active implementation PR and sign-off
+                       bodies to expose the branch protection/status-check gate.
+                       Default: $BRANCH_PROTECTION_STATUS_TEXT
   REPRO_PATH_DELTA_TEXT
                        Text expected in active implementation PR and sign-off
                        bodies to expose latest clean-layout repro path delta.
@@ -305,6 +310,12 @@ print_link_presence() {
         echo "  productionReadinessGuardHandoff: present"
     else
         echo "  productionReadinessGuardHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$BRANCH_PROTECTION_STATUS_TEXT"; then
+        echo "  branchProtectionStatusHandoff: present"
+    else
+        echo "  branchProtectionStatusHandoff: missing"
     fi
 
     if printf '%s\n' "$body" | grep -Fq "$REPRO_PATH_DELTA_TEXT"; then
