@@ -144,6 +144,8 @@ Observed:
 | Hyperlane monorepo integration PR | https://github.com/dusk-network/hyperlane-monorepo/pull/1 |
 | Upstream compatibility review | `dusk-network/hyperlane-monorepo` `docs/dusk-upstream-compatibility-review.md` |
 | Production sign-off tracker | https://github.com/dusk-network/hyperlane-dusk/issues/2 |
+| Consolidated review entry points | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427052555 |
+| Focused decision evidence comments | #4 https://github.com/dusk-network/hyperlane-dusk/issues/4#issuecomment-4427024964; #5 https://github.com/dusk-network/hyperlane-dusk/issues/5#issuecomment-4427030597; #6 https://github.com/dusk-network/hyperlane-dusk/issues/6#issuecomment-4427030602; #7 https://github.com/dusk-network/hyperlane-dusk/issues/7#issuecomment-4427035690; #8 https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4427017481; #9 https://github.com/dusk-network/hyperlane-dusk/issues/9#issuecomment-4427046636 |
 
 ## Remaining Gates
 
@@ -191,7 +193,9 @@ Observed:
    dusk-network/hyperlane-dusk#9:
    Mailbox sender resolution, immutable account registration, pending escrow
    recovery, production signer custody, CI/repro runner policy, and soak
-   acceptance.
+   acceptance. Each split issue now has a source/evidence comment linked from
+   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427052555
+   for reviewer routing.
 
 ## Completion Decision
 
