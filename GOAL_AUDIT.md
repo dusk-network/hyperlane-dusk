@@ -2,10 +2,10 @@
 
 Date: 2026-05-12
 
-This audit maps the original revival/hardening goal to concrete artifacts. It
-is intentionally not a production-readiness sign-off. Items marked `Gated`
-need Dusk reviewer acceptance or additional release evidence before upstream
-submission or production claims.
+This audit maps the original revival/hardening goal to concrete artifacts and
+current gates. It is intentionally not a production-readiness sign-off. Items
+marked `Gated` need Dusk reviewer acceptance or additional release evidence
+before upstream submission or production claims.
 
 ## Completion Audit Summary
 
@@ -23,16 +23,18 @@ Objective restated as concrete success criteria:
    review/sign-off gates are closed.
 
 Audit result: criteria 1-5 have concrete repository, command, and artifact
-evidence. Criterion 6 is intentionally incomplete because internal Dusk review,
-production signer/CI policy, CI runner strategy, and soak acceptance are still
-open in `dusk-network/hyperlane-dusk#2`.
+evidence. Criterion 6 has internal review PRs prepared, but the overall goal is
+not complete because internal Dusk review, production signer/CI policy, CI
+runner strategy, and soak acceptance are still open in
+`dusk-network/hyperlane-dusk#2` and split decision issues #4 through #9.
 
 ## Branches And Evidence Commits
 
 | Component | Branch | Evidence | State |
 |---|---|---|---|
-| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; cleanup regression guard commit `fd5269a6983fc920b5f2d1201b162ff7c11bbef0`; later commits refresh audit, CI/repro, signer, default-branch, cross-repo handoff docs, generated signer key cleanup, and cleanup regression guards; `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the current review-head run at Dusk `fc9ed45f9661a843d053ebddcc89666ef187e5c2` and monorepo `ecb11359747dce240a24c50fa229afd4479919b5` | Internal PR ready for review, open, mergeable; review requested from `moCello`; labels `need:feedback`, `type:feature`; no status checks configured |
+| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Current pushed head `fd37c8769bf92c2cf5f9b201019d71bb3b9613b3`; implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; cleanup regression guard commit `fd5269a6983fc920b5f2d1201b162ff7c11bbef0`; later commits refresh audit, CI/repro, signer, default-branch, cross-repo handoff docs, generated signer key cleanup, cleanup regression guards, gate-status reporting, and split decision issue routing; `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the current review-head run at Dusk `fc9ed45f9661a843d053ebddcc89666ef187e5c2` and monorepo `ecb11359747dce240a24c50fa229afd4479919b5` | Internal PR ready for review, open, mergeable; review requested from `moCello`; labels `need:feedback`, `type:feature`; no status checks configured |
 | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Current pushed head `ecb11359747dce240a24c50fa229afd4479919b5`; rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility review documented in `docs/dusk-upstream-compatibility-review.md`; companion `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the file-backed Dusk signer parser/builder and key-file permission update | Internal PR ready for review, open, mergeable; review requested from `Neotamandua`; labels `need:feedback`, `type:feature`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
+| `dusk-network/hyperlane-dusk` workflow dispatcher | `ci/manual-repro-workflow` | Current pushed head `bfa89fab585f3ee43c86d05b549aabc8d8579ddc`; contains only `.github/workflows/manual-repro-check.yml` and `.github/actionlint.yaml` | Narrow default-branch PR #3 ready for review, open, mergeable; review requested from `moCello` and `Neotamandua`; labels `need:feedback`, `type:docs`; no status checks configured |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
 
 Live verification on 2026-05-12:
@@ -42,6 +44,10 @@ gh pr view 1 --repo dusk-network/hyperlane-dusk \
   --json state,mergeable,headRefOid,reviewRequests,statusCheckRollup
 gh pr view 1 --repo dusk-network/hyperlane-monorepo \
   --json state,mergeable,headRefOid,reviewRequests,statusCheckRollup
+gh pr view 3 --repo dusk-network/hyperlane-dusk \
+  --json state,mergeable,headRefOid,reviewRequests,statusCheckRollup
+gh issue list --repo dusk-network/hyperlane-dusk --state open \
+  --json number,title,assignees,labels,updatedAt --limit 20
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-parse upstream/main
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstream/main
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-list --left-right --count HEAD...upstream/main
@@ -58,6 +64,11 @@ Observed:
 - The live PR head SHAs are intentionally checked through GitHub instead of
   pinned in this file; documentation-only commits on this branch would
   otherwise make the file stale immediately.
+- Manual workflow dispatcher PR #3 is ready for review, open, mergeable, and
+  contains only the workflow and actionlint files needed to make manual
+  `workflow_dispatch` available from the default branch after Dusk review.
+- Split decision issues #4 through #9 are all open with `need:feedback` and
+  `type:rfc` labels.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
   `f758a70630fd72d4749c3afb79454e725b8081a8`.
 - The monorepo Dusk branch is `16 0` relative to `upstream/main`, so it is not
@@ -83,7 +94,7 @@ Observed:
   decision issues open, no visible workflow, upstream drift `16 0`, and no
   placeholder macro matches in `rust/main/chains/hyperlane-dusk`.
 
-## Deliverable Checklist
+## Prompt-To-Artifact Deliverable Checklist
 
 | Requirement | Evidence | Status |
 |---|---|---|
