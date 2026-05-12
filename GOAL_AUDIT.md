@@ -154,7 +154,7 @@ Observed:
 | Production sign-off tracker | https://github.com/dusk-network/hyperlane-dusk/issues/2 |
 | Consolidated review entry points | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427052555 |
 | Recent head and gate refresh | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4431766283 |
-| Latest clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4432215201 |
+| Latest clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4432879665 |
 | Historical clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427472641 |
 | Review-head clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430201984 |
 | Review-head clean-Rusk E2E evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430343619 |

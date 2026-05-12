@@ -221,7 +221,7 @@ Result:
   `scripts/secret-hygiene-check.sh` passed for the exported directory.
 - `make review-hygiene`: repeatable wrapper around
   `scripts/github-review-hygiene.sh`; passed with export directory
-  `/tmp/hyperlane-review-export-1778604427`. It exports Dusk PR #1,
+  `/tmp/hyperlane-review-export-1778605694`. It exports Dusk PR #1,
   workflow PR #3, monorepo PR #1, sign-off issue #2, split issues #4-#9, and
   their comments, scans for known stale evidence refs/wording, validates
   explicit current-head claims for Dusk PR #1, monorepo PR #1, and workflow
