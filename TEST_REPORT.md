@@ -102,7 +102,9 @@ Result:
 
 - `make all`: passed, all contract WASMs built.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
-- `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: passed, 70 tests in the
+  latest run. Earlier runs in this section passed 67 tests before the Mailbox
+  fee-overflow and fee-accounting overflow regressions were added.
 - `cargo test -p dusk-tx`: passed, 3 tests.
 - `make secret-hygiene`: passed.
 - `make gate-status`: passed; reported the implementation PRs and manual
@@ -1121,6 +1123,9 @@ documented recovery/failure modes do not depend on the dirty local Rusk patch.
   `test_igp_rejects_total_gas_payment_overflow`.
 - Changed Mailbox `processed_count` and IGP `gas_payment_count` to use checked
   `u32` conversions instead of truncating query lengths.
+- Confirmed the workspace release profile sets `overflow-checks = true` in
+  `Cargo.toml`; the explicit checked arithmetic above is kept so the safety
+  invariants do not depend only on a build-profile setting.
 
 Event annotation verification:
 
@@ -1140,7 +1145,7 @@ Result:
 - `cargo test -p hyperlane-dusk-types` passed:
   `28 passed; 0 failed; 0 ignored`.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:
-  `68 passed; 0 failed; 0 ignored`.
+  `70 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 

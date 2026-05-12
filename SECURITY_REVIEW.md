@@ -30,7 +30,12 @@ Dusk contracts compile to `wasm32-unknown-unknown` and run on the `piecrust` VM 
 - **Transfer contract**: System contract that manages account balances. Contracts interact with it for deposits (`"deposit"`), withdrawals (`"contract_to_account"`), and balance queries.
 - **`abi::caller()`**: Returns `Option<ContractId>` - the immediate calling contract. Returns `None` only in `direct_call` test mode.
 - **`abi::public_sender()`**: Returns the BLS public key of the Moonlight TX signer. Only available within a Moonlight TX context.
-- **Release WASM builds**: Rust release builds for WASM do NOT panic on integer overflow. Arithmetic wraps silently. This is different from debug builds where overflow panics. This means explicit checked arithmetic is mandatory for security-sensitive operations.
+- **Release WASM builds**: Rust release builds normally do not panic on integer
+  overflow unless overflow checks are enabled. This workspace explicitly sets
+  `[profile.release] overflow-checks = true` in `Cargo.toml` for contract
+  safety. Security-sensitive arithmetic still uses explicit checked operations
+  so the invariant does not rely only on a workspace profile setting, and so
+  the intended error is clear to reviewers and operators.
 
 ## Issues Found & Fixes Applied
 
@@ -144,7 +149,12 @@ fn mint(&mut self, account: Account, amount: u64) {
     self.supply += amount;
 }
 ```
-In release WASM builds, `u64` overflow wraps silently (Rust release mode does not panic on overflow for `wasm32-unknown-unknown`). An attacker could mint tokens in a way that wraps the balance or supply counter back to a small number, breaking accounting invariants.
+With Rust's default release profile, `u64` overflow wraps silently. This
+workspace enables release overflow checks, but relying only on a profile
+setting would make the contract safety property harder to audit and easier to
+break through an alternate build path. An attacker should never be able to mint
+tokens in a way that wraps the balance or supply counter back to a small
+number, because that would break accounting invariants.
 
 **After**: Additions use `checked_add`; supply burn uses `checked_sub`:
 ```rust
@@ -208,7 +218,10 @@ self.collected_fees += self.protocol_fee;
 // IGP
 self.total_gas_payments += payment;
 ```
-These accumulators are append-only counters tracking total fees/payments over the lifetime of the contract. With enough dispatches, they could wrap in release builds.
+These accumulators are append-only counters tracking total fees/payments over
+the lifetime of the contract. With enough dispatches, they could wrap under
+Rust's default release arithmetic semantics, or become dependent on the
+workspace release profile rather than a local contract invariant.
 
 **After**: Changed to `checked_add`:
 ```rust
@@ -248,9 +261,11 @@ count truncation if a future deployment ever exceeds the `u32` query surface.
 required_fee + hook_fee
 ```
 
-In release WASM builds this could wrap silently if a required hook and default
-or custom hook returned a combined fee above `u64::MAX`, causing callers to see
-an under-quoted fee.
+Under Rust's default release arithmetic semantics, this could wrap silently if
+a required hook and default or custom hook returned a combined fee above
+`u64::MAX`, causing callers to see an under-quoted fee. Even with workspace
+release overflow checks enabled, checked addition makes the failure mode
+explicit and local to the Mailbox quote invariant.
 
 **After**: The combined quote now uses checked addition:
 
@@ -275,10 +290,10 @@ closed rather than under-charge.
 self.nonce += 1;
 ```
 
-The Hyperlane wire format stores the nonce as 4 bytes. In release WASM builds,
-plain `u32` overflow can wrap silently. After `u32::MAX` dispatches, a wrapped
-nonce would reuse origin nonce space and could repeat message IDs for identical
-sender/destination/recipient/body tuples.
+The Hyperlane wire format stores the nonce as 4 bytes. Under Rust's default
+release arithmetic semantics, plain `u32` overflow can wrap silently. After
+`u32::MAX` dispatches, a wrapped nonce would reuse origin nonce space and could
+repeat message IDs for identical sender/destination/recipient/body tuples.
 
 **After**: Dispatch now fails closed on nonce exhaustion:
 
@@ -439,6 +454,7 @@ documented deviations:
 | File | Change |
 |---|---|
 | `contracts/warp-native/src/lib.rs` | Added deposit verification, escrow pattern (`pending_transfers`, `claim_pending`, `pending_balance`) |
+| `Cargo.toml` | Workspace release profile enables `overflow-checks = true`; contract code still uses explicit checked arithmetic for security-sensitive invariants |
 | `contracts/warp-drc20/src/lib.rs` | `checked_add` in `mint`/`do_transfer`, `checked_sub` in `burn`, zero-amount check in `transfer_remote`, immediate-caller-aware owner resolution |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, collateral escrow, `claim_pending`, `pending_balance`, and registered-recipient resolution in `handle` |
 | `contracts/warp-drc20-collateral/Cargo.toml` | Added `dusk-bytes = "0.1.7"` dependency |
@@ -527,7 +543,7 @@ make all    # in dusk/ directory
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 68 integration tests pass (47 pre-existing + 21 new)
+# 70 integration tests pass (47 pre-existing + 23 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
