@@ -35,6 +35,7 @@ Usage: bash scripts/github-review-hygiene.sh [options]
 Exports reviewer-facing GitHub text and checks it for:
   - known stale SHA/run/comment wording patterns
   - explicit PR current-head claims against the live PR heads
+  - stale "current/latest" evidence wording in active comments
   - historical status snapshots that are not marked superseded
   - source/artifact secret hygiene regressions
 
@@ -240,6 +241,63 @@ check_pr_head_claims \
     "$DUSK_REPO" \
     3 \
     "Manual workflow dispatcher PR #3 head: .?[0-9a-f]{40}|Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
+
+active_review_text="$EXPORT_DIR/active-review-text.txt"
+for file in "$EXPORT_DIR"/*-body.txt; do
+    printf 'FILE=%s\n' "$file" >>"$active_review_text"
+    cat "$file" >>"$active_review_text"
+    printf '\n---END---\n' >>"$active_review_text"
+done
+
+for file in "$EXPORT_DIR"/*-comments.txt; do
+    awk -v file="$file" '
+        function flush_comment() {
+            if (id != "" && !historical) {
+                print "FILE=" file ":COMMENT_ID=" id
+                printf "%s", body
+                print "\n---END---"
+            }
+        }
+
+        /^COMMENT_ID=/ {
+            flush_comment()
+            id = substr($0, 12)
+            line_no = 0
+            historical = 0
+            body = ""
+            next
+        }
+
+        /^---END---$/ {
+            flush_comment()
+            id = ""
+            body = ""
+            next
+        }
+
+        {
+            if (id != "") {
+                line_no++
+                if (line_no <= 5 && $0 ~ /^(Superseded|Historical) /) {
+                    historical = 1
+                }
+                body = body $0 "\n"
+            }
+        }
+
+        END {
+            flush_comment()
+        }
+    ' "$file" >>"$active_review_text"
+done
+
+stale_active_patterns='Current-head agent check refresh|Current monorepo agent-check evidence refresh|Latest clean-layout repro evidence for the tested Dusk commit|Latest local clean-layout repro run `1778582787`|Latest local clean-layout repro evidence is https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427472641|current-head repro evidence|Final-head clean-layout repro evidence|Latest local final-head repro evidence'
+stale_active_hits="$EXPORT_DIR/stale-active-review-wording.txt"
+if rg -n -e "$stale_active_patterns" "$active_review_text" >"$stale_active_hits"; then
+    cat "$stale_active_hits" >&2
+    fail "stale current/latest wording found in active reviewer-facing text"
+fi
+rm -f "$active_review_text" "$stale_active_hits"
 
 snapshot_markers="Current output after push|Cross-repo handoff refresh on 2026-05-12|Pushed two docs/workflow-only updates|Docs-only wording refresh pushed"
 snapshot_mismatches="$EXPORT_DIR/unsuperseded-status-snapshots.txt"
