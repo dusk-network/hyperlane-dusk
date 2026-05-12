@@ -65,6 +65,9 @@ jobs:
 
       - name: Run local repro check
         working-directory: hyperlane/dusk
+        shell: bash
         env:
           CARGO_TERM_COLOR: always
-        run: make repro-check-agent
+        run: |
+          set -euo pipefail
+          make repro-check-agent
