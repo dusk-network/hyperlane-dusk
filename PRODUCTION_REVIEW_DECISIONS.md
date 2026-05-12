@@ -146,14 +146,18 @@ Evidence:
 - `actionlint .github/workflows/manual-repro-check.yml`.
 - Workflow inputs for exact review heads: `dusk_ref`, `rusk_ref`, and
   `monorepo_ref`.
+- Workflow run name includes the requested refs, and the workflow logs resolved
+  Dusk, Rusk, and monorepo checkout heads before `make repro-check-agent`.
 
 Recommended stance:
 
 Accept the manual self-hosted runner proposal for internal review once Dusk
 provides the `dusk-hyperlane` runner and read-only `DUSK_ORG_READ_TOKEN`.
 When running it from the default branch, set `dusk_ref` and `monorepo_ref` to
-the PR branch or exact commit SHAs under review. Promote it to required PR CI
-only after one stable manual run is recorded in `TEST_REPORT.md`.
+the PR branch or exact commit SHAs under review. Record the workflow URL,
+requested refs, resolved checkout heads, and pass/fail result in
+`TEST_REPORT.md`. Promote it to required PR CI only after one stable manual run
+is recorded there.
 
 ### Soak Acceptance
 
