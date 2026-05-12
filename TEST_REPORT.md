@@ -328,12 +328,12 @@ Result:
   monorepo prototype archive refs, local backup artifact hashes, active branch
   refs, and absence of untracked source paths in both active repos.
 - `make gate-status`: passed; reported the implementation PRs and manual
-  workflow dispatcher PR, zero status checks on the implementation PRs,
+  workflow dispatcher PR, status-check rollups on all internal PRs,
   7 unchecked production sign-off items, all six split decision issues open,
   active-repo untracked source status, default-branch protection and merge
-  method settings, no visible GitHub workflow, repo-level Actions secret and
-  self-hosted runner visibility for CI gate #8, latest clean-layout repro link
-  visibility, post-rebase E2E/archive link visibility,
+  method settings, required status-check policy enabled, workflow visibility,
+  repo-level Actions secret and self-hosted runner visibility for CI gate #8,
+  latest clean-layout repro link visibility, post-rebase E2E/archive link visibility,
   dependency-remediated E2E link visibility, advisory reviewer routing link
   visibility, Dusk Dependabot open-alert visibility plus local lockfile
   vulnerable-range comparison, reviewer-facing `make gate-status-fresh`,
@@ -352,8 +352,8 @@ Result:
   production sign-off.
 - `make production-readiness-guard`: failed as expected while external
   production blockers remain open. It reports open internal PR/review/status
-  gates, unchecked sign-off items, open split decision issues, missing required
-  status checks, missing default-branch workflow/runner/secret visibility,
+  gates, unchecked sign-off items, open split decision issues, required
+  status-check policy enabled, missing repo-level runner/secret visibility,
   upstream freshness, and latest clean-layout repro covered-path delta. Passing
   this guard would not by itself prove production readiness. Protected-branch
   review baselines are now enabled on both Dusk org default branches.
