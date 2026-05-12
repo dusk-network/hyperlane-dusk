@@ -148,6 +148,12 @@ Result:
   to avoid stale "current-head" wording and the obsolete export path
   `1778551243`; stale-wording scan found no matches and
   `scripts/secret-hygiene-check.sh` passed.
+- Re-exported the current GitHub-facing PR and decision issue text under
+  `/tmp/hyperlane-gh-review-text-current-1778556292` after adding consolidated
+  review-map links to the PR bodies and focused decision evidence comments to
+  issues #4 through #9. The export included Dusk PR #1, monorepo PR #1,
+  workflow PR #3, umbrella issue #2, split issues #4-#9, and their comments.
+  `scripts/secret-hygiene-check.sh` passed for the exported directory.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now
