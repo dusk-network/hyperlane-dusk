@@ -301,15 +301,23 @@ rm -f "$stale_active_hits"
 
 latest_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
 latest_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
+latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572'
 for file in \
     "$EXPORT_DIR/dusk-pr-1-body.txt" \
     "$EXPORT_DIR/monorepo-pr-1-body.txt" \
     "$EXPORT_DIR/dusk-issue-2-body.txt"; do
+    rg -q -F "$latest_repro_comment" "$file" \
+        || fail "$file is missing latest clean-layout repro evidence link"
+    if rg -n -e '1778607202|4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253|1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3' "$file" >"$EXPORT_DIR/stale-repro-body.txt"; then
+        cat "$EXPORT_DIR/stale-repro-body.txt" >&2
+        fail "$file contains stale clean-layout repro body evidence"
+    fi
     rg -q -F "$latest_e2e_comment" "$file" \
         || fail "$file is missing current live-head E2E evidence link"
     rg -q -F "$latest_e2e_archive_comment" "$file" \
         || fail "$file is missing current live-head E2E archive link"
 done
+rm -f "$EXPORT_DIR/stale-repro-body.txt"
 
 if rg -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \

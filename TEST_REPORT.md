@@ -385,6 +385,11 @@ Result:
   updates were committed as `3296586` and `76ca8ce`; after editing the PR
   evidence note to avoid pinning a moving PR head, the wrapper was rerun and
   passed against the updated GitHub review surface.
+- `make review-hygiene` now also requires the latest clean-layout repro
+  evidence link `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572`
+  in Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies, and rejects the
+  superseded `1778607202`/`4433179148` repro evidence from those active bodies.
+  The wrapper passed after this guard was added.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now
