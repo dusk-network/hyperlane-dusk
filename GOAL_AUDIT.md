@@ -147,7 +147,8 @@ Observed:
    adjacent private `rusk-private` checkout. `make repro-check` and
    `make repro-check-agent` now wrap the repeatable local non-E2E verification
    subset, and `.github/workflows/manual-repro-check.yml` defines a manual
-   self-hosted workflow that preserves the private dependency checkout layout.
+   self-hosted workflow that preserves the private dependency checkout layout
+   while accepting explicit `dusk_ref`, `rusk_ref`, and `monorepo_ref` inputs.
    `CI_REPRO_STRATEGY.md` records the proposed runner labels, checkout layout,
    read-only token scope, artifact policy, promotion path, and default-branch
    visibility caveat. The workflow still needs a Dusk runner/secret decision

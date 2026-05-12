@@ -3,6 +3,10 @@ name: Dusk Hyperlane Manual Repro Check
 on:
   workflow_dispatch:
     inputs:
+      dusk_ref:
+        description: "dusk-network/hyperlane-dusk ref to checkout"
+        required: true
+        default: "feat/dusk-hardening-v2"
       rusk_ref:
         description: "dusk-network/rusk-private ref to checkout"
         required: true
@@ -25,6 +29,7 @@ jobs:
       - name: Checkout Dusk Hyperlane
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.dusk_ref }}
           path: hyperlane/dusk
           persist-credentials: false
 

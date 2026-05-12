@@ -96,9 +96,14 @@ The current workflow is:
 
 It is `workflow_dispatch` only and accepts:
 
+- `dusk_ref`: defaults to `feat/dusk-hardening-v2`.
 - `rusk_ref`: defaults to clean Rusk reference
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 - `monorepo_ref`: defaults to `feat/dusk-support-v2`.
+
+Set `dusk_ref` to a PR branch or exact commit SHA when running the workflow
+from the default branch, so the repro checks the review head rather than the
+default branch contents.
 
 It runs:
 
@@ -156,7 +161,8 @@ Recommended sequence:
 
 1. Keep the workflow manual until the Dusk runner and token scope are accepted.
 2. Run it once against the current Dusk PR head and monorepo branch.
-3. Record the workflow URL, Dusk head, monorepo head, Rusk ref, and pass/fail
+3. Record the workflow URL, `dusk_ref`, Dusk head, `monorepo_ref`, monorepo
+   head, Rusk ref, and pass/fail
    result in `TEST_REPORT.md`.
 4. Only after the manual run is stable, decide whether to make the non-E2E
    repro check required on internal PRs.

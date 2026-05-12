@@ -78,7 +78,9 @@ Result:
 - `.github/workflows/manual-repro-check.yml`: added after the local repro run as
   a manual self-hosted workflow template for the same `make repro-check-agent`
   command. It requires Dusk to provide a `dusk-hyperlane` self-hosted runner and
-  `DUSK_ORG_READ_TOKEN` secret for private cross-repo checkout.
+  `DUSK_ORG_READ_TOKEN` secret for private cross-repo checkout. The manual
+  inputs include `dusk_ref`, `rusk_ref`, and `monorepo_ref` so reviewers can run
+  the workflow from the default branch against exact review heads.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `make secret-hygiene`: re-run after manual workflow secret-scope docs and
