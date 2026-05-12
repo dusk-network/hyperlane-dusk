@@ -33,7 +33,7 @@ runner strategy, and soak acceptance are still open in
 | Component | Branch | Evidence | State |
 |---|---|---|---|
 | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Live PR head is checked through GitHub and `make gate-status`; implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; cleanup regression guard commit `fd5269a6983fc920b5f2d1201b162ff7c11bbef0`; later commits refresh audit, CI/repro, signer, default-branch, cross-repo handoff docs, generated signer key cleanup, cleanup regression guards, gate-status reporting, and split decision issue routing; `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the latest clean-layout run at Dusk `fc9ed45f9661a843d053ebddcc89666ef187e5c2` and monorepo `ecb11359747dce240a24c50fa229afd4479919b5` | Internal PR ready for review, open, mergeable; review requested from `moCello`; labels `need:feedback`, `type:feature`; no status checks configured |
-| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Current pushed head `60e1254943058f8249e297dc1733e892ec4907fa`; rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility and upstream PR gate plan documented in `docs/dusk-upstream-compatibility-review.md` and `docs/dusk-upstream-pr-plan.md`; companion `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the file-backed Dusk signer parser/builder and key-file permission update | Internal PR ready for review, open, mergeable; review requested from `Neotamandua`; labels `need:feedback`, `type:feature`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
+| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Current pushed head `f580d8b929aa32a97f10e1cef3a35a5df4384b08`; rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility and upstream PR gate plan documented in `docs/dusk-upstream-compatibility-review.md` and `docs/dusk-upstream-pr-plan.md`; companion `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the file-backed Dusk signer parser/builder and key-file permission update | Internal PR ready for review, open, mergeable; review requested from `Neotamandua`; labels `need:feedback`, `type:feature`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
 | `dusk-network/hyperlane-dusk` workflow dispatcher | `ci/manual-repro-workflow` | Current pushed head `6f0a921acb809261f393a3e70eb33f056078a33d`; contains only `.github/workflows/manual-repro-check.yml` and `.github/actionlint.yaml`; workflow logs requested refs and resolved checkout heads before `make repro-check-agent` | Narrow default-branch PR #3 ready for review, open, mergeable; review requested from `moCello` and `Neotamandua`; labels `need:feedback`, `type:docs`; no status checks configured |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
 
@@ -71,7 +71,7 @@ Observed:
   `type:rfc` labels.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
   `f758a70630fd72d4749c3afb79454e725b8081a8`.
-- The monorepo Dusk branch is `17 0` relative to `upstream/main`, so it is not
+- The monorepo Dusk branch is `18 0` relative to `upstream/main`, so it is not
   behind current upstream as of this check.
 - Both local worktrees are clean and track their pushed origin branches.
 - `git ls-files --others --exclude-standard` is empty in both active repos, so
@@ -91,7 +91,7 @@ Observed:
 - `make gate-status` prints the current machine-checkable gate status:
   7 unchecked sign-off items, 1 checked item, zero status checks on the
   implementation PRs, the manual workflow dispatcher PR state, all six split
-  decision issues open, no visible workflow, upstream drift `17 0`, and no
+  decision issues open, no visible workflow, upstream drift `18 0`, and no
   placeholder macro matches in `rust/main/chains/hyperlane-dusk`.
 
 ## Prompt-To-Artifact Deliverable Checklist
