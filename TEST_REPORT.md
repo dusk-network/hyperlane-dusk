@@ -11,8 +11,8 @@ production-review gates and useful follow-up test areas are listed at the end.
 
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778561743` tested Dusk `c2d5d946cf08ce7c48ff373350989512f07dacc6`; check the live PR head through GitHub or `make gate-status` |
-| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778561743` tested monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be`; check the live PR head through GitHub or `make gate-status` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778570601` tested Dusk `b4ace8073147f17f67593c3a471d8bf33ca8dce3`; check the live PR head through GitHub or `make gate-status` |
+| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778570601` tested monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; check the live PR head through GitHub or `make gate-status` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
 | Supplemental clean-layout repro after audit docs refresh | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `24d42c3ed0aaa289f32a22f6a7bf7f7c068bc2ae`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -204,6 +204,11 @@ run_dir=/tmp/hyperlane-dusk-repro-current-1778560831
 HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
 RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
 make repro-check-agent 2>&1 | tee "$run_dir.log"
+
+run_dir=/tmp/hyperlane-dusk-repro-current-1778570601
+HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+make repro-check-agent 2>&1 | tee "$run_dir.log"
 ```
 
 Refs:
@@ -224,6 +229,8 @@ Refs:
   `8e629da55e5e5a804d625ebb8b44173b4d96dab9`
 - Supplemental clean-layout repro tested Dusk PR branch:
   `24d42c3ed0aaa289f32a22f6a7bf7f7c068bc2ae`
+- Mailbox fee-overflow repro tested Dusk PR branch:
+  `b4ace8073147f17f67593c3a471d8bf33ca8dce3`
 - Earlier Hyperlane monorepo branch:
   `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
 - File-backed signer run Hyperlane monorepo branch:
@@ -234,6 +241,8 @@ Refs:
   `ecb11359747dce240a24c50fa229afd4479919b5`
 - Latest clean-layout repro tested Hyperlane monorepo branch:
   `dea286bd364a9268413fd5b1cfc51bd983d443be`
+- Mailbox fee-overflow repro tested Hyperlane monorepo branch:
+  `a44020dc998b7fe868254a5d1a349b9eb8ded899`
 - Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
   detached worktree `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db`
@@ -278,6 +287,12 @@ Refs:
   clean detached worktree
   `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Mailbox fee-overflow repro Rusk path dependency checkout in the temporary
+  layout:
+  `/tmp/hyperlane-dusk-repro-current-1778570601/rusk-private`, symlinked to
+  clean detached worktree
+  `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 - Logs:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326.log`,
   `/tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170.log`,
@@ -286,14 +301,17 @@ Refs:
   `/tmp/hyperlane-dusk-repro-current-1778552618.log`,
   `/tmp/hyperlane-dusk-repro-current-1778558278.log`,
   `/tmp/hyperlane-dusk-repro-current-1778559809.log`,
-  `/tmp/hyperlane-dusk-repro-current-1778560831.log`
+  `/tmp/hyperlane-dusk-repro-current-1778560831.log`,
+  `/tmp/hyperlane-dusk-repro-current-1778570601.log`
 
 Result:
 
-- Passed in all runs.
+- Passed in all listed successful runs.
 - Contract WASM build via `make all`: passed.
 - `cargo test -p hyperlane-dusk-types`: passed, 28 tests.
-- `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: passed, 68 tests in the
+  latest run; earlier runs passed 67 tests before the Mailbox fee-overflow
+  regression was added.
 - `cargo test -p dusk-tx`: passed, 3 tests.
 - `make secret-hygiene`: passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170.log`:
@@ -309,6 +327,8 @@ Result:
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-current-1778559809.log`:
   passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-current-1778560831.log`:
+  passed.
+- `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-current-1778570601.log`:
   passed.
 - Hyperlane Rust agent check from the adjacent monorepo passed:
 
@@ -1054,6 +1074,9 @@ documented recovery/failure modes do not depend on the dirty local Rusk patch.
 - Removed the remaining direct `panic!` invocation from production contract
   code by rewriting Mailbox sender resolution to use the same explicit
   `expect(...)` revert style used elsewhere.
+- Changed Mailbox `quote_dispatch` to reject combined required-hook plus
+  default/custom-hook fee overflow instead of returning a wrapped `u64`; added
+  `test_mailbox_quote_dispatch_rejects_fee_overflow`.
 
 Event annotation verification:
 
@@ -1073,7 +1096,7 @@ Result:
 - `cargo test -p hyperlane-dusk-types` passed:
   `28 passed; 0 failed; 0 ignored`.
 - `cargo test -p hyperlane-dusk-integration-tests` passed:
-  `67 passed; 0 failed; 0 ignored`.
+  `68 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 

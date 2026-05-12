@@ -1045,87 +1045,20 @@ fn test_recipient_ism_override() {
 
 /// Session with production hooks: ProtocolFee as required_hook, IGP as default_hook.
 fn session_with_hooks() -> TestSession {
-    let mut session = TestSession::instantiate(vec![
-        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
-        (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
-    ]);
-
-    // Deploy TestMock (NullISM)
-    session
-        .deploy(
-            TEST_MOCK_BYTECODE,
-            dusk_vm::ContractData::builder()
-                .owner(DEPLOYER)
-                .contract_id(TEST_MOCK_ID),
-        )
-        .expect("Deploying TestMock should succeed");
-
-    // Deploy TestRecipient
-    session
-        .deploy(
-            TEST_RECIPIENT_BYTECODE,
-            dusk_vm::ContractData::builder()
-                .owner(DEPLOYER)
-                .contract_id(TEST_RECIPIENT_ID),
-        )
-        .expect("Deploying TestRecipient should succeed");
-
-    // Deploy MerkleTreeHook
-    session
-        .deploy(
-            MERKLE_TREE_HOOK_BYTECODE,
-            dusk_vm::ContractData::builder()
-                .owner(DEPLOYER)
-                .init_arg(&(MAILBOX_ID,))
-                .contract_id(MERKLE_TREE_HOOK_ID),
-        )
-        .expect("Deploying MerkleTreeHook should succeed");
-
-    // Deploy ProtocolFee: fee=1000 LUX, max=10000 LUX
-    session
-        .deploy(
-            PROTOCOL_FEE_BYTECODE,
-            dusk_vm::ContractData::builder()
-                .owner(DEPLOYER)
-                .init_arg(&(1000u64, 10000u64, MERKLE_TREE_HOOK_ID, MAILBOX_ID))
-                .contract_id(PROTOCOL_FEE_ID),
-        )
-        .expect("Deploying ProtocolFee should succeed");
-
-    // Deploy IGP: owner=MAILBOX_ID, beneficiary=MERKLE_TREE_HOOK_ID, no initial configs
-    let no_configs: Vec<(u32, DomainGasConfig)> = Vec::new();
-    session
-        .deploy(
-            IGP_BYTECODE,
-            dusk_vm::ContractData::builder()
-                .owner(DEPLOYER)
-                .init_arg(&(MAILBOX_ID, MERKLE_TREE_HOOK_ID, no_configs))
-                .contract_id(IGP_ID),
-        )
-        .expect("Deploying IGP should succeed");
-
-    // Deploy Mailbox with ProtocolFee as required_hook, IGP as default_hook
-    session
-        .deploy(
-            MAILBOX_BYTECODE,
-            dusk_vm::ContractData::builder()
-                .owner(DEPLOYER)
-                .init_arg(&(
-                    LOCAL_DOMAIN,
-                    MAILBOX_ID,      // owner
-                    TEST_MOCK_ID,    // default ISM
-                    IGP_ID,          // default hook = IGP
-                    PROTOCOL_FEE_ID, // required hook = ProtocolFee
-                ))
-                .contract_id(MAILBOX_ID),
-        )
-        .expect("Deploying Mailbox should succeed");
-
-    session
+    session_with_hooks_fee_and_igp_config(1000, 10000, Vec::new())
 }
 
 /// Session with production hooks, including IGP with pre-configured gas configs.
 fn session_with_hooks_and_igp_config(igp_configs: Vec<(u32, DomainGasConfig)>) -> TestSession {
+    session_with_hooks_fee_and_igp_config(1000, 10000, igp_configs)
+}
+
+/// Session with production hooks, configurable protocol fee, and IGP gas configs.
+fn session_with_hooks_fee_and_igp_config(
+    protocol_fee: u64,
+    max_protocol_fee: u64,
+    igp_configs: Vec<(u32, DomainGasConfig)>,
+) -> TestSession {
     let mut session = TestSession::instantiate(vec![
         (&*OWNER_PK, INITIAL_DUSK_BALANCE),
         (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
@@ -1162,13 +1095,13 @@ fn session_with_hooks_and_igp_config(igp_configs: Vec<(u32, DomainGasConfig)>) -
         )
         .expect("Deploying MerkleTreeHook should succeed");
 
-    // Deploy ProtocolFee: fee=1000 LUX, max=10000 LUX
+    // Deploy ProtocolFee
     session
         .deploy(
             PROTOCOL_FEE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(1000u64, 10000u64, MERKLE_TREE_HOOK_ID, MAILBOX_ID))
+                .init_arg(&(protocol_fee, max_protocol_fee, MERKLE_TREE_HOOK_ID, MAILBOX_ID))
                 .contract_id(PROTOCOL_FEE_ID),
         )
         .expect("Deploying ProtocolFee should succeed");
@@ -1377,6 +1310,38 @@ fn test_igp_quote_with_config() {
         .data;
 
     assert_eq!(quote, 3_000_000);
+}
+
+#[test]
+fn test_mailbox_quote_dispatch_rejects_fee_overflow() {
+    let mut session = session_with_hooks_fee_and_igp_config(
+        u64::MAX,
+        u64::MAX,
+        vec![(
+            REMOTE_DOMAIN,
+            DomainGasConfig {
+                gas_overhead: 0,
+                token_exchange_rate: 10_000_000_000u64,
+                gas_price: 1u64,
+            },
+        )],
+    );
+
+    let metadata = 1u64.to_le_bytes().to_vec();
+    let result = session.call_public::<_, u64>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "quote_dispatch",
+        &(
+            REMOTE_DOMAIN,
+            [0xBBu8; 32],
+            b"fee overflow".to_vec(),
+            metadata,
+            IGP_ID,
+        ),
+    );
+
+    assert_contract_panic(result, "Mailbox: fee overflow");
 }
 
 #[test]

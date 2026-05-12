@@ -457,7 +457,9 @@ mod mailbox {
             )
             .expect("Mailbox: hook quote failed");
 
-            required_fee + hook_fee
+            required_fee
+                .checked_add(hook_fee)
+                .expect("Mailbox: fee overflow")
         }
 
         /// Resolve the ISM for a given recipient.

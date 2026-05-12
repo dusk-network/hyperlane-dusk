@@ -221,6 +221,33 @@ self.total_gas_payments = self.total_gas_payments.saturating_add(payment);
 
 **Trade-off**: We chose `saturating_add` over `checked_add` here because these are accounting-only counters. They are not used in any security-critical logic — no funds are gated on these values. If they saturate at `u64::MAX`, the only consequence is that the counter stops incrementing, which is an acceptable degradation for a field that would require ~18.4 quintillion dispatches to overflow. Using `checked_add` would panic and prevent message dispatch, which is worse.
 
+### MEDIUM-2B: Mailbox quote total fee overflow
+
+**File**: `contracts/mailbox/src/lib.rs`, `quote_dispatch()`
+
+**Before**: The Mailbox summed required-hook and selected-hook quotes with plain
+`u64` addition:
+
+```rust
+required_fee + hook_fee
+```
+
+In release WASM builds this could wrap silently if a required hook and default
+or custom hook returned a combined fee above `u64::MAX`, causing callers to see
+an under-quoted fee.
+
+**After**: The combined quote now uses checked addition:
+
+```rust
+required_fee
+    .checked_add(hook_fee)
+    .expect("Mailbox: fee overflow")
+```
+
+**Trade-off**: A pathological hook configuration now rejects the quote instead
+of returning a wrapped value. This matches the IGP quote overflow policy: fail
+closed rather than under-charge.
+
 ### MEDIUM-3: MessageIdMultisigISM accepted malformed signature metadata shape
 
 **File**: `contracts/ism-multisig/src/lib.rs`, `verify()`
@@ -359,7 +386,7 @@ documented deviations:
 | Address mapping | External Dusk recipients are represented by `keccak256(bls_public_key_bytes)` and must register their BLS public key on Dusk for account delivery. | The mapping is deterministic and non-updatable. Lost or compromised keys are a user/account-management issue, not recoverable by current contracts. |
 | Unregistered recipients | WarpNative and WarpDrc20Collateral escrow unregistered recipients. | Inbound funds are not stranded at a synthetic contract account. Recipients must register the matching BLS key and call `claim_pending()`. |
 | Multisig metadata | MessageIdMultisigISM requires sorted validator sets, a valid threshold, initialized state, and exact fixed-width signature metadata. | This is stricter than accepting trailing metadata bytes and is intended to prevent malformed metadata acceptance. |
-| Fee accounting | ProtocolFee and IGP lifetime counters saturate rather than panic. IGP fee quote conversion panics on `u64` overflow. | Saturating counters are informational only; fee undercharging is prevented by rejecting unrepresentable quotes. |
+| Fee accounting | ProtocolFee and IGP lifetime counters saturate rather than panic. IGP fee quote conversion and Mailbox total-fee addition panic on `u64` overflow. | Saturating counters are informational only; fee undercharging is prevented by rejecting unrepresentable quotes. |
 | Secret handling | Demo/E2E configs use local dev keys and `/tmp` artifacts. `dusk-tx` supports `DUSK_CONSENSUS_PASSWORD_FILE`, password environment variables, and `--secret-key-stdin`; demo scripts no longer pass Dusk consensus passwords through CLI argv. `SECRET_HANDLING.md` and `make secret-hygiene` add source/artifact guardrails. Production use must still avoid logs, committed config, and CI artifact leakage for Dusk secrets. | This is a release gate outside the WASM contracts. Current scripts are acceptable only for local deterministic dev/test environments, and production signer storage/config generation needs operational sign-off. |
 
 ## Files Modified
@@ -374,13 +401,13 @@ documented deviations:
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
 | `contracts/protocol-fee/src/lib.rs` | `saturating_add` for `collected_fees` |
 | `types/src/events.rs` | Added operational/admin, account registration, gas config, validator-set, pending-claim, and WarpDrc20 transfer events |
-| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events |
+| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events; checked total-fee quotes |
 | `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotations for initialization and Merkle insertion events |
 | `contracts/validator-announce/src/lib.rs` | Explicit event annotations for initialization and validator announcement events |
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 20 new security tests (67 total, up from 47) |
+| `tests/tests/integration.rs` | 21 new security tests (68 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -407,6 +434,7 @@ documented deviations:
 | `test_multisig_ism_verify_rejects_insufficient_signatures` | Verify fails when metadata contains fewer signatures than threshold |
 | `test_multisig_ism_verify_rejects_corrupt_signature_bytes` | Verify fails when fixed-width signature metadata is corrupt and cannot be recovered |
 | `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
+| `test_mailbox_quote_dispatch_rejects_fee_overflow` | Mailbox rejects a combined required-hook plus default-hook quote that would overflow `u64` |
 
 Additional event annotation verification:
 
@@ -416,9 +444,9 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
-All commands passed after the explicit event annotation cleanup. The type
-package reported `28 passed; 0 failed; 0 ignored`; the integration package
-reported `67 passed; 0 failed; 0 ignored`.
+All commands passed after the explicit event annotation cleanup and Mailbox fee
+overflow regression. The type package reported `28 passed; 0 failed; 0 ignored`;
+the integration package reported `68 passed; 0 failed; 0 ignored`.
 
 ### Test Gaps
 
@@ -450,7 +478,7 @@ make all    # in dusk/ directory
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 67 integration tests pass (47 pre-existing + 20 new)
+# 68 integration tests pass (47 pre-existing + 21 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
 
