@@ -322,9 +322,9 @@ Result:
   self-hosted runner visibility for CI gate #8, latest clean-layout repro link
   visibility, post-rebase E2E/archive link visibility,
   dependency-remediated E2E link visibility, advisory reviewer routing link
-  visibility, Dusk Dependabot open-alert visibility, current
-  Hyperlane upstream drift, and no placeholder matches in tracked Dusk repo
-  runtime paths or
+  visibility, Dusk Dependabot open-alert visibility, reviewer-facing
+  `make gate-status-fresh` handoff text, current Hyperlane upstream drift, and
+  no placeholder matches in tracked Dusk repo runtime paths or
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest

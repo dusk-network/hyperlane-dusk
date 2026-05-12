@@ -325,6 +325,8 @@ for file in \
         || fail "$file is missing dependency-remediated E2E evidence link"
     rg -q -F "$REVIEWER_ROUTING_URL" "$file" \
         || fail "$file is missing advisory reviewer routing link"
+    rg -q -F 'make gate-status-fresh' "$file" \
+        || fail "$file is missing make gate-status-fresh handoff text"
 done
 rm -f "$EXPORT_DIR/stale-repro-body.txt"
 
