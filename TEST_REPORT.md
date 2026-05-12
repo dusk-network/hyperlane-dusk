@@ -391,7 +391,8 @@ Result:
   evidence link `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572`
   and advisory reviewer routing link
   `https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md`
-  in Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies, and rejects the
+  in Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies. It also requires
+  the advisory reviewer routing link in workflow PR #3, and rejects the
   superseded `1778607202`/`4433179148` repro evidence from those active bodies
   plus stale "no owner-routing file" wording. The wrapper passed after this
   guard was added.

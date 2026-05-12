@@ -218,6 +218,18 @@ print_link_presence() {
     fi
 }
 
+print_reviewer_routing_presence() {
+    local label="$1"
+    local body="$2"
+
+    echo "$label:"
+    if printf '%s\n' "$body" | grep -Fq "$REVIEWER_ROUTING_URL"; then
+        echo "  reviewerRouting: present"
+    else
+        echo "  reviewerRouting: missing"
+    fi
+}
+
 section "Local Worktrees"
 echo "dusk: $(git -C "$ROOT" rev-parse HEAD)"
 git -C "$ROOT" status --short --branch
@@ -271,6 +283,10 @@ monorepo_pr_body="$(gh pr view 1 --repo "$MONOREPO_REPO" --json body --jq .body)
 print_link_presence "duskPR1" "$dusk_pr_body"
 print_link_presence "monorepoPR1" "$monorepo_pr_body"
 print_link_presence "signoffIssue2" "$issue_body"
+if gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json number >/dev/null 2>&1; then
+    workflow_pr_body="$(gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json body --jq .body)"
+    print_reviewer_routing_presence "workflowPR$WORKFLOW_PR_NUMBER" "$workflow_pr_body"
+fi
 
 section "Split Production Decision Issues"
 open_split_issues=0

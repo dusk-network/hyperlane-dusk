@@ -325,6 +325,11 @@ for file in \
 done
 rm -f "$EXPORT_DIR/stale-repro-body.txt"
 
+if [ -f "$EXPORT_DIR/dusk-pr-3-body.txt" ]; then
+    rg -q -F "$REVIEWER_ROUTING_URL" "$EXPORT_DIR/dusk-pr-3-body.txt" \
+        || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing advisory reviewer routing link"
+fi
+
 if rg -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
     -e 'E2E was not rerun for the docs-only post-rebase head' \
