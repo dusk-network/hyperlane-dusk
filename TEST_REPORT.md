@@ -214,14 +214,17 @@ Result:
   `scripts/secret-hygiene-check.sh` passed for the exported directory.
 - `make review-hygiene`: repeatable wrapper around
   `scripts/github-review-hygiene.sh`; passed with export directory
-  `/tmp/hyperlane-review-export-1778585579`. It exports Dusk PR #1,
+  `/tmp/hyperlane-review-export-1778603156`. It exports Dusk PR #1,
   workflow PR #3, monorepo PR #1, sign-off issue #2, split issues #4-#9, and
   their comments, scans for known stale evidence refs/wording, validates
   explicit current-head claims for Dusk PR #1, monorepo PR #1, and workflow
   PR #3 against live GitHub PR heads while ignoring comments explicitly marked
-  as superseded historical snapshots, requires old status-snapshot comments to
-  be marked superseded, and then runs `scripts/secret-hygiene-check.sh` over
-  the export.
+  Historical or Superseded, rejects active stale clean-layout evidence pointers
+  to the superseded `4431719578` comment and Dusk source ref `6ac9a2bc`, requires
+  old status-snapshot comments to be marked superseded, and then runs
+  `scripts/secret-hygiene-check.sh` over the export. The latest guard updates
+  were committed as `3296586` and `76ca8ce`; after posting the PR evidence note,
+  the wrapper was rerun and passed against the updated GitHub review surface.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now
