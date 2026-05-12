@@ -144,30 +144,34 @@ the resolved heads in `TEST_REPORT.md`. The workflow prints each requested ref
 and resolved checkout head before running the repro command so reviewers can
 copy the exact Dusk, Rusk, and monorepo SHAs from the Actions log.
 
-As of the latest review refresh on 2026-05-12, the exact current internal
-review heads are:
+To dispatch against exact current internal review heads without hard-coding a
+Dusk SHA that becomes stale after docs-only commits, resolve the PR heads first:
 
 ```bash
+dusk_ref="$(gh pr view 1 --repo dusk-network/hyperlane-dusk --json headRefOid --jq .headRefOid)"
+monorepo_ref="$(gh pr view 1 --repo dusk-network/hyperlane-monorepo --json headRefOid --jq .headRefOid)"
+rusk_ref="c0c64db4659500d077bb253ad13acba0e347d3fc"
+
 gh workflow run manual-repro-check.yml \
   --repo dusk-network/hyperlane-dusk \
   --ref main \
-  -f dusk_ref=11f6744bb3514f96db846de1108378e43d161a3e \
-  -f rusk_ref=c0c64db4659500d077bb253ad13acba0e347d3fc \
-  -f monorepo_ref=a44020dc998b7fe868254a5d1a349b9eb8ded899
+  -f dusk_ref="$dusk_ref" \
+  -f rusk_ref="$rusk_ref" \
+  -f monorepo_ref="$monorepo_ref"
 ```
 
 Expected resolved heads:
 
-- Dusk: `11f6744bb3514f96db846de1108378e43d161a3e`.
+- Dusk: the live head of dusk-network/hyperlane-dusk#1.
 - Rusk: `c0c64db4659500d077bb253ad13acba0e347d3fc`.
-- Monorepo: `a44020dc998b7fe868254a5d1a349b9eb8ded899`.
+- Monorepo: the live head of dusk-network/hyperlane-monorepo#1.
 
 Earlier local review-head E2E evidence tested Dusk
 `2ac225175b15aac465d100e748ba68f8b14bd545`; commit
-`11f6744bb3514f96db846de1108378e43d161a3e` is the docs-only follow-up that
-records that evidence in `TEST_REPORT.md` and `GOAL_AUDIT.md`. The manual
-workflow should still be dispatched against `11f6744...` so CI evidence matches
-the PR header exactly.
+`11f6744bb3514f96db846de1108378e43d161a3e` recorded that evidence in
+`TEST_REPORT.md` and `GOAL_AUDIT.md`, and later docs commits may move the Dusk
+PR head again. The manual workflow should be dispatched against the live PR
+heads resolved above so CI evidence matches the PR headers exactly.
 
 It runs:
 
