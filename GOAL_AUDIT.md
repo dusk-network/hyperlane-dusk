@@ -109,12 +109,12 @@ Observed:
   it is expected to fail until the known machine-checkable production blockers
   close.
 - `make gate-status` prints the current machine-checkable gate status:
-  7 unchecked sign-off items, 1 checked item, zero status checks on the
-  implementation PRs, active-repo untracked source status, the manual workflow
-  dispatcher PR state, all six split decision issues open, no visible workflow,
-  default-branch protection and merge method settings, readiness blockers for
-  missing required status checks, repo-level Actions secret and self-hosted
-  runner visibility, Dusk Dependabot open-alert
+  7 unchecked sign-off items, 1 checked item, status checks on all internal
+  PRs, active-repo untracked source status, the manual workflow dispatcher PR
+  state, all six split decision issues open, workflow visibility,
+  default-branch protection and merge method settings, required status-check
+  policy enabled for `Dusk review policy gate`, repo-level Actions secret and
+  self-hosted runner visibility, Dusk Dependabot open-alert
   visibility with local `Cargo.lock` vulnerable-range comparison, current
   upstream drift, and no placeholder macro matches in the Dusk repo runtime
   paths or monorepo Dusk agent crate. It also reports whether active
@@ -122,7 +122,7 @@ Observed:
   dependency-remediated E2E, latest clean-layout repro, reviewer-routing links,
   `make gate-status-fresh`, `make dependency-alert-status`,
   `make completion-audit-status`, `make review-gates`,
-  `make production-readiness-guard`, required status-check policy, and
+  `make production-readiness-guard`, required status-check policy enabled, and
   latest clean-layout repro path delta.
 
 ## Prompt-To-Artifact Deliverable Checklist
@@ -170,7 +170,7 @@ Observed:
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md`; split contract-policy issues #4 through #6 must keep current clean-layout repro evidence https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572 tied to their test coverage |
 | Advisory reviewer routing | `REVIEWERS.md`; routes Dusk contract/tooling/security review to `moCello`, Hyperlane agent/runtime review to `Neotamandua`, split decision issues #4 through #9 to the named Dusk reviewers, and keeps production sign-off in dusk-network/hyperlane-dusk#2 |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `scripts/github-review-hygiene.sh`, `make secret-hygiene`, `make review-hygiene`; dusk-network/hyperlane-dusk#7 must keep current signer-custody evidence links to latest clean-layout repro https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572 and dependency-remediated E2E https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389 |
-| Reviewer-facing link guardrails | `scripts/github-review-hygiene.sh`, `scripts/release-gate-status.sh`, `scripts/dependency-alert-status.sh`, `scripts/completion-audit-status.sh`, `scripts/production-readiness-guard.sh`, `make review-hygiene`, `make dependency-alert-status`, `make completion-audit-status`, `make gate-status`, `make gate-status-fresh`, `make review-gates`, `make production-readiness-guard`; Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies must include or visibly report latest clean-layout repro https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572, dependency-remediated E2E https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389, post-rebase E2E/archive links, the advisory reviewer routing URL https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md, `make gate-status-fresh`, `make dependency-alert-status`, `make completion-audit-status`, `make review-gates`, `make production-readiness-guard`, required status-check policy, and latest clean-layout repro path delta; workflow PR #3 must include or visibly report the advisory reviewer routing URL; active bodies must not include the superseded `1778607202`/`4433179148` clean-layout repro evidence |
+| Reviewer-facing link guardrails | `scripts/github-review-hygiene.sh`, `scripts/release-gate-status.sh`, `scripts/dependency-alert-status.sh`, `scripts/completion-audit-status.sh`, `scripts/production-readiness-guard.sh`, `make review-hygiene`, `make dependency-alert-status`, `make completion-audit-status`, `make gate-status`, `make gate-status-fresh`, `make review-gates`, `make production-readiness-guard`; Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies must include or visibly report latest clean-layout repro https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572, dependency-remediated E2E https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389, post-rebase E2E/archive links, the advisory reviewer routing URL https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md, `make gate-status-fresh`, `make dependency-alert-status`, `make completion-audit-status`, `make review-gates`, `make production-readiness-guard`, required status-check policy enabled, and latest clean-layout repro path delta; workflow PR #3 must include or visibly report the advisory reviewer routing URL; active bodies must not include the superseded `1778607202`/`4433179148` clean-layout repro evidence |
 | CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, `make gate-status-fresh`, dusk-network/hyperlane-dusk#3, dusk-network/hyperlane-dusk#8 |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Durable local evidence archive | `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`; SHA256 `53bc99b30624471b145731b92896b442c3a88c97f8217c8a7cd12be4ab7476fc`; contains the latest review-head repro/E2E logs plus the 7282-second soak logs; `scripts/secret-hygiene-check.sh` passed over the archive staging directory and tarball |
@@ -226,9 +226,10 @@ Observed:
    requested from `Neotamandua`, based on recent Rusk HTTP/RUES/GraphQL route
    ownership, because the remaining decisions are Dusk/Rusk-specific and not
    covered by upstream Hyperlane ownership alone.
-6. CI/repro runner strategy remains a release gate. Both internal PRs currently
-   have empty status-check rollups, and the Dusk workspace depends on an
-   adjacent private `rusk-private` checkout. `make repro-check` and
+6. CI/repro runner strategy remains a release gate. The internal PRs now have
+   status-check rollups and both Dusk org default branches require the shared
+   `Dusk review policy gate`; the Dusk workspace still depends on an adjacent
+   private `rusk-private` checkout for the heavy repro path. `make repro-check` and
    `make repro-check-agent` now wrap the repeatable local non-E2E verification
    subset, and `.github/workflows/manual-repro-check.yml` defines a manual
    self-hosted workflow that preserves the private dependency checkout layout
@@ -240,9 +241,8 @@ Observed:
    protection/status-check policy, and default-branch visibility caveat. The
    workflow still needs a Dusk runner/secret decision and must land on the
    default branch before it can replace local evidence. The default branches
-   now have protected-branch review baselines enabled; they still need required
-   status-check policy before a production-readiness claim. The narrow
-   default-branch dispatcher PR is
+   now have protected-branch review baselines and required status-check policy
+   enabled. The narrow default-branch dispatcher PR is
    https://github.com/dusk-network/hyperlane-dusk/pull/3.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2 and summarized for

@@ -12,8 +12,10 @@ setup to accept, change, or replace.
   `hyperlane-monorepo` checkout.
 - Public GitHub-hosted runners cannot reproduce the full workspace without
   private Dusk repository access.
-- Both internal PRs currently have empty GitHub status-check rollups; the
-  evidence in `TEST_REPORT.md` is local/clean-Rusk evidence.
+- The internal PRs now have GitHub status-check rollups. Both Dusk org default
+  branches require the shared `Dusk review policy gate`; heavy repro and E2E
+  evidence in `TEST_REPORT.md` is still local/clean-Rusk evidence until the
+  private runner/token path is accepted and provisioned.
 - A 2026-05-12 permission probe showed repo-level Actions is enabled on both
   `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, with
   allowed actions set to `all` and default workflow permissions set to `write`.
@@ -22,10 +24,8 @@ setup to accept, change, or replace.
   dusk-network/hyperlane-dusk#8.
 - Both Dusk org repos now have protected `main` branches with required PR
   review, stale-review dismissal, last-push approval, conversation resolution,
-  admin enforcement, and force-push/delete disabled. The PR status-check
-  rollups remain empty, and the production readiness guard still treats at
-  least one required status check as part of the CI/repro release gate tracked
-  in dusk-network/hyperlane-dusk#8.
+  admin enforcement, force-push/delete disabled, and strict required status
+  checks for `Dusk review policy gate`.
 - `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
@@ -39,7 +39,7 @@ setup to accept, change, or replace.
   `.github/workflows/production-readiness-gate.yml`. This is a lightweight
   GitHub-hosted status-check candidate that runs
   `make production-readiness-guard`; it is expected to fail until the known
-  review, sign-off, required-check, workflow, runner, and secret blockers are
+  review, sign-off, workflow runner/secret, and internal merge blockers are
   closed.
 
 ## Proposed Runner

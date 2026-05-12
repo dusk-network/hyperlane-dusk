@@ -27,7 +27,7 @@ DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-al
 COMPLETION_AUDIT_STATUS_TEXT="${COMPLETION_AUDIT_STATUS_TEXT:-make completion-audit-status}"
 REVIEW_GATES_TEXT="${REVIEW_GATES_TEXT:-make review-gates}"
 PRODUCTION_READINESS_GUARD_TEXT="${PRODUCTION_READINESS_GUARD_TEXT:-make production-readiness-guard}"
-BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-required status-check policy}"
+BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-required status-check policy enabled}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
 FETCH_UPSTREAM=0
 
@@ -571,5 +571,5 @@ fi
 section "Summary"
 echo "This script reports machine-checkable gates only."
 echo "The objective remains blocked until the unchecked sign-off items, reviews,"
-echo "required status-check policy, CI/default-branch workflow decision,"
+echo "CI/default-branch workflow runner and secret provisioning,"
 echo "internal PR merge, and upstream-prep gate are resolved by Dusk reviewers."

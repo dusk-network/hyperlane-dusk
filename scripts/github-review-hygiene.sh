@@ -335,7 +335,7 @@ for file in \
         || fail "$file is missing make review-gates handoff text"
     rg -q -F 'make production-readiness-guard' "$file" \
         || fail "$file is missing make production-readiness-guard handoff text"
-    rg -q -F 'required status-check policy' "$file" \
+    rg -q -F 'required status-check policy enabled' "$file" \
         || fail "$file is missing required status-check policy handoff text"
     rg -q -F 'latest clean-layout repro path delta' "$file" \
         || fail "$file is missing latest clean-layout repro path delta handoff text"
@@ -350,7 +350,7 @@ fi
 if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
     rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout repro evidence link"
-    rg -q -F 'required status-check policy' "$EXPORT_DIR/dusk-issue-8-body.txt" \
+    rg -q -F 'required status-check policy enabled' "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing required status-check policy text"
     if rg -n -e '4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253' \
         "$EXPORT_DIR/dusk-issue-8-body.txt" >"$EXPORT_DIR/stale-issue-8-body.txt"; then

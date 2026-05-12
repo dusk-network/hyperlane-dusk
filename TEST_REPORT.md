@@ -386,9 +386,12 @@ Result:
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
   GitHub-hosted status-check candidate. It runs
   `make production-readiness-guard` with GitHub compare API freshness checks,
-  and is expected to fail until the known review, sign-off, required-check,
-  workflow, runner, and secret blockers close.
+  and is expected to fail until the known review, sign-off, workflow
+  runner/secret, and internal merge blockers close.
 - `actionlint .github/workflows/production-readiness-gate.yml`: passed.
+- `.github/workflows/dusk-review-policy-gate.yml`: added as the shared
+  required status-check policy enabled on both Dusk org default branches.
+- `actionlint .github/workflows/dusk-review-policy-gate.yml`: passed.
 - `make secret-hygiene`: re-run after manual workflow secret-scope docs and
   checkout credential hardening; passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log`:

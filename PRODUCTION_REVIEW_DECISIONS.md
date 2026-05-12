@@ -158,16 +158,19 @@ Evidence:
 - `.github/workflows/manual-repro-check.yml`.
 - `.github/workflows/production-readiness-gate.yml`, the lightweight
   status-check candidate for `make production-readiness-guard`.
+- `.github/workflows/dusk-review-policy-gate.yml`, the shared required
+  status-check policy gate now required by both Dusk org default branches.
 - dusk-network/hyperlane-dusk#3, the narrow default-branch dispatcher PR.
 - `scripts/local-repro-check.sh`.
 - `make repro-check-agent`.
 - `make gate-status`.
 - `actionlint .github/workflows/manual-repro-check.yml`.
 - `actionlint .github/workflows/production-readiness-gate.yml`.
+- `actionlint .github/workflows/dusk-review-policy-gate.yml`.
 - `make production-readiness-guard`, which blocks while the Dusk repos have
-  open/unapproved PRs, no required status checks, or missing CI/default-branch
-  workflow visibility. The default branches now have protected-branch review
-  baselines enabled.
+  open/unapproved PRs or missing CI/default-branch workflow runner/secret
+  provisioning. The default branches now have protected-branch review
+  baselines and required status-check policy enabled.
 - Workflow inputs for exact review heads: `dusk_ref`, `rusk_ref`, and
   `monorepo_ref`.
 - Workflow run name includes the requested refs, and the workflow logs resolved
