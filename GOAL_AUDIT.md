@@ -98,7 +98,7 @@ Observed:
 
 | Requirement | Evidence | Status |
 |---|---|---|
-| Preserve current local prototype before rebasing | Backup directory: `/home/hein_/projects/hyperlane/.codex-backups/dusk-hyperlane-20260511T133907Z`; artifacts: `hyperlane-monorepo-tracked.diff`, `dusk-tree.tgz`, `hyperlane-dusk-untracked.tgz`; archive branch: `origin/archive/dusk-prototype-20260511` commit `8e399103b24673f837c04f4227e49c45c8366e7c` | Done |
+| Preserve current local prototype before rebasing | Backup directory: `/home/hein_/projects/hyperlane/.codex-backups/dusk-hyperlane-20260511T133907Z`; artifacts: `hyperlane-monorepo-tracked.diff`, `dusk-tree.tgz`, `hyperlane-dusk-untracked.tgz`; monorepo archive branch: `origin/archive/dusk-prototype-20260511` commit `8e399103b24673f837c04f4227e49c45c8366e7c`; Dusk archive branch: `origin/archive/dusk-hyperlane-prototype-20260511` commit `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` | Done |
 | Fork `hyperlane-xyz/hyperlane-monorepo` into Dusk org | `dusk-network/hyperlane-monorepo`, PR #1: https://github.com/dusk-network/hyperlane-monorepo/pull/1 | Done |
 | Create Dusk-specific Hyperlane contract/tooling repo | `dusk-network/hyperlane-dusk`, PR #1: https://github.com/dusk-network/hyperlane-dusk/pull/1 | Done |
 | Put local `~/projects/hyperlane/dusk` under git and push | Dusk repo branch `feat/dusk-hardening-v2`; implementation/test evidence commit `e4d3f2a`; later commits refresh review/audit handoff docs | Done |
@@ -130,8 +130,8 @@ Observed:
 
 | Evidence | Location |
 |---|---|
-| Prototype archive branch | `dusk-network/hyperlane-monorepo` `archive/dusk-prototype-20260511` at `8e399103b24673f837c04f4227e49c45c8366e7c` |
-| Prototype backup artifact hashes | `dusk-tree.tgz`: `8b38b322f807735944501c280f554f83c278a4cebe62e2282478e03da6bdd6ee`; `hyperlane-dusk-untracked.tgz`: `52942cc44b0c87e86b7a1ed8533273dc664eb27b5cea1ddf8d62ee46b9ab8900`; `hyperlane-monorepo-tracked.diff`: `2fe0dc466de389167f756eae23d926234c9df31c1de435a4e68006355bfc7d0e` |
+| Prototype archive branches | `dusk-network/hyperlane-monorepo` `archive/dusk-prototype-20260511` at `8e399103b24673f837c04f4227e49c45c8366e7c`; `dusk-network/hyperlane-dusk` `archive/dusk-hyperlane-prototype-20260511` at `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` |
+| Prototype backup artifact hashes | Reverified on 2026-05-12. `dusk-tree.tgz`: `8b38b322f807735944501c280f554f83c278a4cebe62e2282478e03da6bdd6ee`; `hyperlane-dusk-untracked.tgz`: `52942cc44b0c87e86b7a1ed8533273dc664eb27b5cea1ddf8d62ee46b9ab8900`; `hyperlane-monorepo-tracked.diff`: `2fe0dc466de389167f756eae23d926234c9df31c1de435a4e68006355bfc7d0e` |
 | Security assumptions, fixes, Solidity deviations, reviewer decisions | `SECURITY_REVIEW.md` |
 | Dusk reference traceability | `REFERENCE_TRACEABILITY.md` |
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
