@@ -114,6 +114,11 @@ Evidence:
 - `make secret-hygiene`.
 - `cargo test -p hyperlane-base dusk` in the companion monorepo, including the
   Unix loose-permission rejection case for `duskKey.keyFile`.
+- Latest clean-layout repro evidence at
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572,
+  including `make secret-hygiene` and the Hyperlane Rust agent check.
+- Dependency-remediated clean-Rusk E2E evidence at
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389.
 
 Recommended stance:
 

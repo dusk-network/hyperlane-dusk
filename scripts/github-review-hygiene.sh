@@ -360,6 +360,21 @@ if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
 fi
 rm -f "$EXPORT_DIR/stale-issue-8-body.txt"
 
+if [ -f "$EXPORT_DIR/dusk-issue-7-body.txt" ]; then
+    rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-7-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing latest clean-layout repro evidence link"
+    rg -q -F "$dependency_remediated_e2e_comment" "$EXPORT_DIR/dusk-issue-7-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing dependency-remediated E2E evidence link"
+    rg -q -F 'PRODUCTION_SIGNER_POLICY.md' "$EXPORT_DIR/dusk-issue-7-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing production signer policy link text"
+    if rg -n -e '4430201984|4430343619' \
+        "$EXPORT_DIR/dusk-issue-7-body.txt" >"$EXPORT_DIR/stale-issue-7-body.txt"; then
+        cat "$EXPORT_DIR/stale-issue-7-body.txt" >&2
+        fail "$EXPORT_DIR/dusk-issue-7-body.txt contains stale signer custody evidence links"
+    fi
+fi
+rm -f "$EXPORT_DIR/stale-issue-7-body.txt"
+
 if rg -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
     -e 'E2E was not rerun for the docs-only post-rebase head' \
