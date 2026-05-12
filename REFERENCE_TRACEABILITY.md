@@ -13,6 +13,20 @@ repositories; it records how they shaped this branch.
 | `dusk-network/duskevm-contracts` | Local checkout `/home/hein_/projects/duskevm-contracts`, README and contract layout | Dusk OP-contract port patterns, E2E/soak workflow shape, Dusk value custody and compatibility-harness practices. |
 | `dusk-network/rusk-private` | Clean detached worktree `c0c64db4659500d077bb253ad13acba0e347d3fc` and local E2E runs | Dusk Rusk/RUES/GraphQL, transfer-contract, Moonlight transaction, and clean-chain behavior used by the Hyperlane E2E evidence. |
 
+Reference checkout state verified on 2026-05-12:
+
+- `dusk-network/contracts#24`: open PR, head
+  `ccd00afee0150d3a10dc1d698aa75f3a63fbcd27`, 70-file PR surface. The local
+  `/home/hein_/projects/contracts` checkout is dirty and was used only as
+  reference material, not as release evidence.
+- `/home/hein_/projects/duskevm-audit`: local commit `98e05ff`; dirty/untracked
+  local files exist and were used only as reference material.
+- `/home/hein_/projects/duskevm-contracts`: local commit `0e9cf3d`; dirty local
+  files exist and were used only as reference material.
+- `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db`: clean detached
+  Rusk reference `c0c64db4659500d077bb253ad13acba0e347d3fc`; this is the Rusk
+  checkout used for the recorded clean-Rusk repro/E2E/soak evidence.
+
 ## Standards Mapping
 
 | Reference theme | Hyperlane application |
