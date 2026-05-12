@@ -13,6 +13,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778607202` tested Dusk source ref `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253`, monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`, upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778607202` tested monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3` after rebasing onto upstream `c6bce706316206ac7b5652155c9ea92e96f78c39`, with Dusk source ref `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Current live-head clean-Rusk E2E evidence after upstream rebase | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`; monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778609411`; MessageIdMultisig E2E run `1778609697` |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -58,9 +59,10 @@ Notes:
   clean-layout repro command passed at that monorepo head, including Dusk WASM
   builds, targeted contract clippy, 28 type tests, 70 VM integration tests,
   3 `dusk-tx` tests, secret hygiene, and the Hyperlane Rust agent check.
-  The clean-Rusk E2E evidence above remains evidence for the pre-rebase
-  monorepo ref `a44020dc998b7fe868254a5d1a349b9eb8ded899`; E2E was not rerun
-  for the docs-only post-rebase head.
+  At that stage, the clean-Rusk E2E evidence above remained evidence for the
+  pre-rebase monorepo ref `a44020dc998b7fe868254a5d1a349b9eb8ded899`; later
+  current live-head E2E runs `1778609411` and `1778609697` covered the final
+  post-rebase monorepo head.
 - After upstream Hyperlane advanced to
   `7a362a093d622b69d6c55d47992c9490ec33fb1a`, the monorepo PR branch was
   rebased again and pushed. The upstream change was TypeScript infra/config
@@ -80,6 +82,12 @@ Notes:
   passed after the rebase. Clean-layout repro run `1778607202` then passed on
   Dusk source ref `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253` and monorepo
   `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`.
+- Current live-head clean-Rusk E2E runs `1778609411` and `1778609697` then
+  passed at Dusk `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`, monorepo
+  `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`, upstream base
+  `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`. These runs cover the
+  post-rebase TestMock and MessageIdMultisig paths in both directions.
 - The latest review-head repro/E2E logs and the 7282-second high-volume soak
   logs were copied from `/tmp` into durable local handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`.
@@ -108,7 +116,7 @@ Notes:
   `cc34e8e31abcab6ef3ef05587f38ce7963257586c30375d59b46c25296e0b2a1`.
   `scripts/secret-hygiene-check.sh` passed over the repro log and tarball.
 - The live Dusk PR head after that repro is
-  `48907f3e75546662dadf502eea73f085391a89aa`. From tested source ref
+  `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`. From tested source ref
   `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253` to that live head,
   `git diff --name-status` reports only `GOAL_AUDIT.md`, `TEST_REPORT.md`, and
   `scripts/github-review-hygiene.sh`. The intervening commits are evidence
@@ -735,6 +743,35 @@ Artifacts:
 - `/tmp/hyperlane-db-relayer-testMock-1778587094/`
 - `/tmp/rusk-dev.log`
 
+### Current Live-Head Clean Rusk E2E: TestMock ISM
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+bash demo/e2e-agents.sh --only testMock --timeout 300 \
+  2>&1 | tee /tmp/hyperlane-current-live-head-e2e-testMock-1778609411.outer.log
+```
+
+Result:
+
+- Passed on detached Rusk commit `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Tested Dusk repo ref `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`.
+- Tested monorepo ref `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`.
+- Tested upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`.
+- EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
+- Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
+- `scripts/secret-hygiene-check.sh` passed over the safe text logs listed
+  below.
+
+Artifacts:
+
+- `/tmp/hyperlane-current-live-head-e2e-testMock-1778609411.outer.log`
+- `/tmp/hyperlane-start-env-testMock-1778609411.log`
+- `/tmp/hyperlane-deploy-testMock-1778609411.log`
+- `/tmp/hyperlane-relayer-testMock-1778609411.log`
+- `/tmp/hyperlane-db-relayer-testMock-1778609411/`
+- `/tmp/rusk-dev.log`
+
 ### Clean Rusk Secret-Handling Smoke: TestMock ISM
 
 ```bash
@@ -859,6 +896,42 @@ Artifacts:
 - `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778587351/metadata_latest.json`
 - `/tmp/hyperlane-db-relayer-messageIdMultisig-1778587351/`
 - `/tmp/hyperlane-db-validator-anvil-messageIdMultisig-1778587351/`
+- `/tmp/rusk-dev.log`
+
+### Current Live-Head Clean Rusk E2E: MessageIdMultisigISM
+
+```bash
+cd /home/hein_/projects/hyperlane/dusk
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+bash demo/e2e-agents.sh --only messageIdMultisig --timeout 300 \
+  2>&1 | tee /tmp/hyperlane-current-live-head-e2e-messageIdMultisig-1778609697.outer.log
+```
+
+Result:
+
+- Passed on detached Rusk commit `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Tested Dusk repo ref `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`.
+- Tested monorepo ref `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`.
+- Tested upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`.
+- Validator and relayer started successfully.
+- EVM -> Dusk delivered: 3 wDUSK minted on Dusk.
+- Dusk -> EVM delivered: 1 wDUSK minted back on EVM.
+- `scripts/secret-hygiene-check.sh` passed over the safe text logs listed
+  below.
+
+Artifacts:
+
+- `/tmp/hyperlane-current-live-head-e2e-messageIdMultisig-1778609697.outer.log`
+- `/tmp/hyperlane-start-env-messageIdMultisig-1778609697.log`
+- `/tmp/hyperlane-deploy-messageIdMultisig-1778609697.log`
+- `/tmp/hyperlane-validator-messageIdMultisig-1778609697.log`
+- `/tmp/hyperlane-relayer-messageIdMultisig-1778609697.log`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778609697/index.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778609697/0_with_id.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778609697/announcement.json`
+- `/tmp/hyperlane-checkpoints-anvil-messageIdMultisig-1778609697/metadata_latest.json`
+- `/tmp/hyperlane-db-relayer-messageIdMultisig-1778609697/`
+- `/tmp/hyperlane-db-validator-anvil-messageIdMultisig-1778609697/`
 - `/tmp/rusk-dev.log`
 
 ### Dirty Redeploy Guard
