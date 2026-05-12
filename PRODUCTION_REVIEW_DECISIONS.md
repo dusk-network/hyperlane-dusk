@@ -148,6 +148,8 @@ Evidence:
   `monorepo_ref`.
 - Workflow run name includes the requested refs, and the workflow logs resolved
   Dusk, Rusk, and monorepo checkout heads before `make repro-check-agent`.
+- The final repro step explicitly uses `shell: bash` and runs under
+  `set -euo pipefail` before invoking `make repro-check-agent`.
 
 Recommended stance:
 
