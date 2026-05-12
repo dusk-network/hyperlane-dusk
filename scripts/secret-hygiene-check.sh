@@ -37,6 +37,16 @@ if rg -n -- '--password' demo/*.sh >"$password_hits"; then
     fail "demo scripts must not pass Dusk consensus passwords through CLI argv"
 fi
 
+while IFS= read -r script; do
+    if [ "$script" = "demo/gen-agent-configs.sh" ]; then
+        continue
+    fi
+    if ! rg -q 'GENERATED_DUSK_SIGNER_KEY_FILES' "$script"; then
+        echo "$script" >&2
+        fail "E2E scripts that generate agent configs must clean up Dusk signer key files"
+    fi
+done < <(git ls-files 'demo/*.sh' | xargs rg -l 'gen-agent-configs\.sh' || true)
+
 if [ "$#" -gt 0 ]; then
     info "Scanning runtime artifact paths"
     for path in "$@"; do

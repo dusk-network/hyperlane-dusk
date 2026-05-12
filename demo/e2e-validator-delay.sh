@@ -21,6 +21,7 @@ AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-1}"
 
 CURRENT_RELAYER_PID=""
 CURRENT_VALIDATOR_PID=""
+GENERATED_DUSK_SIGNER_KEY_FILES=()
 
 require_tools() {
     command -v jq >/dev/null 2>&1 || fail "jq not found"
@@ -52,6 +53,9 @@ kill_pid() {
 cleanup() {
     kill_pid "$CURRENT_RELAYER_PID"
     kill_pid "$CURRENT_VALIDATOR_PID"
+    if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
+    fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
 
@@ -188,6 +192,10 @@ bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism messageIdMultisig \
 cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism messageIdMultisig --run-id "$run_id")"
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
 validator_cfg="$(echo "$cfg_json" | jq -r '.validator')"
+generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+if [ -n "$generated_dusk_signer_key_file" ]; then
+    GENERATED_DUSK_SIGNER_KEY_FILES+=("$generated_dusk_signer_key_file")
+fi
 
 info "Building agent binaries..."
 (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer -p validator >/dev/null)

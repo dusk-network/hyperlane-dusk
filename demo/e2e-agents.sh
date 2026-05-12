@@ -35,6 +35,7 @@ TIMEOUT_SECS="${TIMEOUT_SECS:-240}"
 # PIDs of the currently running agents (used by the EXIT trap).
 CURRENT_RELAYER_PID=""
 CURRENT_VALIDATOR_PID=""
+GENERATED_DUSK_SIGNER_KEY_FILES=()
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -88,6 +89,9 @@ cleanup() {
     # Best-effort cleanup on failures/timeouts.
     kill_pid "$CURRENT_RELAYER_PID"
     kill_pid "$CURRENT_VALIDATOR_PID"
+    if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
+    fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
 
@@ -148,6 +152,10 @@ run_case() {
     cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id")"
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
     validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
+    dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+    if [ -n "$dusk_signer_key_file" ]; then
+        GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
+    fi
 
     # Build agent binaries (incremental).
     (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer -p validator >/dev/null)
@@ -288,6 +296,9 @@ PY
     kill_pid "$validator_pid"
     CURRENT_RELAYER_PID=""
     CURRENT_VALIDATOR_PID=""
+    if [ -n "$dusk_signer_key_file" ]; then
+        rm -f "$dusk_signer_key_file" 2>/dev/null || true
+    fi
 
     info "Stopping environment..."
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true

@@ -89,6 +89,10 @@ gh api repos/dusk-network/hyperlane-dusk/issues/2/comments --paginate --jq '.[].
 rg -n -e 'Current-head' -e 'current-head' -e '1778551243' \
   /tmp/hyperlane-gh-review-text-audit-1778551686 || true
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-gh-review-text-audit-1778551686
+bash -n demo/e2e-agents.sh demo/e2e-low-dusk-signer-balance.sh \
+  demo/e2e-origin-rpc-failure.sh demo/e2e-destination-rpc-failure.sh \
+  demo/e2e-duplicate-relayer-attempt.sh demo/e2e-validator-delay.sh \
+  demo/e2e-corrupt-checkpoint-metadata.sh demo/e2e-relayer-restart-stress.sh
 ```
 
 Result:
@@ -131,6 +135,11 @@ Result:
   to avoid stale "current-head" wording and the obsolete export path
   `1778551243`; stale-wording scan found no matches and
   `scripts/secret-hygiene-check.sh` passed.
+- E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
+  signer key files and remove them on exit after stopping agents. `bash -n`
+  passed for the touched E2E scripts listed above. `make secret-hygiene` now
+  fails if a future E2E wrapper calls `gen-agent-configs.sh` without this
+  cleanup tracking.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 

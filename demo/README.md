@@ -256,6 +256,8 @@ it does not appear in shell history or process argv.
 key files under `/tmp` with `umask 077`. The configs point at Dusk key files
 and still contain local Anvil signer material; neither the configs nor the key
 files may be committed, uploaded as CI artifacts, or reused for production.
+The E2E wrappers delete generated Dusk signer key files on exit after stopping
+running agents; logs and non-secret path references are left for debugging.
 The EVM private keys used by these scripts are Anvil dev keys only.
 
 Run `make secret-hygiene` before review. Before uploading CI or E2E artifacts,

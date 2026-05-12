@@ -23,6 +23,7 @@ AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-1}"
 BAD_DUSK_RPC="${BAD_DUSK_RPC:-http://127.0.0.1:18080}"
 
 CURRENT_RELAYER_PID=""
+GENERATED_DUSK_SIGNER_KEY_FILES=()
 
 require_tools() {
     command -v jq >/dev/null 2>&1 || fail "jq not found"
@@ -53,6 +54,9 @@ kill_pid() {
 
 cleanup() {
     kill_pid "$CURRENT_RELAYER_PID"
+    if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
+    fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
 
@@ -160,6 +164,10 @@ bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism testMock >"$deploy_log" 2>&1 || 
 
 cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$run_id")"
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
+generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+if [ -n "$generated_dusk_signer_key_file" ]; then
+    GENERATED_DUSK_SIGNER_KEY_FILES+=("$generated_dusk_signer_key_file")
+fi
 bad_rpc_relayer_cfg="/tmp/hyperlane-relayer-bad-destination-rpc-testMock-${run_id}.json"
 healthy_relayer_cfg="/tmp/hyperlane-relayer-healthy-destination-rpc-testMock-${run_id}.json"
 
