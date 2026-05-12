@@ -88,7 +88,8 @@ Observed:
   `make completion-audit-status`, `make dependency-alert-status`,
   `make review-hygiene`, and `make gate-status-fresh`.
 - `make production-readiness-guard` is a negative guard that must fail while
-  known machine-checkable production blockers remain open. It is not a
+  known machine-checkable production blockers remain open, including missing
+  default-branch protection/review/status-check requirements. It is not a
   production-readiness proof.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
@@ -105,7 +106,8 @@ Observed:
   7 unchecked sign-off items, 1 checked item, zero status checks on the
   implementation PRs, active-repo untracked source status, the manual workflow
   dispatcher PR state, all six split decision issues open, no visible workflow,
-  default-branch protection and merge method settings, repo-level Actions
+  default-branch protection and merge method settings, readiness blockers for
+  missing branch protection/review/status-check requirements, repo-level Actions
   secret and self-hosted runner visibility, Dusk Dependabot open-alert
   visibility with local `Cargo.lock` vulnerable-range comparison, current
   upstream drift, and no placeholder macro matches in the Dusk repo runtime

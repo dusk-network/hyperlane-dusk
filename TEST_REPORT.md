@@ -351,7 +351,8 @@ Result:
   production sign-off.
 - `make production-readiness-guard`: failed as expected while external
   production blockers remain open. It reports open internal PR/review/status
-  gates, unchecked sign-off items, open split decision issues, missing default
+  gates, unchecked sign-off items, open split decision issues, missing
+  default-branch protection/review/status-check requirements, missing default
   branch workflow/runner/secret visibility, upstream freshness, and latest
   clean-layout repro covered-path delta. Passing this guard would not by itself
   prove production readiness.

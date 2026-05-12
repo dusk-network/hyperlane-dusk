@@ -74,8 +74,51 @@ check_pr() {
     fi
 }
 
+check_branch_protection() {
+    local repo="$1"
+    local label="$2"
+    local default_branch
+    local protection_json
+    local status_count
+    local requires_reviews
+    local err_file
+
+    default_branch="$(gh api "repos/$repo" --jq .default_branch)"
+    printf '%sDefaultBranch: %s\n' "$label" "$default_branch"
+
+    err_file="/tmp/hyperlane-readiness-protection.$$.err"
+    if protection_json="$(gh api "repos/$repo/branches/$default_branch/protection" \
+        --jq '{requiredStatusChecks: (.required_status_checks.contexts // []), requiresReviews: (.required_pull_request_reviews != null)}' \
+        2>"$err_file")"; then
+        status_count="$(printf '%s\n' "$protection_json" | jq '.requiredStatusChecks | length')"
+        requires_reviews="$(printf '%s\n' "$protection_json" | jq -r .requiresReviews)"
+        printf '%sBranchProtection: enabled\n' "$label"
+        printf '%sRequiredStatusChecks: %s\n' "$label" "$status_count"
+        printf '%sRequiresReviews: %s\n' "$label" "$requires_reviews"
+
+        if [ "$status_count" -lt "$MIN_STATUS_CHECKS" ]; then
+            add_blocker "$label default branch has $status_count required status checks; expected at least $MIN_STATUS_CHECKS"
+        fi
+
+        if [ "$requires_reviews" != "true" ]; then
+            add_blocker "$label default branch does not require pull request reviews"
+        fi
+    else
+        if grep -q 'Branch not protected' "$err_file"; then
+            printf '%sBranchProtection: none\n' "$label"
+            add_blocker "$label default branch $default_branch is not protected"
+        else
+            printf '%sBranchProtection: unknown\n' "$label"
+            sed 's/^/  /' "$err_file"
+            add_blocker "$label default branch protection visibility is unknown"
+        fi
+    fi
+    rm -f "$err_file"
+}
+
 require_cmd gh
 require_cmd git
+require_cmd jq
 
 section "Internal PRs"
 check_pr "dusk" "$DUSK_REPO" 1
@@ -86,6 +129,10 @@ if gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json state >/dev/null 
 else
     add_blocker "workflow dispatcher PR #$WORKFLOW_PR_NUMBER is missing or inaccessible"
 fi
+
+section "Branch Protection"
+check_branch_protection "$DUSK_REPO" "dusk"
+check_branch_protection "$MONOREPO_REPO" "monorepo"
 
 section "Production Sign-Off"
 issue_body="$(gh issue view 2 --repo "$DUSK_REPO" --json body --jq .body)"

@@ -549,5 +549,5 @@ fi
 section "Summary"
 echo "This script reports machine-checkable gates only."
 echo "The objective remains blocked until the unchecked sign-off items, reviews,"
-echo "CI/default-branch workflow decision, internal PR merge, and upstream-prep"
-echo "gate are resolved by Dusk reviewers."
+echo "branch protection/status-check policy, CI/default-branch workflow decision,"
+echo "internal PR merge, and upstream-prep gate are resolved by Dusk reviewers."
