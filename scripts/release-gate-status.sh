@@ -148,11 +148,17 @@ print_repo_merge_policy() {
         echo "branchProtection: enabled"
         printf '%s\n' "$protection_json" | sed 's/^/  /'
     else
-        echo "branchProtection: none"
-        if [ -n "$protection_json" ]; then
+        if printf '%s\n' "$protection_json" | grep -q '"message":"Branch not protected"'; then
+            echo "branchProtection: none"
+        else
+            echo "branchProtection: unknown"
+        fi
+        if [ -n "$protection_json" ] && ! printf '%s\n' "$protection_json" | grep -q '"message":"Branch not protected"'; then
             printf '%s\n' "$protection_json" | sed 's/^/  /'
         fi
-        sed 's/^/  /' /tmp/hyperlane-dusk-protection.$$.err
+        if ! grep -q 'Branch not protected' /tmp/hyperlane-dusk-protection.$$.err; then
+            sed 's/^/  /' /tmp/hyperlane-dusk-protection.$$.err
+        fi
     fi
     rm -f /tmp/hyperlane-dusk-protection.$$.err
 }
