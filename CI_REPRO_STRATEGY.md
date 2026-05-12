@@ -20,10 +20,12 @@ setup to accept, change, or replace.
   The current CI blocker is runner/secret/workflow provisioning, not disabled
   repo-level Actions. The probe is recorded in
   dusk-network/hyperlane-dusk#8.
-- Both Dusk org repos currently have unprotected `main` branches and empty PR
-  status-check rollups. The production readiness guard now treats branch
-  protection, required PR review, and required status checks as part of the
-  CI/repro release gate tracked in dusk-network/hyperlane-dusk#8.
+- Both Dusk org repos now have protected `main` branches with required PR
+  review, stale-review dismissal, last-push approval, conversation resolution,
+  admin enforcement, and force-push/delete disabled. The PR status-check
+  rollups remain empty, and the production readiness guard still treats at
+  least one required status check as part of the CI/repro release gate tracked
+  in dusk-network/hyperlane-dusk#8.
 - `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
@@ -96,9 +98,9 @@ make gate-status-fresh
 
 `make production-readiness-guard` is expected to fail while production blockers
 remain open. It reports machine-checkable blockers such as open internal PRs,
-unchecked sign-off items, open split decision issues, missing default-branch
-protection/review/status-check requirements, missing workflow/runner
-visibility, upstream drift, and latest clean-layout repro covered-path delta.
+unchecked sign-off items, open split decision issues, missing review/status
+check requirements, missing workflow/runner visibility, upstream drift, and
+latest clean-layout repro covered-path delta.
 
 `make gate-status` calls `scripts/release-gate-status.sh`, which reports local
 worktree state, untracked source status, implementation PR and
