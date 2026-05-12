@@ -31,8 +31,8 @@ open in `dusk-network/hyperlane-dusk#2`.
 
 | Component | Branch | Evidence | State |
 |---|---|---|---|
-| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; later commits refresh audit, CI/repro, signer, default-branch, and cross-repo handoff docs; `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the file-backed Dusk signer config and key-file permission updates | Internal PR ready for review, open, mergeable; review requested from `moCello`; labels `need:feedback`, `type:feature`; no status checks configured |
-| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility review documented in `docs/dusk-upstream-compatibility-review.md`; companion `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the file-backed Dusk signer parser/builder and key-file permission update | Internal PR ready for review, open, mergeable; review requested from `Neotamandua`; labels `need:feedback`, `type:feature`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
+| `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Implementation/test evidence through `e4d3f2ab704286fe89e43b24543f8104b8838633`; cleanup regression guard commit `fd5269a6983fc920b5f2d1201b162ff7c11bbef0`; later commits refresh audit, CI/repro, signer, default-branch, cross-repo handoff docs, generated signer key cleanup, and cleanup regression guards; `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the file-backed Dusk signer config and key-file permission updates | Internal PR ready for review, open, mergeable; review requested from `moCello`; labels `need:feedback`, `type:feature`; no status checks configured |
+| `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Current pushed head `ecb11359747dce240a24c50fa229afd4479919b5`; rebase/check evidence `f0df7aa522c65c4a7cf94c677c9573bd353c9b72`; upstream compatibility review documented in `docs/dusk-upstream-compatibility-review.md`; companion `TEST_REPORT.md` records supplemental clean-layout `make repro-check-agent` runs with exact tested SHAs, including the file-backed Dusk signer parser/builder and key-file permission update | Internal PR ready for review, open, mergeable; review requested from `Neotamandua`; labels `need:feedback`, `type:feature`; no status checks configured; merge-base equals upstream `f758a70630fd72d4749c3afb79454e725b8081a8` |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
 
 Live verification on 2026-05-12:
@@ -44,6 +44,8 @@ gh pr view 1 --repo dusk-network/hyperlane-monorepo \
   --json state,mergeable,headRefOid,reviewRequests,statusCheckRollup
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-parse upstream/main
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstream/main
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-list --left-right --count HEAD...upstream/main
+gh workflow list --repo dusk-network/hyperlane-dusk --all
 ```
 
 Observed:
@@ -57,6 +59,8 @@ Observed:
   otherwise make the file stale immediately.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
   `f758a70630fd72d4749c3afb79454e725b8081a8`.
+- The monorepo Dusk branch is `16 0` relative to `upstream/main`, so it is not
+  behind current upstream as of this check.
 - Both local worktrees are clean and track their pushed origin branches.
 - `git ls-files --others --exclude-standard` is empty in both active repos, so
   the Dusk contract/tooling repo and the Hyperlane monorepo fork do not have
@@ -64,6 +68,10 @@ Observed:
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
   `archive/dusk-hyperlane-prototype-20260511`.
+- `gh workflow list --repo dusk-network/hyperlane-dusk --all` currently
+  returns no discoverable workflows, matching the documented caveat that
+  `.github/workflows/manual-repro-check.yml` must land on the default branch
+  before it can replace local repro evidence.
 
 ## Deliverable Checklist
 
