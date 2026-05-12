@@ -13,6 +13,8 @@ MONOREPO_REPO="${MONOREPO_REPO:-dusk-network/hyperlane-monorepo}"
 WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
+CURRENT_E2E_URL="${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}"
+CURRENT_E2E_ARCHIVE_URL="${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}"
 FETCH_UPSTREAM=0
 
 usage() {
@@ -49,6 +51,13 @@ Environment:
                        Default: $SIGNOFF_ISSUES
   UPSTREAM_REMOTE      Hyperlane upstream remote name.
                        Default: $UPSTREAM_REMOTE
+  CURRENT_E2E_URL      Current live-head E2E evidence URL expected in active
+                       reviewer-facing bodies.
+                       Default: $CURRENT_E2E_URL
+  CURRENT_E2E_ARCHIVE_URL
+                       Current live-head E2E archive URL expected in active
+                       reviewer-facing bodies.
+                       Default: $CURRENT_E2E_ARCHIVE_URL
 EOF
 }
 
@@ -171,6 +180,24 @@ checked_count() {
     grep -c '^- \[x\]' || true
 }
 
+print_link_presence() {
+    local label="$1"
+    local body="$2"
+
+    echo "$label:"
+    if printf '%s\n' "$body" | grep -Fq "$CURRENT_E2E_URL"; then
+        echo "  currentLiveHeadE2E: present"
+    else
+        echo "  currentLiveHeadE2E: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$CURRENT_E2E_ARCHIVE_URL"; then
+        echo "  currentLiveHeadE2EArchive: present"
+    else
+        echo "  currentLiveHeadE2EArchive: missing"
+    fi
+}
+
 section "Local Worktrees"
 echo "dusk: $(git -C "$ROOT" rev-parse HEAD)"
 git -C "$ROOT" status --short --branch
@@ -217,6 +244,13 @@ issue_body="$(gh issue view 2 --repo "$DUSK_REPO" --json body --jq .body)"
 echo "url: https://github.com/$DUSK_REPO/issues/2"
 echo "uncheckedItems: $(printf '%s\n' "$issue_body" | unchecked_count)"
 echo "checkedItems: $(printf '%s\n' "$issue_body" | checked_count)"
+
+section "Review Handoff Link Visibility"
+dusk_pr_body="$(gh pr view 1 --repo "$DUSK_REPO" --json body --jq .body)"
+monorepo_pr_body="$(gh pr view 1 --repo "$MONOREPO_REPO" --json body --jq .body)"
+print_link_presence "duskPR1" "$dusk_pr_body"
+print_link_presence "monorepoPR1" "$monorepo_pr_body"
+print_link_presence "signoffIssue2" "$issue_body"
 
 section "Split Production Decision Issues"
 open_split_issues=0

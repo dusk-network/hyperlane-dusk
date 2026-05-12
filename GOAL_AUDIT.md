@@ -95,7 +95,9 @@ Observed:
   dispatcher PR state, all six split decision issues open, no visible workflow,
   default-branch protection and merge method settings, repo-level Actions
   secret and self-hosted runner visibility, current upstream drift, and no
-  placeholder macro matches in
+  placeholder macro matches in the Dusk agent crate. It also reports whether
+  active reviewer-facing PR/issue bodies include the current live-head E2E
+  evidence and archive links for
   `rust/main/chains/hyperlane-dusk`.
 
 ## Prompt-To-Artifact Deliverable Checklist
