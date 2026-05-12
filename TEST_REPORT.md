@@ -192,6 +192,7 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
+make dependency-alert-status
 make gate-status
 make gate-status-fresh
 make repro-check-agent
@@ -314,6 +315,11 @@ Result:
   `/tmp/hyperlane-dependency-remediation-e2e-messageIdMultisig-1778613956.outer.log`,
   and the archive listed above.
 - `make secret-hygiene`: passed.
+- `make dependency-alert-status`: passed; queried 27 open GitHub Dependabot
+  `Cargo.lock` alerts and confirmed all 27 first-patched version floors are
+  satisfied by the current local lockfile package versions. This is a
+  feature-branch triage aid and does not replace GitHub closing alerts after a
+  default-branch rescan.
 - `make gate-status`: passed; reported the implementation PRs and manual
   workflow dispatcher PR, zero status checks on the implementation PRs,
   7 unchecked production sign-off items, all six split decision issues open,
@@ -322,9 +328,10 @@ Result:
   self-hosted runner visibility for CI gate #8, latest clean-layout repro link
   visibility, post-rebase E2E/archive link visibility,
   dependency-remediated E2E link visibility, advisory reviewer routing link
-  visibility, Dusk Dependabot open-alert visibility, reviewer-facing
-  `make gate-status-fresh` handoff text, current Hyperlane upstream drift, and
-  no placeholder matches in tracked Dusk repo runtime paths or
+  visibility, Dusk Dependabot open-alert visibility plus local lockfile
+  first-patched-floor comparison, reviewer-facing `make gate-status-fresh`
+  handoff text, current Hyperlane upstream drift, and no placeholder matches
+  in tracked Dusk repo runtime paths or
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest

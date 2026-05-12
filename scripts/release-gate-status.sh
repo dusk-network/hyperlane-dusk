@@ -401,6 +401,13 @@ else
 fi
 rm -f "$dependabot_alerts" /tmp/hyperlane-dusk-dependabot.$$.err
 
+if dependency_status="$(bash "$ROOT/scripts/dependency-alert-status.sh" --summary-only 2>&1)"; then
+    printf '%s\n' "$dependency_status" | sed 's/^/  /'
+else
+    echo "dependencyAlertPatchFloorStatus: failed"
+    printf '%s\n' "$dependency_status" | sed 's/^/  /'
+fi
+
 section "Hyperlane Upstream Drift"
 if [ -d "$MONOREPO_DIR" ]; then
     if git -C "$MONOREPO_DIR" remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1; then
