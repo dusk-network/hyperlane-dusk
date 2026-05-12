@@ -25,6 +25,7 @@ Prints the current machine-checkable review status:
   - production sign-off checklist counts from dusk-network/hyperlane-dusk#2
   - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
   - workflow visibility for dusk-network/hyperlane-dusk
+  - repo-level Actions secret and self-hosted runner visibility for CI gate #8
   - Hyperlane upstream/main drift for the local monorepo checkout
   - Dusk agent placeholder scan in rust/main/chains/hyperlane-dusk
 
@@ -181,6 +182,35 @@ if [ -n "$workflow_output" ]; then
 else
     echo "no workflows visible through GitHub API"
 fi
+
+section "CI Provisioning Visibility"
+if repo_secrets_count="$(gh api "repos/$DUSK_REPO/actions/secrets" --jq .total_count 2>/tmp/hyperlane-dusk-secrets.$$.err)"; then
+    echo "repoSecretsVisible: $repo_secrets_count"
+else
+    echo "repoSecretsVisible: unknown"
+    sed 's/^/  /' /tmp/hyperlane-dusk-secrets.$$.err
+fi
+rm -f /tmp/hyperlane-dusk-secrets.$$.err
+
+if repo_runners_count="$(gh api "repos/$DUSK_REPO/actions/runners" --jq .total_count 2>/tmp/hyperlane-dusk-runners.$$.err)"; then
+    echo "repoSelfHostedRunnersVisible: $repo_runners_count"
+else
+    echo "repoSelfHostedRunnersVisible: unknown"
+    sed 's/^/  /' /tmp/hyperlane-dusk-runners.$$.err
+fi
+rm -f /tmp/hyperlane-dusk-runners.$$.err
+
+org_name="${DUSK_REPO%%/*}"
+if org_runners_count="$(gh api "orgs/$org_name/actions/runners" --jq .total_count 2>/tmp/hyperlane-dusk-org-runners.$$.err)"; then
+    echo "orgSelfHostedRunnersVisible: $org_runners_count"
+else
+    echo "orgSelfHostedRunnersVisible: unknown"
+    if [ -n "$org_runners_count" ]; then
+        printf '%s\n' "$org_runners_count" | sed 's/^/  /'
+    fi
+    sed 's/^/  /' /tmp/hyperlane-dusk-org-runners.$$.err
+fi
+rm -f /tmp/hyperlane-dusk-org-runners.$$.err
 
 section "Hyperlane Upstream Drift"
 if [ -d "$MONOREPO_DIR" ]; then

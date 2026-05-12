@@ -92,8 +92,9 @@ Observed:
 - `make gate-status` prints the current machine-checkable gate status:
   7 unchecked sign-off items, 1 checked item, zero status checks on the
   implementation PRs, the manual workflow dispatcher PR state, all six split
-  decision issues open, no visible workflow, current upstream drift, and no
-  placeholder macro matches in `rust/main/chains/hyperlane-dusk`.
+  decision issues open, no visible workflow, repo-level Actions secret and
+  self-hosted runner visibility, current upstream drift, and no placeholder
+  macro matches in `rust/main/chains/hyperlane-dusk`.
 
 ## Prompt-To-Artifact Deliverable Checklist
 
@@ -137,7 +138,7 @@ Observed:
 | Dusk reference traceability | `REFERENCE_TRACEABILITY.md` |
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `scripts/github-review-hygiene.sh`, `make secret-hygiene`, `make review-hygiene` |
-| CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, dusk-network/hyperlane-dusk#3 |
+| CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, dusk-network/hyperlane-dusk#3, dusk-network/hyperlane-dusk#8 |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Repeatable local E2E scripts | `demo/e2e-agents.sh`, `demo/e2e-relayer-restart-stress.sh`, `demo/e2e-soak-restart-stress.sh`, `demo/e2e-*.sh` |
 | Demo and E2E command documentation | `demo/README.md` |

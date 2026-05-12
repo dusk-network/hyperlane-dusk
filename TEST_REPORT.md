@@ -117,9 +117,9 @@ Result:
 - `make gate-status`: passed; reported the implementation PRs and manual
   workflow dispatcher PR, zero status checks on the implementation PRs,
   7 unchecked production sign-off items, all six split decision issues open,
-  no visible GitHub workflow, current Hyperlane upstream drift, and no
-  placeholder matches in
-  `rust/main/chains/hyperlane-dusk`.
+  no visible GitHub workflow, repo-level Actions secret and self-hosted runner
+  visibility for CI gate #8, current Hyperlane upstream drift, and no
+  placeholder matches in `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check.
 - `bash scripts/local-repro-check.sh --agent-check`: passed. This wraps the
