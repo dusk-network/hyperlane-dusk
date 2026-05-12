@@ -347,6 +347,19 @@ if [ -f "$EXPORT_DIR/dusk-pr-3-body.txt" ]; then
         || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing advisory reviewer routing link"
 fi
 
+if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
+    rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-8-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout repro evidence link"
+    rg -q -F 'branch protection/status-check policy' "$EXPORT_DIR/dusk-issue-8-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing branch protection/status-check policy text"
+    if rg -n -e '4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253' \
+        "$EXPORT_DIR/dusk-issue-8-body.txt" >"$EXPORT_DIR/stale-issue-8-body.txt"; then
+        cat "$EXPORT_DIR/stale-issue-8-body.txt" >&2
+        fail "$EXPORT_DIR/dusk-issue-8-body.txt contains stale clean-layout repro body evidence"
+    fi
+fi
+rm -f "$EXPORT_DIR/stale-issue-8-body.txt"
+
 if rg -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
     -e 'E2E was not rerun for the docs-only post-rebase head' \

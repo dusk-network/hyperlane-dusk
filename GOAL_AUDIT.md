@@ -229,10 +229,12 @@ Observed:
    The final workflow repro step uses explicit `shell: bash` and
    `set -euo pipefail` before invoking `make repro-check-agent`.
    `CI_REPRO_STRATEGY.md` records the proposed runner labels, checkout layout,
-   read-only token scope, artifact policy, promotion path, and default-branch
-   visibility caveat. The workflow still needs a Dusk runner/secret decision
-   and must land on the default branch before it can replace local evidence.
-   The narrow default-branch dispatcher PR is
+   read-only token scope, artifact policy, promotion path, branch
+   protection/status-check policy, and default-branch visibility caveat. The
+   workflow still needs a Dusk runner/secret decision and must land on the
+   default branch before it can replace local evidence. The default branches
+   also need protected-branch review and required-status-check policy before a
+   production-readiness claim. The narrow default-branch dispatcher PR is
    https://github.com/dusk-network/hyperlane-dusk/pull/3.
 7. The remaining production sign-off work is tracked in
    https://github.com/dusk-network/hyperlane-dusk/issues/2 and summarized for

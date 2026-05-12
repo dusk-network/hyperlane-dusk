@@ -20,6 +20,10 @@ setup to accept, change, or replace.
   The current CI blocker is runner/secret/workflow provisioning, not disabled
   repo-level Actions. The probe is recorded in
   dusk-network/hyperlane-dusk#8.
+- Both Dusk org repos currently have unprotected `main` branches and empty PR
+  status-check rollups. The production readiness guard now treats branch
+  protection, required PR review, and required status checks as part of the
+  CI/repro release gate tracked in dusk-network/hyperlane-dusk#8.
 - `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
@@ -285,7 +289,10 @@ Recommended sequence:
    in `TEST_REPORT.md`.
 4. Only after the manual run is stable, decide whether to make the non-E2E
    repro check required on internal PRs.
-5. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides
+5. Protect `main` on `dusk-network/hyperlane-dusk` and
+   `dusk-network/hyperlane-monorepo`, require PR review, and require the
+   accepted CI check before treating either repo as production-ready.
+6. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides
    a runner specifically intended for long-running local network tests.
 
 ## Open Decision

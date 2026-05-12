@@ -131,9 +131,12 @@ Tracking issue: dusk-network/hyperlane-dusk#8.
 
 Decision:
 
-- [ ] Accept the manual self-hosted runner proposal.
-- [ ] Replace it with another Dusk private CI system.
-- [ ] Keep PR evidence local/manual and do not require CI yet.
+- [ ] Accept the manual self-hosted runner proposal plus branch
+      protection/status-check policy.
+- [ ] Replace it with another Dusk private CI system and equivalent branch
+      protection/status-check policy.
+- [ ] Keep PR evidence local/manual and explicitly accept that branch
+      protection/required status checks are not release gates yet.
 
 Evidence:
 
@@ -144,6 +147,9 @@ Evidence:
 - `make repro-check-agent`.
 - `make gate-status`.
 - `actionlint .github/workflows/manual-repro-check.yml`.
+- `make production-readiness-guard`, which blocks while the Dusk repos have
+  unprotected default branches, no required PR reviews, or no required status
+  checks.
 - Workflow inputs for exact review heads: `dusk_ref`, `rusk_ref`, and
   `monorepo_ref`.
 - Workflow run name includes the requested refs, and the workflow logs resolved
@@ -155,6 +161,9 @@ Recommended stance:
 
 Accept the manual self-hosted runner proposal for internal review once Dusk
 provides the `dusk-hyperlane` runner and read-only `DUSK_ORG_READ_TOKEN`.
+Pair that with protected `main` branches for `dusk-network/hyperlane-dusk` and
+`dusk-network/hyperlane-monorepo`, required PR review, and at least one
+required status check once the accepted CI path exists.
 When running it from the default branch, resolve the live Dusk and monorepo PR
 heads immediately before dispatch and pass those exact SHAs as `dusk_ref` and
 `monorepo_ref`; keep `rusk_ref` pinned to the reviewed clean Rusk commit unless
