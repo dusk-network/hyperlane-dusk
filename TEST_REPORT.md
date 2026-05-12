@@ -14,6 +14,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778607202` tested Dusk source ref `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253`, monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`, upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778607202` tested monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3` after rebasing onto upstream `c6bce706316206ac7b5652155c9ea92e96f78c39`, with Dusk source ref `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Current live-head clean-Rusk E2E evidence after upstream rebase | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`; monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778609411`; MessageIdMultisig E2E run `1778609697` |
+| Dependency-remediated clean-Rusk E2E evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk dependency-remediation worktree with `Cargo.toml`/`Cargo.lock` updates documented below; monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778613709`; MessageIdMultisig E2E run `1778613956` |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -88,6 +89,13 @@ Notes:
   `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk
   `c0c64db4659500d077bb253ad13acba0e347d3fc`. These runs cover the
   post-rebase TestMock and MessageIdMultisig paths in both directions.
+- After dependency advisory remediation, clean-Rusk E2E runs `1778613709` and
+  `1778613956` passed with the updated `Cargo.toml`/`Cargo.lock` dependency
+  graph, monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`, upstream base
+  `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`. These runs cover the
+  TestMock and MessageIdMultisig paths in both directions after the Rust
+  dependency updates.
 - The current live-head clean-Rusk E2E logs were copied into durable local
   handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-live-head-e2e-1778609411-1778609697.tgz`.
@@ -126,13 +134,35 @@ Notes:
   tested source ref
   `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253` to that live head,
   `git diff --name-status` reports only `GOAL_AUDIT.md`, `TEST_REPORT.md`, and
-  `scripts/github-review-hygiene.sh` as of the latest gate refresh. The
+  `scripts/github-review-hygiene.sh` as of the previous gate refresh. The
   intervening commits are evidence docs, review-hygiene stale-link guard
   updates, evidence wording clarification, live-head E2E/archive documentation,
   and reviewer-facing live-head E2E link enforcement. Current live-head E2E runs
   `1778609411` and `1778609697` tested Dusk
   `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8` directly before the later
   docs/tooling-only commits.
+- A 2026-05-12 dependency advisory remediation pass updated the Dusk repo Rust
+  dependency graph for GitHub-reported advisories: `wasmtime` 25.0.3 -> 36.0.9,
+  `openssl` 0.10.75 -> 0.10.79, `openssl-sys` 0.9.111 -> 0.9.115,
+  `rustls-webpki` 0.103.9 -> 0.103.13, `quinn-proto` 0.11.13 -> 0.11.14,
+  `rand` 0.8.5 -> 0.8.6, `rand` 0.9.2 -> 0.9.3, and `keccak` 0.1.5 -> 0.1.6.
+  The `lru` package was already at 0.16.4. `wasmtime` remains scoped to the
+  `hyperlane-dusk-integration-tests` dev-dependency, while `quinn-proto` and
+  `rand` 0.9.3 remain lockfile-only in the active target graph. GitHub
+  Dependabot alerts may remain visible until GitHub rescans the pushed
+  `Cargo.lock`.
+- Dependency remediation logs were copied into durable local handoff archive
+  `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-1778613424.tgz`.
+  SHA256:
+  `507bd4d4dfc7bfd6c6fd517f3f8d6edc83e662d2b81530e4be933ddd53ac6433`.
+  `scripts/secret-hygiene-check.sh` passed over the log directory and tarball.
+- Dependency-remediated clean-Rusk E2E logs were copied into durable local
+  handoff archive
+  `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-e2e-1778613709-1778613956.tgz`.
+  SHA256:
+  `36df8403ac20fa2b62e1e69780229222520102457a9d3f24165f6a4dbd924f13`.
+  `scripts/secret-hygiene-check.sh` passed over the archive staging directory
+  and tarball.
 
 ## Commands Run
 
@@ -155,6 +185,48 @@ HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/hyperlane-dusk-repro-current-head-1778604592 \
 HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/hyperlane-dusk-repro-current-head-1778607202 \
   RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
   make repro-check-agent 2>&1 | tee /tmp/hyperlane-dusk-repro-current-head-1778607202.log
+cargo update -p openssl --precise 0.10.79
+cargo update -p rustls-webpki --precise 0.103.13
+cargo update -p quinn-proto --precise 0.11.14
+cargo update -p rand@0.8.5 --precise 0.8.6
+cargo update -p rand@0.9.2 --precise 0.9.3
+cargo update -p keccak --precise 0.1.6
+cargo update -p wasmtime --precise 36.0.7
+LOG_DIR=/tmp/hyperlane-dusk-dependency-remediation-1778613424
+cargo test -p hyperlane-dusk-types 2>&1 | tee "$LOG_DIR/types.log"
+cargo test -p dusk-tx 2>&1 | tee "$LOG_DIR/dusk-tx.log"
+cargo test -p hyperlane-dusk-integration-tests 2>&1 | tee "$LOG_DIR/integration.log"
+cargo check -p hyperlane-dusk-e2e -p dusk-tx 2>&1 | tee "$LOG_DIR/e2e-dusk-tx-check.log"
+make secret-hygiene 2>&1 | tee "$LOG_DIR/secret-hygiene.log"
+cargo tree -i wasmtime
+cargo tree -i openssl
+cargo tree -i rustls-webpki
+cargo tree -i keccak
+cargo tree -i rand@0.8.6
+cargo tree -p lru
+cargo tree --target all -i quinn-proto || true
+cargo tree --target all -i rand@0.9.3 || true
+bash scripts/secret-hygiene-check.sh "$LOG_DIR"
+tar -C /tmp -czf /home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-1778613424.tgz \
+  hyperlane-dusk-dependency-remediation-1778613424
+sha256sum /home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-1778613424.tgz
+bash scripts/secret-hygiene-check.sh \
+  /home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-1778613424.tgz
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+  bash demo/e2e-agents.sh --only testMock --timeout 300 \
+  2>&1 | tee /tmp/hyperlane-dependency-remediation-e2e-testMock-1778613709.outer.log
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+  bash demo/e2e-agents.sh --only messageIdMultisig --timeout 300 \
+  2>&1 | tee /tmp/hyperlane-dependency-remediation-e2e-messageIdMultisig-1778613956.outer.log
+bash scripts/secret-hygiene-check.sh \
+  /tmp/hyperlane-dusk-dependency-remediation-e2e-1778613709-1778613956
+tar -C /tmp -czf \
+  /home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-e2e-1778613709-1778613956.tgz \
+  hyperlane-dusk-dependency-remediation-e2e-1778613709-1778613956
+sha256sum \
+  /home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-e2e-1778613709-1778613956.tgz
+bash scripts/secret-hygiene-check.sh \
+  /home/hein_/projects/hyperlane/.codex-backups/hyperlane-dusk-dependency-remediation-e2e-1778613709-1778613956.tgz
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log
 if bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.json \
   >/tmp/hyperlane-secret-hygiene-negative.log 2>&1; then
@@ -209,6 +281,18 @@ Result:
   latest run. Earlier runs in this section passed 67 tests before the Mailbox
   fee-overflow and fee-accounting overflow regressions were added.
 - `cargo test -p dusk-tx`: passed, 3 tests.
+- Dependency remediation run `1778613424`: passed `cargo test -p
+  hyperlane-dusk-types` with 28 tests, `cargo test -p dusk-tx` with 3 tests,
+  `cargo test -p hyperlane-dusk-integration-tests` with 70 tests,
+  `cargo check -p hyperlane-dusk-e2e -p dusk-tx`, and `make secret-hygiene`.
+  Logs are in `/tmp/hyperlane-dusk-dependency-remediation-1778613424` and the
+  archive listed above. The only warnings were existing dead-code warnings in
+  the integration test session helper and the E2E binary.
+- Dependency-remediated E2E runs `1778613709` and `1778613956`: passed TestMock
+  and MessageIdMultisig bidirectional bridge paths against clean Rusk. Logs are
+  in `/tmp/hyperlane-dependency-remediation-e2e-testMock-1778613709.outer.log`,
+  `/tmp/hyperlane-dependency-remediation-e2e-messageIdMultisig-1778613956.outer.log`,
+  and the archive listed above.
 - `make secret-hygiene`: passed.
 - `make gate-status`: passed; reported the implementation PRs and manual
   workflow dispatcher PR, zero status checks on the implementation PRs,

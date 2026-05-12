@@ -51,7 +51,7 @@ dusk-vm = { path = "../../rusk-private/vm", default-features = false }
 rand = "0.8"
 ff = { version = "0.13", default-features = false }
 rusk-prover = { path = "../../rusk-private/rusk-prover" }
-wasmtime = "25"
+wasmtime = "36"
 
 # Pin to avoid edition2024 issues
 blake2b_simd = "=1.0.3"
