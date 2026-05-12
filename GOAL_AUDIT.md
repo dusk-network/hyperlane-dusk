@@ -94,11 +94,13 @@ Observed:
   implementation PRs, active-repo untracked source status, the manual workflow
   dispatcher PR state, all six split decision issues open, no visible workflow,
   default-branch protection and merge method settings, repo-level Actions
-  secret and self-hosted runner visibility, current upstream drift, and no
-  placeholder macro matches in the Dusk agent crate. It also reports whether
-  active reviewer-facing PR/issue bodies include post-rebase E2E/archive links,
-  dependency-remediated E2E, latest clean-layout repro, and reviewer-routing
-  links.
+  secret and self-hosted runner visibility, Dusk Dependabot open-alert
+  visibility with local `Cargo.lock` first-patched-floor comparison, current
+  upstream drift, and no placeholder macro matches in the Dusk repo runtime
+  paths or monorepo Dusk agent crate. It also reports whether active
+  reviewer-facing PR/issue bodies include post-rebase E2E/archive links,
+  dependency-remediated E2E, latest clean-layout repro, reviewer-routing links,
+  `make gate-status-fresh`, and `make dependency-alert-status`.
 
 ## Prompt-To-Artifact Deliverable Checklist
 
