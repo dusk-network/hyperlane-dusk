@@ -35,6 +35,7 @@ Usage: bash scripts/github-review-hygiene.sh [options]
 Exports reviewer-facing GitHub text and checks it for:
   - known stale SHA/run/comment wording patterns
   - explicit PR current-head claims against the live PR heads
+  - historical status snapshots that are not marked superseded
   - source/artifact secret hygiene regressions
 
 Options:
@@ -189,6 +190,55 @@ check_pr_head_claims \
     "$DUSK_REPO" \
     3 \
     "Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
+
+snapshot_markers="Current output after push|Cross-repo handoff refresh on 2026-05-12|Pushed two docs/workflow-only updates|Docs-only wording refresh pushed"
+snapshot_mismatches="$EXPORT_DIR/unsuperseded-status-snapshots.txt"
+for file in "$EXPORT_DIR"/*-comments.txt; do
+    awk -v file="$file" -v out="$snapshot_mismatches" -v markers="$snapshot_markers" '
+        function flush_comment() {
+            if (id != "" && has_marker && !superseded) {
+                print file ":COMMENT_ID=" id >> out
+            }
+        }
+
+        /^COMMENT_ID=/ {
+            flush_comment()
+            id = substr($0, 12)
+            line_no = 0
+            has_marker = 0
+            superseded = 0
+            next
+        }
+
+        /^---END---$/ {
+            flush_comment()
+            id = ""
+            next
+        }
+
+        {
+            if (id != "") {
+                line_no++
+                if (line_no <= 5 && $0 ~ /^Superseded historical status snapshot\./) {
+                    superseded = 1
+                }
+                if ($0 ~ markers) {
+                    has_marker = 1
+                }
+            }
+        }
+
+        END {
+            flush_comment()
+        }
+    ' "$file"
+done
+
+if [ -s "$snapshot_mismatches" ]; then
+    cat "$snapshot_mismatches" >&2
+    fail "historical status snapshot comments must be marked superseded"
+fi
+rm -f "$snapshot_mismatches"
 
 bash scripts/secret-hygiene-check.sh "$EXPORT_DIR"
 
