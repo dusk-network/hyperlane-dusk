@@ -145,8 +145,8 @@ Observed:
 | Upstream compatibility review | `dusk-network/hyperlane-monorepo` `docs/dusk-upstream-compatibility-review.md` |
 | Production sign-off tracker | https://github.com/dusk-network/hyperlane-dusk/issues/2 |
 | Consolidated review entry points | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427052555 |
-| Current head and gate refresh | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427190665 |
-| Current-head clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427222531 |
+| Current head and gate refresh | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427263548 |
+| Latest clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427222531 |
 | Focused decision evidence comments | #4 https://github.com/dusk-network/hyperlane-dusk/issues/4#issuecomment-4427024964; #5 https://github.com/dusk-network/hyperlane-dusk/issues/5#issuecomment-4427030597; #6 https://github.com/dusk-network/hyperlane-dusk/issues/6#issuecomment-4427030602; #7 https://github.com/dusk-network/hyperlane-dusk/issues/7#issuecomment-4427035690; #8 https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4427017481; #9 https://github.com/dusk-network/hyperlane-dusk/issues/9#issuecomment-4427046636 |
 
 ## Remaining Gates
