@@ -96,6 +96,12 @@ Notes:
   `c0c64db4659500d077bb253ad13acba0e347d3fc`. These runs cover the
   TestMock and MessageIdMultisig paths in both directions after the Rust
   dependency updates.
+- The monorepo PR later moved to
+  `006e49dd7041097384683a78b1c1973c83e90de8` with a documentation-only
+  advisory-scope note in `docs/dusk-upstream-compatibility-review.md`. That
+  note records that all 173 open Dependabot alerts visible in the monorepo fork
+  are npm alerts in manifests outside the Dusk Rust integration diff, and that
+  no open non-npm/Cargo alerts were returned by the Dependabot API.
 - The current live-head clean-Rusk E2E logs were copied into durable local
   handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-live-head-e2e-1778609411-1778609697.tgz`.
