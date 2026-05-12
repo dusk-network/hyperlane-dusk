@@ -34,7 +34,7 @@ Usage: bash scripts/github-review-hygiene.sh [options]
 
 Exports reviewer-facing GitHub text and checks it for:
   - known stale SHA/run/comment wording patterns
-  - explicit Dusk PR #1 current-head claims against the live PR head
+  - explicit PR current-head claims against the live PR heads
   - source/artifact secret hygiene regressions
 
 Options:
@@ -143,24 +143,52 @@ if rg -n -e "$STALE_REVIEW_PATTERNS" "$EXPORT_DIR" >"$stale_hits"; then
 fi
 rm -f "$stale_hits"
 
-dusk_pr_head="$(gh api "repos/$DUSK_REPO/pulls/1" --jq .head.sha)"
-dusk_head_claim_patterns="(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
-dusk_head_claims="$EXPORT_DIR/dusk-pr-head-claims.txt"
-dusk_head_mismatches="$EXPORT_DIR/dusk-pr-head-mismatches.txt"
-if rg -n -o -e "$dusk_head_claim_patterns" "$EXPORT_DIR" >"$dusk_head_claims"; then
-    while IFS= read -r claim; do
-        claim_sha="$(printf '%s\n' "$claim" | rg -o '[0-9a-f]{40}' | head -n1)"
-        if [ "$claim_sha" != "$dusk_pr_head" ]; then
-            printf '%s\n' "$claim" >>"$dusk_head_mismatches"
-        fi
-    done <"$dusk_head_claims"
+check_pr_head_claims() {
+    local label="$1"
+    local repo="$2"
+    local pr="$3"
+    local patterns="$4"
+    local live_head
+    local claims
+    local mismatches
 
-    if [ -s "$dusk_head_mismatches" ]; then
-        cat "$dusk_head_mismatches" >&2
-        fail "stale Dusk PR #1 current-head claim found; live head is $dusk_pr_head"
+    live_head="$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)"
+    claims="$EXPORT_DIR/pr-head-claims-$pr.txt"
+    mismatches="$EXPORT_DIR/pr-head-mismatches-$pr.txt"
+
+    if rg -n -o -e "$patterns" "$EXPORT_DIR" >"$claims"; then
+        while IFS= read -r claim; do
+            claim_sha="$(printf '%s\n' "$claim" | rg -o '[0-9a-f]{40}' | head -n1)"
+            if [ "$claim_sha" != "$live_head" ]; then
+                printf '%s\n' "$claim" >>"$mismatches"
+            fi
+        done <"$claims"
+
+        if [ -s "$mismatches" ]; then
+            cat "$mismatches" >&2
+            fail "stale $label current-head claim found; live head is $live_head"
+        fi
     fi
-fi
-rm -f "$dusk_head_claims" "$dusk_head_mismatches"
+    rm -f "$claims" "$mismatches"
+}
+
+check_pr_head_claims \
+    "Dusk PR #1" \
+    "$DUSK_REPO" \
+    1 \
+    "(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
+
+check_pr_head_claims \
+    "monorepo PR #1" \
+    "$MONOREPO_REPO" \
+    1 \
+    "Monorepo PR #1 current head: .?[0-9a-f]{40}|Monorepo PR #1: .?[0-9a-f]{40}"
+
+check_pr_head_claims \
+    "workflow dispatcher PR #3" \
+    "$DUSK_REPO" \
+    3 \
+    "Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
 
 bash scripts/secret-hygiene-check.sh "$EXPORT_DIR"
 
