@@ -375,6 +375,18 @@ if [ -f "$EXPORT_DIR/dusk-issue-7-body.txt" ]; then
 fi
 rm -f "$EXPORT_DIR/stale-issue-7-body.txt"
 
+for issue in 4 5 6; do
+    file="$EXPORT_DIR/dusk-issue-$issue-body.txt"
+    if [ -f "$file" ]; then
+        rg -q -F "$latest_repro_comment" "$file" \
+            || fail "$file is missing latest clean-layout repro evidence link"
+        rg -q -F 'SECURITY_REVIEW.md' "$file" \
+            || fail "$file is missing security review link text"
+        rg -q -F 'PRODUCTION_REVIEW_DECISIONS.md' "$file" \
+            || fail "$file is missing production decision record link text"
+    fi
+done
+
 if rg -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
     -e 'E2E was not rerun for the docs-only post-rebase head' \

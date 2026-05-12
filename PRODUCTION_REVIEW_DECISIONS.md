@@ -30,6 +30,9 @@ Evidence:
 - `test_dispatch_via_transaction`.
 - `test_dispatch_via_recipient_proxy`.
 - Clean-Rusk TestMock and MessageIdMultisig E2E in `TEST_REPORT.md`.
+- Latest clean-layout repro evidence at
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572,
+  including 70 VM integration tests and the Hyperlane Rust agent check.
 
 Recommended stance:
 
@@ -57,6 +60,9 @@ Evidence:
 - `SECURITY_REVIEW.md`, "Address mapping".
 - `SECURITY_REVIEW.md`, "Open Production Review Decisions".
 - WarpDrc20, WarpDrc20Collateral, and WarpNative registration tests.
+- Latest clean-layout repro evidence at
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572,
+  including 70 VM integration tests and the Hyperlane Rust agent check.
 
 Recommended stance:
 
@@ -87,6 +93,9 @@ Evidence:
 - `test_warp_native_escrow_accumulates`.
 - `test_warp_collateral_handle_escrows_unregistered_recipient`.
 - `test_warp_collateral_claim_pending_transfers_after_registration`.
+- Latest clean-layout repro evidence at
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572,
+  including 70 VM integration tests and the Hyperlane Rust agent check.
 
 Recommended stance:
 
