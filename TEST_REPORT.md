@@ -86,8 +86,9 @@ Result:
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log`:
   passed.
 - Negative artifact scan against `/tmp/hyperlane-relayer-testMock-1778530398.json`:
-  failed as expected after detecting generated `hexKey` and `duskKey` signer
-  config entries.
+  failed as expected after detecting generated signer config material. Current
+  generated configs use `duskKey.keyFile` for the Dusk side, while the local EVM
+  side still uses Anvil `hexKey` material.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 

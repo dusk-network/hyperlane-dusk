@@ -41,10 +41,13 @@ if [ "$#" -gt 0 ]; then
     info "Scanning runtime artifact paths"
     for path in "$@"; do
         [ -e "$path" ] || fail "artifact path not found: $path"
+        if find "$path" -name '*.key' -o -name '*.keys' -o -name '*.pem' | rg .; then
+            fail "runtime artifact path includes secret-like file names"
+        fi
     done
 
     if rg -n \
-        -e '"type"[[:space:]]*:[[:space:]]*"duskKey"' \
+        -e '"key"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' \
         -e '"type"[[:space:]]*:[[:space:]]*"hexKey"' \
         -e 'secret_key_bls' \
         -e 'DUSK_CONSENSUS_PASSWORD=' \

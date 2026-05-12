@@ -252,10 +252,11 @@ production deployment scripts.
 When a raw BLS secret key is unavoidable, pass it with `--secret-key-stdin` so
 it does not appear in shell history or process argv.
 
-`demo/gen-agent-configs.sh` writes temporary agent config files under `/tmp`
-with `umask 077`. Those files contain local dev signer material and must not be
-committed, uploaded as CI artifacts, or reused for production. The EVM private
-keys used by these scripts are Anvil dev keys only.
+`demo/gen-agent-configs.sh` writes temporary agent config files and Dusk signer
+key files under `/tmp` with `umask 077`. The configs point at Dusk key files
+and still contain local Anvil signer material; neither the configs nor the key
+files may be committed, uploaded as CI artifacts, or reused for production.
+The EVM private keys used by these scripts are Anvil dev keys only.
 
 Run `make secret-hygiene` before review. Before uploading CI or E2E artifacts,
 scan the exact artifact paths with `bash scripts/secret-hygiene-check.sh

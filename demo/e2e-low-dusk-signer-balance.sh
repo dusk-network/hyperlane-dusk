@@ -165,11 +165,14 @@ cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$ru
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
 low_relayer_cfg="/tmp/hyperlane-relayer-low-signer-testMock-${run_id}.json"
 funded_relayer_cfg="/tmp/hyperlane-relayer-funded-signer-testMock-${run_id}.json"
+low_dusk_signer_key_file="/tmp/hyperlane-dusk-signer-low-testMock-${run_id}.key"
+
+printf '%s\n' "$UNFUNDED_DUSK_SECRET_KEY" > "$low_dusk_signer_key_file"
 
 jq \
-  --arg key "$UNFUNDED_DUSK_SECRET_KEY" \
+  --arg key_file "$low_dusk_signer_key_file" \
   --arg db "/tmp/hyperlane-db-relayer-low-signer-testMock-${run_id}" \
-  '.db = $db | .chains.dusk.signer.key = $key' \
+  '.db = $db | .chains.dusk.signer.keyFile = $key_file | del(.chains.dusk.signer.key)' \
   "$relayer_cfg" > "$low_relayer_cfg"
 
 jq \

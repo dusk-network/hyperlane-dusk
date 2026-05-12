@@ -113,6 +113,9 @@ CHECKPOINT_DIR="/tmp/hyperlane-checkpoints-anvil-${ISM}-${RUN_ID}"
 
 RELAYER_CONFIG="/tmp/hyperlane-relayer-${ISM}-${RUN_ID}.json"
 VALIDATOR_CONFIG="/tmp/hyperlane-validator-anvil-${ISM}-${RUN_ID}.json"
+DUSK_SIGNER_KEY_FILE="/tmp/hyperlane-dusk-signer-${ISM}-${RUN_ID}.key"
+
+printf '0x%s\n' "$DUSK_SECRET_KEY_HEX" > "$DUSK_SIGNER_KEY_FILE"
 
 # ── Write Relayer Config ────────────────────────────────────────────────────
 
@@ -153,7 +156,7 @@ cat > "$RELAYER_CONFIG" <<JSON
       "validatorAnnounce": "0x${DUSK_VALIDATOR_ANNOUNCE}",
       "merkleTreeHook": "0x${DUSK_MERKLE_TREE_HOOK}",
       "submitter": "Classic",
-      "signer": { "type": "duskKey", "key": "0x${DUSK_SECRET_KEY_HEX}" }
+      "signer": { "type": "duskKey", "keyFile": "${DUSK_SIGNER_KEY_FILE}" }
     }
   }
 }
@@ -199,12 +202,13 @@ if [ "$ISM" = "messageIdMultisig" ]; then
     jq -n \
       --arg relayer "$RELAYER_CONFIG" \
       --arg validator "$VALIDATOR_CONFIG" \
+      --arg dusk_signer_key_file "$DUSK_SIGNER_KEY_FILE" \
       --arg run_id "$RUN_ID" \
-      '{run_id: $run_id, relayer: $relayer, validator: $validator}'
+      '{run_id: $run_id, relayer: $relayer, validator: $validator, duskSignerKeyFile: $dusk_signer_key_file}'
 else
     jq -n \
       --arg relayer "$RELAYER_CONFIG" \
+      --arg dusk_signer_key_file "$DUSK_SIGNER_KEY_FILE" \
       --arg run_id "$RUN_ID" \
-      '{run_id: $run_id, relayer: $relayer}'
+      '{run_id: $run_id, relayer: $relayer, duskSignerKeyFile: $dusk_signer_key_file}'
 fi
-

@@ -5,16 +5,22 @@ It is a proposal for Dusk review, not an accepted production policy.
 
 ## Current Implementation
 
-The current Hyperlane monorepo branch adds a Dusk signer type named
-`duskKey`. In `hyperlane-base`, `SignerConf::DuskKey` stores a raw 32-byte
-BLS key, and the Dusk signer builder accepts that variant only.
+The current Hyperlane monorepo branch adds a Dusk signer type named `duskKey`.
+In `hyperlane-base`, `SignerConf::DuskKey` accepts exactly one of:
+
+- `key`: inline raw 32-byte BLS key, retained for backwards-compatible local
+  development only.
+- `keyFile`: path to a file containing the raw BLS key.
+- `keyEnv`: environment variable containing the raw BLS key.
 
 Current implication:
 
-- Dusk relayer/validator transaction signing can work from generated local
-  agent configs.
-- Those configs contain raw signer material and must not be committed or
-  uploaded as artifacts.
+- Dusk relayer/validator transaction signing can work from generated local agent
+  configs without embedding the Dusk raw key in the JSON config.
+- The demo writes Dusk signer keys to `0600`-style `/tmp/*.key` files through
+  `umask 077`, and generated configs reference those files with `keyFile`.
+- Generated configs and key files must not be committed or uploaded as
+  artifacts.
 - Dusk production custody is not equivalent to existing EVM AWS signer support;
   a Dusk external signer, KMS signer, or node signer path would need explicit
   implementation and review.
@@ -26,7 +32,8 @@ The demo and E2E scripts use deterministic local development material:
 - Anvil private keys for the local EVM side.
 - Encrypted local `consensus.keys` for Dusk deployer/test transactions.
 - Generated Hyperlane relayer/validator JSON files under `/tmp`.
-- Local `duskKey` entries generated only for local agent runs.
+- Local `duskKey` `keyFile` entries and Dusk signer key files generated only
+  for local agent runs.
 
 These defaults are acceptable only for local development and reproducibility.
 
@@ -38,10 +45,11 @@ production-readiness claim:
 - No raw Dusk signer key in git, PR bodies, issue bodies, logs, or uploaded CI
   artifacts.
 - No Dusk consensus password in process argv.
-- No generated Hyperlane signer config archived from `/tmp`.
-- Runtime config files containing raw keys, if used at all, must be generated
-  on the target host from a Dusk-approved secret source and removed during
-  teardown or rotation.
+- No generated Hyperlane signer config or Dusk signer key file archived from
+  `/tmp`.
+- Runtime config files should use `keyFile` or `keyEnv`, not inline `key`, for
+  Dusk signer material. The underlying secret source must still be approved by
+  Dusk operations.
 - Files containing signer material must be readable only by the agent user
   (`0600` file mode or stricter equivalent).
 - Relayer and validator keys should be distinct unless Dusk explicitly accepts
@@ -56,14 +64,15 @@ Dusk reviewers should choose one of these paths before production use.
 
 ### Option A: Ephemeral Local Key File
 
-Use the existing `duskKey` implementation, but generate the agent config at
-runtime from an approved secret manager or sealed host secret.
+Use `duskKey` with `keyFile`, writing the file at runtime from an approved
+secret manager or sealed host secret.
 
 Required controls:
 
 - The raw key never appears in committed config.
-- The generated config is written with restrictive permissions.
-- The generated config path is excluded from artifact collection.
+- The generated key file and config are written with restrictive permissions.
+- The generated config and key-file paths are excluded from artifact
+  collection.
 - `scripts/secret-hygiene-check.sh` scans any logs or files before upload.
 - The runner/host is treated as sensitive infrastructure.
 

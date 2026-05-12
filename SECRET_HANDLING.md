@@ -10,15 +10,15 @@ demo keys are not production keys.
 - Use `DUSK_CONSENSUS_PASSWORD` or `DUSK_CONSENSUS_KEYS_PASS` only on trusted
   local runners where environment variables are not collected as artifacts.
 - Use `--secret-key-stdin` when a raw BLS secret key is unavoidable.
-- Do not commit or upload generated Hyperlane agent configs. They contain local
-  signer material for Dusk and Anvil.
+- Do not commit or upload generated Hyperlane agent configs. Local demo configs
+  point at Dusk key files and still contain Anvil signer material.
 - Do not upload `/tmp/hyperlane-relayer-*.json`,
   `/tmp/hyperlane-validator-*.json`, `demo/.env*`, `e2e/consensus.keys`,
-  `*.keys`, or password files as CI artifacts.
+  `*.key`, `*.keys`, or password files as CI artifacts.
 
-`PRODUCTION_SIGNER_POLICY.md` records the current `duskKey` raw-key
-implementation constraint and the signer-custody choices that Dusk must accept,
-change, or replace before production use.
+`PRODUCTION_SIGNER_POLICY.md` records the current `duskKey` signer-file/env
+support and the signer-custody choices that Dusk must accept, change, or
+replace before production use.
 
 ## Manual Repro Workflow
 
@@ -54,9 +54,10 @@ Before uploading CI or E2E artifacts, scan the exact files or directories:
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-*.log
 ```
 
-The artifact scan intentionally fails on signer config markers such as
-`"type": "duskKey"` and `"type": "hexKey"`. Generated agent configs should be
-kept on the runner and deleted after the run, not archived.
+The artifact scan intentionally fails on inline raw key fields, `hexKey`
+signer config markers, and secret-like files such as `*.key`, `*.keys`, and
+`*.pem`. Generated agent configs and Dusk signer key files should be kept on
+the runner and deleted after the run, not archived.
 
 The check is conservative: it is meant to guard release packaging and CI
 artifact upload steps, not to bless production custody. Production signer

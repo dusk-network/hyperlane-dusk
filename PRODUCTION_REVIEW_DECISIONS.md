@@ -108,9 +108,9 @@ Evidence:
 Recommended stance:
 
 Accept Option A only for internal review and testnet-style validation. Mainnet
-production should explicitly decide whether raw-key presence on relayer or
-validator hosts is acceptable. If it is not acceptable, require external signer
-work before production.
+production should explicitly decide whether raw-key presence in a local
+`keyFile` or `keyEnv` source on relayer or validator hosts is acceptable. If it
+is not acceptable, require external signer work before production.
 
 ### CI/Repro Runner Strategy
 

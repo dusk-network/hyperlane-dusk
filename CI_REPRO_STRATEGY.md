@@ -145,7 +145,8 @@ Never upload:
 - `e2e/consensus.keys`
 - `*.keys`
 - password files
-- generated configs containing `duskKey`, `hexKey`, or raw private keys
+- generated configs containing `hexKey`, inline raw keys, or secret-like Dusk
+  key files
 
 Logs may be uploaded only after the exact files pass the hygiene check.
 

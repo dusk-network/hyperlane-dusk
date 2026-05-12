@@ -79,7 +79,7 @@ Observed:
 | Harden Mailbox, MerkleTreeHook, ValidatorAnnounce, MessageIdMultisigISM, IGP/protocol-fee, WarpDrc20, WarpDrc20Collateral, and WarpNative | `SECURITY_REVIEW.md` lists issue-by-issue fixes, assumptions, Solidity deviations, and file-level changes | Done for internal review |
 | Address arithmetic, replay/domain separation, malformed metadata, duplicate delivery, admin paths, dirty redeploys, and token accounting | `SECURITY_REVIEW.md`; `TEST_REPORT.md`; 67 integration tests; E2E/fault-injection runs listed below | Done for internal review |
 | Avoid runtime `todo!`, `unimplemented!`, and direct `panic!` paths | `TEST_REPORT.md` records the Dusk contract/runtime/tooling scan command and result for `rg -n "todo!|unimplemented!|panic!" contracts types data-driver dusk-tx e2e wasm-bindings demo -g '!target'` with no matches in scoped production paths. The monorepo `docs/dusk-upstream-compatibility-review.md` records the Dusk agent scan: no matches in `rust/main/chains/hyperlane-dusk`, and no added placeholder macros in the Dusk diff against `upstream/main`. | Done |
-| Avoid leaking Dusk secrets through committed configs and process argv | Demo/E2E configs use ignored local files and `/tmp` artifacts; `dusk-tx` supports password file/env lookup and stdin raw-key loading; demo scripts avoid Dusk consensus passwords in CLI argv; `SECRET_HANDLING.md` and `make secret-hygiene` provide source/artifact guardrails; `SECURITY_REVIEW.md` keeps production signer/config handling as a release gate | Gated |
+| Avoid leaking Dusk secrets through committed configs and process argv | Demo/E2E configs use ignored local files and `/tmp` artifacts; `duskKey` now supports `keyFile`/`keyEnv` so Dusk raw keys do not need to be embedded in generated JSON; demo agent configs reference `0600`-style `/tmp/*.key` files through `keyFile`; `dusk-tx` supports password file/env lookup and stdin raw-key loading; demo scripts avoid Dusk consensus passwords in CLI argv; `SECRET_HANDLING.md` and `make secret-hygiene` provide source/artifact guardrails; `SECURITY_REVIEW.md` keeps production signer/config handling as a release gate | Gated |
 | Dusk VM contract/type checks | `make all`; `cargo test -p hyperlane-dusk-types` -> 28 passed; `cargo test -p hyperlane-dusk-integration-tests` -> 67 passed; `cargo test -p dusk-tx` -> 3 passed; supplemental clean-layout `make repro-check-agent` result with exact tested SHAs is recorded in `TEST_REPORT.md` | Done |
 | Hyperlane Rust agent checks | From monorepo `rust/main`: `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander` -> passed after rebasing onto upstream `f758a706`; supplemental clean-layout `make repro-check-agent` result with exact tested SHAs is recorded in `TEST_REPORT.md` | Done |
 | Local EVM <-> Dusk with TestMock/null-style ISM | Clean Rusk run `1778520709`: bidirectional E2E passed | Done |
@@ -129,12 +129,13 @@ Observed:
    direction per cycle, and a 7282-second 7-cycle clean-Rusk soak with 20
    transfers each direction per cycle.
 3. Production secret handling needs an operational/CI sign-off. Current scripts
-   keep dev configs in ignored files and `/tmp`, Dusk consensus passwords are
-   no longer passed to `dusk-tx` in process argv, and `make secret-hygiene`
-   provides source/artifact guardrails. `PRODUCTION_SIGNER_POLICY.md` records
-   the current `duskKey` raw-key implementation constraint plus acceptable v1
-   custody choices for Dusk review. Production deployment must still accept or
-   replace that signer custody and CI artifact policy.
+   keep dev configs and Dusk signer key files in ignored `/tmp` paths, generated
+   Dusk agent configs use `duskKey.keyFile` instead of inline Dusk raw keys,
+   Dusk consensus passwords are no longer passed to `dusk-tx` in process argv,
+   and `make secret-hygiene` provides source/artifact guardrails.
+   `PRODUCTION_SIGNER_POLICY.md` records the current `duskKey` file/env support
+   plus acceptable v1 custody choices for Dusk review. Production deployment
+   must still accept or replace that signer custody and CI artifact policy.
 4. Upstream Hyperlane draft PRs should not be prepared until the internal Dusk
    PRs complete review.
 5. The Hyperlane monorepo PR has internal Dusk agent/runtime review requested
