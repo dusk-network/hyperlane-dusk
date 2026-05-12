@@ -136,7 +136,7 @@ Observed:
 | Security assumptions, fixes, Solidity deviations, reviewer decisions | `SECURITY_REVIEW.md` |
 | Dusk reference traceability | `REFERENCE_TRACEABILITY.md` |
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
-| Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
+| Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `scripts/github-review-hygiene.sh`, `make secret-hygiene`, `make review-hygiene` |
 | CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, dusk-network/hyperlane-dusk#3 |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Repeatable local E2E scripts | `demo/e2e-agents.sh`, `demo/e2e-relayer-restart-stress.sh`, `demo/e2e-soak-restart-stress.sh`, `demo/e2e-*.sh` |

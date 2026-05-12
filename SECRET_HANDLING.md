@@ -59,6 +59,17 @@ Before uploading CI or E2E artifacts, scan the exact files or directories:
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-*.log
 ```
 
+Before linking or relying on GitHub PR/issue review text as release evidence,
+export and scan the review surfaces:
+
+```bash
+make review-hygiene
+```
+
+This writes a timestamped `/tmp/hyperlane-review-export-*` directory, checks
+known stale evidence refs/wording, and runs the same secret hygiene scanner
+over the exported PR/issue bodies and comments.
+
 The artifact scan intentionally fails on inline raw key fields, `hexKey`
 signer config markers, and secret-like files such as `*.key`, `*.keys`, and
 `*.pem`. Generated agent configs and Dusk signer key files should be kept on

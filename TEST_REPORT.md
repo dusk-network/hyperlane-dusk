@@ -164,6 +164,12 @@ Result:
   issues #4 through #9. The export included Dusk PR #1, monorepo PR #1,
   workflow PR #3, umbrella issue #2, split issues #4-#9, and their comments.
   `scripts/secret-hygiene-check.sh` passed for the exported directory.
+- `make review-hygiene`: added as a repeatable wrapper around
+  `scripts/github-review-hygiene.sh`; passed with export directory
+  `/tmp/hyperlane-review-export-1778578973`. It exports Dusk PR #1,
+  workflow PR #3, monorepo PR #1, sign-off issue #2, split issues #4-#9, and
+  their comments, scans for known stale evidence refs/wording, then runs
+  `scripts/secret-hygiene-check.sh` over the export.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now

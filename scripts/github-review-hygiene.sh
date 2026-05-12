@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Export GitHub review surfaces and scan them for stale evidence text.
+#
+# This is a read-only guardrail for PR/issue bodies and comments. It catches
+# stale SHA/run references in reviewer-facing text and then reuses the secret
+# hygiene scanner over the exported files.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+DUSK_REPO="${DUSK_REPO:-dusk-network/hyperlane-dusk}"
+MONOREPO_REPO="${MONOREPO_REPO:-dusk-network/hyperlane-monorepo}"
+DUSK_PRS="${DUSK_PRS:-1 3}"
+MONOREPO_PRS="${MONOREPO_PRS:-1}"
+DUSK_ISSUES="${DUSK_ISSUES:-2 4 5 6 7 8 9}"
+EXPORT_DIR="${EXPORT_DIR:-}"
+KEEP_EXPORT="${KEEP_EXPORT:-1}"
+STALE_REVIEW_PATTERNS="${STALE_REVIEW_PATTERNS:-356239661c5121e79e81930fd2b18995bf375b11|78b0cfd19b59705c49639cd8200baa2404344d2c|c0036501b26cc98fb64259807e4cbca929487aec|1778574482|1778576530|28d07e01d1bbc0cf59575a811cde55e844a2abb7|runtime commit|Dusk runtime commit|repeatable cargo clippy|only adds evidence-doc updates|evidence-doc updates only|17 0}"
+
+fail() {
+    echo "[FAIL] $*" >&2
+    exit 1
+}
+
+info() {
+    echo "[INFO] $*" >&2
+}
+
+usage() {
+    cat <<EOF
+Usage: bash scripts/github-review-hygiene.sh [options]
+
+Exports reviewer-facing GitHub text and checks it for:
+  - known stale SHA/run/comment wording patterns
+  - source/artifact secret hygiene regressions
+
+Options:
+  --export-dir DIR       Write export files to DIR.
+                         Default: /tmp/hyperlane-review-export-<timestamp>
+  --no-keep              Remove the export directory on success.
+  -h, --help             Show this help.
+
+Environment:
+  DUSK_REPO              Dusk contracts/tooling repo.
+                         Default: $DUSK_REPO
+  MONOREPO_REPO          Hyperlane monorepo fork.
+                         Default: $MONOREPO_REPO
+  DUSK_PRS               Space-separated Dusk PR numbers to export.
+                         Default: $DUSK_PRS
+  MONOREPO_PRS           Space-separated monorepo PR numbers to export.
+                         Default: $MONOREPO_PRS
+  DUSK_ISSUES            Space-separated Dusk issue numbers to export.
+                         Default: $DUSK_ISSUES
+  STALE_REVIEW_PATTERNS  Extended regex for stale review text.
+                         Default: current repository stale-reference set.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --export-dir)
+            EXPORT_DIR="${2:-}"
+            [ -n "$EXPORT_DIR" ] || fail "--export-dir requires a path"
+            shift 2
+            ;;
+        --no-keep)
+            KEEP_EXPORT=0
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+command -v gh >/dev/null 2>&1 || fail "gh is required"
+command -v rg >/dev/null 2>&1 || fail "rg is required"
+command -v jq >/dev/null 2>&1 || fail "jq is required"
+
+if [ -z "$EXPORT_DIR" ]; then
+    EXPORT_DIR="/tmp/hyperlane-review-export-$(date +%s)"
+fi
+
+rm -rf "$EXPORT_DIR"
+mkdir -p "$EXPORT_DIR"
+
+cleanup() {
+    if [ "$KEEP_EXPORT" -eq 0 ]; then
+        rm -rf "$EXPORT_DIR"
+    fi
+}
+trap cleanup EXIT
+
+export_pr() {
+    local repo="$1"
+    local number="$2"
+    local prefix="$3"
+
+    info "Exporting $repo PR #$number"
+    gh api "repos/$repo/pulls/$number" --jq .body >"$EXPORT_DIR/$prefix-pr-$number-body.txt"
+    gh api "repos/$repo/issues/$number/comments" --paginate \
+        --jq '.[] | "COMMENT_ID=\(.id)\n" + .body + "\n---END---"' \
+        >"$EXPORT_DIR/$prefix-pr-$number-comments.txt"
+}
+
+export_issue() {
+    local repo="$1"
+    local number="$2"
+    local prefix="$3"
+
+    info "Exporting $repo issue #$number"
+    gh api "repos/$repo/issues/$number" --jq .body >"$EXPORT_DIR/$prefix-issue-$number-body.txt"
+    gh api "repos/$repo/issues/$number/comments" --paginate \
+        --jq '.[] | "COMMENT_ID=\(.id)\n" + .body + "\n---END---"' \
+        >"$EXPORT_DIR/$prefix-issue-$number-comments.txt"
+}
+
+for pr in $DUSK_PRS; do
+    export_pr "$DUSK_REPO" "$pr" "dusk"
+done
+
+for pr in $MONOREPO_PRS; do
+    export_pr "$MONOREPO_REPO" "$pr" "monorepo"
+done
+
+for issue in $DUSK_ISSUES; do
+    export_issue "$DUSK_REPO" "$issue" "dusk"
+done
+
+info "Exported review text to $EXPORT_DIR"
+
+stale_hits="$EXPORT_DIR/stale-review-hits.txt"
+if rg -n -e "$STALE_REVIEW_PATTERNS" "$EXPORT_DIR" >"$stale_hits"; then
+    cat "$stale_hits" >&2
+    fail "stale reviewer-facing text found"
+fi
+rm -f "$stale_hits"
+
+bash scripts/secret-hygiene-check.sh "$EXPORT_DIR"
+
+info "GitHub review hygiene checks passed"
+echo "$EXPORT_DIR"

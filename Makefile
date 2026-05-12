@@ -101,6 +101,11 @@ test: test-types test-integration
 secret-hygiene:
 	bash scripts/secret-hygiene-check.sh
 
+# Export GitHub PR/issue review text and scan it for stale evidence/secrets.
+.PHONY: review-hygiene
+review-hygiene:
+	bash scripts/github-review-hygiene.sh
+
 # Run the repeatable local verification subset used before review.
 .PHONY: repro-check
 repro-check:
@@ -145,6 +150,7 @@ help:
 	@echo "  dusk-tx            Build dusk-tx CLI tool"
 	@echo "  test               Run all tests"
 	@echo "  secret-hygiene     Check source secret-handling guardrails"
+	@echo "  review-hygiene     Check GitHub review text for stale refs/secrets"
 	@echo "  repro-check        Run repeatable local pre-review checks"
 	@echo "  repro-check-agent  Run repro-check plus Hyperlane agent cargo check"
 	@echo "                     Set RUSK_DIR=/path/to/rusk-private to use a clean checkout"
