@@ -131,6 +131,12 @@ gate-status:
 gate-status-fresh:
 	bash scripts/release-gate-status.sh --fetch-upstream
 
+# Run the lightweight reviewer gate bundle. This does not run the heavy repro
+# or E2E scripts; it verifies preservation evidence, dependency-alert triage,
+# reviewer-facing handoff text, and live PR/sign-off gate state.
+.PHONY: review-gates
+review-gates: completion-audit-status dependency-alert-status review-hygiene gate-status-fresh
+
 # Run cross-chain demo (requires rusk-duskevm Docker + Foundry)
 .PHONY: demo
 demo: all dusk-tx
@@ -172,5 +178,6 @@ help:
 	@echo "                     Set RUSK_DIR=/path/to/rusk-private to use a clean checkout"
 	@echo "  gate-status        Print current review/sign-off gate status"
 	@echo "  gate-status-fresh  Fetch Hyperlane upstream/main, then print gate status"
+	@echo "  review-gates       Run lightweight review gates without E2E/repro"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"

@@ -53,6 +53,7 @@ git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstrea
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-list --left-right --count HEAD...upstream/main
 gh workflow list --repo dusk-network/hyperlane-dusk --all
 make completion-audit-status
+make review-gates
 make gate-status-fresh
 ```
 
@@ -82,6 +83,9 @@ Observed:
 - `make completion-audit-status` verifies the preserved prototype archive
   branch refs, local backup artifact hashes, active branch refs, and untracked
   source state in both active repos.
+- `make review-gates` wraps the lightweight non-E2E review gates:
+  `make completion-audit-status`, `make dependency-alert-status`,
+  `make review-hygiene`, and `make gate-status-fresh`.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
   `archive/dusk-hyperlane-prototype-20260511`.
@@ -152,7 +156,7 @@ Observed:
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
 | Advisory reviewer routing | `REVIEWERS.md`; routes Dusk contract/tooling/security review to `moCello`, Hyperlane agent/runtime review to `Neotamandua`, split decision issues #4 through #9 to the named Dusk reviewers, and keeps production sign-off in dusk-network/hyperlane-dusk#2 |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `scripts/github-review-hygiene.sh`, `make secret-hygiene`, `make review-hygiene` |
-| Reviewer-facing link guardrails | `scripts/github-review-hygiene.sh`, `scripts/release-gate-status.sh`, `scripts/dependency-alert-status.sh`, `scripts/completion-audit-status.sh`, `make review-hygiene`, `make dependency-alert-status`, `make completion-audit-status`, `make gate-status`, `make gate-status-fresh`; Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies must include or visibly report latest clean-layout repro https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572, dependency-remediated E2E https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389, post-rebase E2E/archive links, the advisory reviewer routing URL https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md, `make gate-status-fresh`, `make dependency-alert-status`, `make completion-audit-status`, and latest clean-layout repro path delta; workflow PR #3 must include or visibly report the advisory reviewer routing URL; active bodies must not include the superseded `1778607202`/`4433179148` clean-layout repro evidence |
+| Reviewer-facing link guardrails | `scripts/github-review-hygiene.sh`, `scripts/release-gate-status.sh`, `scripts/dependency-alert-status.sh`, `scripts/completion-audit-status.sh`, `make review-hygiene`, `make dependency-alert-status`, `make completion-audit-status`, `make gate-status`, `make gate-status-fresh`, `make review-gates`; Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies must include or visibly report latest clean-layout repro https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572, dependency-remediated E2E https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389, post-rebase E2E/archive links, the advisory reviewer routing URL https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md, `make gate-status-fresh`, `make dependency-alert-status`, `make completion-audit-status`, and latest clean-layout repro path delta; workflow PR #3 must include or visibly report the advisory reviewer routing URL; active bodies must not include the superseded `1778607202`/`4433179148` clean-layout repro evidence |
 | CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, `make gate-status-fresh`, dusk-network/hyperlane-dusk#3, dusk-network/hyperlane-dusk#8 |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Durable local evidence archive | `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`; SHA256 `53bc99b30624471b145731b92896b442c3a88c97f8217c8a7cd12be4ab7476fc`; contains the latest review-head repro/E2E logs plus the 7282-second soak logs; `scripts/secret-hygiene-check.sh` passed over the archive staging directory and tarball |
