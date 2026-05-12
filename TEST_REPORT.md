@@ -1077,6 +1077,8 @@ documented recovery/failure modes do not depend on the dirty local Rusk patch.
 - Changed Mailbox `quote_dispatch` to reject combined required-hook plus
   default/custom-hook fee overflow instead of returning a wrapped `u64`; added
   `test_mailbox_quote_dispatch_rejects_fee_overflow`.
+- Changed Mailbox dispatch nonce increment to `checked_add` so release WASM
+  rejects nonce exhaustion instead of wrapping the fixed-width Hyperlane nonce.
 
 Event annotation verification:
 

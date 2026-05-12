@@ -201,7 +201,10 @@ mod mailbox {
             self.latest_dispatched_id = id;
             self.dispatched_messages.push(encoded.clone());
             self.dispatched_block_heights.push(abi::block_height());
-            self.nonce += 1;
+            self.nonce = self
+                .nonce
+                .checked_add(1)
+                .expect("Mailbox: nonce overflow");
 
             // Emit events
             abi::emit(

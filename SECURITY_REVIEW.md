@@ -248,6 +248,35 @@ required_fee
 of returning a wrapped value. This matches the IGP quote overflow policy: fail
 closed rather than under-charge.
 
+### MEDIUM-2C: Mailbox nonce overflow
+
+**File**: `contracts/mailbox/src/lib.rs`, `dispatch()`
+
+**Before**: The Mailbox incremented its Hyperlane message nonce with plain
+`u32` addition:
+
+```rust
+self.nonce += 1;
+```
+
+The Hyperlane wire format stores the nonce as 4 bytes. In release WASM builds,
+plain `u32` overflow can wrap silently. After `u32::MAX` dispatches, a wrapped
+nonce would reuse origin nonce space and could repeat message IDs for identical
+sender/destination/recipient/body tuples.
+
+**After**: Dispatch now fails closed on nonce exhaustion:
+
+```rust
+self.nonce = self
+    .nonce
+    .checked_add(1)
+    .expect("Mailbox: nonce overflow");
+```
+
+**Trade-off**: A Mailbox with exhausted 32-bit nonce space must be redeployed
+and routing/config migrated. This matches the protocol's fixed-width nonce
+encoding better than silently wrapping.
+
 ### MEDIUM-3: MessageIdMultisigISM accepted malformed signature metadata shape
 
 **File**: `contracts/ism-multisig/src/lib.rs`, `verify()`
@@ -401,7 +430,7 @@ documented deviations:
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
 | `contracts/protocol-fee/src/lib.rs` | `saturating_add` for `collected_fees` |
 | `types/src/events.rs` | Added operational/admin, account registration, gas config, validator-set, pending-claim, and WarpDrc20 transfer events |
-| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events; checked total-fee quotes |
+| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events; checked total-fee quotes; checked nonce increment |
 | `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotations for initialization and Merkle insertion events |
 | `contracts/validator-announce/src/lib.rs` | Explicit event annotations for initialization and validator announcement events |
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
@@ -452,6 +481,7 @@ the integration package reported `68 passed; 0 failed; 0 ignored`.
 
 | Gap | Why |
 |---|---|
+| Mailbox nonce overflow panic path | The nonce is private Mailbox state with no production setter; reaching `u32::MAX` requires billions of successful dispatches. The code now uses `checked_add`, and the security property is reviewed statically rather than driven through the VM harness with a test-only state mutation hook. |
 | WarpNative `transfer_remote` deposit verification | Cannot test with `direct_call` — requires real Moonlight TX with `deposit` field. The transfer contract's deposit validation logic is tested in Dusk's own test suite. Needs e2e test against live rusk. |
 | WarpNative `claim_pending` happy path (actual DUSK transfer) | Requires the contract to hold DUSK balance, which requires a prior successful `transfer_remote` with real deposit. Same limitation as above. |
 | IGP `u64::try_from` panic path | Would need gas oracle config that produces a fee > `u64::MAX`. The `checked_mul` calls before it would panic first in practice. |
