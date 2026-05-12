@@ -105,9 +105,9 @@ make gate-status-fresh
 `make production-readiness-guard` is expected to fail while production blockers
 remain open. It reports machine-checkable blockers such as open internal PRs,
 review gates, unchecked sign-off items, open split decision issues, missing
-`DUSK_ORG_READ_TOKEN` visibility, missing self-hosted runner visibility for the
-`dusk-hyperlane` label, upstream drift, and latest clean-layout repro
-covered-path delta.
+`DUSK_ORG_READ_TOKEN` visibility in both internal repos, missing self-hosted
+runner visibility for the `dusk-hyperlane` label, upstream drift, and latest
+clean-layout repro covered-path delta.
 
 `make gate-status` calls `scripts/release-gate-status.sh`, which reports local
 worktree state, untracked source status, implementation PR and
@@ -115,7 +115,8 @@ workflow-dispatcher PR mergeability/review/status state, production sign-off
 checklist counts, split decision issue states, default-branch protection and
 merge method settings, workflow visibility, CI provisioning visibility,
 including the exact `DUSK_ORG_READ_TOKEN` and `dusk-hyperlane` runner-label
-checks,
+checks for the Dusk repo, plus the monorepo `DUSK_ORG_READ_TOKEN` check needed
+by `.github/workflows/dusk-agent-gate.yml`,
 reviewer-facing evidence-link visibility, Dusk Dependabot open-alert
 visibility, local `Cargo.lock` vulnerable-range comparison through
 `make dependency-alert-status`, reviewer-facing `make gate-status-fresh` and

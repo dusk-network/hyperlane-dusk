@@ -223,6 +223,31 @@ case "$repo_runner_has_label:$org_runner_has_label" in
         ;;
 esac
 
+check_required_secret() {
+    local repo="$1"
+    local label="$2"
+    local err_file="$3"
+    local secrets_json
+    local secrets_count
+    local required_secret_visible
+
+    if secrets_json="$(gh api "repos/$repo/actions/secrets" 2>"$err_file")"; then
+        secrets_count="$(printf '%s\n' "$secrets_json" | jq .total_count)"
+        required_secret_visible="$(printf '%s\n' "$secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+        printf '%sSecretsVisible: %s\n' "$label" "$secrets_count"
+        printf '%sRequiredSecretVisible: %s\n' "$label" "$required_secret_visible"
+        if [ "$required_secret_visible" != "true" ]; then
+            add_blocker "$label Actions secret $REQUIRED_SECRET_NAME is not visible"
+        fi
+    else
+        printf '%sSecretsVisible: unknown\n' "$label"
+        printf '%sRequiredSecretVisible: unknown\n' "$label"
+        sed 's/^/  /' "$err_file"
+        add_blocker "$label Actions secret visibility is unknown"
+    fi
+    rm -f "$err_file"
+}
+
 if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
     repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
     required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
@@ -238,6 +263,8 @@ else
     add_blocker "repo-level Actions secret visibility is unknown"
 fi
 rm -f /tmp/hyperlane-readiness-secrets.$$.err
+
+check_required_secret "$MONOREPO_REPO" "monorepoRepo" "/tmp/hyperlane-readiness-monorepo-secrets.$$.err"
 
 section "Freshness"
 if [ "$MONOREPO_COMPARE_VIA_GH" = "1" ]; then

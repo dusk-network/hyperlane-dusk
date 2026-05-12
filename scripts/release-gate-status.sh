@@ -447,6 +447,18 @@ else
 fi
 rm -f /tmp/hyperlane-dusk-secrets.$$.err
 
+if monorepo_secrets_json="$(gh api "repos/$MONOREPO_REPO/actions/secrets" 2>/tmp/hyperlane-dusk-monorepo-secrets.$$.err)"; then
+    monorepo_secrets_count="$(printf '%s\n' "$monorepo_secrets_json" | jq .total_count)"
+    monorepo_required_secret_visible="$(printf '%s\n' "$monorepo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+    echo "monorepoRepoSecretsVisible: $monorepo_secrets_count"
+    echo "monorepoRepoRequiredSecretVisible: $monorepo_required_secret_visible"
+else
+    echo "monorepoRepoSecretsVisible: unknown"
+    echo "monorepoRepoRequiredSecretVisible: unknown"
+    sed 's/^/  /' /tmp/hyperlane-dusk-monorepo-secrets.$$.err
+fi
+rm -f /tmp/hyperlane-dusk-monorepo-secrets.$$.err
+
 runner_has_label() {
     jq --arg label "$REQUIRED_RUNNER_LABEL" \
         '[.runners[]? | select(any(.labels[]?; .name == $label))] | length > 0'

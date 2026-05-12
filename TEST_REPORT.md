@@ -333,8 +333,8 @@ Result:
   active-repo untracked source status, default-branch protection and merge
   method settings, required status-check policy enabled, workflow visibility,
   repo-level Actions secret visibility, exact `DUSK_ORG_READ_TOKEN`
-  visibility, self-hosted runner visibility, and exact `dusk-hyperlane`
-  runner-label visibility for CI gate #8,
+  visibility in both internal repos, self-hosted runner visibility, and exact
+  `dusk-hyperlane` runner-label visibility for CI gate #8,
   latest clean-layout repro link visibility, post-rebase E2E/archive link visibility,
   dependency-remediated E2E link visibility, advisory reviewer routing link
   visibility, Dusk Dependabot open-alert visibility plus local lockfile
@@ -355,8 +355,9 @@ Result:
 - `make production-readiness-guard`: failed as expected while external
   production blockers remain open. It reports open internal PR/review/status
   gates, unchecked sign-off items, open split decision issues, required
-  status-check policy enabled, missing `DUSK_ORG_READ_TOKEN` visibility,
-  missing self-hosted runner visibility for the `dusk-hyperlane` label,
+  status-check policy enabled, missing `DUSK_ORG_READ_TOKEN` visibility in
+  both internal repos, missing self-hosted runner visibility for the
+  `dusk-hyperlane` label,
   upstream freshness, and latest clean-layout repro covered-path delta. Passing
   this guard would not by itself prove production readiness. Protected-branch
   review baselines are now enabled on both Dusk org default branches.
