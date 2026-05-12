@@ -193,6 +193,7 @@ cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
 make dependency-alert-status
+make completion-audit-status
 make gate-status
 make gate-status-fresh
 make repro-check-agent
@@ -321,6 +322,9 @@ Result:
   built-in vulnerable-range parser self-test before querying GitHub. This is a
   feature-branch triage aid and does not replace GitHub closing alerts after a
   default-branch rescan.
+- `make completion-audit-status`: passed; verified the preserved Dusk and
+  monorepo prototype archive refs, local backup artifact hashes, active branch
+  refs, and absence of untracked source paths in both active repos.
 - `make gate-status`: passed; reported the implementation PRs and manual
   workflow dispatcher PR, zero status checks on the implementation PRs,
   7 unchecked production sign-off items, all six split decision issues open,

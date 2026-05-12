@@ -110,6 +110,10 @@ review-hygiene:
 dependency-alert-status:
 	bash scripts/dependency-alert-status.sh
 
+.PHONY: completion-audit-status
+completion-audit-status:
+	bash scripts/completion-audit-status.sh
+
 # Run the repeatable local verification subset used before review.
 .PHONY: repro-check
 repro-check:
@@ -161,6 +165,8 @@ help:
 	@echo "  review-hygiene     Check GitHub review text for stale refs/secrets"
 	@echo "  dependency-alert-status"
 	@echo "                     Compare open Dependabot Cargo.lock alerts to the local lockfile"
+	@echo "  completion-audit-status"
+	@echo "                     Verify preservation refs, backup hashes, and untracked source state"
 	@echo "  repro-check        Run repeatable local pre-review checks"
 	@echo "  repro-check-agent  Run repro-check plus Hyperlane agent cargo check"
 	@echo "                     Set RUSK_DIR=/path/to/rusk-private to use a clean checkout"

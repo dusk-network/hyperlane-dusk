@@ -52,6 +52,7 @@ git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-parse upstream/main
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstream/main
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-list --left-right --count HEAD...upstream/main
 gh workflow list --repo dusk-network/hyperlane-dusk --all
+make completion-audit-status
 make gate-status-fresh
 ```
 
@@ -78,6 +79,9 @@ Observed:
 - `git ls-files --others --exclude-standard` is empty in both active repos, so
   the Dusk contract/tooling repo and the Hyperlane monorepo fork do not have
   untracked source paths as their source of truth.
+- `make completion-audit-status` verifies the preserved prototype archive
+  branch refs, local backup artifact hashes, active branch refs, and untracked
+  source state in both active repos.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
   `archive/dusk-hyperlane-prototype-20260511`.
@@ -107,7 +111,7 @@ Observed:
 
 | Requirement | Evidence | Status |
 |---|---|---|
-| Preserve current local prototype before rebasing | Backup directory: `/home/hein_/projects/hyperlane/.codex-backups/dusk-hyperlane-20260511T133907Z`; artifacts: `hyperlane-monorepo-tracked.diff`, `dusk-tree.tgz`, `hyperlane-dusk-untracked.tgz`; monorepo archive branch: `origin/archive/dusk-prototype-20260511` commit `8e399103b24673f837c04f4227e49c45c8366e7c`; Dusk archive branch: `origin/archive/dusk-hyperlane-prototype-20260511` commit `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` | Done |
+| Preserve current local prototype before rebasing | Backup directory: `/home/hein_/projects/hyperlane/.codex-backups/dusk-hyperlane-20260511T133907Z`; artifacts: `hyperlane-monorepo-tracked.diff`, `dusk-tree.tgz`, `hyperlane-dusk-untracked.tgz`; monorepo archive branch: `origin/archive/dusk-prototype-20260511` commit `8e399103b24673f837c04f4227e49c45c8366e7c`; Dusk archive branch: `origin/archive/dusk-hyperlane-prototype-20260511` commit `c5ce2135407dad6420d010bdafe82a0b9b4bb78d`; `make completion-audit-status` verifies these refs and hashes | Done |
 | Fork `hyperlane-xyz/hyperlane-monorepo` into Dusk org | `dusk-network/hyperlane-monorepo`, PR #1: https://github.com/dusk-network/hyperlane-monorepo/pull/1 | Done |
 | Create Dusk-specific Hyperlane contract/tooling repo | `dusk-network/hyperlane-dusk`, PR #1: https://github.com/dusk-network/hyperlane-dusk/pull/1 | Done |
 | Put local `~/projects/hyperlane/dusk` under git and push | Dusk repo branch `feat/dusk-hardening-v2`; live PR head is checked through GitHub and `make gate-status`; `TEST_REPORT.md` records the latest clean-layout repro evidence and exact tested SHAs | Done |
@@ -148,7 +152,7 @@ Observed:
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
 | Advisory reviewer routing | `REVIEWERS.md`; routes Dusk contract/tooling/security review to `moCello`, Hyperlane agent/runtime review to `Neotamandua`, split decision issues #4 through #9 to the named Dusk reviewers, and keeps production sign-off in dusk-network/hyperlane-dusk#2 |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `scripts/github-review-hygiene.sh`, `make secret-hygiene`, `make review-hygiene` |
-| Reviewer-facing link guardrails | `scripts/github-review-hygiene.sh`, `scripts/release-gate-status.sh`, `scripts/dependency-alert-status.sh`, `make review-hygiene`, `make dependency-alert-status`, `make gate-status`, `make gate-status-fresh`; Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies must include or visibly report latest clean-layout repro https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572, dependency-remediated E2E https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389, post-rebase E2E/archive links, the advisory reviewer routing URL https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md, `make gate-status-fresh`, `make dependency-alert-status`, and latest clean-layout repro path delta; workflow PR #3 must include or visibly report the advisory reviewer routing URL; active bodies must not include the superseded `1778607202`/`4433179148` clean-layout repro evidence |
+| Reviewer-facing link guardrails | `scripts/github-review-hygiene.sh`, `scripts/release-gate-status.sh`, `scripts/dependency-alert-status.sh`, `scripts/completion-audit-status.sh`, `make review-hygiene`, `make dependency-alert-status`, `make completion-audit-status`, `make gate-status`, `make gate-status-fresh`; Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies must include or visibly report latest clean-layout repro https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572, dependency-remediated E2E https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389, post-rebase E2E/archive links, the advisory reviewer routing URL https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md, `make gate-status-fresh`, `make dependency-alert-status`, and latest clean-layout repro path delta; workflow PR #3 must include or visibly report the advisory reviewer routing URL; active bodies must not include the superseded `1778607202`/`4433179148` clean-layout repro evidence |
 | CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status`, `make gate-status-fresh`, dusk-network/hyperlane-dusk#3, dusk-network/hyperlane-dusk#8 |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Durable local evidence archive | `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`; SHA256 `53bc99b30624471b145731b92896b442c3a88c97f8217c8a7cd12be4ab7476fc`; contains the latest review-head repro/E2E logs plus the 7282-second soak logs; `scripts/secret-hygiene-check.sh` passed over the archive staging directory and tarball |
