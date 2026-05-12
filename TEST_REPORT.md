@@ -317,7 +317,8 @@ Result:
 - `make secret-hygiene`: passed.
 - `make dependency-alert-status`: passed; queried 27 open GitHub Dependabot
   `Cargo.lock` alerts and confirmed all 27 have no current local lockfile
-  package versions within the alert vulnerable ranges. This is a
+  package versions within the alert vulnerable ranges. The script runs a
+  built-in vulnerable-range parser self-test before querying GitHub. This is a
   feature-branch triage aid and does not replace GitHub closing alerts after a
   default-branch rescan.
 - `make gate-status`: passed; reported the implementation PRs and manual

@@ -12,6 +12,7 @@ cd "$ROOT"
 DUSK_REPO="${DUSK_REPO:-dusk-network/hyperlane-dusk}"
 LOCKFILE="${LOCKFILE:-Cargo.lock}"
 SUMMARY_ONLY=0
+SELF_TEST=0
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -27,6 +28,8 @@ version range with the current local Cargo.lock package versions.
 
 Options:
   --summary-only      Print only counts and grouped current locked versions.
+  --self-test         Run the vulnerable-version-range parser self-test and
+                     exit without querying GitHub.
   --lockfile PATH     Cargo.lock path to inspect.
                      Default: $LOCKFILE
   -h, --help          Show this help.
@@ -41,6 +44,10 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --summary-only)
             SUMMARY_ONLY=1
+            shift
+            ;;
+        --self-test)
+            SELF_TEST=1
             shift
             ;;
         --lockfile)
@@ -58,11 +65,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-command -v gh >/dev/null 2>&1 || fail "gh is required"
-command -v awk >/dev/null 2>&1 || fail "awk is required"
 command -v sort >/dev/null 2>&1 || fail "sort is required"
-
-[ -f "$LOCKFILE" ] || fail "missing lockfile: $LOCKFILE"
 
 version_at_least() {
     local current="$1"
@@ -163,6 +166,52 @@ version_in_range() {
     done
     return 0
 }
+
+assert_range() {
+    local version="$1"
+    local range="$2"
+    local expected="$3"
+    local result=0
+
+    version_in_range "$version" "$range" || result=$?
+    case "$expected:$result" in
+        in:0|out:1|unparsed:2)
+            ;;
+        *)
+            fail "range self-test failed: version=$version range=$range expected=$expected got=$result"
+            ;;
+    esac
+}
+
+run_self_test() {
+    assert_range "0.1.5" "< 0.1.6" in
+    assert_range "0.1.6" "< 0.1.6" out
+    assert_range "0.16.2" ">= 0.9.0, < 0.16.3" in
+    assert_range "0.16.4" ">= 0.9.0, < 0.16.3" out
+    assert_range "0.8.6" ">= 0.7.0, < 0.8.6" out
+    assert_range "0.9.2" ">= 0.9.0, < 0.9.3" in
+    assert_range "0.9.3" ">= 0.9.0, < 0.9.3" out
+    assert_range "36.0.6" ">= 25.0.0, < 36.0.6" out
+    assert_range "25.0.0" ">= 25.0.0, < 36.0.6" in
+    assert_range "1.2.3" "= 1.2.3" in
+    assert_range "1.2.4" "= 1.2.3" out
+    assert_range "1.2.4" "> 1.2.3" in
+    assert_range "1.2.3" "<= 1.2.3" in
+    assert_range "1.2.4" "~> 1.2" unparsed
+}
+
+if [ "$SELF_TEST" -eq 1 ]; then
+    run_self_test
+    echo "dependency alert range parser self-test: passed"
+    exit 0
+fi
+
+run_self_test >/dev/null
+
+command -v gh >/dev/null 2>&1 || fail "gh is required"
+command -v awk >/dev/null 2>&1 || fail "awk is required"
+
+[ -f "$LOCKFILE" ] || fail "missing lockfile: $LOCKFILE"
 
 tmpdir="$(mktemp -d)"
 cleanup() {
