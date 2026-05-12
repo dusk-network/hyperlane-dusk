@@ -73,6 +73,22 @@ gh api repos/dusk-network/hyperlane-monorepo/issues/1/comments --paginate --jq '
 gh api repos/dusk-network/hyperlane-dusk/issues/2/comments --paginate --jq '.[].body' \
   >/tmp/hyperlane-gh-review-text-1778551437/dusk-issue-2-comments.txt
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-gh-review-text-1778551437
+
+gh api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .body \
+  >/tmp/hyperlane-gh-review-text-audit-1778551686/dusk-pr-1-body.txt
+gh api repos/dusk-network/hyperlane-monorepo/pulls/1 --jq .body \
+  >/tmp/hyperlane-gh-review-text-audit-1778551686/monorepo-pr-1-body.txt
+gh api repos/dusk-network/hyperlane-dusk/issues/2 --jq .body \
+  >/tmp/hyperlane-gh-review-text-audit-1778551686/dusk-issue-2-body.txt
+gh api repos/dusk-network/hyperlane-dusk/issues/1/comments --paginate --jq '.[].body' \
+  >/tmp/hyperlane-gh-review-text-audit-1778551686/dusk-pr-1-comments.txt
+gh api repos/dusk-network/hyperlane-monorepo/issues/1/comments --paginate --jq '.[].body' \
+  >/tmp/hyperlane-gh-review-text-audit-1778551686/monorepo-pr-1-comments.txt
+gh api repos/dusk-network/hyperlane-dusk/issues/2/comments --paginate --jq '.[].body' \
+  >/tmp/hyperlane-gh-review-text-audit-1778551686/dusk-issue-2-comments.txt
+rg -n -e 'Current-head' -e 'current-head' -e '1778551243' \
+  /tmp/hyperlane-gh-review-text-audit-1778551686 || true
+bash scripts/secret-hygiene-check.sh /tmp/hyperlane-gh-review-text-audit-1778551686
 ```
 
 Result:
@@ -110,6 +126,11 @@ Result:
   `/tmp/hyperlane-gh-review-text-1778551437` and scanned it with
   `scripts/secret-hygiene-check.sh`: passed after removing literal password
   flag text from PR body prose and correcting tested-SHA wording for repro `1778550420`.
+- Re-exported GitHub-facing text under
+  `/tmp/hyperlane-gh-review-text-audit-1778551686` after editing older comments
+  to avoid stale "current-head" wording and the obsolete export path
+  `1778551243`; stale-wording scan found no matches and
+  `scripts/secret-hygiene-check.sh` passed.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 
