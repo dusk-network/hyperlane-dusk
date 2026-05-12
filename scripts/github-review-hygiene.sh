@@ -297,7 +297,28 @@ if rg -n -e "$stale_active_patterns" "$active_review_text" >"$stale_active_hits"
     cat "$stale_active_hits" >&2
     fail "stale current/latest wording found in active reviewer-facing text"
 fi
-rm -f "$active_review_text" "$stale_active_hits"
+rm -f "$stale_active_hits"
+
+latest_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
+latest_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
+for file in \
+    "$EXPORT_DIR/dusk-pr-1-body.txt" \
+    "$EXPORT_DIR/monorepo-pr-1-body.txt" \
+    "$EXPORT_DIR/dusk-issue-2-body.txt"; do
+    rg -q -F "$latest_e2e_comment" "$file" \
+        || fail "$file is missing current live-head E2E evidence link"
+    rg -q -F "$latest_e2e_archive_comment" "$file" \
+        || fail "$file is missing current live-head E2E archive link"
+done
+
+if rg -n \
+    -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
+    -e 'E2E was not rerun for the docs-only post-rebase head' \
+    "$active_review_text" >"$EXPORT_DIR/pre-rebase-only-e2e-wording.txt"; then
+    cat "$EXPORT_DIR/pre-rebase-only-e2e-wording.txt" >&2
+    fail "active reviewer-facing text still implies E2E is pre-rebase only"
+fi
+rm -f "$active_review_text" "$EXPORT_DIR/pre-rebase-only-e2e-wording.txt"
 
 snapshot_markers="Current output after push|Cross-repo handoff refresh on 2026-05-12|Pushed two docs/workflow-only updates|Docs-only wording refresh pushed"
 snapshot_mismatches="$EXPORT_DIR/unsuperseded-status-snapshots.txt"
