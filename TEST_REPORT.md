@@ -193,6 +193,7 @@ cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
 make gate-status
+make gate-status-fresh
 make repro-check-agent
 bash scripts/local-repro-check.sh --agent-check
 HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/hyperlane-dusk-repro-current-head-1778604592 \
