@@ -21,7 +21,7 @@ Usage: bash scripts/release-gate-status.sh [options]
 
 Prints the current machine-checkable review status:
   - local Dusk and Hyperlane worktree state
-  - Dusk and monorepo PR state, mergeability, reviews, and status checks
+  - Dusk and monorepo PR state, labels, mergeability, reviews, and status checks
   - production sign-off checklist counts from dusk-network/hyperlane-dusk#2
   - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
   - workflow visibility for dusk-network/hyperlane-dusk
@@ -98,10 +98,11 @@ print_pr() {
 
     section "$label PR"
     gh pr view "$number" --repo "$repo" \
-        --json state,mergeable,headRefOid,reviewDecision,reviewRequests,statusCheckRollup,url \
+        --json state,labels,mergeable,headRefOid,reviewDecision,reviewRequests,statusCheckRollup,url \
         --jq '
             "url: \(.url)\n" +
             "state: \(.state)\n" +
+            "labels: \([.labels[].name] | join(", "))\n" +
             "mergeable: \(.mergeable)\n" +
             "head: \(.headRefOid)\n" +
             "reviewDecision: \(.reviewDecision // "")\n" +
@@ -115,11 +116,12 @@ print_issue() {
     local number="$2"
 
     gh issue view "$number" --repo "$repo" \
-        --json state,title,assignees,url \
+        --json state,title,labels,assignees,url \
         --jq '
             "#\(.url | split("/")[-1]) \(.title)\n" +
             "  url: \(.url)\n" +
             "  state: \(.state)\n" +
+            "  labels: \([.labels[].name] | join(", "))\n" +
             "  assignees: \([.assignees[].login] | join(", "))"
         '
 }
