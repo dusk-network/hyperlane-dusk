@@ -12,7 +12,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778599935` tested Dusk source ref `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
-| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778599935` tested monorepo `a2db5731e385634268071d39b0554883d11d8ac5` after rebasing onto upstream `66e8c1f4644cea0392b33007225e6611b8f06804`, with Dusk source ref `de9b7fa3c832fb60982d3dbd22c8a59114d37732` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778599935` tested monorepo `a2db5731e385634268071d39b0554883d11d8ac5`, with Dusk source ref `de9b7fa3c832fb60982d3dbd22c8a59114d37732` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`. The branch was later rebased onto upstream `7a362a093d622b69d6c55d47992c9490ec33fb1a`; post-rebase targeted Rust agent check passed, and the diff from the clean-layout repro monorepo ref to the live PR head is Dusk upstream docs plus upstream TypeScript infra/config only |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -61,6 +61,13 @@ Notes:
   The clean-Rusk E2E evidence above remains evidence for the pre-rebase
   monorepo ref `a44020dc998b7fe868254a5d1a349b9eb8ded899`; E2E was not rerun
   for the docs-only post-rebase head.
+- After upstream Hyperlane advanced to
+  `7a362a093d622b69d6c55d47992c9490ec33fb1a`, the monorepo PR branch was
+  rebased again and pushed. The upstream change was TypeScript infra/config
+  only (`typescript/infra/config/environments/mainnet3/agent.ts`), and the
+  Dusk branch changes after the clean-layout repro monorepo ref are Dusk
+  upstream compatibility/PR-plan docs. `git diff --check`, the Dusk agent
+  placeholder scan, and the targeted Rust agent check passed after the rebase.
 - The latest review-head repro/E2E logs and the 7282-second high-volume soak
   logs were copied from `/tmp` into durable local handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`.
@@ -271,11 +278,10 @@ Result:
   the latest tested source ref `de9b7fa3c832fb60982d3dbd22c8a59114d37732`
   touched only docs, workflow, reference, and hygiene-script files. The
   monorepo diff from the review-head clean-Rusk E2E ref
-  `a44020dc998b7fe868254a5d1a349b9eb8ded899` to current monorepo ref
-  `a2db5731e385634268071d39b0554883d11d8ac5` touched only Dusk upstream-plan
-  docs and upstream TypeScript infra/config files. No Dusk contract, Dusk type,
-  Dusk transaction, or Rust Dusk agent runtime files changed after the
-  review-head clean-Rusk E2E runs.
+  `a44020dc998b7fe868254a5d1a349b9eb8ded899` to the live monorepo PR head
+  touched only Dusk upstream-plan docs and upstream TypeScript infra/config
+  files. No Dusk contract, Dusk type, Dusk transaction, or Rust Dusk agent
+  runtime files changed after the review-head clean-Rusk E2E runs.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 
@@ -575,6 +581,9 @@ Result:
 - Passed again after rebasing `feat/dusk-support-v2` onto current upstream
   Hyperlane `main` at `66e8c1f4644cea0392b33007225e6611b8f06804`; post-rebase
   head `a2db5731e385634268071d39b0554883d11d8ac5`.
+- Passed again after rebasing `feat/dusk-support-v2` onto upstream Hyperlane
+  `main` at `7a362a093d622b69d6c55d47992c9490ec33fb1a`; post-rebase head
+  `09e62be2e55ecd87d3931f6f10623086befd7848`.
 - Passed after adding file/env-backed `duskKey` signer sources.
 
 ### Local EVM <-> Dusk Agent E2E: TestMock ISM
