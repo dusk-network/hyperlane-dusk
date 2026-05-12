@@ -67,8 +67,9 @@ make review-hygiene
 ```
 
 This writes a timestamped `/tmp/hyperlane-review-export-*` directory, checks
-known stale evidence refs/wording, and runs the same secret hygiene scanner
-over the exported PR/issue bodies and comments.
+known stale evidence refs/wording, including stale current-head refs and wrong
+clean-repro tested-SHA refs, and runs the same secret hygiene scanner over the
+exported PR/issue bodies and comments.
 
 The artifact scan intentionally fails on inline raw key fields, `hexKey`
 signer config markers, and secret-like files such as `*.key`, `*.keys`, and
