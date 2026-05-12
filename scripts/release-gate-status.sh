@@ -16,6 +16,7 @@ UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 CURRENT_E2E_URL="${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}"
 CURRENT_E2E_ARCHIVE_URL="${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}"
 LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572}"
+REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
 FETCH_UPSTREAM=0
 
 usage() {
@@ -62,6 +63,9 @@ Environment:
   LATEST_REPRO_URL     Latest clean-layout repro evidence URL expected in
                        active reviewer-facing bodies.
                        Default: $LATEST_REPRO_URL
+  REVIEWER_ROUTING_URL Advisory reviewer routing URL expected in active
+                       reviewer-facing bodies.
+                       Default: $REVIEWER_ROUTING_URL
 EOF
 }
 
@@ -205,6 +209,12 @@ print_link_presence() {
         echo "  currentLiveHeadE2EArchive: present"
     else
         echo "  currentLiveHeadE2EArchive: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$REVIEWER_ROUTING_URL"; then
+        echo "  reviewerRouting: present"
+    else
+        echo "  reviewerRouting: missing"
     fi
 }
 
