@@ -12,7 +12,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778582787` tested Dusk `889a00bb11d589d268ee928d0855e3724dfab0fe`; check the live PR head through GitHub or `make gate-status` |
-| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778582787` tested monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; check the live PR head through GitHub or `make gate-status` |
+| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest post-rebase PR head `9798cec3c0b54ce8e7ccc6d961b49f1fd2c7ffc0` passed the targeted Rust agent check after rebasing onto upstream `66e8c1f4644cea0392b33007225e6611b8f06804`; latest clean-layout repro run `1778582787` tested monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; check the live PR head through GitHub or `make gate-status` |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -52,6 +52,13 @@ Notes:
   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430201984
   and
   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430343619.
+- After upstream Hyperlane advanced to
+  `66e8c1f4644cea0392b33007225e6611b8f06804`, the monorepo PR branch was
+  rebased and pushed at `9798cec3c0b54ce8e7ccc6d961b49f1fd2c7ffc0`. The
+  targeted Rust agent check passed at that head. The clean-Rusk E2E evidence
+  above remains evidence for the pre-rebase monorepo ref
+  `a44020dc998b7fe868254a5d1a349b9eb8ded899`; E2E was not rerun for the
+  docs-only post-rebase head.
 - The latest review-head repro/E2E logs and the 7282-second high-volume soak
   logs were copied from `/tmp` into durable local handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-evidence-20260512T1245Z.tgz`.
@@ -500,7 +507,8 @@ Result:
 - `cargo test -p hyperlane-base dusk`: passed, 4 focused signer/parser tests.
 - Passed. Re-run after Dusk event/type changes also passed.
 - Passed again after rebasing `feat/dusk-support-v2` onto current upstream
-  Hyperlane `main` at `f758a70630fd72d4749c3afb79454e725b8081a8`.
+  Hyperlane `main` at `66e8c1f4644cea0392b33007225e6611b8f06804`; post-rebase
+  head `9798cec3c0b54ce8e7ccc6d961b49f1fd2c7ffc0`.
 - Passed after adding file/env-backed `duskKey` signer sources.
 
 ### Local EVM <-> Dusk Agent E2E: TestMock ISM
