@@ -387,6 +387,23 @@ for issue in 4 5 6; do
     fi
 done
 
+for issue in 4 5 6 7 8 9; do
+    file="$EXPORT_DIR/dusk-issue-$issue-body.txt"
+    if [ -f "$file" ]; then
+        rg -q -F 'Current gate handoff:' "$file" \
+            || fail "$file is missing current gate handoff section"
+        rg -q -F 'currentGateRefreshHandoff' "$file" \
+            || fail "$file is missing currentGateRefreshHandoff text"
+        rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587' \
+            "$file" \
+            || fail "$file is missing current gate refresh link"
+        rg -q -F 'make review-gates' "$file" \
+            || fail "$file is missing make review-gates handoff text"
+        rg -q -F 'make production-readiness-guard' "$file" \
+            || fail "$file is missing production-readiness guard handoff text"
+    fi
+done
+
 if [ -f "$EXPORT_DIR/dusk-issue-9-body.txt" ]; then
     rg -q -F '1778541618' "$EXPORT_DIR/dusk-issue-9-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak run id"
