@@ -262,6 +262,16 @@ Result:
   `lander`. Local log:
   `/tmp/hyperlane-dusk-repro-current-head-1778599935.log`. Durable archive:
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778599935.tgz`.
+- E2E freshness check on 2026-05-12: the Dusk diff from the review-head
+  clean-Rusk E2E source ref `2ac225175b15aac465d100e748ba68f8b14bd545` to
+  the latest tested source ref `de9b7fa3c832fb60982d3dbd22c8a59114d37732`
+  touched only docs, workflow, reference, and hygiene-script files. The
+  monorepo diff from the review-head clean-Rusk E2E ref
+  `a44020dc998b7fe868254a5d1a349b9eb8ded899` to current monorepo ref
+  `a2db5731e385634268071d39b0554883d11d8ac5` touched only Dusk upstream-plan
+  docs and upstream TypeScript infra/config files. No Dusk contract, Dusk type,
+  Dusk transaction, or Rust Dusk agent runtime files changed after the
+  review-head clean-Rusk E2E runs.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 
