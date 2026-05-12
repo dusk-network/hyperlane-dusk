@@ -34,6 +34,7 @@ Usage: bash scripts/github-review-hygiene.sh [options]
 
 Exports reviewer-facing GitHub text and checks it for:
   - known stale SHA/run/comment wording patterns
+  - explicit Dusk PR #1 current-head claims against the live PR head
   - source/artifact secret hygiene regressions
 
 Options:
@@ -141,6 +142,25 @@ if rg -n -e "$STALE_REVIEW_PATTERNS" "$EXPORT_DIR" >"$stale_hits"; then
     fail "stale reviewer-facing text found"
 fi
 rm -f "$stale_hits"
+
+dusk_pr_head="$(gh api "repos/$DUSK_REPO/pulls/1" --jq .head.sha)"
+dusk_head_claim_patterns="(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
+dusk_head_claims="$EXPORT_DIR/dusk-pr-head-claims.txt"
+dusk_head_mismatches="$EXPORT_DIR/dusk-pr-head-mismatches.txt"
+if rg -n -o -e "$dusk_head_claim_patterns" "$EXPORT_DIR" >"$dusk_head_claims"; then
+    while IFS= read -r claim; do
+        claim_sha="$(printf '%s\n' "$claim" | rg -o '[0-9a-f]{40}' | head -n1)"
+        if [ "$claim_sha" != "$dusk_pr_head" ]; then
+            printf '%s\n' "$claim" >>"$dusk_head_mismatches"
+        fi
+    done <"$dusk_head_claims"
+
+    if [ -s "$dusk_head_mismatches" ]; then
+        cat "$dusk_head_mismatches" >&2
+        fail "stale Dusk PR #1 current-head claim found; live head is $dusk_pr_head"
+    fi
+fi
+rm -f "$dusk_head_claims" "$dusk_head_mismatches"
 
 bash scripts/secret-hygiene-check.sh "$EXPORT_DIR"
 
