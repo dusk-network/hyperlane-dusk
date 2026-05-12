@@ -503,17 +503,7 @@ Additional event annotation verification:
 
 ```bash
 make all
-cargo clippy --target wasm32-unknown-unknown --features contract \
-  -p hyperlane-dusk-types \
-  -p hyperlane-dusk-mailbox \
-  -p hyperlane-dusk-merkle-tree-hook \
-  -p hyperlane-dusk-ism-multisig \
-  -p hyperlane-dusk-validator-announce \
-  -p hyperlane-dusk-protocol-fee \
-  -p hyperlane-dusk-igp \
-  -p hyperlane-dusk-warp-drc20 \
-  -p hyperlane-dusk-warp-drc20-collateral \
-  -p hyperlane-dusk-warp-native
+make clippy-contracts
 cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 ```
@@ -558,17 +548,7 @@ the final sign-off in https://github.com/dusk-network/hyperlane-dusk/issues/2.
 make all    # in dusk/ directory
 
 # Static lint pass for the production wasm contract/type surface
-cargo clippy --target wasm32-unknown-unknown --features contract \
-  -p hyperlane-dusk-types \
-  -p hyperlane-dusk-mailbox \
-  -p hyperlane-dusk-merkle-tree-hook \
-  -p hyperlane-dusk-ism-multisig \
-  -p hyperlane-dusk-validator-announce \
-  -p hyperlane-dusk-protocol-fee \
-  -p hyperlane-dusk-igp \
-  -p hyperlane-dusk-warp-drc20 \
-  -p hyperlane-dusk-warp-drc20-collateral \
-  -p hyperlane-dusk-warp-native
+make clippy-contracts
 
 # 28 unit tests pass
 cargo test -p hyperlane-dusk-types

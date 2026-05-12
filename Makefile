@@ -13,6 +13,17 @@ CONTRACT_FEATURE := contract
 STACK_SIZE := 65536
 CONTRACTS := mailbox merkle-tree-hook ism-multisig validator-announce test-recipient test-mock protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
 TARGET_DIR := target/contract
+PRODUCTION_CLIPPY_PACKAGES := \
+	-p hyperlane-dusk-types \
+	-p hyperlane-dusk-mailbox \
+	-p hyperlane-dusk-merkle-tree-hook \
+	-p hyperlane-dusk-ism-multisig \
+	-p hyperlane-dusk-validator-announce \
+	-p hyperlane-dusk-protocol-fee \
+	-p hyperlane-dusk-igp \
+	-p hyperlane-dusk-warp-drc20 \
+	-p hyperlane-dusk-warp-drc20-collateral \
+	-p hyperlane-dusk-warp-native
 
 # Build all contract WASMs
 .PHONY: all
@@ -35,6 +46,16 @@ $(CONTRACTS):
 check:
 	cargo check --target $(WASM_TARGET) --features $(CONTRACT_FEATURE) --workspace \
 		--exclude hyperlane-dusk-integration-tests
+
+# Run clippy over the production contract/type surface.
+#
+# This intentionally avoids a workspace-wide wasm clippy pass because host/test
+# dependencies pull wasm-unsupported getrandom paths before reaching the
+# production contracts.
+.PHONY: clippy-contracts
+clippy-contracts:
+	cargo clippy --target $(WASM_TARGET) --features $(CONTRACT_FEATURE) \
+		$(PRODUCTION_CLIPPY_PACKAGES)
 
 # Run types crate unit tests
 .PHONY: test-types
@@ -117,6 +138,7 @@ help:
 	@echo "  test-recipient     Build TestRecipient contract"
 	@echo "  test-mock          Build TestMock contract"
 	@echo "  check              Check all contracts compile"
+	@echo "  clippy-contracts   Lint production contract/type crates for wasm"
 	@echo "  test-types         Run types crate tests"
 	@echo "  test-integration   Run VM integration tests"
 	@echo "  data-driver        Build data-driver WASM (for explorer)"

@@ -28,6 +28,7 @@ Usage: bash scripts/local-repro-check.sh [options]
 
 Runs the local reproducibility checks that do not require a live E2E network:
   - make all
+  - make clippy-contracts
   - cargo test -p hyperlane-dusk-types
   - cargo test -p hyperlane-dusk-integration-tests
   - cargo test -p dusk-tx
@@ -149,6 +150,9 @@ info "Using Rusk path dependencies from $DEFAULT_RUSK_DIR"
 
 info "Building Dusk contract WASMs"
 make all
+
+info "Running targeted Dusk wasm clippy checks"
+make clippy-contracts
 
 info "Running Dusk type tests"
 cargo test -p hyperlane-dusk-types

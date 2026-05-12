@@ -152,6 +152,7 @@ That wraps:
 
 ```bash
 make all
+make clippy-contracts
 cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
