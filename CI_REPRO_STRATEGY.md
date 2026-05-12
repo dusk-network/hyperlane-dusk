@@ -105,6 +105,21 @@ Set `dusk_ref` to a PR branch or exact commit SHA when running the workflow
 from the default branch, so the repro checks the review head rather than the
 default branch contents.
 
+Once the workflow exists on the default branch and the runner/token are
+available, a reviewer can dispatch the current internal review shape with:
+
+```bash
+gh workflow run manual-repro-check.yml \
+  --repo dusk-network/hyperlane-dusk \
+  --ref main \
+  -f dusk_ref=feat/dusk-hardening-v2 \
+  -f rusk_ref=c0c64db4659500d077bb253ad13acba0e347d3fc \
+  -f monorepo_ref=feat/dusk-support-v2
+```
+
+For release evidence, prefer exact commit SHAs in those three inputs and record
+the resolved heads in `TEST_REPORT.md`.
+
 It runs:
 
 ```bash
@@ -161,9 +176,9 @@ Recommended sequence:
 
 1. Keep the workflow manual until the Dusk runner and token scope are accepted.
 2. Run it once against the current Dusk PR head and monorepo branch.
-3. Record the workflow URL, `dusk_ref`, Dusk head, `monorepo_ref`, monorepo
-   head, Rusk ref, and pass/fail
-   result in `TEST_REPORT.md`.
+3. Record the workflow URL, `dusk_ref`, resolved Dusk head, `monorepo_ref`,
+   resolved monorepo head, `rusk_ref`, resolved Rusk head, and pass/fail result
+   in `TEST_REPORT.md`.
 4. Only after the manual run is stable, decide whether to make the non-E2E
    repro check required on internal PRs.
 5. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides

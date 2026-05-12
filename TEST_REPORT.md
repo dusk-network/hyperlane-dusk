@@ -94,6 +94,8 @@ Result:
   `DUSK_ORG_READ_TOKEN` secret for private cross-repo checkout. The manual
   inputs include `dusk_ref`, `rusk_ref`, and `monorepo_ref` so reviewers can run
   the workflow from the default branch against exact review heads.
+  `CI_REPRO_STRATEGY.md` includes the `gh workflow run` command shape and says
+  to record both requested refs and resolved heads for release evidence.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `make secret-hygiene`: re-run after manual workflow secret-scope docs and
