@@ -14,6 +14,12 @@ setup to accept, change, or replace.
   private Dusk repository access.
 - Both internal PRs currently have empty GitHub status-check rollups; the
   evidence in `TEST_REPORT.md` is local/clean-Rusk evidence.
+- A 2026-05-12 permission probe showed repo-level Actions is enabled on both
+  `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, with
+  allowed actions set to `all` and default workflow permissions set to `write`.
+  The current CI blocker is runner/secret/workflow provisioning, not disabled
+  repo-level Actions. The probe is recorded in
+  dusk-network/hyperlane-dusk#8.
 - `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
