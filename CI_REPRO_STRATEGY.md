@@ -138,7 +138,9 @@ gh workflow run manual-repro-check.yml \
 ```
 
 For release evidence, prefer exact commit SHAs in those three inputs and record
-the resolved heads in `TEST_REPORT.md`.
+the resolved heads in `TEST_REPORT.md`. The workflow prints each requested ref
+and resolved checkout head before running the repro command so reviewers can
+copy the exact Dusk, Rusk, and monorepo SHAs from the Actions log.
 
 It runs:
 

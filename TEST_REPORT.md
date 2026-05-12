@@ -123,7 +123,8 @@ Result:
   inputs include `dusk_ref`, `rusk_ref`, and `monorepo_ref` so reviewers can run
   the workflow from the default branch against exact review heads.
   `CI_REPRO_STRATEGY.md` includes the `gh workflow run` command shape and says
-  to record both requested refs and resolved heads for release evidence.
+  to record both requested refs and resolved heads for release evidence. The
+  workflow logs the resolved checkout heads before running the repro command.
 - dusk-network/hyperlane-dusk#3: opened as a narrow default-branch dispatcher
   PR containing only `.github/workflows/manual-repro-check.yml` and
   `.github/actionlint.yaml`, so Dusk can make the manual workflow visible
