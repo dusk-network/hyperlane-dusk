@@ -1,6 +1,6 @@
 # Dusk Hyperlane Revival Goal Audit
 
-Date: 2026-05-12
+Date: 2026-05-13
 
 This audit maps the original revival/hardening goal to concrete artifacts and
 current gates. It is intentionally not a production-readiness sign-off. Items
@@ -37,7 +37,7 @@ runner strategy, and soak acceptance are still open in
 | `dusk-network/hyperlane-dusk` workflow dispatcher | `ci/manual-repro-workflow` | Live PR head is checked through GitHub and `make gate-status`; contains only `.github/workflows/manual-repro-check.yml` and `.github/actionlint.yaml`; workflow logs requested refs and resolved checkout heads, then runs the final repro step under explicit `shell: bash` with `set -euo pipefail` before `make repro-check-agent` | Narrow default-branch PR #3 ready for review, open, blocked on review; review requested from `moCello` and `Neotamandua`; labels `need:feedback`, `type:docs`; `Manual repro dispatcher gate` and `Dusk review policy gate` passing |
 | Clean Rusk reference | detached HEAD | `c0c64db4659500d077bb253ad13acba0e347d3fc` | Used for clean E2E evidence |
 
-Live verification on 2026-05-12:
+Live verification on 2026-05-13:
 
 ```bash
 gh pr view 1 --repo dusk-network/hyperlane-dusk \
