@@ -13,6 +13,7 @@ MONOREPO_REPO="${MONOREPO_REPO:-dusk-network/hyperlane-monorepo}"
 WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
+DUSK_PLACEHOLDER_PATHS="${DUSK_PLACEHOLDER_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo}"
 CURRENT_E2E_URL="${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}"
 CURRENT_E2E_ARCHIVE_URL="${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}"
 LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572}"
@@ -53,6 +54,10 @@ Environment:
                        Default: $SIGNOFF_ISSUES
   UPSTREAM_REMOTE      Hyperlane upstream remote name.
                        Default: $UPSTREAM_REMOTE
+  DUSK_PLACEHOLDER_PATHS
+                       Space-separated tracked Dusk repo paths scanned for
+                       runtime placeholder macros.
+                       Default: $DUSK_PLACEHOLDER_PATHS
   CURRENT_E2E_URL      Current live-head E2E evidence URL expected in active
                        reviewer-facing bodies.
                        Default: $CURRENT_E2E_URL
@@ -365,6 +370,15 @@ else
 fi
 
 section "Runtime Placeholder Scan"
+echo "duskRepoPaths: $DUSK_PLACEHOLDER_PATHS"
+if git -C "$ROOT" grep -n -E 'todo!|unimplemented!|panic!' -- $DUSK_PLACEHOLDER_PATHS >/tmp/hyperlane-dusk-repo-placeholder-scan.$$; then
+    cat /tmp/hyperlane-dusk-repo-placeholder-scan.$$
+    rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
+else
+    rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
+    echo "no matches in Dusk repo scoped runtime paths"
+fi
+
 if [ -d "$MONOREPO_DIR/rust/main/chains/hyperlane-dusk" ]; then
     if git -C "$MONOREPO_DIR" grep -n -E 'todo!|unimplemented!|panic!' -- rust/main/chains/hyperlane-dusk >/tmp/hyperlane-dusk-placeholder-scan.$$; then
         cat /tmp/hyperlane-dusk-placeholder-scan.$$
