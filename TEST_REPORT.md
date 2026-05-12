@@ -11,8 +11,8 @@ production-review gates and useful follow-up test areas are listed at the end.
 
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778572385` tested Dusk `17e9b6219239d2ffa72a0de0c019c5476d7f9b70`; check the live PR head through GitHub or `make gate-status` |
-| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778572385` tested monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; check the live PR head through GitHub or `make gate-status` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778574482` tested Dusk `28d07e01d1bbc0cf59575a811cde55e844a2abb7`; check the live PR head through GitHub or `make gate-status` |
+| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778574482` tested monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; check the live PR head through GitHub or `make gate-status` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
 | Supplemental clean-layout repro after audit docs refresh | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `24d42c3ed0aaa289f32a22f6a7bf7f7c068bc2ae`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -214,6 +214,11 @@ run_dir=/tmp/hyperlane-dusk-repro-current-1778572385
 HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
 RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
 make repro-check-agent 2>&1 | tee "$run_dir.log"
+
+run_dir=/tmp/hyperlane-dusk-repro-current-1778574482
+HYPERLANE_DUSK_REPRO_WORKDIR="$run_dir" \
+RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+make repro-check-agent 2>&1 | tee "$run_dir.log"
 ```
 
 Refs:
@@ -238,6 +243,8 @@ Refs:
   `b4ace8073147f17f67593c3a471d8bf33ca8dce3`
 - Mailbox nonce-overflow repro tested Dusk PR branch:
   `17e9b6219239d2ffa72a0de0c019c5476d7f9b70`
+- Fee-accounting overflow repro tested Dusk PR branch:
+  `28d07e01d1bbc0cf59575a811cde55e844a2abb7`
 - Earlier Hyperlane monorepo branch:
   `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
 - File-backed signer run Hyperlane monorepo branch:
@@ -251,6 +258,8 @@ Refs:
 - Mailbox fee-overflow repro tested Hyperlane monorepo branch:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
 - Mailbox nonce-overflow repro tested Hyperlane monorepo branch:
+  `a44020dc998b7fe868254a5d1a349b9eb8ded899`
+- Fee-accounting overflow repro tested Hyperlane monorepo branch:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
 - Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
@@ -308,6 +317,12 @@ Refs:
   clean detached worktree
   `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Fee-accounting overflow repro Rusk path dependency checkout in the temporary
+  layout:
+  `/tmp/hyperlane-dusk-repro-current-1778574482/rusk-private`, symlinked to
+  clean detached worktree
+  `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 - Logs:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326.log`,
   `/tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170.log`,
@@ -318,7 +333,8 @@ Refs:
   `/tmp/hyperlane-dusk-repro-current-1778559809.log`,
   `/tmp/hyperlane-dusk-repro-current-1778560831.log`,
   `/tmp/hyperlane-dusk-repro-current-1778570601.log`,
-  `/tmp/hyperlane-dusk-repro-current-1778572385.log`
+  `/tmp/hyperlane-dusk-repro-current-1778572385.log`,
+  `/tmp/hyperlane-dusk-repro-current-1778574482.log`
 
 Result:
 
@@ -347,6 +363,8 @@ Result:
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-current-1778570601.log`:
   passed.
 - `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-current-1778572385.log`:
+  passed.
+- `bash scripts/secret-hygiene-check.sh /tmp/hyperlane-dusk-repro-current-1778574482.log`:
   passed.
 - Hyperlane Rust agent check from the adjacent monorepo passed:
 
