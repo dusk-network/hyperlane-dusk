@@ -10,6 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MONOREPO_DIR="${MONOREPO_DIR:-$ROOT/../hyperlane-monorepo}"
 DUSK_REPO="${DUSK_REPO:-dusk-network/hyperlane-dusk}"
 MONOREPO_REPO="${MONOREPO_REPO:-dusk-network/hyperlane-monorepo}"
+WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 FETCH_UPSTREAM=0
 
@@ -36,6 +37,8 @@ Environment:
                        Default: $DUSK_REPO
   MONOREPO_REPO        GitHub repo for Hyperlane integration PRs.
                        Default: $MONOREPO_REPO
+  WORKFLOW_PR_NUMBER   Dusk repo PR number for the manual workflow dispatcher.
+                       Default: $WORKFLOW_PR_NUMBER
   UPSTREAM_REMOTE      Hyperlane upstream remote name.
                        Default: $UPSTREAM_REMOTE
 EOF
@@ -122,6 +125,9 @@ fi
 
 print_pr "$DUSK_REPO" 1 "Dusk"
 print_pr "$MONOREPO_REPO" 1 "Hyperlane monorepo"
+if gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json number >/dev/null 2>&1; then
+    print_pr "$DUSK_REPO" "$WORKFLOW_PR_NUMBER" "Manual workflow dispatcher"
+fi
 
 section "Production Sign-Off Issue"
 issue_body="$(gh issue view 2 --repo "$DUSK_REPO" --json body --jq .body)"

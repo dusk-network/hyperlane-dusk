@@ -78,9 +78,10 @@ Observed:
   visible independently from the full Dusk Hyperlane implementation PR once
   Dusk accepts the runner/token setup.
 - `make gate-status` prints the current machine-checkable gate status:
-  7 unchecked sign-off items, 1 checked item, zero status checks on both PRs,
-  no visible workflow, upstream drift `16 0`, and no placeholder macro matches
-  in `rust/main/chains/hyperlane-dusk`.
+  7 unchecked sign-off items, 1 checked item, zero status checks on the
+  implementation PRs, the manual workflow dispatcher PR state, no visible
+  workflow, upstream drift `16 0`, and no placeholder macro matches in
+  `rust/main/chains/hyperlane-dusk`.
 
 ## Deliverable Checklist
 
