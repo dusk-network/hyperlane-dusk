@@ -319,8 +319,9 @@ Result:
   active-repo untracked source status, default-branch protection and merge
   method settings, no visible GitHub workflow, repo-level Actions secret and
   self-hosted runner visibility for CI gate #8, latest clean-layout repro link
-  visibility, current live-head E2E/archive link visibility, current Hyperlane
-  upstream drift, and no placeholder matches in
+  visibility, current live-head E2E/archive link visibility, advisory reviewer
+  routing link visibility, current Hyperlane upstream drift, and no placeholder
+  matches in
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
@@ -388,9 +389,12 @@ Result:
   passed against the updated GitHub review surface.
 - `make review-hygiene` now also requires the latest clean-layout repro
   evidence link `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572`
+  and advisory reviewer routing link
+  `https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md`
   in Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies, and rejects the
-  superseded `1778607202`/`4433179148` repro evidence from those active bodies.
-  The wrapper passed after this guard was added.
+  superseded `1778607202`/`4433179148` repro evidence from those active bodies
+  plus stale "no owner-routing file" wording. The wrapper passed after this
+  guard was added.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now
