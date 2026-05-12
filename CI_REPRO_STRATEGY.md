@@ -230,4 +230,6 @@ Recommended sequence:
 Dusk still needs to decide whether this self-hosted workflow is the accepted
 CI/repro strategy for internal review, or whether another private CI system
 should own these checks. That decision remains tracked in
+https://github.com/dusk-network/hyperlane-dusk/issues/8 and rolls up into the
+production sign-off tracker at
 https://github.com/dusk-network/hyperlane-dusk/issues/2.
