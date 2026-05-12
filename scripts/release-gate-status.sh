@@ -11,6 +11,7 @@ MONOREPO_DIR="${MONOREPO_DIR:-$ROOT/../hyperlane-monorepo}"
 DUSK_REPO="${DUSK_REPO:-dusk-network/hyperlane-dusk}"
 MONOREPO_REPO="${MONOREPO_REPO:-dusk-network/hyperlane-monorepo}"
 WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
+SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 FETCH_UPSTREAM=0
 
@@ -22,6 +23,7 @@ Prints the current machine-checkable review status:
   - local Dusk and Hyperlane worktree state
   - Dusk and monorepo PR state, mergeability, reviews, and status checks
   - production sign-off checklist counts from dusk-network/hyperlane-dusk#2
+  - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
   - workflow visibility for dusk-network/hyperlane-dusk
   - Hyperlane upstream/main drift for the local monorepo checkout
   - Dusk agent placeholder scan in rust/main/chains/hyperlane-dusk
@@ -39,6 +41,9 @@ Environment:
                        Default: $MONOREPO_REPO
   WORKFLOW_PR_NUMBER   Dusk repo PR number for the manual workflow dispatcher.
                        Default: $WORKFLOW_PR_NUMBER
+  SIGNOFF_ISSUES       Space-separated Dusk repo issue numbers for split
+                       production decisions.
+                       Default: $SIGNOFF_ISSUES
   UPSTREAM_REMOTE      Hyperlane upstream remote name.
                        Default: $UPSTREAM_REMOTE
 EOF
@@ -105,6 +110,20 @@ print_pr() {
         '
 }
 
+print_issue() {
+    local repo="$1"
+    local number="$2"
+
+    gh issue view "$number" --repo "$repo" \
+        --json state,title,assignees,url \
+        --jq '
+            "#\(.url | split("/")[-1]) \(.title)\n" +
+            "  url: \(.url)\n" +
+            "  state: \(.state)\n" +
+            "  assignees: \([.assignees[].login] | join(", "))"
+        '
+}
+
 unchecked_count() {
     grep -c '^- \[ \]' || true
 }
@@ -134,6 +153,24 @@ issue_body="$(gh issue view 2 --repo "$DUSK_REPO" --json body --jq .body)"
 echo "url: https://github.com/$DUSK_REPO/issues/2"
 echo "uncheckedItems: $(printf '%s\n' "$issue_body" | unchecked_count)"
 echo "checkedItems: $(printf '%s\n' "$issue_body" | checked_count)"
+
+section "Split Production Decision Issues"
+open_split_issues=0
+closed_split_issues=0
+for issue in $SIGNOFF_ISSUES; do
+    if issue_json="$(gh issue view "$issue" --repo "$DUSK_REPO" --json state --jq .state 2>/dev/null)"; then
+        print_issue "$DUSK_REPO" "$issue"
+        if [ "$issue_json" = "OPEN" ]; then
+            open_split_issues=$((open_split_issues + 1))
+        else
+            closed_split_issues=$((closed_split_issues + 1))
+        fi
+    else
+        echo "#$issue missing or inaccessible"
+    fi
+done
+echo "openSplitIssues: $open_split_issues"
+echo "closedSplitIssues: $closed_split_issues"
 
 section "Workflow Visibility"
 workflow_output="$(gh workflow list --repo "$DUSK_REPO" --all || true)"

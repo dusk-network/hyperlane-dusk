@@ -106,8 +106,9 @@ Result:
 - `make secret-hygiene`: passed.
 - `make gate-status`: passed; reported the implementation PRs and manual
   workflow dispatcher PR, zero status checks on the implementation PRs,
-  7 unchecked production sign-off items, no visible GitHub workflow, Hyperlane
-  upstream drift `16 0`, and no placeholder matches in
+  7 unchecked production sign-off items, all six split decision issues open,
+  no visible GitHub workflow, Hyperlane upstream drift `16 0`, and no
+  placeholder matches in
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check.
