@@ -20,7 +20,7 @@ POST_REBASE_E2E_URL="${POST_REBASE_E2E_URL:-${CURRENT_E2E_URL:-https://github.co
 POST_REBASE_E2E_ARCHIVE_URL="${POST_REBASE_E2E_ARCHIVE_URL:-${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}}"
 DEPENDENCY_REMEDIATED_E2E_URL="${DEPENDENCY_REMEDIATED_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389}"
 LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572}"
-CURRENT_GATE_REFRESH_URL="${CURRENT_GATE_REFRESH_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587}"
+CURRENT_GATE_REFRESH_TEXT="${CURRENT_GATE_REFRESH_TEXT:-head and gate refresh:}"
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
 GATE_STATUS_FRESH_TEXT="${GATE_STATUS_FRESH_TEXT:-make gate-status-fresh}"
 DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-alert-status}"
@@ -96,10 +96,10 @@ Environment:
   LATEST_REPRO_URL     Latest clean-layout repro evidence URL expected in
                        active reviewer-facing bodies.
                        Default: $LATEST_REPRO_URL
-  CURRENT_GATE_REFRESH_URL
-                       Current head/gate refresh URL expected in active
+  CURRENT_GATE_REFRESH_TEXT
+                       Current head/gate refresh handoff text expected in active
                        reviewer-facing bodies.
-                       Default: $CURRENT_GATE_REFRESH_URL
+                       Default: $CURRENT_GATE_REFRESH_TEXT
   REVIEWER_ROUTING_URL Advisory reviewer routing URL expected in active
                        reviewer-facing bodies.
                        Default: $REVIEWER_ROUTING_URL
@@ -263,10 +263,10 @@ print_link_presence() {
         echo "  latestCleanLayoutRepro: missing"
     fi
 
-    if printf '%s\n' "$body" | grep -Fq "$CURRENT_GATE_REFRESH_URL"; then
-        echo "  currentGateRefresh: present"
+    if printf '%s\n' "$body" | grep -Fq "$CURRENT_GATE_REFRESH_TEXT"; then
+        echo "  currentGateRefreshHandoff: present"
     else
-        echo "  currentGateRefresh: missing"
+        echo "  currentGateRefreshHandoff: missing"
     fi
 
     if printf '%s\n' "$body" | grep -Fq "$POST_REBASE_E2E_URL"; then

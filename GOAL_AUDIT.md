@@ -183,7 +183,7 @@ Observed:
 | Monorepo dependency advisory scope | `dusk-network/hyperlane-monorepo` `docs/dusk-upstream-compatibility-review.md`; PR note https://github.com/dusk-network/hyperlane-monorepo/pull/1#issuecomment-4434167729 |
 | Production sign-off tracker | https://github.com/dusk-network/hyperlane-dusk/issues/2 |
 | Consolidated review entry points | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427052555 |
-| Recent head and gate refresh | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587 |
+| Recent head and gate refresh | Active Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies each include a `head and gate refresh:` handoff entry; latest posted gate comment before this audit refresh: https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587 |
 | Latest clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572 |
 | Historical clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427472641 |
 | Review-head clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430201984 |
