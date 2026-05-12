@@ -197,6 +197,7 @@ make completion-audit-status
 make gate-status
 make gate-status-fresh
 make review-gates
+make production-readiness-guard
 make repro-check-agent
 bash scripts/local-repro-check.sh --agent-check
 HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/hyperlane-dusk-repro-current-head-1778604592 \
@@ -347,6 +348,12 @@ Result:
   `make review-hygiene`, and `make gate-status-fresh`. It does not replace
   `make repro-check-agent`, clean-Rusk E2E, CI provisioning, or Dusk
   production sign-off.
+- `make production-readiness-guard`: failed as expected while external
+  production blockers remain open. It reports open internal PR/review/status
+  gates, unchecked sign-off items, open split decision issues, missing default
+  branch workflow/runner/secret visibility, upstream freshness, and latest
+  clean-layout repro covered-path delta. Passing this guard would not by itself
+  prove production readiness.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   current-head run `1778615349` passed against Dusk source ref

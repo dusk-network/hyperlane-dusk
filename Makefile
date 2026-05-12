@@ -137,6 +137,10 @@ gate-status-fresh:
 .PHONY: review-gates
 review-gates: completion-audit-status dependency-alert-status review-hygiene gate-status-fresh
 
+.PHONY: production-readiness-guard
+production-readiness-guard:
+	bash scripts/production-readiness-guard.sh
+
 # Run cross-chain demo (requires rusk-duskevm Docker + Foundry)
 .PHONY: demo
 demo: all dusk-tx
@@ -179,5 +183,7 @@ help:
 	@echo "  gate-status        Print current review/sign-off gate status"
 	@echo "  gate-status-fresh  Fetch Hyperlane upstream/main, then print gate status"
 	@echo "  review-gates       Run lightweight review gates without E2E/repro"
+	@echo "  production-readiness-guard"
+	@echo "                     Fail while machine-checkable production blockers remain"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"
