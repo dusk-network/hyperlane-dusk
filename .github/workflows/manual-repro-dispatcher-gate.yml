@@ -1,0 +1,50 @@
+name: Dusk Manual Repro Dispatcher Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dispatcher-gate:
+    name: Manual repro dispatcher gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Dusk Hyperlane
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate dispatcher files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .github/workflows/manual-repro-check.yml
+          test -f .github/actionlint.yaml
+          grep -n "workflow_dispatch" .github/workflows/manual-repro-check.yml
+          grep -n "dusk-hyperlane" .github/workflows/manual-repro-check.yml .github/actionlint.yaml
+          grep -n "set -euo pipefail" .github/workflows/manual-repro-check.yml
+
+      - name: Check dispatcher diff whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check HEAD~1..HEAD -- \
+            .github/workflows/manual-repro-check.yml \
+            .github/workflows/manual-repro-dispatcher-gate.yml \
+            .github/actionlint.yaml
+
+      - name: Check dispatcher secret hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -En "upload-artifact|hexKey|keyFile|keyEnv|password|--secret-key|BEGIN .*PRIVATE" \
+            .github/workflows/manual-repro-check.yml \
+            .github/actionlint.yaml
