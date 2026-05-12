@@ -91,10 +91,11 @@ Observed:
   Dusk accepts the runner/token setup.
 - `make gate-status` prints the current machine-checkable gate status:
   7 unchecked sign-off items, 1 checked item, zero status checks on the
-  implementation PRs, the manual workflow dispatcher PR state, all six split
-  decision issues open, no visible workflow, repo-level Actions secret and
-  self-hosted runner visibility, current upstream drift, and no placeholder
-  macro matches in `rust/main/chains/hyperlane-dusk`.
+  implementation PRs, active-repo untracked source status, the manual workflow
+  dispatcher PR state, all six split decision issues open, no visible workflow,
+  repo-level Actions secret and self-hosted runner visibility, current upstream
+  drift, and no placeholder macro matches in
+  `rust/main/chains/hyperlane-dusk`.
 
 ## Prompt-To-Artifact Deliverable Checklist
 

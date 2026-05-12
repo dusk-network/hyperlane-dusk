@@ -21,6 +21,7 @@ Usage: bash scripts/release-gate-status.sh [options]
 
 Prints the current machine-checkable review status:
   - local Dusk and Hyperlane worktree state
+  - untracked source status for both active repositories
   - Dusk and monorepo PR state, labels, mergeability, reviews, and status checks
   - production sign-off checklist counts from dusk-network/hyperlane-dusk#2
   - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
@@ -143,6 +144,27 @@ if [ -d "$MONOREPO_DIR/.git" ] || git -C "$MONOREPO_DIR" rev-parse --git-dir >/d
     git -C "$MONOREPO_DIR" status --short --branch
 else
     echo "monorepo: missing checkout at $MONOREPO_DIR"
+fi
+
+section "Untracked Source Check"
+dusk_untracked="$(git -C "$ROOT" ls-files --others --exclude-standard)"
+if [ -n "$dusk_untracked" ]; then
+    echo "duskUntrackedSource: present"
+    printf '%s\n' "$dusk_untracked" | sed 's/^/  /'
+else
+    echo "duskUntrackedSource: none"
+fi
+
+if [ -d "$MONOREPO_DIR" ]; then
+    monorepo_untracked="$(git -C "$MONOREPO_DIR" ls-files --others --exclude-standard)"
+    if [ -n "$monorepo_untracked" ]; then
+        echo "monorepoUntrackedSource: present"
+        printf '%s\n' "$monorepo_untracked" | sed 's/^/  /'
+    else
+        echo "monorepoUntrackedSource: none"
+    fi
+else
+    echo "monorepoUntrackedSource: unknown"
 fi
 
 print_pr "$DUSK_REPO" 1 "Dusk"
