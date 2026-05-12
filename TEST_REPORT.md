@@ -11,8 +11,8 @@ production-review gates and useful follow-up test areas are listed at the end.
 
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778596710` tested Dusk source ref `6ac9a2bc0c3cbdb1d9994335b23f06189d355f40`, monorepo `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; later Dusk commits only update evidence links and wording |
-| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778596710` tested monorepo `a2db5731e385634268071d39b0554883d11d8ac5` after rebasing onto upstream `66e8c1f4644cea0392b33007225e6611b8f06804`, with Dusk source ref `6ac9a2bc0c3cbdb1d9994335b23f06189d355f40` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778599935` tested Dusk PR head `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778599935` tested monorepo `a2db5731e385634268071d39b0554883d11d8ac5` after rebasing onto upstream `66e8c1f4644cea0392b33007225e6611b8f06804`, with Dusk PR head `de9b7fa3c832fb60982d3dbd22c8a59114d37732` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
 | Supplemental clean-layout review-branch local repro | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `06e9bd2c05607eb922ea476ea25feb334f0656a6`; monorepo `ecb11359747dce240a24c50fa229afd4479919b5` |
 | Recorded clean-layout local repro evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Historical evidence: Dusk `8e629da55e5e5a804d625ebb8b44173b4d96dab9`; monorepo `dea286bd364a9268413fd5b1cfc51bd983d443be` |
@@ -68,13 +68,20 @@ Notes:
   `53bc99b30624471b145731b92896b442c3a88c97f8217c8a7cd12be4ab7476fc`.
   `scripts/secret-hygiene-check.sh` passed over both the archive staging
   directory and the tarball.
-- The latest clean-layout repro log was copied into durable local
+- The previous clean-layout repro log was copied into durable local
   handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-final-head-repro-20260512T144314Z.tgz`.
   SHA256:
   `e8c17cb43da130091a52b2c711aa64d0fef000b599997a372c968970c52dfa7e`.
   `scripts/secret-hygiene-check.sh` passed over both the archive staging
   directory and the tarball.
+- The latest clean-layout repro for Dusk PR head `de9b7fa` was copied into
+  durable local handoff archive
+  `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778599935.tgz`.
+  SHA256:
+  `4ac0ba327024358bed5278fd276f796d71cbb6940c8417fdc76125cfedfdfa44`.
+  `scripts/secret-hygiene-check.sh` passed over the repro log, archive staging
+  directory, and tarball.
 
 ## Commands Run
 
@@ -91,6 +98,9 @@ make secret-hygiene
 make gate-status
 make repro-check-agent
 bash scripts/local-repro-check.sh --agent-check
+HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/hyperlane-dusk-repro-current-head-1778599935 \
+  RUSK_DIR=/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db \
+  make repro-check-agent 2>&1 | tee /tmp/hyperlane-dusk-repro-current-head-1778599935.log
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log
 if bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.json \
   >/tmp/hyperlane-secret-hygiene-negative.log 2>&1; then
@@ -155,7 +165,11 @@ Result:
   drift, and no placeholder matches in
   `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
-  non-E2E repro command, including the Hyperlane Rust agent check.
+  non-E2E repro command, including the Hyperlane Rust agent check. Latest
+  current-head run `1778599935` passed against Dusk PR head
+  `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo
+  `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 - `bash scripts/local-repro-check.sh --agent-check`: passed. This wraps the
   same repeatable non-E2E checks plus the Hyperlane Rust agent check. It still
   requires local/private Rusk path dependencies and does not replace the
@@ -228,16 +242,26 @@ Result:
   the validator, consumed checkpoint metadata through the relayer path, and
   passed both directions. Generated Dusk signer key files were removed on exit.
   A secret-hygiene scan over the safe text logs passed.
-- Clean-layout repro run `1778596710` passed against Dusk source ref
+- Previous clean-layout repro run `1778596710` passed against Dusk source ref
   `6ac9a2bc0c3cbdb1d9994335b23f06189d355f40`, monorepo
   `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk
   `c0c64db4659500d077bb253ad13acba0e347d3fc`. It covered Dusk contract WASM
   builds, `make clippy-contracts`, 28 type tests, 70 VM integration tests,
   3 `dusk-tx` tests, secret hygiene, and the Hyperlane Rust agent check for
   `hyperlane-dusk`, `hyperlane-base`, `validator`, `relayer`, `scraper`, and
-  `lander`. Later Dusk commits only update evidence links and wording. Local log:
+  `lander`. Local log:
   `/tmp/hyperlane-dusk-repro-final-head-1778596710.log`. Durable archive:
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-final-head-repro-20260512T144314Z.tgz`.
+- Current-head clean-layout repro run `1778599935` passed against Dusk PR head
+  `de9b7fa3c832fb60982d3dbd22c8a59114d37732`, monorepo
+  `a2db5731e385634268071d39b0554883d11d8ac5`, and clean Rusk
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`. It covered Dusk contract WASM
+  builds, `make clippy-contracts`, 28 type tests, 70 VM integration tests,
+  3 `dusk-tx` tests, secret hygiene, and the Hyperlane Rust agent check for
+  `hyperlane-dusk`, `hyperlane-base`, `validator`, `relayer`, `scraper`, and
+  `lander`. Local log:
+  `/tmp/hyperlane-dusk-repro-current-head-1778599935.log`. Durable archive:
+  `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778599935.tgz`.
 
 ### Supplemental Clean-Layout Review-Branch Local Repro
 
@@ -342,8 +366,10 @@ Refs:
   `c0036501b26cc98fb64259807e4cbca929487aec`
 - Repeatable clippy wrapper repro tested Dusk PR branch:
   `06dbf75e2d67b0bbc5aa450066bfb5743f79bdd2`
-- Current-head clean-layout repro tested Dusk PR branch:
+- Historical clean-layout repro tested Dusk PR branch:
   `889a00bb11d589d268ee928d0855e3724dfab0fe`
+- Current-head clean-layout repro tested Dusk PR branch:
+  `de9b7fa3c832fb60982d3dbd22c8a59114d37732`
 - Earlier Hyperlane monorepo branch:
   `09e32b7c2f04503b75b3527e0f8c6f5a6c8e42a2`
 - File-backed signer run Hyperlane monorepo branch:
@@ -352,7 +378,7 @@ Refs:
   `ecb11359747dce240a24c50fa229afd4479919b5`
 - Earlier clean-layout repro tested Hyperlane monorepo branch:
   `ecb11359747dce240a24c50fa229afd4479919b5`
-- Latest clean-layout repro tested Hyperlane monorepo branch:
+- Earlier clean-layout repro tested Hyperlane monorepo branch:
   `dea286bd364a9268413fd5b1cfc51bd983d443be`
 - Mailbox fee-overflow repro tested Hyperlane monorepo branch:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
@@ -364,15 +390,22 @@ Refs:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
 - Repeatable clippy wrapper repro tested Hyperlane monorepo branch:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
-- Current-head clean-layout repro tested Hyperlane monorepo branch:
+- Historical clean-layout repro tested Hyperlane monorepo branch:
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`
+- Current-head clean-layout repro tested Hyperlane monorepo branch:
+  `a2db5731e385634268071d39b0554883d11d8ac5`
 - Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-1778540326/rusk-private`, symlinked to clean
   detached worktree `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db`
   at `c0c64db4659500d077bb253ad13acba0e347d3fc`.
-- Latest run Rusk path dependency checkout in the temporary layout:
+- Earlier run Rusk path dependency checkout in the temporary layout:
   `/tmp/hyperlane-dusk-repro-rusk-dir-current-1778541170/rusk-private`,
   symlinked to clean detached worktree
+  `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Latest run Rusk path dependency checkout in the temporary layout:
+  `/tmp/hyperlane-dusk-repro-current-head-1778599935/rusk-private`, symlinked
+  to clean detached worktree
   `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 - File-backed signer run Rusk path dependency checkout in the temporary layout:
