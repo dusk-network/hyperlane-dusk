@@ -151,7 +151,7 @@ Observed:
 | Upstream compatibility review | `dusk-network/hyperlane-monorepo` `docs/dusk-upstream-compatibility-review.md` |
 | Production sign-off tracker | https://github.com/dusk-network/hyperlane-dusk/issues/2 |
 | Consolidated review entry points | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427052555 |
-| Current head and gate refresh | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427759710 |
+| Current head and gate refresh | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4431766283 |
 | Latest clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4427472641 |
 | Review-head clean-layout repro evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430201984 |
 | Review-head clean-Rusk E2E evidence | https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430343619 |
