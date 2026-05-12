@@ -331,8 +331,9 @@ Result:
   dependency-remediated E2E link visibility, advisory reviewer routing link
   visibility, Dusk Dependabot open-alert visibility plus local lockfile
   vulnerable-range comparison, reviewer-facing `make gate-status-fresh` and
-  `make dependency-alert-status` handoff text, current Hyperlane upstream
-  drift, no covered-path delta since latest clean-layout repro source ref
+  `make dependency-alert-status` handoff text, reviewer-facing latest
+  clean-layout repro path delta handoff text, current Hyperlane upstream drift,
+  no covered-path delta since latest clean-layout repro source ref
   `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, and no placeholder matches in
   tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local

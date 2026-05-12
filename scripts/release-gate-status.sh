@@ -23,6 +23,7 @@ LATEST_REPRO_URL="${LATEST_REPRO_URL:-https://github.com/dusk-network/hyperlane-
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
 GATE_STATUS_FRESH_TEXT="${GATE_STATUS_FRESH_TEXT:-make gate-status-fresh}"
 DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-alert-status}"
+REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
 FETCH_UPSTREAM=0
 
 usage() {
@@ -101,6 +102,10 @@ Environment:
                        Text expected in active implementation PR and sign-off
                        bodies to expose the dependency alert comparison.
                        Default: $DEPENDENCY_ALERT_STATUS_TEXT
+  REPRO_PATH_DELTA_TEXT
+                       Text expected in active implementation PR and sign-off
+                       bodies to expose latest clean-layout repro path delta.
+                       Default: $REPRO_PATH_DELTA_TEXT
 EOF
 }
 
@@ -268,6 +273,12 @@ print_link_presence() {
         echo "  dependencyAlertHandoff: present"
     else
         echo "  dependencyAlertHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$REPRO_PATH_DELTA_TEXT"; then
+        echo "  reproPathDeltaHandoff: present"
+    else
+        echo "  reproPathDeltaHandoff: missing"
     fi
 }
 
