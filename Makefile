@@ -89,6 +89,10 @@ repro-check:
 repro-check-agent:
 	bash scripts/local-repro-check.sh --agent-check
 
+.PHONY: gate-status
+gate-status:
+	bash scripts/release-gate-status.sh
+
 # Run cross-chain demo (requires rusk-duskevm Docker + Foundry)
 .PHONY: demo
 demo: all dusk-tx
@@ -122,5 +126,6 @@ help:
 	@echo "  repro-check        Run repeatable local pre-review checks"
 	@echo "  repro-check-agent  Run repro-check plus Hyperlane agent cargo check"
 	@echo "                     Set RUSK_DIR=/path/to/rusk-private to use a clean checkout"
+	@echo "  gate-status        Print current review/sign-off gate status"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"

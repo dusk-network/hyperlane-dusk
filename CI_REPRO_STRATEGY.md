@@ -65,6 +65,18 @@ RUSK_DIR=/path/to/clean/rusk-private make repro-check-agent
 Set `HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/some-dir` to keep that temporary layout
 and its logs after the run.
 
+Reviewers can also print the current machine-checkable gate state without
+running the heavy build/test repro:
+
+```bash
+make gate-status
+```
+
+This calls `scripts/release-gate-status.sh`, which reports local worktree
+state, PR mergeability/review/status-check state, production sign-off checklist
+counts, workflow visibility, Hyperlane upstream drift, and the Dusk agent
+runtime placeholder scan. It does not close any production gates.
+
 ## Access Token
 
 Use one GitHub secret:

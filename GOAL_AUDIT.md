@@ -46,6 +46,7 @@ git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-parse upstream/main
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD upstream/main
 git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-list --left-right --count HEAD...upstream/main
 gh workflow list --repo dusk-network/hyperlane-dusk --all
+make gate-status
 ```
 
 Observed:
@@ -72,6 +73,10 @@ Observed:
   returns no discoverable workflows, matching the documented caveat that
   `.github/workflows/manual-repro-check.yml` must land on the default branch
   before it can replace local repro evidence.
+- `make gate-status` prints the current machine-checkable gate status:
+  7 unchecked sign-off items, 1 checked item, zero status checks on both PRs,
+  no visible workflow, upstream drift `16 0`, and no placeholder macro matches
+  in `rust/main/chains/hyperlane-dusk`.
 
 ## Deliverable Checklist
 
@@ -115,7 +120,7 @@ Observed:
 | Dusk reference traceability | `REFERENCE_TRACEABILITY.md` |
 | Reviewer decision record | `PRODUCTION_REVIEW_DECISIONS.md` |
 | Secret handling policy, signer custody proposal, and source/artifact guardrail | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `scripts/secret-hygiene-check.sh`, `make secret-hygiene` |
-| CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent` |
+| CI/repro runner proposal | `CI_REPRO_STRATEGY.md`, `.github/workflows/manual-repro-check.yml`, `make repro-check-agent`, `make gate-status` |
 | Commands, clean Rusk commit, run IDs, artifact paths, pass/fail notes | `TEST_REPORT.md` |
 | Repeatable local E2E scripts | `demo/e2e-agents.sh`, `demo/e2e-relayer-restart-stress.sh`, `demo/e2e-soak-restart-stress.sh`, `demo/e2e-*.sh` |
 | Demo and E2E command documentation | `demo/README.md` |

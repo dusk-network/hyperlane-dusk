@@ -54,6 +54,7 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
+make gate-status
 make repro-check-agent
 bash scripts/local-repro-check.sh --agent-check
 bash scripts/secret-hygiene-check.sh /tmp/hyperlane-relayer-testMock-1778530398.log
@@ -103,6 +104,10 @@ Result:
 - `cargo test -p hyperlane-dusk-integration-tests`: passed, 67 tests.
 - `cargo test -p dusk-tx`: passed, 3 tests.
 - `make secret-hygiene`: passed.
+- `make gate-status`: passed; reported both PRs open/mergeable with zero
+  status checks, 7 unchecked production sign-off items, no visible GitHub
+  workflow, Hyperlane upstream drift `16 0`, and no placeholder matches in
+  `rust/main/chains/hyperlane-dusk`.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check.
 - `bash scripts/local-repro-check.sh --agent-check`: passed. This wraps the

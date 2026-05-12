@@ -131,6 +131,7 @@ Evidence:
 - `.github/workflows/manual-repro-check.yml`.
 - `scripts/local-repro-check.sh`.
 - `make repro-check-agent`.
+- `make gate-status`.
 - `actionlint .github/workflows/manual-repro-check.yml`.
 - Workflow inputs for exact review heads: `dusk_ref`, `rusk_ref`, and
   `monorepo_ref`.
