@@ -107,6 +107,12 @@ Notes:
   SHA256:
   `cc34e8e31abcab6ef3ef05587f38ce7963257586c30375d59b46c25296e0b2a1`.
   `scripts/secret-hygiene-check.sh` passed over the repro log and tarball.
+- The live Dusk PR head after that repro is
+  `48907f3e75546662dadf502eea73f085391a89aa`. From tested source ref
+  `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253` to that live head,
+  `git diff --name-status` reports only `GOAL_AUDIT.md`, `TEST_REPORT.md`, and
+  `scripts/github-review-hygiene.sh`. The intervening commits are evidence
+  docs, review-hygiene stale-link guard, and evidence wording clarification.
 
 ## Commands Run
 
