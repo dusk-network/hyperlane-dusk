@@ -26,6 +26,7 @@ MONOREPO_COMPARE_HEAD="${MONOREPO_COMPARE_HEAD:-dusk-network:feat/dusk-support-v
 UPSTREAM_SUBMISSION_REPO="${UPSTREAM_SUBMISSION_REPO:-hyperlane-xyz/hyperlane-monorepo}"
 UPSTREAM_SUBMISSION_HEAD="${UPSTREAM_SUBMISSION_HEAD:-dusk-network:feat/dusk-support-v2}"
 UPSTREAM_SUBMISSION_GATE_ONLY="${UPSTREAM_SUBMISSION_GATE_ONLY:-0}"
+CI_VISIBILITY_GATE_ONLY="${CI_VISIBILITY_GATE_ONLY:-0}"
 UPSTREAM_SUBMISSION_SEARCH_JSON="${UPSTREAM_SUBMISSION_SEARCH_JSON:-}"
 UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN="${UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN:-0}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
@@ -296,6 +297,126 @@ check_upstream_submission_gate() {
     fi
 }
 
+check_ci_visibility() {
+    local workflow_output
+    local repo_runners_json
+    local repo_runners_count
+    local repo_runner_has_label
+    local org_name
+    local org_runners_json
+    local org_runners_count
+    local org_runner_has_label
+    local repo_secrets_json
+    local repo_secrets_count
+    local required_secret_visible
+    local status_secret_visible
+
+    section "Workflow And CI Visibility"
+    workflow_output="$(gh workflow list --repo "$DUSK_REPO" --all || true)"
+    if [ -z "$workflow_output" ]; then
+        echo "workflowVisibility: none"
+        add_blocker "no GitHub Actions workflows are visible on the default branch"
+    else
+        echo "workflowVisibility: present"
+    fi
+
+    runner_has_label() {
+        jq --arg label "$REQUIRED_RUNNER_LABEL" \
+            '[.runners[]? | select(any(.labels[]?; .name == $label))] | length > 0'
+    }
+
+    repo_runner_has_label="unknown"
+    org_runner_has_label="unknown"
+
+    if repo_runners_json="$(gh api "repos/$DUSK_REPO/actions/runners" 2>/tmp/hyperlane-readiness-runners.$$.err)"; then
+        repo_runners_count="$(printf '%s\n' "$repo_runners_json" | jq .total_count)"
+        repo_runner_has_label="$(printf '%s\n' "$repo_runners_json" | runner_has_label)"
+        printf 'repoSelfHostedRunnersVisible: %s\n' "$repo_runners_count"
+        printf 'repoRunnerWithRequiredLabelVisible: %s\n' "$repo_runner_has_label"
+    else
+        echo "repoSelfHostedRunnersVisible: unknown"
+        echo "repoRunnerWithRequiredLabelVisible: unknown"
+        sed 's/^/  /' /tmp/hyperlane-readiness-runners.$$.err
+    fi
+    rm -f /tmp/hyperlane-readiness-runners.$$.err
+
+    org_name="${DUSK_REPO%%/*}"
+    if org_runners_json="$(gh api "orgs/$org_name/actions/runners" 2>/tmp/hyperlane-readiness-org-runners.$$.err)"; then
+        org_runners_count="$(printf '%s\n' "$org_runners_json" | jq .total_count)"
+        org_runner_has_label="$(printf '%s\n' "$org_runners_json" | runner_has_label)"
+        printf 'orgSelfHostedRunnersVisible: %s\n' "$org_runners_count"
+        printf 'orgRunnerWithRequiredLabelVisible: %s\n' "$org_runner_has_label"
+    else
+        echo "orgSelfHostedRunnersVisible: unknown"
+        echo "orgRunnerWithRequiredLabelVisible: unknown"
+        sed 's/^/  /' /tmp/hyperlane-readiness-org-runners.$$.err
+    fi
+    rm -f /tmp/hyperlane-readiness-org-runners.$$.err
+
+    case "$repo_runner_has_label:$org_runner_has_label" in
+        true:*|*:true)
+            ;;
+        false:false)
+            add_blocker "no repo-level or org-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible"
+            ;;
+        false:unknown)
+            add_blocker "no repo-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible and org runner visibility is unknown"
+            ;;
+        unknown:false)
+            add_blocker "repo-level runner visibility is unknown and no org-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible"
+            ;;
+        *)
+            add_blocker "self-hosted runner visibility for label $REQUIRED_RUNNER_LABEL is unknown"
+            ;;
+    esac
+
+    check_required_secret() {
+        local repo="$1"
+        local label="$2"
+        local err_file="$3"
+        local secrets_json
+        local secrets_count
+        local required_secret_visible
+
+        if secrets_json="$(gh api "repos/$repo/actions/secrets" 2>"$err_file")"; then
+            secrets_count="$(printf '%s\n' "$secrets_json" | jq .total_count)"
+            required_secret_visible="$(printf '%s\n' "$secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+            printf '%sSecretsVisible: %s\n' "$label" "$secrets_count"
+            printf '%sRequiredSecretVisible: %s\n' "$label" "$required_secret_visible"
+            if [ "$required_secret_visible" != "true" ]; then
+                add_blocker "$label Actions secret $REQUIRED_SECRET_NAME is not visible"
+            fi
+        else
+            printf '%sSecretsVisible: unknown\n' "$label"
+            printf '%sRequiredSecretVisible: unknown\n' "$label"
+            sed 's/^/  /' "$err_file"
+            add_blocker "$label Actions secret visibility is unknown"
+        fi
+        rm -f "$err_file"
+    }
+
+    if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
+        repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
+        required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+        status_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$STATUS_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+        printf 'repoSecretsVisible: %s\n' "$repo_secrets_count"
+        printf 'repoRequiredSecretVisible: %s\n' "$required_secret_visible"
+        printf 'repoStatusSecretVisible: %s\n' "$status_secret_visible"
+        if [ "$required_secret_visible" != "true" ]; then
+            add_blocker "repo-level Actions secret $REQUIRED_SECRET_NAME is not visible"
+        fi
+    else
+        echo "repoSecretsVisible: unknown"
+        echo "repoRequiredSecretVisible: unknown"
+        echo "repoStatusSecretVisible: unknown"
+        sed 's/^/  /' /tmp/hyperlane-readiness-secrets.$$.err
+        add_blocker "repo-level Actions secret visibility is unknown"
+    fi
+    rm -f /tmp/hyperlane-readiness-secrets.$$.err
+
+    check_required_secret "$MONOREPO_REPO" "monorepoRepo" "/tmp/hyperlane-readiness-monorepo-secrets.$$.err"
+}
+
 print_summary_and_exit() {
     section "Summary"
     if [ "${#blockers[@]}" -eq 0 ]; then
@@ -317,6 +438,11 @@ require_cmd jq
 
 if [ "$UPSTREAM_SUBMISSION_GATE_ONLY" = "1" ]; then
     check_upstream_submission_gate
+    print_summary_and_exit
+fi
+
+if [ "$CI_VISIBILITY_GATE_ONLY" = "1" ]; then
+    check_ci_visibility
     print_summary_and_exit
 fi
 
@@ -372,110 +498,7 @@ if [ "$dependency_alert_status" -ne 0 ]; then
 fi
 rm -f "$dependency_alert_output"
 
-section "Workflow And CI Visibility"
-workflow_output="$(gh workflow list --repo "$DUSK_REPO" --all || true)"
-if [ -z "$workflow_output" ]; then
-    echo "workflowVisibility: none"
-    add_blocker "no GitHub Actions workflows are visible on the default branch"
-else
-    echo "workflowVisibility: present"
-fi
-
-runner_has_label() {
-    jq --arg label "$REQUIRED_RUNNER_LABEL" \
-        '[.runners[]? | select(any(.labels[]?; .name == $label))] | length > 0'
-}
-
-repo_runner_has_label="unknown"
-org_runner_has_label="unknown"
-
-if repo_runners_json="$(gh api "repos/$DUSK_REPO/actions/runners" 2>/tmp/hyperlane-readiness-runners.$$.err)"; then
-    repo_runners_count="$(printf '%s\n' "$repo_runners_json" | jq .total_count)"
-    repo_runner_has_label="$(printf '%s\n' "$repo_runners_json" | runner_has_label)"
-    printf 'repoSelfHostedRunnersVisible: %s\n' "$repo_runners_count"
-    printf 'repoRunnerWithRequiredLabelVisible: %s\n' "$repo_runner_has_label"
-else
-    echo "repoSelfHostedRunnersVisible: unknown"
-    echo "repoRunnerWithRequiredLabelVisible: unknown"
-    sed 's/^/  /' /tmp/hyperlane-readiness-runners.$$.err
-fi
-rm -f /tmp/hyperlane-readiness-runners.$$.err
-
-org_name="${DUSK_REPO%%/*}"
-if org_runners_json="$(gh api "orgs/$org_name/actions/runners" 2>/tmp/hyperlane-readiness-org-runners.$$.err)"; then
-    org_runners_count="$(printf '%s\n' "$org_runners_json" | jq .total_count)"
-    org_runner_has_label="$(printf '%s\n' "$org_runners_json" | runner_has_label)"
-    printf 'orgSelfHostedRunnersVisible: %s\n' "$org_runners_count"
-    printf 'orgRunnerWithRequiredLabelVisible: %s\n' "$org_runner_has_label"
-else
-    echo "orgSelfHostedRunnersVisible: unknown"
-    echo "orgRunnerWithRequiredLabelVisible: unknown"
-    sed 's/^/  /' /tmp/hyperlane-readiness-org-runners.$$.err
-fi
-rm -f /tmp/hyperlane-readiness-org-runners.$$.err
-
-case "$repo_runner_has_label:$org_runner_has_label" in
-    true:*|*:true)
-        ;;
-    false:false)
-        add_blocker "no repo-level or org-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible"
-        ;;
-    false:unknown)
-        add_blocker "no repo-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible and org runner visibility is unknown"
-        ;;
-    unknown:false)
-        add_blocker "repo-level runner visibility is unknown and no org-level self-hosted runner with label $REQUIRED_RUNNER_LABEL is visible"
-        ;;
-    *)
-        add_blocker "self-hosted runner visibility for label $REQUIRED_RUNNER_LABEL is unknown"
-        ;;
-esac
-
-check_required_secret() {
-    local repo="$1"
-    local label="$2"
-    local err_file="$3"
-    local secrets_json
-    local secrets_count
-    local required_secret_visible
-
-    if secrets_json="$(gh api "repos/$repo/actions/secrets" 2>"$err_file")"; then
-        secrets_count="$(printf '%s\n' "$secrets_json" | jq .total_count)"
-        required_secret_visible="$(printf '%s\n' "$secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
-        printf '%sSecretsVisible: %s\n' "$label" "$secrets_count"
-        printf '%sRequiredSecretVisible: %s\n' "$label" "$required_secret_visible"
-        if [ "$required_secret_visible" != "true" ]; then
-            add_blocker "$label Actions secret $REQUIRED_SECRET_NAME is not visible"
-        fi
-    else
-        printf '%sSecretsVisible: unknown\n' "$label"
-        printf '%sRequiredSecretVisible: unknown\n' "$label"
-        sed 's/^/  /' "$err_file"
-        add_blocker "$label Actions secret visibility is unknown"
-    fi
-    rm -f "$err_file"
-}
-
-if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
-    repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
-    required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
-    status_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$STATUS_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
-    printf 'repoSecretsVisible: %s\n' "$repo_secrets_count"
-    printf 'repoRequiredSecretVisible: %s\n' "$required_secret_visible"
-    printf 'repoStatusSecretVisible: %s\n' "$status_secret_visible"
-    if [ "$required_secret_visible" != "true" ]; then
-        add_blocker "repo-level Actions secret $REQUIRED_SECRET_NAME is not visible"
-    fi
-else
-    echo "repoSecretsVisible: unknown"
-    echo "repoRequiredSecretVisible: unknown"
-    echo "repoStatusSecretVisible: unknown"
-    sed 's/^/  /' /tmp/hyperlane-readiness-secrets.$$.err
-    add_blocker "repo-level Actions secret visibility is unknown"
-fi
-rm -f /tmp/hyperlane-readiness-secrets.$$.err
-
-check_required_secret "$MONOREPO_REPO" "monorepoRepo" "/tmp/hyperlane-readiness-monorepo-secrets.$$.err"
+check_ci_visibility
 
 section "Freshness"
 if [ "$MONOREPO_COMPARE_VIA_GH" = "1" ]; then

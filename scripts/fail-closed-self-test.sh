@@ -65,6 +65,47 @@ expect_fail \
         UPSTREAM_SUBMISSION_SEARCH_JSON='{"total_count":1,"items":[{"number":1,"html_url":"https://github.com/hyperlane-xyz/hyperlane-monorepo/pull/1","title":"Premature Dusk upstream PR"}]}' \
     bash scripts/production-readiness-guard.sh
 
+mkdir -p "$workdir/ci-visibility-mock-bin"
+cat >"$workdir/ci-visibility-mock-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$*" in
+    "workflow list --repo dusk-network/hyperlane-dusk --all")
+        printf 'Dusk Review Policy Gate active 1\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/actions/runners")
+        printf '{"total_count":0,"runners":[]}\n'
+        ;;
+    "api orgs/dusk-network/actions/runners")
+        printf '{"total_count":0,"runners":[]}\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/actions/secrets")
+        printf '{"total_count":0,"secrets":[]}\n'
+        ;;
+    "api repos/dusk-network/hyperlane-monorepo/actions/secrets")
+        printf '{"total_count":0,"secrets":[]}\n'
+        ;;
+    *)
+        echo "unexpected gh invocation: $*" >&2
+        exit 1
+        ;;
+esac
+EOF
+chmod +x "$workdir/ci-visibility-mock-bin/gh"
+
+expect_fail \
+    production-readiness-missing-ci-runner \
+    'no repo-level or org-level self-hosted runner with label dusk-hyperlane is visible' \
+    env PATH="$workdir/ci-visibility-mock-bin:$PATH" CI_VISIBILITY_GATE_ONLY=1 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-missing-ci-secret \
+    'repo-level Actions secret DUSK_ORG_READ_TOKEN is not visible' \
+    env PATH="$workdir/ci-visibility-mock-bin:$PATH" CI_VISIBILITY_GATE_ONLY=1 \
+    bash scripts/production-readiness-guard.sh
+
 expect_fail \
     review-hygiene-invalid-agent-pattern \
     'Dusk agent runtime panic/placeholder scan failed' \
