@@ -681,6 +681,26 @@ Result:
   `https://github.com/dusk-network/hyperlane-dusk/actions/runs/25804689294/job/75804008587`,
   `make review-hygiene` passed with export
   `/tmp/hyperlane-review-export-1778682025`.
+- `make review-hygiene` now checks workflow PR #3 comments for the current
+  clean-layout repro evidence link
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4442208973`
+  and rejects the stale dispatcher repro evidence link
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895`.
+  This guard was added after the PR #3 exact-ref dispatch comment was updated
+  in place. `bash -n scripts/github-review-hygiene.sh`, `git diff --check`,
+  `make secret-hygiene`, and `make review-hygiene` passed; after push, the
+  Dusk review policy job passed and the production-readiness job failed with the
+  expected blocker summary.
+- `make review-hygiene` now rejects the active reviewer-facing phrase
+  `Current latest clean-layout repro evidence`. The historical RUES-hardening
+  repro comment was edited in place to start as historical/superseded evidence
+  and point at the current clean-layout repro comment. `bash -n
+  scripts/github-review-hygiene.sh`, `git diff --check`, `make review-hygiene`,
+  and `make review-gates` passed at guard commit
+  `fac1134131d37d8dff5b7e2ca9dada40983ac688`; `make review-hygiene` exports
+  included `/tmp/hyperlane-review-export-1778686937` and
+  `/tmp/hyperlane-review-export-1778687061`, and `make review-gates` exported
+  `/tmp/hyperlane-review-export-1778686993`.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and generated agent config files and remove them on exit
   after stopping agents. `bash -n` passed for the touched E2E scripts listed
