@@ -79,7 +79,13 @@ if [ "$#" -gt 0 ]; then
     info "Scanning runtime artifact paths"
     for path in "$@"; do
         [ -e "$path" ] || fail "artifact path not found: $path"
-        find "$path" \( -name '*.key' -o -name '*.keys' -o -name '*.pem' \) -print >"$artifact_secret_files"
+        find "$path" \( \
+            -name '*.key' -o \
+            -name '*.keys' -o \
+            -name '*.pem' -o \
+            -name '.env' -o \
+            -name '.env.*' \
+        \) -print >"$artifact_secret_files"
         if rg_to_file "$artifact_secret_hits" "runtime artifact secret filename" . "$artifact_secret_files"; then
             cat "$artifact_secret_hits" >&2
             fail "runtime artifact path includes secret-like file names"

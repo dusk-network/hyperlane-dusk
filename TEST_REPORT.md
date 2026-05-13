@@ -882,6 +882,10 @@ Result:
   report mentions as evidence. `make fail-closed-self-test` covers missing
   archive files and archive hash mismatches in addition to missing report path
   and hash text.
+- `scripts/secret-hygiene-check.sh` now treats `.env` and `.env.*` files as
+  secret-like runtime artifact filenames, matching the tracked-source policy
+  for local dev env files. `make fail-closed-self-test` covers `.env.bridge`
+  artifact rejection before CI or reviewer evidence upload.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the

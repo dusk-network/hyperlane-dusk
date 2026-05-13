@@ -158,6 +158,13 @@ expect_fail \
         GOAL_AUDIT_FILE="$hash_mismatch_report" \
     bash scripts/report-hygiene-check.sh
 
+mkdir -p "$workdir/env-artifacts"
+printf 'local env placeholder\n' >"$workdir/env-artifacts/.env.bridge"
+expect_fail \
+    secret-hygiene-env-artifact \
+    'runtime artifact path includes secret-like file names' \
+    bash scripts/secret-hygiene-check.sh "$workdir/env-artifacts"
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"
