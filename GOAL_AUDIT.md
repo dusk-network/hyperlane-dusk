@@ -130,10 +130,10 @@ Observed:
   A 2026-05-13 `make dispatcher-merge-order-smoke` check from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` verified that current dispatcher
   head `a73cb10f0be7693a5d6eab4ebedcccb640b29655` and the implementation
-  head under test `1589c4ccd492c1d48f50233799075a8c12bf2b29` merge cleanly in either
+  head under test `f656de36ea7b7099ab3a1eabcb89b672d9eb9c4d` merge cleanly in either
   order, with no workflow/actionlint file drift after the combined merge.
   Latest command logs from the refreshed review-gates bundle were written under
-  `/tmp/hyperlane-merge-order-logs.iITjBB`.
+  `/tmp/hyperlane-merge-order-logs.QUAn6t`.
 - Split decision issues #4 through #9 are all open with `need:feedback` and
   `type:rfc` labels.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to

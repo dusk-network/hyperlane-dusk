@@ -69,6 +69,18 @@ expect_fail \
     env STALE_REPORT_PATTERNS='[invalid' \
     bash scripts/report-hygiene-check.sh
 
+stale_report="$workdir/stale-report.md"
+cat >"$stale_report" <<'EOF'
+Stale dispatcher smoke evidence:
+- implementation head ae937e79e60af2d1c6f02e303be8956bddf6a133
+- log path /tmp/hyperlane-merge-order-logs.eGzQ7Q
+EOF
+expect_fail \
+    report-hygiene-stale-dispatcher-evidence \
+    'stale local report evidence found' \
+    env REPORT_FILES="$stale_report" \
+    bash scripts/report-hygiene-check.sh
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"

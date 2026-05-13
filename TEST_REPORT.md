@@ -620,12 +620,12 @@ Result:
   landing orders: dispatcher branch `origin/ci/manual-repro-workflow`
   `a73cb10f0be7693a5d6eab4ebedcccb640b29655` followed by implementation
   branch `origin/feat/dusk-hardening-v2`
-  `1589c4ccd492c1d48f50233799075a8c12bf2b29`, and the reverse order. In both
+  `f656de36ea7b7099ab3a1eabcb89b672d9eb9c4d`, and the reverse order. In both
   orders, `.github/workflows/manual-repro-check.yml`,
   `.github/workflows/dusk-review-policy-gate.yml`, and
   `.github/actionlint.yaml` had an empty diff against the implementation
   branch after the combined merge. Temporary command logs were written under
-  `/tmp/hyperlane-merge-order-logs.iITjBB`.
+  `/tmp/hyperlane-merge-order-logs.QUAn6t`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
@@ -821,12 +821,18 @@ Result:
   `/tmp/hyperlane-merge-order-logs.0nGCze`.
 - `make fail-closed-self-test` now automates the archive member-path invalid
   regex, gate-status placeholder invalid regex, review-hygiene agent placeholder
-  invalid regex, report-hygiene stale-pattern invalid regex, and secret-hygiene
-  unreadable runtime artifact probes. It also creates a temporary untracked repo
-  file and verifies `make completion-audit-status` rejects it. It is part of
-  `make review-gates`; the post-edit `make review-gates` run passed with
-  review-hygiene export `/tmp/hyperlane-review-export-1778702613` and
-  dispatcher merge-order smoke log `/tmp/hyperlane-merge-order-logs.YO0Zpk`.
+  invalid regex, report-hygiene stale-pattern invalid regex, report-hygiene
+  stale dispatcher smoke evidence, and secret-hygiene unreadable runtime
+  artifact probes. It also creates a temporary untracked repo file and verifies
+  `make completion-audit-status` rejects it. It is part of `make review-gates`;
+  the post-edit `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778702613` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.YO0Zpk`.
+- `make fail-closed-self-test` now also injects a temporary report containing
+  stale dispatcher smoke evidence and verifies `make report-hygiene` rejects it.
+  The post-edit `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778703518` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.QUAn6t`.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the
