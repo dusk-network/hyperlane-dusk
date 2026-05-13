@@ -129,11 +129,12 @@ Observed:
   preserving the shared review-policy gate.
   A 2026-05-13 `make dispatcher-merge-order-smoke` check from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` verified that current dispatcher
-  head `a73cb10f0be7693a5d6eab4ebedcccb640b29655` and the implementation
-  head under test `f656de36ea7b7099ab3a1eabcb89b672d9eb9c4d` merge cleanly in either
-  order, with no workflow/actionlint file drift after the combined merge.
-  Latest command logs from the refreshed review-gates bundle were written under
-  `/tmp/hyperlane-merge-order-logs.QUAn6t`.
+  branch `origin/ci/manual-repro-workflow` and implementation branch
+  `origin/feat/dusk-hardening-v2` merge cleanly in either order, with no
+  workflow/actionlint file drift after the combined merge. The exact current
+  implementation SHA and temporary log path are emitted by
+  `make dispatcher-merge-order-smoke` and `make review-gates` rather than
+  pinned here.
 - Split decision issues #4 through #9 are all open with `need:feedback` and
   `type:rfc` labels.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to

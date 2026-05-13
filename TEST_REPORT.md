@@ -830,9 +830,11 @@ Result:
   `/tmp/hyperlane-merge-order-logs.YO0Zpk`.
 - `make fail-closed-self-test` now also injects a temporary report containing
   stale dispatcher smoke evidence and verifies `make report-hygiene` rejects it.
+  It also verifies that `GOAL_AUDIT.md` rejects moving dispatcher smoke head/log
+  pins and keeps that evidence live through `make dispatcher-merge-order-smoke`.
   The post-edit `make review-gates` run passed with review-hygiene export
-  `/tmp/hyperlane-review-export-1778703518` and dispatcher merge-order smoke log
-  `/tmp/hyperlane-merge-order-logs.QUAn6t`.
+  `/tmp/hyperlane-review-export-1778703841` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.SSFKEq`.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the

@@ -81,6 +81,18 @@ expect_fail \
     env REPORT_FILES="$stale_report" \
     bash scripts/report-hygiene-check.sh
 
+stale_goal_audit="$workdir/stale-goal-audit.md"
+cat >"$stale_goal_audit" <<'EOF'
+Dispatcher smoke evidence:
+- head under test `f656de36ea7b7099ab3a1eabcb89b672d9eb9c4d`
+- Latest command logs from the refreshed review-gates bundle were written under `/tmp/hyperlane-merge-order-logs.QUAn6t`.
+EOF
+expect_fail \
+    report-hygiene-stale-goal-audit-moving-evidence \
+    'stale moving goal-audit evidence found' \
+    env REPORT_FILES="$stale_goal_audit" GOAL_AUDIT_FILE="$stale_goal_audit" \
+    bash scripts/report-hygiene-check.sh
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"
