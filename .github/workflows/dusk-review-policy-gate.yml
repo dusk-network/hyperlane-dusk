@@ -43,8 +43,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          command -v rg >/dev/null 2>&1
-          bash -n scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
+          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
+            bash -n "$script"
+          done
 
           stale_dispatcher_comments="$(mktemp)"
           cat >"$stale_dispatcher_comments" <<'EOF'
