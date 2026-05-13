@@ -216,7 +216,10 @@ Notes:
   and scanned the extracted contents with
   `bash scripts/secret-hygiene-check.sh "$scan_root"`. The extracted-content
   scan covered repro, E2E, dependency-remediation, and soak handoff archives
-  and found no secret-like filenames or signer/password command text.
+  and found no secret-like filenames or signer/password command text. The
+  wrapper rejects unsafe archive member paths, non-regular/non-directory archive
+  entries, and extracted symlinks or special files before treating archive
+  contents as reviewer evidence.
 - `make archive-hygiene` wraps this command shape:
 
 ```bash

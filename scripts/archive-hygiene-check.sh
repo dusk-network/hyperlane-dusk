@@ -23,8 +23,9 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 
 archive_list="$(mktemp -t hyperlane-archive-list.XXXXXX)"
 member_list="$(mktemp -t hyperlane-archive-members.XXXXXX)"
+member_details="$(mktemp -t hyperlane-archive-member-details.XXXXXX)"
 scan_root="$(mktemp -d -t hyperlane-archive-hygiene.XXXXXX)"
-trap 'rm -rf "$scan_root"; rm -f "$archive_list" "$member_list"' EXIT
+trap 'rm -rf "$scan_root"; rm -f "$archive_list" "$member_list" "$member_details"' EXIT
 
 find "$ARCHIVE_DIR" -maxdepth 1 -type f -name '*.tgz' -print | sort >"$archive_list"
 [ -s "$archive_list" ] || fail "no .tgz archives found in $ARCHIVE_DIR"
@@ -39,8 +40,22 @@ while IFS= read -r archive; do
         fail "archive contains unsafe member path: $archive"
     fi
 
+    tar -tvzf "$archive" >"$member_details"
+    if ! awk '
+        substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" {
+            print
+            bad = 1
+        }
+        END { exit bad }
+    ' "$member_details"; then
+        fail "archive contains non-regular/non-directory members: $archive"
+    fi
+
     mkdir -p "$dest"
-    tar -xzf "$archive" -C "$dest"
+    tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$dest"
+    if find "$dest" \( -type l -o -type p -o -type b -o -type c -o -type s \) -print | rg .; then
+        fail "archive extracted symlinks or special files: $archive"
+    fi
     info "Extracted $(basename "$archive")"
 done <"$archive_list"
 
