@@ -757,6 +757,19 @@ Result:
   `make review-gates` run passed with review-hygiene export
   `/tmp/hyperlane-review-export-1778699848` and dispatcher merge-order smoke
   log `/tmp/hyperlane-merge-order-logs.5G96x2`.
+- The monorepo PR #1 body was updated in place to avoid pinning moving
+  monorepo PR check-run URLs for `Dusk review policy gate`,
+  `Dusk agent cargo check`, and inherited fork-skipped checks. It now points
+  reviewers to the live PR check rollup and `make gate-status-fresh` for
+  moving status, while keeping the stable failure shape for the missing
+  `DUSK_ORG_READ_TOKEN` preflight. `scripts/github-review-hygiene.sh` now
+  rejects future active comments that reintroduce moving monorepo PR check-run
+  URLs or the stale `25816561587`/`25816561525` run IDs. The post-edit
+  `make review-hygiene` run passed with export
+  `/tmp/hyperlane-review-export-1778700112`; the post-edit
+  `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778700153` and dispatcher merge-order smoke
+  log `/tmp/hyperlane-merge-order-logs.wc83Bz`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
