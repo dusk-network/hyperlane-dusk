@@ -73,19 +73,33 @@ pr_review_decision() {
     local repo="$1"
     local number="$2"
     local err_file
+    local raw
 
     err_file="/tmp/hyperlane-readiness-review.$$.err"
-    if gh pr view "$number" --repo "$repo" \
-        --json reviewDecision \
-        --jq '.reviewDecision // ""' \
-        2>"$err_file"; then
+    if raw="$(gh api "repos/$repo/pulls/$number/reviews?per_page=100" 2>"$err_file")"; then
+        printf '%s\n' "$raw" | jq -r '
+            if length == 0 then
+                "REVIEW_REQUIRED"
+            else
+                [sort_by(.submitted_at)
+                 | group_by(.user.login)
+                 | map(.[-1].state)] as $states
+                | if any($states[]; . == "CHANGES_REQUESTED") then
+                    "CHANGES_REQUESTED"
+                  elif any($states[]; . == "APPROVED") then
+                    "APPROVED"
+                  else
+                    "REVIEW_REQUIRED"
+                  end
+            end
+        '
         rm -f "$err_file"
         return 0
     fi
 
-    printf 'UNKNOWN\n'
     sed 's/^/  gh: /' "$err_file" >&2
     rm -f "$err_file"
+    printf 'UNKNOWN\n'
 }
 
 status_rollup() {
