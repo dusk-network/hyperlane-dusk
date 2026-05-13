@@ -129,8 +129,8 @@ Observed:
   preserving the shared review-policy gate.
   A 2026-05-13 `make dispatcher-merge-order-smoke` check from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` verified that current dispatcher
-  head `a6cbd2e030dce61cb1abeab5fab970534bbbb068` and current implementation
-  head `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba` merge cleanly in either
+  head `a73cb10f0be7693a5d6eab4ebedcccb640b29655` and current implementation
+  head `4eb984bf79daec589e63b55354d7a68bab6c10a9` merge cleanly in either
   order, with no workflow/actionlint file drift after the combined merge.
 - Split decision issues #4 through #9 are all open with `need:feedback` and
   `type:rfc` labels.

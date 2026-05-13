@@ -19,6 +19,7 @@ IMPLEMENTATION_REF="${IMPLEMENTATION_REF:-$REMOTE/$IMPLEMENTATION_BRANCH}"
 
 TRACKED_PATHS=(
     ".github/workflows/manual-repro-check.yml"
+    ".github/workflows/dusk-review-policy-gate.yml"
     ".github/actionlint.yaml"
 )
 

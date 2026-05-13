@@ -604,13 +604,14 @@ Result:
   temporary detached worktrees from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` and verifies both current remote
   landing orders: dispatcher branch `origin/ci/manual-repro-workflow`
-  `a6cbd2e030dce61cb1abeab5fab970534bbbb068` followed by implementation
+  `a73cb10f0be7693a5d6eab4ebedcccb640b29655` followed by implementation
   branch `origin/feat/dusk-hardening-v2`
-  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba`, and the reverse order. In both
-  orders, `.github/workflows/manual-repro-check.yml` and
+  `4eb984bf79daec589e63b55354d7a68bab6c10a9`, and the reverse order. In both
+  orders, `.github/workflows/manual-repro-check.yml`,
+  `.github/workflows/dusk-review-policy-gate.yml`, and
   `.github/actionlint.yaml` had an empty diff against the implementation
   branch after the combined merge. Temporary command logs were written under
-  `/tmp/hyperlane-merge-order-logs.COXhBM`.
+  `/tmp/hyperlane-merge-order-logs.Gp0XlL`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
