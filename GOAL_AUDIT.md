@@ -121,10 +121,10 @@ Observed:
   `Manual repro dispatcher gate` and `Dusk review policy gate` passing, and
   contains only the workflow and actionlint files needed to make manual
   `workflow_dispatch` available from the default branch after Dusk review.
-  A 2026-05-13 merge-order smoke check from `origin/main`
+  A 2026-05-13 `make dispatcher-merge-order-smoke` check from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` verified that current dispatcher
   head `e54d6d49588ac24908c22dde2ac2345ddb983291` and current implementation
-  head `c39273d918c7abcf506d2d2795b5f51bfea14b96` merge cleanly in either
+  head `0c5a7fa10152b117c1e60fbbcfd2618db370aec4` merge cleanly in either
   order, with no workflow/actionlint file drift after the combined merge.
 - Split decision issues #4 through #9 are all open with `need:feedback` and
   `type:rfc` labels.
@@ -143,7 +143,8 @@ Observed:
 - `make review-gates` wraps the lightweight non-E2E review gates:
   `make completion-audit-status`, `make archive-hygiene-test`,
   `make archive-hygiene`,
-  `make dependency-alert-status`, `make review-hygiene`, and
+  `make dependency-alert-status`, `make review-hygiene`,
+  `make dispatcher-merge-order-smoke`, and
   `make gate-status-fresh`.
 - `make production-readiness-guard` is a negative guard that must fail while
   known machine-checkable production blockers remain open. Current blockers are

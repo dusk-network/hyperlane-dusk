@@ -124,6 +124,10 @@ dependency-alert-status:
 completion-audit-status:
 	bash scripts/completion-audit-status.sh
 
+.PHONY: dispatcher-merge-order-smoke
+dispatcher-merge-order-smoke:
+	bash scripts/dispatcher-merge-order-smoke.sh
+
 # Run the repeatable local verification subset used before review.
 .PHONY: repro-check
 repro-check:
@@ -143,9 +147,10 @@ gate-status-fresh:
 
 # Run the lightweight reviewer gate bundle. This does not run the heavy repro
 # or E2E scripts; it verifies preservation evidence, dependency-alert triage,
-# reviewer-facing handoff text, and live PR/sign-off gate state.
+# reviewer-facing handoff text, dispatcher merge-order safety, and live
+# PR/sign-off gate state.
 .PHONY: review-gates
-review-gates: completion-audit-status archive-hygiene-test archive-hygiene dependency-alert-status review-hygiene gate-status-fresh
+review-gates: completion-audit-status archive-hygiene-test archive-hygiene dependency-alert-status review-hygiene dispatcher-merge-order-smoke gate-status-fresh
 
 .PHONY: production-readiness-guard
 production-readiness-guard:
@@ -190,6 +195,8 @@ help:
 	@echo "                     Compare open Dependabot Cargo.lock alerts to the local lockfile"
 	@echo "  completion-audit-status"
 	@echo "                     Verify preservation refs, backup hashes, and untracked source state"
+	@echo "  dispatcher-merge-order-smoke"
+	@echo "                     Check PR #3 and PR #1 land cleanly in either order"
 	@echo "  repro-check        Run repeatable local pre-review checks"
 	@echo "  repro-check-agent  Run repro-check plus Hyperlane agent cargo check"
 	@echo "                     Set RUSK_DIR=/path/to/rusk-private to use a clean checkout"

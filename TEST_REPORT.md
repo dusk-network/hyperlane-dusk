@@ -481,7 +481,8 @@ Result:
 - `make review-gates`: passed; this lightweight wrapper runs
   `make completion-audit-status`, `make archive-hygiene-test`,
   `make archive-hygiene`,
-  `make dependency-alert-status`, `make review-hygiene`, and
+  `make dependency-alert-status`, `make review-hygiene`,
+  `make dispatcher-merge-order-smoke`, and
   `make gate-status-fresh`. It does not replace `make repro-check-agent`,
   clean-Rusk E2E, CI provisioning, or Dusk production sign-off.
 - `make production-readiness-guard`: failed as expected while external
@@ -548,20 +549,17 @@ Result:
   PR containing only `.github/workflows/manual-repro-check.yml` and
   `.github/actionlint.yaml`, so Dusk can make the manual workflow visible
   independently from the full implementation PR.
-- Dispatcher/implementation merge-order smoke check: passed on 2026-05-13.
-  Temporary detached worktrees from `origin/main`
-  `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` merged both current remote
-  heads cleanly: dispatcher branch `origin/ci/manual-repro-workflow`
+- `make dispatcher-merge-order-smoke`: passed on 2026-05-13. This target uses
+  temporary detached worktrees from `origin/main`
+  `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` and verifies both current remote
+  landing orders: dispatcher branch `origin/ci/manual-repro-workflow`
   `e54d6d49588ac24908c22dde2ac2345ddb983291` followed by implementation
   branch `origin/feat/dusk-hardening-v2`
-  `c39273d918c7abcf506d2d2795b5f51bfea14b96`, and the reverse order. In both
+  `0c5a7fa10152b117c1e60fbbcfd2618db370aec4`, and the reverse order. In both
   orders, `.github/workflows/manual-repro-check.yml` and
   `.github/actionlint.yaml` had an empty diff against the implementation
-  branch after the combined merge. Temporary command logs were written to
-  `/tmp/hyperlane-merge-order-a1.log`, `/tmp/hyperlane-merge-order-a2.log`,
-  `/tmp/hyperlane-merge-order-a-diff.log`,
-  `/tmp/hyperlane-merge-order-b1.log`, `/tmp/hyperlane-merge-order-b2.log`,
-  and `/tmp/hyperlane-merge-order-b-diff.log`.
+  branch after the combined merge. Temporary command logs were written under
+  `/tmp/hyperlane-merge-order-logs.FnF7KS`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
