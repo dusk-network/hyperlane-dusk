@@ -486,13 +486,74 @@ check_monorepo_repro_delta() {
     fi
 }
 
+github_commit_tree_sha() {
+    local repo="$1"
+    local ref="$2"
+
+    gh api "repos/$repo/commits/$ref" --jq .commit.tree.sha
+}
+
+github_monorepo_covered_manifest() {
+    local repo="$1"
+    local ref="$2"
+    local output_path="$3"
+    local err_file="$4"
+    local tree_sha
+    local tree_json
+    local truncated
+
+    tree_sha="$(github_commit_tree_sha "$repo" "$ref" 2>"$err_file")" || return 1
+    tree_json="$(gh api "repos/$repo/git/trees/$tree_sha?recursive=1" 2>"$err_file")" || return 1
+    truncated="$(printf '%s\n' "$tree_json" | jq -r '.truncated')"
+    if [ "$truncated" = "true" ]; then
+        printf '  GitHub tree API response for %s was truncated\n' "$ref" >"$err_file"
+        return 1
+    fi
+
+    printf '%s\n' "$tree_json" \
+        | jq -r '.tree[] | select(.type == "blob") | [.path, .sha] | @tsv' \
+        | while IFS=$'\t' read -r path sha; do
+            for covered_path in $MONOREPO_REPRO_COVERED_PATHS; do
+                if [ "$path" = "$covered_path" ] || [[ "$path" == "$covered_path/"* ]]; then
+                    printf '%s\t%s\n' "$path" "$sha"
+                    break
+                fi
+            done
+        done \
+        | LC_ALL=C sort >"$output_path"
+}
+
+github_monorepo_covered_delta() {
+    local base_ref="$1"
+    local head_ref="$2"
+    local err_file="$3"
+    local base_manifest
+    local head_manifest
+    local delta
+
+    base_manifest="$(mktemp)"
+    head_manifest="$(mktemp)"
+    if ! github_monorepo_covered_manifest "$MONOREPO_REPO" "$base_ref" "$base_manifest" "$err_file"; then
+        rm -f "$base_manifest" "$head_manifest"
+        return 1
+    fi
+    if ! github_monorepo_covered_manifest "$MONOREPO_REPO" "$head_ref" "$head_manifest" "$err_file"; then
+        rm -f "$base_manifest" "$head_manifest"
+        return 1
+    fi
+
+    delta="$(comm -3 "$base_manifest" "$head_manifest" | sed $'s/^\t//' | cut -f1 | LC_ALL=C sort -u)"
+    rm -f "$base_manifest" "$head_manifest"
+    printf '%s\n' "$delta"
+}
+
 if [ "$MONOREPO_COMPARE_VIA_GH" = "1" ]; then
     monorepo_delta_head="${MONOREPO_COMPARE_HEAD#*:}"
-    if monorepo_delta_json="$(gh api "repos/$MONOREPO_REPO/compare/$LATEST_REPRO_MONOREPO_REF...$monorepo_delta_head" 2>/tmp/hyperlane-readiness-monorepo-delta.$$.err)"; then
-        check_monorepo_repro_delta "$(printf '%s\n' "$monorepo_delta_json" | jq -r '.files[]?.filename')"
+    if monorepo_delta="$(github_monorepo_covered_delta "$LATEST_REPRO_MONOREPO_REF" "$monorepo_delta_head" /tmp/hyperlane-readiness-monorepo-delta.$$.err)"; then
+        check_monorepo_repro_delta "$monorepo_delta"
     else
         sed 's/^/  /' /tmp/hyperlane-readiness-monorepo-delta.$$.err
-        add_blocker "monorepo latest clean-layout repro delta compare is unavailable"
+        add_blocker "monorepo latest clean-layout repro covered-tree compare is unavailable"
     fi
     rm -f /tmp/hyperlane-readiness-monorepo-delta.$$.err
 elif [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" rev-parse --verify "$LATEST_REPRO_MONOREPO_REF^{commit}" >/dev/null 2>&1; then
