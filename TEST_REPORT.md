@@ -210,6 +210,25 @@ Notes:
   `5da9c5ff7768b1be227f00a5e4f8a7de2f6418057875ecf8e132bc0926a72a04`.
   `scripts/secret-hygiene-check.sh` passed over the repro log, archive staging
   directory, and tarball.
+- Archive hygiene audit on 2026-05-13: all durable `.tgz` evidence archives in
+  `/home/hein_/projects/hyperlane/.codex-backups` were extracted into a
+  temporary directory and scanned with `bash scripts/secret-hygiene-check.sh
+  "$scan_root"`. The extracted-content scan covered repro, E2E,
+  dependency-remediation, and soak handoff archives and found no secret-like
+  filenames or signer/password command text.
+- Command used for the extracted-content archive scan:
+
+```bash
+scan_root="$(mktemp -d -t hyperlane-archive-hygiene.XXXXXX)"
+trap 'rm -rf "$scan_root"' EXIT
+for archive in /home/hein_/projects/hyperlane/.codex-backups/*.tgz; do
+  name="$(basename "$archive" .tgz)"
+  dest="$scan_root/$name"
+  mkdir -p "$dest"
+  tar -xzf "$archive" -C "$dest"
+done
+bash scripts/secret-hygiene-check.sh "$scan_root"
+```
 
 ## Commands Run
 
