@@ -521,10 +521,10 @@ Result:
   protection/status-check policy handoff text, reviewer-facing latest
   clean-layout repro path delta handoff text, current Hyperlane upstream drift,
   no Dusk covered-path delta since latest clean-layout repro source ref
-  `8d3704e8f5a3ab0976b97fc3a68319e112e8affc`, and no placeholder matches in
+  `ef8ee43cd99569299b9744b498ac1bbac69950bc`, and no placeholder matches in
   tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
   It also reports the monorepo delta since latest clean-layout repro monorepo
-  ref `9050143c1ef12f76d117ee97effa79da8df3e334` and verifies
+  ref `515fab074024271935bc7795604dbb4f0823a937` and verifies
   `monorepoCoveredPathDelta: none` for the scoped Dusk agent/runtime/workflow
   paths.
 - `make review-gates`: passed; this lightweight wrapper runs
