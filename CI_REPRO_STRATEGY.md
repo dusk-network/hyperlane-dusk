@@ -122,8 +122,9 @@ workflow-dispatcher PR mergeability/review/status state, production sign-off
 checklist counts, split decision issue states, default-branch protection and
 merge method settings, workflow visibility, CI provisioning visibility,
 including the exact `DUSK_ORG_READ_TOKEN` and `dusk-hyperlane` runner-label
-checks for the Dusk repo, plus the monorepo `DUSK_ORG_READ_TOKEN` check needed
-by `.github/workflows/dusk-agent-gate.yml`,
+checks for the Dusk repo, optional `DUSK_STATUS_READ_TOKEN` visibility for the
+production-readiness workflow, plus the monorepo `DUSK_ORG_READ_TOKEN` check
+needed by `.github/workflows/dusk-agent-gate.yml`,
 reviewer-facing evidence-link visibility, Dusk Dependabot open-alert
 visibility, local `Cargo.lock` vulnerable-range comparison through
 `make dependency-alert-status`, reviewer-facing `make gate-status-fresh` and
@@ -210,6 +211,19 @@ Dusk-approved CI credential specifically for status visibility. That credential
 must not be a signer, validator key, consensus password, deployment key,
 relayer key, or image-publishing credential.
 
+The proposed production-readiness workflow can consume that optional status
+credential as:
+
+```text
+DUSK_STATUS_READ_TOKEN
+```
+
+`DUSK_STATUS_READ_TOKEN` is only for GitHub status visibility in
+`.github/workflows/production-readiness-gate.yml`; it must not be used by the
+manual repro workflow checkout steps. If absent, the workflow falls back to
+`DUSK_ORG_READ_TOKEN` and then `github.token`, which is why the current CI run
+reports Dependabot alert triage as unavailable under the integration token.
+
 ## Admin Provisioning Runbook
 
 If Dusk accepts this CI path, provision the read-only token in both internal
@@ -218,6 +232,14 @@ repositories without placing the token on process argv:
 ```bash
 gh secret set DUSK_ORG_READ_TOKEN --repo dusk-network/hyperlane-dusk < /path/to/read-only-token.txt
 gh secret set DUSK_ORG_READ_TOKEN --repo dusk-network/hyperlane-monorepo < /path/to/read-only-token.txt
+```
+
+If Dusk approves CI-side status visibility instead of a local admin rerun,
+provision the separate status token only in repos whose production-readiness
+workflow needs it:
+
+```bash
+gh secret set DUSK_STATUS_READ_TOKEN --repo dusk-network/hyperlane-dusk < /path/to/status-read-token.txt
 ```
 
 Then confirm a self-hosted runner with the required labels is available to

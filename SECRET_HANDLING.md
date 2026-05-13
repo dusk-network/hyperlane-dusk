@@ -48,6 +48,12 @@ checkout requirements. Use an approved admin/security-read local `gh`
 credential or a separate Dusk-approved CI credential for those status checks if
 Dusk wants the GitHub Actions guard to see them.
 
+If Dusk chooses a CI credential for status visibility, store it separately as
+`DUSK_STATUS_READ_TOKEN` and use it only in the production-readiness workflow.
+It must not be used by manual repro checkout steps and must not carry Dusk
+runtime, signer, validator, consensus, deployment, relayer, or image-publishing
+authority.
+
 The workflow sets `persist-credentials: false` on checkout steps so the token is
 not left in local git config while the repro command runs.
 

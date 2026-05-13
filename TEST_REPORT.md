@@ -333,8 +333,9 @@ Result:
   active-repo untracked source status, default-branch protection and merge
   method settings, required status-check policy enabled, workflow visibility,
   repo-level Actions secret visibility, exact `DUSK_ORG_READ_TOKEN`
-  visibility in both internal repos, self-hosted runner visibility, and exact
-  `dusk-hyperlane` runner-label visibility for CI gate #8,
+  visibility in both internal repos, optional `DUSK_STATUS_READ_TOKEN`
+  visibility for the production-readiness workflow, self-hosted runner
+  visibility, and exact `dusk-hyperlane` runner-label visibility for CI gate #8,
   latest clean-layout repro link visibility, post-rebase E2E/archive link visibility,
   dependency-remediated E2E link visibility, advisory reviewer routing link
   visibility, Dusk Dependabot open-alert visibility plus local lockfile
@@ -364,8 +365,10 @@ Result:
   visibility checks can require permissions broader than source checkout;
   `DUSK_ORG_READ_TOKEN` remains source-checkout-only, and Dusk must use an
   approved admin/security-read local `gh` credential or separate approved CI
-  credential for branch protection, Actions-secret, runner, and Dependabot
-  alert visibility.
+  credential such as `DUSK_STATUS_READ_TOKEN` for branch protection,
+  Actions-secret, runner, and Dependabot alert visibility. The optional status
+  token is only for `.github/workflows/production-readiness-gate.yml`; the
+  manual repro workflow remains on the source-checkout token.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   current-head run `1778615349` passed against Dusk source ref

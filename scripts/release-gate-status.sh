@@ -31,6 +31,7 @@ BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-required status-
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
 CI_PROVISIONING_RUNBOOK_URL="${CI_PROVISIONING_RUNBOOK_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
+STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 FETCH_UPSTREAM=0
 
@@ -455,11 +456,14 @@ section "CI Provisioning Visibility"
 if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-dusk-secrets.$$.err)"; then
     repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
     repo_required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+    repo_status_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$STATUS_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
     echo "repoSecretsVisible: $repo_secrets_count"
     echo "repoRequiredSecretVisible: $repo_required_secret_visible"
+    echo "repoStatusSecretVisible: $repo_status_secret_visible"
 else
     echo "repoSecretsVisible: unknown"
     echo "repoRequiredSecretVisible: unknown"
+    echo "repoStatusSecretVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-dusk-secrets.$$.err
 fi
 rm -f /tmp/hyperlane-dusk-secrets.$$.err
@@ -467,11 +471,14 @@ rm -f /tmp/hyperlane-dusk-secrets.$$.err
 if monorepo_secrets_json="$(gh api "repos/$MONOREPO_REPO/actions/secrets" 2>/tmp/hyperlane-dusk-monorepo-secrets.$$.err)"; then
     monorepo_secrets_count="$(printf '%s\n' "$monorepo_secrets_json" | jq .total_count)"
     monorepo_required_secret_visible="$(printf '%s\n' "$monorepo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+    monorepo_status_secret_visible="$(printf '%s\n' "$monorepo_secrets_json" | jq --arg name "$STATUS_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
     echo "monorepoRepoSecretsVisible: $monorepo_secrets_count"
     echo "monorepoRepoRequiredSecretVisible: $monorepo_required_secret_visible"
+    echo "monorepoRepoStatusSecretVisible: $monorepo_status_secret_visible"
 else
     echo "monorepoRepoSecretsVisible: unknown"
     echo "monorepoRepoRequiredSecretVisible: unknown"
+    echo "monorepoRepoStatusSecretVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-dusk-monorepo-secrets.$$.err
 fi
 rm -f /tmp/hyperlane-dusk-monorepo-secrets.$$.err

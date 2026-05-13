@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      GH_TOKEN: ${{ secrets.DUSK_ORG_READ_TOKEN || github.token }}
+      GH_TOKEN: ${{ secrets.DUSK_STATUS_READ_TOKEN || secrets.DUSK_ORG_READ_TOKEN || github.token }}
       DUSK_DIR: ${{ github.workspace }}/hyperlane/dusk
       MONOREPO_REF: ${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
       MONOREPO_COMPARE_VIA_GH: "1"

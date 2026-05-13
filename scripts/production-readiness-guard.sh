@@ -22,6 +22,7 @@ MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monore
 MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
 MONOREPO_COMPARE_HEAD="${MONOREPO_COMPARE_HEAD:-dusk-network:feat/dusk-support-v2}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
+STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 
 blockers=()
@@ -265,14 +266,17 @@ check_required_secret() {
 if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
     repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
     required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+    status_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$STATUS_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
     printf 'repoSecretsVisible: %s\n' "$repo_secrets_count"
     printf 'repoRequiredSecretVisible: %s\n' "$required_secret_visible"
+    printf 'repoStatusSecretVisible: %s\n' "$status_secret_visible"
     if [ "$required_secret_visible" != "true" ]; then
         add_blocker "repo-level Actions secret $REQUIRED_SECRET_NAME is not visible"
     fi
 else
     echo "repoSecretsVisible: unknown"
     echo "repoRequiredSecretVisible: unknown"
+    echo "repoStatusSecretVisible: unknown"
     sed 's/^/  /' /tmp/hyperlane-readiness-secrets.$$.err
     add_blocker "repo-level Actions secret visibility is unknown"
 fi
