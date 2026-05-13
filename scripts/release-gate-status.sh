@@ -15,6 +15,7 @@ SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_PLACEHOLDER_PATHS="${DUSK_PLACEHOLDER_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo}"
 DUSK_PLACEHOLDER_PATTERN="${DUSK_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!}"
+DUSK_CONTRACT_UNWRAP_PATTERN="${DUSK_CONTRACT_UNWRAP_PATTERN:-\\.unwrap\\(\\)}"
 AGENT_PLACEHOLDER_PATTERN="${AGENT_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!|expect\(}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo Cargo.toml Cargo.lock}"
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-ef8ee43cd99569299b9744b498ac1bbac69950bc}"
@@ -121,6 +122,10 @@ Environment:
                        Extended regex used for tracked Dusk repo runtime
                        placeholder scans.
                        Default: $DUSK_PLACEHOLDER_PATTERN
+  DUSK_CONTRACT_UNWRAP_PATTERN
+                       Extended regex used to reject direct unwrap() calls in
+                       production contract source.
+                       Default: $DUSK_CONTRACT_UNWRAP_PATTERN
   AGENT_PLACEHOLDER_PATTERN
                        Extended regex used for Dusk agent runtime
                        panic/placeholder scans.
@@ -268,6 +273,14 @@ print_runtime_placeholder_scan() {
     else
         rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
         echo "no matches in Dusk repo scoped runtime paths"
+    fi
+
+    if git_grep_to_file /tmp/hyperlane-dusk-contract-unwrap-scan.$$ "Dusk contract direct unwrap" "$ROOT" -n -E "$DUSK_CONTRACT_UNWRAP_PATTERN" -- contracts; then
+        cat /tmp/hyperlane-dusk-contract-unwrap-scan.$$
+        rm -f /tmp/hyperlane-dusk-contract-unwrap-scan.$$
+    else
+        rm -f /tmp/hyperlane-dusk-contract-unwrap-scan.$$
+        echo "no direct unwrap() matches in Dusk contract source"
     fi
 
     if [ -d "$MONOREPO_DIR/rust/main/chains/hyperlane-dusk" ]; then

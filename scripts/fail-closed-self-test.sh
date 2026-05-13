@@ -58,6 +58,12 @@ expect_fail \
     bash scripts/release-gate-status.sh --placeholder-scan-only
 
 expect_fail \
+    gate-status-invalid-contract-unwrap-pattern \
+    'Dusk contract direct unwrap scan failed' \
+    env DUSK_CONTRACT_UNWRAP_PATTERN='[invalid' \
+    bash scripts/release-gate-status.sh --placeholder-scan-only
+
+expect_fail \
     production-readiness-premature-upstream-pr \
     'upstream Hyperlane PRs are open' \
     env UPSTREAM_SUBMISSION_GATE_ONLY=1 \

@@ -338,7 +338,7 @@ mod warp_drc20 {
             // Verify sender is an enrolled router
             let enrolled = self.enrolled_routers.get(&origin);
             assert!(
-                enrolled.is_some() && *enrolled.unwrap() == sender,
+                matches!(enrolled, Some(enrolled_sender) if *enrolled_sender == sender),
                 "WarpDrc20: sender is not enrolled router for origin"
             );
 
