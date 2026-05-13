@@ -429,6 +429,16 @@ Result:
   Actions-secret, runner, and Dependabot alert visibility. The optional status
   token is only for `.github/workflows/production-readiness-gate.yml`; the
   manual repro workflow remains on the source-checkout token.
+- CI `Production readiness guard` on Dusk PR #1 completed with the same
+  expected failure at Dusk head
+  `746935a2e8e4f0a2dc9e216b7b91a510e3a41e20`:
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25790821003/job/75755608816.
+  The failed-job summary was limited to the known external blockers:
+  unmerged/unapproved internal PRs, unknown branch-protection visibility from
+  the Actions integration token, 7 unchecked production sign-off items, 6 open
+  split decision issues, unavailable Dependabot alert triage in Actions,
+  unknown `dusk-hyperlane` runner visibility, and unknown repo-level Actions
+  secret visibility.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   current-head run `1778615349` passed against Dusk source ref
