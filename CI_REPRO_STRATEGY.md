@@ -22,6 +22,10 @@ setup to accept, change, or replace.
   The current CI blocker is runner/secret/workflow provisioning, not disabled
   repo-level Actions. The probe is recorded in
   dusk-network/hyperlane-dusk#8.
+- The inherited Hyperlane Rust image-publishing workflow is intentionally
+  skipped on the Dusk fork by a `github.repository_owner == 'hyperlane-xyz'`
+  job guard in the monorepo PR. Dusk does not need to provision Hyperlane-owned
+  image publishing or GitHub App credentials for this internal review path.
 - Both Dusk org repos now have protected `main` branches with required PR
   review, stale-review dismissal, last-push approval, conversation resolution,
   admin enforcement, force-push/delete disabled, and strict required status
@@ -175,6 +179,7 @@ DUSK_ORG_READ_TOKEN
 
 Required scope:
 
+- Read-only access to `dusk-network/hyperlane-dusk`.
 - Read-only access to `dusk-network/rusk-private`.
 - Read-only access to `dusk-network/hyperlane-monorepo` if the workflow runs
   from `dusk-network/hyperlane-dusk`.
