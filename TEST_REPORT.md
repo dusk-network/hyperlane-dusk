@@ -13,6 +13,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778615349` tested Dusk source ref `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, monorepo `006e49dd7041097384683a78b1c1973c83e90de8`, upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778615349` tested monorepo `006e49dd7041097384683a78b1c1973c83e90de8` after rebasing onto upstream `c6bce706316206ac7b5652155c9ea92e96f78c39`, with Dusk source ref `016eaa89e1afce0ef9a7534fe285d9aa16e26183` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
+| Post-repro Dusk agent panic-path hardening | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Monorepo `9e8c7abf054fcf1193abc81a2d984fe59b08eb16`; removed Dusk agent `expect(...)` paths from RUES client construction and rkyv serialization, made the Dusk base-provider builder fallible, and hardened `.github/workflows/dusk-agent-gate.yml` to use `git grep` for `todo!`, `unimplemented!`, `panic!`, and `expect\\(` in `rust/main/chains/hyperlane-dusk/src`. Local `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander`, incremental `cargo check -p hyperlane-dusk -p hyperlane-base`, `actionlint .github/workflows/dusk-agent-gate.yml`, and the local `git grep` panic/placeholder scan passed. CI `Dusk review policy gate` passed at https://github.com/dusk-network/hyperlane-monorepo/actions/runs/25774262432/job/75703551832; CI `Dusk agent cargo check` passed the hardened scan and failed at the expected private companion-repo preflight until `DUSK_ORG_READ_TOKEN` is provisioned: https://github.com/dusk-network/hyperlane-monorepo/actions/runs/25774262448/job/75703551892 |
 | Post-rebase clean-Rusk E2E evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`; monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778609411`; MessageIdMultisig E2E run `1778609697` |
 | Dependency-remediated clean-Rusk E2E evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk dependency-remediation worktree with `Cargo.toml`/`Cargo.lock` updates documented below; monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778613709`; MessageIdMultisig E2E run `1778613956` |
 | Review-head clean-layout repro and E2E evidence before this report update | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `2ac225175b15aac465d100e748ba68f8b14bd545`; monorepo `a44020dc998b7fe868254a5d1a349b9eb8ded899`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; non-E2E repro run `1778586371`; TestMock E2E run `1778587094`; MessageIdMultisig E2E run `1778587351` |
@@ -111,6 +112,22 @@ Notes:
   3 `dusk-tx` tests, secret hygiene, and the Hyperlane Rust agent check for
   `hyperlane-dusk`, `hyperlane-base`, `validator`, `relayer`, `scraper`, and
   `lander`.
+- The monorepo PR later moved to
+  `9e8c7abf054fcf1193abc81a2d984fe59b08eb16` with a focused Dusk agent
+  panic-path hardening slice. RUES client construction and rkyv serialization
+  now return errors instead of using `expect(...)`; the Dusk base-provider
+  builder propagates those errors; and `.github/workflows/dusk-agent-gate.yml`
+  uses `git grep` instead of runner-local `rg` to scan
+  `rust/main/chains/hyperlane-dusk/src` for `todo!`, `unimplemented!`,
+  `panic!`, and `expect\(`. Local `cargo check -p hyperlane-dusk -p
+  hyperlane-base -p validator -p relayer -p scraper -p lander` passed in
+  1m51s, incremental `cargo check -p hyperlane-dusk -p hyperlane-base` passed
+  in 44.55s, `actionlint .github/workflows/dusk-agent-gate.yml` passed, and
+  the local `git grep` panic/placeholder scan reported no Dusk agent runtime
+  matches. The CI `Dusk review policy gate` passed for this head; the CI
+  `Dusk agent cargo check` passed the hardened scan and still fails at the
+  expected private companion-repo preflight until `DUSK_ORG_READ_TOKEN` is
+  provisioned.
 - The post-rebase clean-Rusk E2E logs were copied into durable local
   handoff archive
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-live-head-e2e-1778609411-1778609697.tgz`.
@@ -860,6 +877,15 @@ Result:
   `main` at `c6bce706316206ac7b5652155c9ea92e96f78c39`; post-rebase head
   `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`.
 - Passed after adding file/env-backed `duskKey` signer sources.
+- Passed on monorepo `9e8c7abf054fcf1193abc81a2d984fe59b08eb16` after
+  replacing the Dusk agent `expect(...)` RUES/rkyv paths with error returns:
+  `cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p
+  scraper -p lander` passed in 1m51s, and incremental `cargo check -p
+  hyperlane-dusk -p hyperlane-base` passed in 44.55s.
+- `actionlint .github/workflows/dusk-agent-gate.yml` passed after replacing
+  the CI runtime scan's runner-local `rg` dependency with `git grep`.
+- `git grep -n -E 'todo!|unimplemented!|panic!|expect\(' --
+  rust/main/chains/hyperlane-dusk/src` reported no Dusk agent runtime matches.
 
 ### Local EVM <-> Dusk Agent E2E: TestMock ISM
 
