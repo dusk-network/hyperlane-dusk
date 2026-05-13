@@ -19,7 +19,8 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
 
 workdir="$(mktemp -d -t hyperlane-fail-closed-test.XXXXXX)"
-trap 'chmod -R u+rwX "$workdir" 2>/dev/null || true; rm -rf "$workdir"' EXIT
+untracked_probe="$ROOT/.completion-audit-untracked-probe"
+trap 'chmod -R u+rwX "$workdir" 2>/dev/null || true; rm -rf "$workdir"; rm -f "$untracked_probe"' EXIT
 
 expect_fail() {
     local label="$1"
@@ -75,5 +76,12 @@ expect_fail \
     secret-hygiene-unreadable-artifact \
     'runtime artifact secret text scan failed' \
     bash scripts/secret-hygiene-check.sh "$workdir/secret-artifacts"
+
+printf 'temporary completion audit probe\n' >"$untracked_probe"
+expect_fail \
+    completion-audit-untracked-source \
+    'dusk has untracked source paths' \
+    bash scripts/completion-audit-status.sh
+rm -f "$untracked_probe"
 
 info "Fail-closed self-test passed"
