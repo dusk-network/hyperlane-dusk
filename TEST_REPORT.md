@@ -920,6 +920,10 @@ Result:
   `CI_VISIBILITY_GATE_ONLY=1`; the guard rejects branch-protection, workflow,
   runner, and required-secret blockers before a live PR can be treated as
   production-ready.
+- `make fail-closed-self-test` also covers unavailable dependency-alert triage
+  with `DEPENDENCY_ALERT_GATE_ONLY=1` and a mocked dependency-alert helper that
+  emits `dependencyAlertStatus: unavailable`. The production-readiness guard
+  rejects that path before a PR can be treated as production-ready.
 - `make gate-status-fresh` and `make production-readiness-guard` now report an
   upstream submission gate using GitHub search for open
   `hyperlane-xyz/hyperlane-monorepo` PRs from

@@ -144,6 +144,21 @@ expect_fail \
     env PATH="$workdir/branch-protection-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
     bash scripts/production-readiness-guard.sh
 
+dependency_alert_unavailable="$workdir/dependency-alert-unavailable.sh"
+cat >"$dependency_alert_unavailable" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "dependencyAlertStatus: unavailable"
+exit 1
+EOF
+chmod +x "$dependency_alert_unavailable"
+
+expect_fail \
+    production-readiness-dependency-alert-unavailable \
+    'Dusk Cargo.lock dependency-alert triage is unavailable' \
+    env DEPENDENCY_ALERT_GATE_ONLY=1 DEPENDENCY_ALERT_STATUS_SCRIPT="$dependency_alert_unavailable" \
+    bash scripts/production-readiness-guard.sh
+
 expect_fail \
     review-hygiene-invalid-agent-pattern \
     'Dusk agent runtime panic/placeholder scan failed' \

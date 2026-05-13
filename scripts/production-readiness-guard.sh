@@ -28,6 +28,8 @@ UPSTREAM_SUBMISSION_HEAD="${UPSTREAM_SUBMISSION_HEAD:-dusk-network:feat/dusk-sup
 UPSTREAM_SUBMISSION_GATE_ONLY="${UPSTREAM_SUBMISSION_GATE_ONLY:-0}"
 CI_VISIBILITY_GATE_ONLY="${CI_VISIBILITY_GATE_ONLY:-0}"
 BRANCH_PROTECTION_GATE_ONLY="${BRANCH_PROTECTION_GATE_ONLY:-0}"
+DEPENDENCY_ALERT_GATE_ONLY="${DEPENDENCY_ALERT_GATE_ONLY:-0}"
+DEPENDENCY_ALERT_STATUS_SCRIPT="${DEPENDENCY_ALERT_STATUS_SCRIPT:-$ROOT/scripts/dependency-alert-status.sh}"
 UPSTREAM_SUBMISSION_SEARCH_JSON="${UPSTREAM_SUBMISSION_SEARCH_JSON:-}"
 UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN="${UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN:-0}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
@@ -418,6 +420,24 @@ check_ci_visibility() {
     check_required_secret "$MONOREPO_REPO" "monorepoRepo" "/tmp/hyperlane-readiness-monorepo-secrets.$$.err"
 }
 
+check_dependency_alerts() {
+    local dependency_alert_status=0
+    local dependency_alert_output
+
+    section "Dependency Alerts"
+    dependency_alert_output="$(mktemp)"
+    bash "$DEPENDENCY_ALERT_STATUS_SCRIPT" --summary-only 2>&1 \
+        | tee "$dependency_alert_output" || dependency_alert_status=$?
+    if [ "$dependency_alert_status" -ne 0 ]; then
+        if grep -q '^dependencyAlertStatus: unavailable' "$dependency_alert_output"; then
+            add_blocker "Dusk Cargo.lock dependency-alert triage is unavailable"
+        else
+            add_blocker "Dusk Cargo.lock dependency-alert triage has vulnerable, unparsed, or unpatchable open alerts"
+        fi
+    fi
+    rm -f "$dependency_alert_output"
+}
+
 print_summary_and_exit() {
     section "Summary"
     if [ "${#blockers[@]}" -eq 0 ]; then
@@ -451,6 +471,11 @@ if [ "$BRANCH_PROTECTION_GATE_ONLY" = "1" ]; then
     section "Branch Protection"
     check_branch_protection "$DUSK_REPO" "dusk"
     check_branch_protection "$MONOREPO_REPO" "monorepo"
+    print_summary_and_exit
+fi
+
+if [ "$DEPENDENCY_ALERT_GATE_ONLY" = "1" ]; then
+    check_dependency_alerts
     print_summary_and_exit
 fi
 
@@ -492,19 +517,7 @@ if [ "$open_split_issues" -gt 0 ]; then
     add_blocker "$open_split_issues split production decision issues remain open"
 fi
 
-section "Dependency Alerts"
-dependency_alert_status=0
-dependency_alert_output="$(mktemp)"
-bash "$ROOT/scripts/dependency-alert-status.sh" --summary-only 2>&1 \
-    | tee "$dependency_alert_output" || dependency_alert_status=$?
-if [ "$dependency_alert_status" -ne 0 ]; then
-    if grep -q '^dependencyAlertStatus: unavailable' "$dependency_alert_output"; then
-        add_blocker "Dusk Cargo.lock dependency-alert triage is unavailable"
-    else
-        add_blocker "Dusk Cargo.lock dependency-alert triage has vulnerable, unparsed, or unpatchable open alerts"
-    fi
-fi
-rm -f "$dependency_alert_output"
+check_dependency_alerts
 
 check_ci_visibility
 
