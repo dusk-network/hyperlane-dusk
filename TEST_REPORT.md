@@ -1007,6 +1007,22 @@ Result:
   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445875247
   records `coveredPathDelta: none`, `monorepoCoveredPathDelta: none`, the
   latest Dusk PR #1 check URLs, and the remaining external production blockers.
+- A 2026-05-14 `make review-gates` run passed after synchronizing the shared
+  review-policy workflow between implementation and dispatcher branches. It
+  ran against Dusk head `e8b2b8b887fec8600cb1a6a2ce47341ca7960c7a`,
+  monorepo head `515fab074024271935bc7795604dbb4f0823a937`, and dispatcher
+  head `b6a2341f7e793468e2a631d51b803c0b9c495003`. Review hygiene exported
+  `/tmp/hyperlane-review-export-1778715303`; dispatcher merge-order smoke
+  passed with log directory `/tmp/hyperlane-merge-order-logs.no277R` and
+  confirmed the dispatcher and implementation branches merge cleanly in either
+  order with no shared workflow/actionlint drift. The same run reported
+  `coveredPathDelta: none`, `monorepoCoveredPathDelta: none`, no untracked
+  source in either active repo, zero open upstream Hyperlane PRs from
+  `dusk-network:feat/dusk-support-v2`, 27 open Cargo alerts with no vulnerable
+  locked versions, and the remaining external review/sign-off/runner/token
+  blockers. After this report refresh, `make review-gates` passed again with
+  review-hygiene export `/tmp/hyperlane-review-export-1778715510` and
+  dispatcher merge-order smoke log `/tmp/hyperlane-merge-order-logs.0IZsy3`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were

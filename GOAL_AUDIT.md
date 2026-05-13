@@ -156,6 +156,16 @@ Observed:
   `make review-hygiene`,
   `make dispatcher-merge-order-smoke`, and
   `make gate-status-fresh`.
+- The 2026-05-14 `make review-gates` refresh passed at Dusk head
+  `e8b2b8b887fec8600cb1a6a2ce47341ca7960c7a`, monorepo head
+  `515fab074024271935bc7795604dbb4f0823a937`, and dispatcher head
+  `b6a2341f7e793468e2a631d51b803c0b9c495003`. It produced review export
+  `/tmp/hyperlane-review-export-1778715303` and dispatcher merge-order log
+  `/tmp/hyperlane-merge-order-logs.no277R`, verified no covered-path delta from
+  the latest clean-layout repros, and still reported the known external
+  production blockers. The post-report-edit rerun also passed, producing
+  review export `/tmp/hyperlane-review-export-1778715510` and dispatcher
+  merge-order log `/tmp/hyperlane-merge-order-logs.0IZsy3`.
 - `make production-readiness-guard` is a negative guard that must fail while
   known machine-checkable production blockers remain open. Current blockers are
   open/unapproved internal PRs, unchecked sign-off items, open split decision
