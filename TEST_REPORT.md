@@ -626,6 +626,9 @@ Result:
   requires Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies to mention
   archive hygiene self-tests and extracted evidence archive hygiene scans. This
   guard passed after the active PR and issue bodies were updated in place.
+- `make review-hygiene` now also requires active reviewer-facing text to
+  mention `make dispatcher-merge-order-smoke`, so the new PR #3 / PR #1
+  landing-order check remains visible in the review handoff.
 - `make review-hygiene` now rejects JSON-escaped reviewer-facing PR, issue, or
   comment bodies that render as quoted strings with literal `\n` escapes. This
   guard passed after the Dusk PR #1, monorepo PR #1, and #8 runbook comment

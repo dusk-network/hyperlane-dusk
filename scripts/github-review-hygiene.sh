@@ -41,7 +41,7 @@ Exports reviewer-facing GitHub text and checks it for:
   - JSON-escaped PR/issue/comment body rendering
   - historical status snapshots that are not marked superseded
   - missing reviewer-facing links and review-gate handoff text
-  - stale make review-gates descriptions that omit archive hygiene coverage
+  - stale make review-gates descriptions that omit archive/dispatcher coverage
   - stale monorepo queued-check status after inherited Depot workflow guards
   - source/artifact secret hygiene regressions
 
@@ -326,6 +326,9 @@ if rg -n -F "$stale_review_gates_description" "$active_review_text" >"$stale_rev
     fail "stale make review-gates description found; archive hygiene coverage is missing"
 fi
 rm -f "$stale_review_gates_hits"
+
+rg -q -F 'make dispatcher-merge-order-smoke' "$active_review_text" \
+    || fail "active reviewer-facing text is missing dispatcher merge-order smoke handoff text"
 
 post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
 post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
