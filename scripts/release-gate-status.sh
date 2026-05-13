@@ -41,6 +41,7 @@ REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 FETCH_UPSTREAM=0
+PLACEHOLDER_SCAN_ONLY=0
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -94,6 +95,8 @@ Options:
   --fetch-upstream     Run git fetch <upstream-remote> main before drift check.
   --monorepo-dir DIR   Hyperlane monorepo checkout.
                        Default: $MONOREPO_DIR
+  --placeholder-scan-only
+                       Run only the local runtime placeholder scans.
   -h, --help           Show this help.
 
 Environment:
@@ -210,6 +213,10 @@ while [ "$#" -gt 0 ]; do
             FETCH_UPSTREAM=1
             shift
             ;;
+        --placeholder-scan-only)
+            PLACEHOLDER_SCAN_ONLY=1
+            shift
+            ;;
         --monorepo-dir)
             MONOREPO_DIR="${2:-}"
             [ -n "$MONOREPO_DIR" ] || {
@@ -233,10 +240,6 @@ command -v git >/dev/null 2>&1 || {
     echo "[FAIL] git is required" >&2
     exit 1
 }
-command -v gh >/dev/null 2>&1 || {
-    echo "[FAIL] gh is required" >&2
-    exit 1
-}
 
 if [ -d "$MONOREPO_DIR" ]; then
     MONOREPO_DIR="$(cd "$MONOREPO_DIR" && pwd -P)"
@@ -244,6 +247,40 @@ fi
 
 section() {
     printf '\n== %s ==\n' "$1"
+}
+
+print_runtime_placeholder_scan() {
+    section "Runtime Placeholder Scan"
+    echo "duskRepoPaths: $DUSK_PLACEHOLDER_PATHS"
+    if git_grep_to_file /tmp/hyperlane-dusk-repo-placeholder-scan.$$ "Dusk repo runtime placeholder" "$ROOT" -n -E "$DUSK_PLACEHOLDER_PATTERN" -- $DUSK_PLACEHOLDER_PATHS; then
+        cat /tmp/hyperlane-dusk-repo-placeholder-scan.$$
+        rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
+    else
+        rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
+        echo "no matches in Dusk repo scoped runtime paths"
+    fi
+
+    if [ -d "$MONOREPO_DIR/rust/main/chains/hyperlane-dusk" ]; then
+        if git_grep_to_file /tmp/hyperlane-dusk-placeholder-scan.$$ "Dusk agent runtime panic/placeholder" "$MONOREPO_DIR" -n -E "$AGENT_PLACEHOLDER_PATTERN" -- rust/main/chains/hyperlane-dusk/src; then
+            cat /tmp/hyperlane-dusk-placeholder-scan.$$
+            rm -f /tmp/hyperlane-dusk-placeholder-scan.$$
+        else
+            rm -f /tmp/hyperlane-dusk-placeholder-scan.$$
+            echo "no panic/placeholder matches in rust/main/chains/hyperlane-dusk/src"
+        fi
+    else
+        echo "missing Dusk chain crate in monorepo checkout"
+    fi
+}
+
+if [ "$PLACEHOLDER_SCAN_ONLY" -eq 1 ]; then
+    print_runtime_placeholder_scan
+    exit 0
+fi
+
+command -v gh >/dev/null 2>&1 || {
+    echo "[FAIL] gh is required" >&2
+    exit 1
 }
 
 print_pr() {
@@ -660,27 +697,7 @@ else
     echo "missing monorepo checkout: $MONOREPO_DIR"
 fi
 
-section "Runtime Placeholder Scan"
-echo "duskRepoPaths: $DUSK_PLACEHOLDER_PATHS"
-if git_grep_to_file /tmp/hyperlane-dusk-repo-placeholder-scan.$$ "Dusk repo runtime placeholder" "$ROOT" -n -E "$DUSK_PLACEHOLDER_PATTERN" -- $DUSK_PLACEHOLDER_PATHS; then
-    cat /tmp/hyperlane-dusk-repo-placeholder-scan.$$
-    rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
-else
-    rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
-    echo "no matches in Dusk repo scoped runtime paths"
-fi
-
-if [ -d "$MONOREPO_DIR/rust/main/chains/hyperlane-dusk" ]; then
-    if git_grep_to_file /tmp/hyperlane-dusk-placeholder-scan.$$ "Dusk agent runtime panic/placeholder" "$MONOREPO_DIR" -n -E "$AGENT_PLACEHOLDER_PATTERN" -- rust/main/chains/hyperlane-dusk/src; then
-        cat /tmp/hyperlane-dusk-placeholder-scan.$$
-        rm -f /tmp/hyperlane-dusk-placeholder-scan.$$
-    else
-        rm -f /tmp/hyperlane-dusk-placeholder-scan.$$
-        echo "no panic/placeholder matches in rust/main/chains/hyperlane-dusk/src"
-    fi
-else
-    echo "missing Dusk chain crate in monorepo checkout"
-fi
+print_runtime_placeholder_scan
 
 section "Latest Clean Repro Delta"
 echo "latestReproDuskRef: $LATEST_REPRO_DUSK_REF"
