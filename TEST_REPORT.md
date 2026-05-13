@@ -556,7 +556,7 @@ Result:
   `make dispatcher-merge-order-smoke`, and
   `make gate-status-fresh`. Exact current-head `make review-gates` evidence is
   maintained in the current gate refresh handoff:
-  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587`.
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446061536`.
   Recent exports include `/tmp/hyperlane-review-export-1778681965` and
   `/tmp/hyperlane-review-export-1778682243`. This wrapper does not replace
   `make repro-check-agent`, clean-Rusk E2E, CI provisioning, or Dusk
@@ -780,7 +780,7 @@ Result:
   monorepo repro handoff text. `make review-gates` passed with review-hygiene
   export `/tmp/hyperlane-review-export-1778698688`.
 - The current gate refresh comment at
-  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446061536
   and the #8 CI/repro runbook comment were updated in place to avoid pinning
   moving Dusk PR-head SHAs or moving Dusk PR #1 check-run URLs. They now point
   reviewers to live PR check rollups for moving state and keep fixed refs only

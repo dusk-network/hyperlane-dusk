@@ -583,7 +583,7 @@ for issue in 4 5 6 7 8 9; do
             || fail "$file is missing current gate handoff section"
         rg -q -F 'currentGateRefreshHandoff' "$file" \
             || fail "$file is missing currentGateRefreshHandoff text"
-        rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587' \
+        rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446061536' \
             "$file" \
             || fail "$file is missing current gate refresh link"
         rg -q -F 'make review-gates' "$file" \
