@@ -430,6 +430,11 @@ No matches remain. Mailbox sender resolution previously used a direct
 contracts. Other contract reverts still intentionally use `assert!` and
 `expect(...)` for invariant checks and failed external calls.
 
+Production contract source is also scanned by `make gate-status` for direct
+`.unwrap()` calls. WarpNative, WarpDrc20, and WarpDrc20Collateral inbound router
+checks now use pattern matching instead of guarded `unwrap()` calls, so a future
+unguarded or weakly-guarded unwrap is reported by the review gate.
+
 ## Security Assumptions and Solidity Deviations
 
 These Dusk contracts intentionally do not attempt to be byte-for-byte Solidity

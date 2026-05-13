@@ -203,9 +203,9 @@ expect_fail \
 
 tmp_only_repro_report="$workdir/tmp-only-repro-report.md"
 cat >"$tmp_only_repro_report" <<'EOF'
-Latest checkout-v6 clean-layout repro evidence:
-- log: /tmp/hyperlane-review-checkout-v6-repro-1778695627.log
-- SHA256: 9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12
+Latest clean-layout repro evidence:
+- log: /tmp/hyperlane-warp-unwrap-repro-1778712399.log
+- SHA256: 814018acb922b7d27b9419837916986381bd9a729b56d3a9f6369466b008b8c0
 EOF
 expect_fail \
     report-hygiene-missing-latest-repro-archive \
@@ -217,9 +217,9 @@ expect_fail \
 
 path_only_repro_report="$workdir/path-only-repro-report.md"
 cat >"$path_only_repro_report" <<'EOF'
-Latest checkout-v6 clean-layout repro evidence:
-- archive: /home/hein_/projects/hyperlane/.codex-backups/hyperlane-checkout-v6-repro-1778695627.tgz
-- log SHA256: 9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12
+Latest clean-layout repro evidence:
+- archive: /home/hein_/projects/hyperlane/.codex-backups/hyperlane-warp-unwrap-repro-1778712399.tgz
+- log SHA256: 814018acb922b7d27b9419837916986381bd9a729b56d3a9f6369466b008b8c0
 EOF
 expect_fail \
     report-hygiene-missing-latest-repro-archive-hash \
@@ -233,7 +233,7 @@ missing_archive_report="$workdir/missing-archive-report.md"
 missing_archive_path="$workdir/missing-archive.tgz"
 missing_archive_hash="0000000000000000000000000000000000000000000000000000000000000000"
 cat >"$missing_archive_report" <<EOF
-Latest checkout-v6 clean-layout repro evidence:
+Latest clean-layout repro evidence:
 - archive: $missing_archive_path
 - archive SHA256: $missing_archive_hash
 EOF
@@ -252,7 +252,7 @@ hash_mismatch_archive="$workdir/hash-mismatch.tgz"
 printf 'not the expected archive\n' >"$hash_mismatch_archive"
 hash_mismatch_expected="1111111111111111111111111111111111111111111111111111111111111111"
 cat >"$hash_mismatch_report" <<EOF
-Latest checkout-v6 clean-layout repro evidence:
+Latest clean-layout repro evidence:
 - archive: $hash_mismatch_archive
 - archive SHA256: $hash_mismatch_expected
 EOF
