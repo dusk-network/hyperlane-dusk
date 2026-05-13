@@ -64,7 +64,7 @@ still fails at the expected private companion-repo preflight until
 `9050143c1ef12f76d117ee97effa79da8df3e334` and later
 `fc9a2eaec28a8226497c7d678fd591f9d274b6f8` refresh upstream-prep docs
 without changing runtime code. The live monorepo PR rollup now has no queued
-checks: 14 completed successes, 22 completed skips, and the one expected Dusk
+checks: 15 completed successes, 22 completed skips, and the one expected Dusk
 agent failure.
 
 Dusk-side runtime and secret-artifact hardening on 2026-05-13 moved
