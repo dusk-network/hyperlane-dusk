@@ -85,6 +85,15 @@ elif [ -n "$ARCHIVE_EXPECTED_SHA256S" ]; then
         expected_sha256="${entry#*=}"
         archive_path="$ARCHIVE_DIR/$archive_name"
         [ "$archive_name" != "$entry" ] || fail "invalid expected archive SHA256 entry: $entry"
+        case "$archive_name" in
+            *.tgz) ;;
+            *) fail "expected archive SHA256 entry must name a .tgz archive: $archive_name" ;;
+        esac
+        case "$archive_name" in
+            "" | /* | */* | ..)
+                fail "expected archive SHA256 entry contains unsafe path: $archive_name"
+                ;;
+        esac
         [ -f "$archive_path" ] || fail "expected archive not found: $archive_path"
         actual_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
         [ "$actual_sha256" = "$expected_sha256" ] \

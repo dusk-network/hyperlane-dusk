@@ -69,6 +69,10 @@ safe_sha256="$(sha256sum "$case_dir/archives/safe.tgz" | awk '{print $1}')"
 ARCHIVE_EXPECTED_SHA256S="safe.tgz=$safe_sha256" expect_pass "safe" "$case_dir/archives"
 ARCHIVE_EXPECTED_SHA256S="safe.tgz=0000000000000000000000000000000000000000000000000000000000000000" \
     expect_fail "sha-mismatch" "$case_dir/archives" 'expected sha256'
+ARCHIVE_EXPECTED_SHA256S="../safe.tgz=$safe_sha256" \
+    expect_fail "expected-sha-unsafe-path" "$case_dir/archives" 'unsafe path'
+ARCHIVE_EXPECTED_SHA256S="safe.txt=$safe_sha256" \
+    expect_fail "expected-sha-non-archive" "$case_dir/archives" 'must name a .tgz archive'
 printf '%s  ../safe.tgz\n' "$safe_sha256" >"$case_dir/unsafe-manifest.sha256"
 ARCHIVE_SHA256_MANIFEST="$case_dir/unsafe-manifest.sha256" \
     expect_fail "manifest-unsafe-path" "$case_dir/archives" 'unsafe path'
