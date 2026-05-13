@@ -11,7 +11,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 
 | Component | Repository | Branch | Evidence commit |
 |---|---|---|---|
-| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest checkout-v6 clean-layout repro run `1778695627` tested Dusk source ref `ef8ee43cd99569299b9744b498ac1bbac69950bc`, monorepo `515fab074024271935bc7795604dbb4f0823a937`, and upstream base `7689ff65f4929a72ad0650a03e8dd7d987f0e802`; log `/tmp/hyperlane-review-checkout-v6-repro-1778695627.log`, SHA256 `9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12` |
+| Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest checkout-v6 clean-layout repro run `1778695627` tested Dusk source ref `ef8ee43cd99569299b9744b498ac1bbac69950bc`, monorepo `515fab074024271935bc7795604dbb4f0823a937`, and upstream base `7689ff65f4929a72ad0650a03e8dd7d987f0e802`; durable archive `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-checkout-v6-repro-1778695627.tgz`, SHA256 `1f16dd8caa86c54ff351f0a0fc41f9ee8083c25515514ac77afb2f60f7483ccb`; contained log SHA256 `9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest checkout-v6 clean-layout repro run `1778695627` tested monorepo `515fab074024271935bc7795604dbb4f0823a937` after rebasing onto upstream `7689ff65f4929a72ad0650a03e8dd7d987f0e802`, with Dusk source ref `ef8ee43cd99569299b9744b498ac1bbac69950bc`; it passed the Hyperlane Rust agent check through `make repro-check-agent` |
 | Post-repro Dusk agent, CI guard, generated-config cleanup, and checkout hardening | `dusk-network/hyperlane-monorepo` + `dusk-network/hyperlane-dusk` | `feat/dusk-support-v2` + `feat/dusk-hardening-v2` | Monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20` after rebasing onto upstream `2b7db706023806b36a57e446205ae443537ae9ec`; removed Dusk agent `expect(...)` paths from RUES client construction and rkyv serialization, made the Dusk base-provider builder fallible, hardened `.github/workflows/dusk-agent-gate.yml`, guarded inherited Dusk-fork workflows, and refreshed upstream-base notes. Dusk-side RUES clients in `dusk-tx` and `e2e` now propagate HTTP client build errors instead of panicking. Dusk `8d3704e8f5a3ab0976b97fc3a68319e112e8affc` additionally cleans generated Hyperlane agent config files from E2E wrappers and extends `make secret-hygiene` to require that cleanup for future `gen-agent-configs.sh` consumers. Dusk `ef8ee43cd99569299b9744b498ac1bbac69950bc` and monorepo `515fab074024271935bc7795604dbb4f0823a937` update Dusk-controlled workflows to `actions/checkout@v6` after verifying the tag through the GitHub API. Latest clean-layout repro run `1778695627` passed the Dusk contract/type/tooling checks plus the Hyperlane Rust agent check against those heads. Live monorepo PR head and `monorepoCoveredPathDelta` are checked through live PR status and `make gate-status-fresh` rather than pinned in this row. |
 | Validated runtime clean-Rusk E2E refresh | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk PR head `fd2ec8fe996dd28f85259e6aebd8db25182c20de`, latest covered Dusk implementation ref `93ed3b07b26d8784610d2ba754a851490de15e21`, monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20`, upstream base `2b7db706023806b36a57e446205ae443537ae9ec`, clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778672800`; MessageIdMultisig E2E run `1778673269`; evidence comment https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440708799 |
@@ -587,9 +587,16 @@ Result:
   `ef8ee43cd99569299b9744b498ac1bbac69950bc`, monorepo
   `515fab074024271935bc7795604dbb4f0823a937`, upstream base
   `7689ff65f4929a72ad0650a03e8dd7d987f0e802`, and clean Rusk
-  `c0c64db4659500d077bb253ad13acba0e347d3fc`. Log:
-  `/tmp/hyperlane-review-checkout-v6-repro-1778695627.log`; SHA256:
-  `9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12`.
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`. Durable archive:
+  `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-checkout-v6-repro-1778695627.tgz`;
+  SHA256:
+  `1f16dd8caa86c54ff351f0a0fc41f9ee8083c25515514ac77afb2f60f7483ccb`.
+  The archive contains `/tmp/hyperlane-review-checkout-v6-repro-1778695627.log`
+  with SHA256
+  `9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12`;
+  `scripts/secret-hygiene-check.sh` passed over the archive staging directory
+  and tarball, and `scripts/archive-hygiene-check.sh` passed over the durable
+  evidence archive directory after the archive was added.
 - `bash scripts/local-repro-check.sh --agent-check`: passed. This wraps the
   same repeatable non-E2E checks plus the Hyperlane Rust agent check. It still
   requires local/private Rusk path dependencies and does not replace the
