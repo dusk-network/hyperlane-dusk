@@ -41,6 +41,13 @@ Notes:
 - `SECRET_HANDLING.md` documents the local/production boundary, and
   `make secret-hygiene` checks tracked source plus optional CI artifact paths
   for secret-handling regressions.
+- Live monorepo PR status on 2026-05-13 shows 86 checks: one expected
+  completed failure (`Dusk agent cargo check`) until `DUSK_ORG_READ_TOKEN` is
+  provisioned, 11 completed successes, 22 completed skips, and 52 queued
+  inherited upstream checks from the `test`, `rust`, and `Rebalancer E2E
+  Tests` workflows. The queued inherited checks started on
+  2026-05-13T08:35:27Z and are tracked separately from the Dusk review-policy
+  and Dusk agent gates.
 - A 2026-05-12 supplemental `make repro-check-agent` run passed on the Dusk
   and monorepo review-branch heads at the time of the run, using `RUSK_DIR` to
   point at the clean detached Rusk worktree. `scripts/local-repro-check.sh`

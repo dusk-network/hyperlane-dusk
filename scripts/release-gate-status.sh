@@ -210,7 +210,14 @@ print_pr() {
             "head: \(.headRefOid)\n" +
             "reviewDecision: \(.reviewDecision // "")\n" +
             "reviewRequests: \([.reviewRequests[].login] | join(", "))\n" +
-            "statusChecks: \(.statusCheckRollup | length)"
+            "statusChecks: \(.statusCheckRollup | length)\n" +
+            "statusCheckSummary: \(
+                [.statusCheckRollup[] | ((.status // "") + ":" + (.conclusion // ""))]
+                | sort
+                | group_by(.)
+                | map("\(.[0])=\(length)")
+                | join(", ")
+            )"
         '
 }
 

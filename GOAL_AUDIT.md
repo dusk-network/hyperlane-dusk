@@ -59,6 +59,12 @@ source contains `todo!`, `unimplemented!`, `panic!`, or `expect\(`. CI
 `Dusk review policy gate` passed on that head; CI `Dusk agent cargo check`
 passed the hardened scan and still fails at the expected private
 companion-repo preflight until `DUSK_ORG_READ_TOKEN` is provisioned.
+The same live monorepo PR rollup currently includes 52 queued inherited
+upstream checks from the `test`, `rust`, and `Rebalancer E2E Tests` workflows,
+plus 11 completed successes, 22 completed skips, and the one expected Dusk
+agent failure. Those inherited queued checks are tracked as GitHub Actions
+infrastructure status, not as additional Dusk runtime or contract test
+failures.
 
 Live verification on 2026-05-13:
 
