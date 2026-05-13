@@ -47,7 +47,8 @@ Prints the current machine-checkable review status:
   - production sign-off checklist counts from dusk-network/hyperlane-dusk#2
   - split production decision issue states from dusk-network/hyperlane-dusk#4-#9
   - workflow visibility for dusk-network/hyperlane-dusk
-  - repo-level Actions secret and self-hosted runner visibility for CI gate #8
+  - repo-level Actions source/status secret and self-hosted runner visibility
+    for CI gate #8
   - reviewer-facing evidence, routing, fresh-gate, dependency-alert,
     completion-audit, review-gates, and production-readiness handoff visibility
   - Dusk Dependabot open-alert visibility and local Cargo.lock vulnerable-range
