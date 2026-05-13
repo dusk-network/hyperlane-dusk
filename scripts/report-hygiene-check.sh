@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 REPORT_FILES="${REPORT_FILES:-GOAL_AUDIT.md TEST_REPORT.md CI_REPRO_STRATEGY.md}"
-STALE_REPORT_PATTERNS="${STALE_REPORT_PATTERNS:-25790821003|25791389384|75755608816|75757564450|0c5a7fa10152b117c1e60fbbcfd2618db370aec4|1778686937|1778686993|1778687061|https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4442208973|https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443848247|contains only.*manual-repro-check\\.yml.*and.*actionlint\\.yaml|latest clean-layout repro source ref[[:space:]]+\`8d3704e8f5a3ab0976b97fc3a68319e112e8affc\`|latest clean-layout repro monorepo[[:space:]]+ref \`9050143c1ef12f76d117ee97effa79da8df3e334\`}"
+STALE_REPORT_PATTERNS="${STALE_REPORT_PATTERNS:-25790821003|25791389384|75755608816|75757564450|0c5a7fa10152b117c1e60fbbcfd2618db370aec4|1778686937|1778686993|1778687061|https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4442208973|https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443848247|contains only.*manual-repro-check\\.yml.*and.*actionlint\\.yaml|latest clean-layout repro source ref[[:space:]]+\`8d3704e8f5a3ab0976b97fc3a68319e112e8affc\`|latest clean-layout repro monorepo[[:space:]]+ref \`9050143c1ef12f76d117ee97effa79da8df3e334\`|25819297778|25819297742|25804689562|25804689294|75856037468|75856036345|75804009086|75804008587}"
 
 fail() {
     echo "[FAIL] $*" >&2

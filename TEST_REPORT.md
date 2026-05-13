@@ -62,12 +62,11 @@ Notes:
   the full dispatcher validation command:
   `actionlint .github/workflows/manual-repro-check.yml .github/workflows/manual-repro-dispatcher-gate.yml .github/workflows/dusk-review-policy-gate.yml`.
   The same guard rejects the stale production-readiness run
-  `25797921067`/job `75779855203`. The PR #1 post-push status at that head
-  showed `Dusk review policy gate` success at
-  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25819297778/job/75856037468
-  and the expected `Production readiness guard` failure at
-  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25819297742/job/75856036345.
-  Local `make review-hygiene` also passed with export
+  `25797921067`/job `75779855203`. The PR #1 post-push status had the expected
+  shape: review policy success plus production-readiness failure while blockers
+  remained. Moving PR check URLs are now read from live PR check rollups instead
+  of retained in this historical report row. Local `make review-hygiene` passed
+  with export
   `/tmp/hyperlane-review-export-1778697862`, and
   `make completion-audit-status` passed with Dusk active ref
   `13eaca26336820e27b862ecf3cfccc564a47e751` and monorepo active ref
@@ -707,12 +706,9 @@ Result:
   bodies were repaired with raw Markdown update payloads.
 - `make review-hygiene` now rejects stale Dusk handoff heads and check URLs
   from the prior `54e56fa`, `db863ed`, and `cc3d75a` gate refreshes in active
-  reviewer-facing text. After the #8 runbook comment was refreshed to Dusk
-  `53b6117b54fc7a3ab29d5aff4254bfa31ba32868`, latest Dusk review-policy job
-  `https://github.com/dusk-network/hyperlane-dusk/actions/runs/25804689562/job/75804009086`,
-  and latest expected production-readiness failure
-  `https://github.com/dusk-network/hyperlane-dusk/actions/runs/25804689294/job/75804008587`,
-  `make review-hygiene` passed with export
+  reviewer-facing text. After the #8 runbook comment was refreshed to avoid
+  stale handoff wording and moving check-run pins, `make review-hygiene` passed
+  with export
   `/tmp/hyperlane-review-export-1778682025`.
 - `make review-hygiene` now checks workflow PR #3 comments for the current
   clean-layout repro evidence link
@@ -770,6 +766,12 @@ Result:
   `make review-gates` run passed with review-hygiene export
   `/tmp/hyperlane-review-export-1778700153` and dispatcher merge-order smoke
   log `/tmp/hyperlane-merge-order-logs.wc83Bz`.
+- Local report hygiene now rejects stale Dusk PR check-run/job IDs that were
+  previously retained in historical report rows. The live-head delta audit row
+  now points to live PR check rollups for moving status instead of pinning those
+  old URLs. The post-edit `make review-gates` run passed with review-hygiene
+  export `/tmp/hyperlane-review-export-1778700393` and dispatcher merge-order
+  smoke log `/tmp/hyperlane-merge-order-logs.QvdMgT`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
