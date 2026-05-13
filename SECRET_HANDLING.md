@@ -29,7 +29,9 @@ replace before production use.
 
 `.github/workflows/manual-repro-check.yml` is `workflow_dispatch` only and is
 intended for a Dusk-controlled self-hosted runner. It needs
-`DUSK_ORG_READ_TOKEN` only to checkout private Dusk repositories.
+`DUSK_ORG_READ_TOKEN` only for read-only source checkout of the internal repos
+used by the repro: `dusk-network/hyperlane-dusk`,
+`dusk-network/hyperlane-monorepo`, and `dusk-network/rusk-private`.
 
 `CI_REPRO_STRATEGY.md` records the proposed runner labels, checkout layout,
 token scope, artifact policy, and promotion path for reviewers to accept,
@@ -37,7 +39,7 @@ change, or replace.
 
 `DUSK_ORG_READ_TOKEN` must be a read-only repository/org token scoped to source
 checkout. It must not be a Dusk signer, validator key, consensus key password,
-or deployment secret.
+deployment secret, relayer key, or image-publishing credential.
 
 The workflow sets `persist-credentials: false` on checkout steps so the token is
 not left in local git config while the repro command runs.

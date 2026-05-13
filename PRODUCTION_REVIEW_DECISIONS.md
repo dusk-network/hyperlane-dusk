@@ -185,6 +185,13 @@ Recommended stance:
 
 Accept the manual self-hosted runner proposal for internal review once Dusk
 provides the `dusk-hyperlane` runner and read-only `DUSK_ORG_READ_TOKEN`.
+The token should be scoped only for source checkout of
+`dusk-network/hyperlane-dusk`, `dusk-network/hyperlane-monorepo`, and
+`dusk-network/rusk-private`; it must not be a signer, validator key, consensus
+password, deployment key, relayer key, or image-publishing credential. Hyperlane
+image-publishing/GitHub App credentials are not required for the internal Dusk
+review path because the inherited Rust image workflow is skipped on the Dusk
+fork and remains enabled for the later upstream PR path.
 Keep the protected `main` and required-review baseline now enabled for
 `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, then add
 at least one required status check once the accepted CI path exists.
