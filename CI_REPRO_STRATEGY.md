@@ -434,6 +434,36 @@ Recommended sequence:
 6. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides
    a runner specifically intended for long-running local network tests.
 
+### Required Check Promotion
+
+After #8 is accepted and the runner/token path has produced at least one stable
+manual run, update required status checks without dropping the existing review
+policy gate. If Dusk accepts the proposed GitHub Actions path, the expected
+check names are `Production readiness guard` for `dusk-network/hyperlane-dusk`
+and `Dusk agent cargo check` for `dusk-network/hyperlane-monorepo`.
+
+```bash
+gh api -X PATCH \
+  repos/dusk-network/hyperlane-dusk/branches/main/protection/required_status_checks \
+  -F strict=true \
+  -f 'contexts[]=Dusk review policy gate' \
+  -f 'contexts[]=Production readiness guard'
+
+gh api -X PATCH \
+  repos/dusk-network/hyperlane-monorepo/branches/main/protection/required_status_checks \
+  -F strict=true \
+  -f 'contexts[]=Dusk review policy gate' \
+  -f 'contexts[]=Dusk agent cargo check'
+
+gh api repos/dusk-network/hyperlane-dusk/branches/main/protection/required_status_checks \
+  --jq '{strict, contexts}'
+gh api repos/dusk-network/hyperlane-monorepo/branches/main/protection/required_status_checks \
+  --jq '{strict, contexts}'
+```
+
+If Dusk chooses another private CI system, replace the second context in each
+repo with the accepted check name and record the replacement in #8 and #2.
+
 ## Open Decision
 
 Dusk still needs to decide whether this self-hosted workflow is the accepted
