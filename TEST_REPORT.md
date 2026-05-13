@@ -801,6 +801,14 @@ Result:
   `/tmp/hyperlane-review-export-1778701318`, and dispatcher merge-order smoke
   logs `/tmp/hyperlane-merge-order-logs.OHtUdQ` and
   `/tmp/hyperlane-merge-order-logs.EX9psz`.
+- Archive hygiene now fails closed on `rg` errors in archive member-path scans
+  and no longer pipes special-file detection through `rg`. An invalid member
+  pattern probe with `ARCHIVE_UNSAFE_MEMBER_PATTERN='[invalid'` failed as
+  expected with log `/tmp/hyperlane-archive-hygiene-invalid-pattern.log`.
+  `make archive-hygiene-test` passed after the guard update, and the post-edit
+  `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778701507` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.ebdc5r`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
