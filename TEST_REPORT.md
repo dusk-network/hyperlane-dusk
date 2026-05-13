@@ -352,9 +352,9 @@ bash scripts/secret-hygiene-check.sh "$scan_root"
   closed on an incorrect archive hash, unsafe expected-SHA path, non-`.tgz`
   expected-SHA name, unsafe manifest entry, or unmanifested archive. A
   current-head `make review-gates` run against Dusk head
-  `fca3a7c5066209668840e0a1bb7e3513e6515e6f` passed with review-hygiene export
-  `/tmp/hyperlane-review-export-1778706377` and dispatcher merge-order smoke log
-  `/tmp/hyperlane-merge-order-logs.qDVs3P`.
+  `bd7cd3d1fdf7aa31ccf113e1f449cc7a8c6cd1ce` passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778706676` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.xRM4Um`.
 
 ## Commands Run
 
