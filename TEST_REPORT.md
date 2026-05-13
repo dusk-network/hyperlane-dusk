@@ -518,7 +518,8 @@ Result:
 - `make review-gates`: passed; this lightweight wrapper runs
   `make completion-audit-status`, `make archive-hygiene-test`,
   `make archive-hygiene`,
-  `make dependency-alert-status`, `make review-hygiene`,
+  `make dependency-alert-status`, `make report-hygiene`,
+  `make review-hygiene`,
   `make dispatcher-merge-order-smoke`, and
   `make gate-status-fresh`. Exact current-head `make review-gates` evidence is
   maintained in the current gate refresh handoff:
@@ -710,6 +711,11 @@ Result:
   exports included `/tmp/hyperlane-review-export-1778690375` and
   `/tmp/hyperlane-review-export-1778690519`, and `make review-gates` exported
   `/tmp/hyperlane-review-export-1778690383`.
+- `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
+  `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
+  implementation head, monorepo success count, and old export paths that were
+  corrected during the current report refresh, so `make review-gates` now
+  covers both GitHub-facing review text and local review reports.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and generated agent config files and remove them on exit
   after stopping agents. `bash -n` passed for the touched E2E scripts listed

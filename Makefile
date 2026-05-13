@@ -116,6 +116,10 @@ archive-hygiene-test:
 review-hygiene:
 	bash scripts/github-review-hygiene.sh
 
+.PHONY: report-hygiene
+report-hygiene:
+	bash scripts/report-hygiene-check.sh
+
 .PHONY: dependency-alert-status
 dependency-alert-status:
 	bash scripts/dependency-alert-status.sh
@@ -150,7 +154,7 @@ gate-status-fresh:
 # reviewer-facing handoff text, dispatcher merge-order safety, and live
 # PR/sign-off gate state.
 .PHONY: review-gates
-review-gates: completion-audit-status archive-hygiene-test archive-hygiene dependency-alert-status review-hygiene dispatcher-merge-order-smoke gate-status-fresh
+review-gates: completion-audit-status archive-hygiene-test archive-hygiene dependency-alert-status report-hygiene review-hygiene dispatcher-merge-order-smoke gate-status-fresh
 
 .PHONY: production-readiness-guard
 production-readiness-guard:
@@ -191,6 +195,7 @@ help:
 	@echo "  archive-hygiene-test"
 	@echo "                     Regression-test archive hygiene scanner rejection paths"
 	@echo "  review-hygiene     Check GitHub review text for stale refs/secrets"
+	@echo "  report-hygiene     Check local reports for stale evidence refs"
 	@echo "  dependency-alert-status"
 	@echo "                     Compare open Dependabot Cargo.lock alerts to the local lockfile"
 	@echo "  completion-audit-status"
