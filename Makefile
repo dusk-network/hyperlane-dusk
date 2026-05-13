@@ -140,7 +140,7 @@ gate-status-fresh:
 # or E2E scripts; it verifies preservation evidence, dependency-alert triage,
 # reviewer-facing handoff text, and live PR/sign-off gate state.
 .PHONY: review-gates
-review-gates: completion-audit-status dependency-alert-status review-hygiene gate-status-fresh
+review-gates: completion-audit-status archive-hygiene dependency-alert-status review-hygiene gate-status-fresh
 
 .PHONY: production-readiness-guard
 production-readiness-guard:

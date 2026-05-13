@@ -112,8 +112,9 @@ Observed:
   branch refs, local backup artifact hashes, active branch refs, and untracked
   source state in both active repos.
 - `make review-gates` wraps the lightweight non-E2E review gates:
-  `make completion-audit-status`, `make dependency-alert-status`,
-  `make review-hygiene`, and `make gate-status-fresh`.
+  `make completion-audit-status`, `make archive-hygiene`,
+  `make dependency-alert-status`, `make review-hygiene`, and
+  `make gate-status-fresh`.
 - `make production-readiness-guard` is a negative guard that must fail while
   known machine-checkable production blockers remain open. Current blockers are
   open/unapproved internal PRs, unchecked sign-off items, open split decision

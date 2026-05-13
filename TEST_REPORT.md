@@ -404,10 +404,10 @@ Result:
   `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, and no placeholder matches in
   tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
 - `make review-gates`: passed; this lightweight wrapper runs
-  `make completion-audit-status`, `make dependency-alert-status`,
-  `make review-hygiene`, and `make gate-status-fresh`. It does not replace
-  `make repro-check-agent`, clean-Rusk E2E, CI provisioning, or Dusk
-  production sign-off.
+  `make completion-audit-status`, `make archive-hygiene`,
+  `make dependency-alert-status`, `make review-hygiene`, and
+  `make gate-status-fresh`. It does not replace `make repro-check-agent`,
+  clean-Rusk E2E, CI provisioning, or Dusk production sign-off.
 - `make production-readiness-guard`: failed as expected while external
   production blockers remain open. It reports open internal PR/review/status
   gates, unchecked sign-off items, open split decision issues, required
