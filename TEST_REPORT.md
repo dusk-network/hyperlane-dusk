@@ -345,9 +345,10 @@ bash scripts/secret-hygiene-check.sh "$scan_root"
   `make archive-hygiene-test` self-test includes `sha-mismatch`,
   `manifest-unsafe-path`, and `manifest-missing-archive` fixtures that fail
   closed on an incorrect archive hash, unsafe manifest entry, or unmanifested
-  archive. The post-edit `make review-gates` run passed with review-hygiene
-  export `/tmp/hyperlane-review-export-1778705749` and dispatcher merge-order
-  smoke log `/tmp/hyperlane-merge-order-logs.4UoRwG`.
+  archive. The post-push `make review-gates` run against Dusk head
+  `445eafdefeb1f33d3cb9b704efad9d45f397b3fd` passed with review-hygiene
+  export `/tmp/hyperlane-review-export-1778706024` and dispatcher merge-order
+  smoke log `/tmp/hyperlane-merge-order-logs.DTQ631`.
 
 ## Commands Run
 
