@@ -34,11 +34,11 @@ setup to accept, change, or replace.
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
   after the workflow file is merged or otherwise added to the default branch.
-- A narrow default-branch dispatcher PR exists as
-  dusk-network/hyperlane-dusk#3. It contains only
-  `.github/workflows/manual-repro-check.yml` and `.github/actionlint.yaml`, so
-  Dusk can make the workflow visible without first merging the full Hyperlane
-  implementation PR.
+- A workflow-only default-branch dispatcher PR exists as
+  dusk-network/hyperlane-dusk#3. It contains the manual repro workflow,
+  dispatcher self-check workflow, shared Dusk review-policy workflow, and
+  actionlint config, so Dusk can make the manual repro workflow visible without
+  first merging the full Hyperlane implementation PR.
 - The implementation branch now also proposes
   `.github/workflows/production-readiness-gate.yml`. This is a lightweight
   GitHub-hosted status-check candidate that runs

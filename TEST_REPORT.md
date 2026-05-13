@@ -593,10 +593,13 @@ Result:
   `gh workflow run` command shape and says to record both requested refs and
   resolved heads for release evidence. The workflow logs the resolved checkout
   heads before running the repro command.
-- dusk-network/hyperlane-dusk#3: opened as a narrow default-branch dispatcher
-  PR containing only `.github/workflows/manual-repro-check.yml` and
+- dusk-network/hyperlane-dusk#3: opened as a workflow-only default-branch
+  dispatcher PR containing `.github/workflows/manual-repro-check.yml`,
+  `.github/workflows/manual-repro-dispatcher-gate.yml`,
+  `.github/workflows/dusk-review-policy-gate.yml`, and
   `.github/actionlint.yaml`, so Dusk can make the manual workflow visible
-  independently from the full implementation PR.
+  independently from the full implementation PR while preserving the shared
+  review-policy gate.
 - `make dispatcher-merge-order-smoke`: passed on 2026-05-13. This target uses
   temporary detached worktrees from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` and verifies both current remote
