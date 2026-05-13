@@ -304,25 +304,10 @@ default branch contents.
 
 Once the workflow exists on the default branch, either by merging
 dusk-network/hyperlane-dusk#3 or by another Dusk-approved equivalent, and the
-runner/token are available, a reviewer can dispatch the current internal
-review shape with:
-
-```bash
-gh workflow run manual-repro-check.yml \
-  --repo dusk-network/hyperlane-dusk \
-  --ref main \
-  -f dusk_ref=feat/dusk-hardening-v2 \
-  -f rusk_ref=c0c64db4659500d077bb253ad13acba0e347d3fc \
-  -f monorepo_ref=feat/dusk-support-v2
-```
-
-For release evidence, prefer exact commit SHAs in those three inputs and record
-the resolved heads in `TEST_REPORT.md`. The workflow prints each requested ref
-and resolved checkout head before running the repro command so reviewers can
-copy the exact Dusk, Rusk, and monorepo SHAs from the Actions log.
-
-To dispatch against exact current internal review heads without hard-coding a
-Dusk SHA that becomes stale after docs-only commits, resolve the PR heads first:
+runner/token are available, dispatch against exact current internal review
+heads by resolving the PR heads immediately before running the workflow. This
+avoids stale hard-coded SHAs after docs-only commits while still recording the
+exact commits used for release evidence:
 
 ```bash
 dusk_ref="$(gh pr view 1 --repo dusk-network/hyperlane-dusk --json headRefOid --jq .headRefOid)"
@@ -342,6 +327,11 @@ Expected resolved heads:
 - Dusk: the live head of dusk-network/hyperlane-dusk#1.
 - Rusk: `c0c64db4659500d077bb253ad13acba0e347d3fc`.
 - Monorepo: the live head of dusk-network/hyperlane-monorepo#1.
+
+Record the workflow URL, requested refs, resolved heads, and pass/fail result
+in `TEST_REPORT.md`. The workflow prints each requested ref and resolved
+checkout head before running the repro command so reviewers can copy the exact
+Dusk, Rusk, and monorepo SHAs from the Actions log.
 
 Earlier local review-head E2E evidence tested Dusk
 `2ac225175b15aac465d100e748ba68f8b14bd545`; commit
