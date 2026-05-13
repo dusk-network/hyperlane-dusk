@@ -153,18 +153,22 @@ wait_for_status_checks() {
     local number="$3"
     local elapsed=0
     local rollup
+    local status_count
     local non_completed_count
 
     while true; do
         rollup="$(status_rollup "$repo" "$number")"
+        status_count="$(printf '%s\n' "$rollup" | jq 'length')"
         non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
 
-        if [ "$non_completed_count" -eq 0 ] || [ "$elapsed" -ge "$STATUS_CHECK_WAIT_SECONDS" ]; then
+        if { [ "$status_count" -ge "$MIN_STATUS_CHECKS" ] && [ "$non_completed_count" -eq 0 ]; } ||
+            [ "$elapsed" -ge "$STATUS_CHECK_WAIT_SECONDS" ]; then
             printf '%s\n' "$rollup"
             return 0
         fi
 
-        printf '%sNonCompletedStatusChecksWaiting: %s\n' "$label" "$non_completed_count" >&2
+        printf '%sStatusChecksWaiting: %s/%s, nonCompleted: %s\n' \
+            "$label" "$status_count" "$MIN_STATUS_CHECKS" "$non_completed_count" >&2
         sleep "$STATUS_CHECK_POLL_SECONDS"
         elapsed=$((elapsed + STATUS_CHECK_POLL_SECONDS))
     done

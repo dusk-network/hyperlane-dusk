@@ -827,6 +827,14 @@ Result:
   `make review-gates`; the post-edit `make review-gates` run passed with
   review-hygiene export `/tmp/hyperlane-review-export-1778702613` and
   dispatcher merge-order smoke log `/tmp/hyperlane-merge-order-logs.YO0Zpk`.
+- `make production-readiness-guard` now waits for the minimum expected PR check
+  count as well as non-completed checks, avoiding transient zero-check snapshots
+  immediately after a push while still failing if checks never appear before the
+  wait timeout. The post-edit `make production-readiness-guard` run failed on
+  the expected review/sign-off/runner/secret blockers, and the post-edit
+  `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778702836` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.oQN6ID`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
