@@ -13,7 +13,7 @@ production-review gates and useful follow-up test areas are listed at the end.
 |---|---|---|---|
 | Dusk contracts/tooling | `dusk-network/hyperlane-dusk` | `feat/dusk-hardening-v2` | Latest clean-layout repro run `1778671118` tested Dusk source ref `93ed3b07b26d8784610d2ba754a851490de15e21`, monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20`, upstream base `2b7db706023806b36a57e446205ae443537ae9ec`, and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
 | Hyperlane agent integration | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Latest clean-layout repro run `1778671118` tested monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20` after rebasing onto upstream `2b7db706023806b36a57e446205ae443537ae9ec`, with Dusk source ref `93ed3b07b26d8784610d2ba754a851490de15e21` and clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc` |
-| Post-repro Dusk agent and CI guard hardening | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20` after rebasing onto upstream `2b7db706023806b36a57e446205ae443537ae9ec`; removed Dusk agent `expect(...)` paths from RUES client construction and rkyv serialization, made the Dusk base-provider builder fallible, hardened `.github/workflows/dusk-agent-gate.yml` to use `git grep` for `todo!`, `unimplemented!`, `panic!`, and `expect\\(` in `rust/main/chains/hyperlane-dusk/src`, guarded inherited Rust/monorepo image-publishing workflows and inherited Depot-backed PR workflows from Dusk-fork Hyperlane-org infrastructure, and refreshed upstream-base notes. Dusk-side RUES clients in `dusk-tx` and `e2e` now propagate HTTP client build errors instead of panicking. Clean-layout repro run `1778671118` passed the Dusk contract/type/tooling checks plus the Hyperlane Rust agent check against the latest covered implementation ref `93ed3b07b26d8784610d2ba754a851490de15e21`; later docs/guard-only commits are outside the repro-covered runtime paths. CI `Dusk review policy gate` passed at https://github.com/dusk-network/hyperlane-monorepo/actions/runs/25793366866/job/75764349170; CI `Dusk agent cargo check` failed at the expected private companion-repo preflight until `DUSK_ORG_READ_TOKEN` is provisioned: https://github.com/dusk-network/hyperlane-monorepo/actions/runs/25793366931/job/75764349240. The live monorepo PR rollup has no queued checks: `COMPLETED:FAILURE=1`, `COMPLETED:SKIPPED=22`, and `COMPLETED:SUCCESS=15`. |
+| Post-repro Dusk agent and CI guard hardening | `dusk-network/hyperlane-monorepo` | `feat/dusk-support-v2` | Monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20` after rebasing onto upstream `2b7db706023806b36a57e446205ae443537ae9ec`; removed Dusk agent `expect(...)` paths from RUES client construction and rkyv serialization, made the Dusk base-provider builder fallible, hardened `.github/workflows/dusk-agent-gate.yml` to use `git grep` for `todo!`, `unimplemented!`, `panic!`, and `expect\\(` in `rust/main/chains/hyperlane-dusk/src`, guarded inherited Rust/monorepo image-publishing workflows and inherited Depot-backed PR workflows from Dusk-fork Hyperlane-org infrastructure, and refreshed upstream-base notes. Dusk-side RUES clients in `dusk-tx` and `e2e` now propagate HTTP client build errors instead of panicking. Clean-layout repro run `1778671118` passed the Dusk contract/type/tooling checks plus the Hyperlane Rust agent check against the latest covered implementation ref `93ed3b07b26d8784610d2ba754a851490de15e21`; later docs/guard-only commits are outside the repro-covered runtime paths. CI `Dusk review policy gate` passed at https://github.com/dusk-network/hyperlane-monorepo/actions/runs/25793366866/job/75764349170; CI `Dusk agent cargo check` failed at the expected private companion-repo preflight until `DUSK_ORG_READ_TOKEN` is provisioned: https://github.com/dusk-network/hyperlane-monorepo/actions/runs/25793366931/job/75764349240. The live monorepo PR rollup has no queued checks: `COMPLETED:FAILURE=1`, `COMPLETED:SKIPPED=22`, and `COMPLETED:SUCCESS=17`. |
 | Current-head clean-Rusk E2E refresh | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk PR head `fd2ec8fe996dd28f85259e6aebd8db25182c20de`, latest covered Dusk implementation ref `93ed3b07b26d8784610d2ba754a851490de15e21`, monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20`, upstream base `2b7db706023806b36a57e446205ae443537ae9ec`, clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778672800`; MessageIdMultisig E2E run `1778673269`; evidence comment https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440708799 |
 | Post-rebase clean-Rusk E2E evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk `b1ccdc9d1e7797bba4939405200aa4cc5aff2ea8`; monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778609411`; MessageIdMultisig E2E run `1778609697` |
 | Dependency-remediated clean-Rusk E2E evidence | `dusk-network/hyperlane-dusk` + `dusk-network/hyperlane-monorepo` | `feat/dusk-hardening-v2` + `feat/dusk-support-v2` | Dusk dependency-remediation worktree with `Cargo.toml`/`Cargo.lock` updates documented below; monorepo `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`; upstream base `c6bce706316206ac7b5652155c9ea92e96f78c39`; clean Rusk `c0c64db4659500d077bb253ad13acba0e347d3fc`; TestMock E2E run `1778613709`; MessageIdMultisig E2E run `1778613956` |
@@ -42,10 +42,10 @@ Notes:
 - `SECRET_HANDLING.md` documents the local/production boundary, and
   `make secret-hygiene` checks tracked source plus optional CI artifact paths
   for secret-handling regressions.
-- Live monorepo PR status on 2026-05-13 now shows 38 checks after adding
+- Live monorepo PR status on 2026-05-13 now shows 40 checks after adding
   Dusk-fork guards for inherited Depot-backed upstream workflows: one expected
   completed failure (`Dusk agent cargo check`) until `DUSK_ORG_READ_TOKEN` is
-  provisioned, 15 completed successes, 22 completed skips, and no queued
+  provisioned, 17 completed successes, 22 completed skips, and no queued
   checks. The earlier 52 queued inherited upstream checks from `test`, `rust`,
   and `Rebalancer E2E Tests` are superseded by monorepo
   `48dcc0c87efc12584904d841d5088c1ae4acef20`.
@@ -212,10 +212,11 @@ Notes:
   `cc34e8e31abcab6ef3ef05587f38ce7963257586c30375d59b46c25296e0b2a1`.
   `scripts/secret-hygiene-check.sh` passed over the repro log and tarball.
 - The live Dusk and monorepo PR heads are checked through GitHub and
-  `make gate-status`. Current-head clean-layout repro run `1778615349` covers
-  Dusk `016eaa89e1afce0ef9a7534fe285d9aa16e26183` and monorepo
-  `006e49dd7041097384683a78b1c1973c83e90de8`, which were the active PR heads
-  at the time of the latest repro refresh.
+  `make gate-status`. Latest clean-layout repro run `1778671118` covers
+  Dusk implementation source ref
+  `93ed3b07b26d8784610d2ba754a851490de15e21` and monorepo
+  `48dcc0c87efc12584904d841d5088c1ae4acef20`; later Dusk changes are outside
+  `DUSK_REPRO_COVERED_PATHS`, and the guard reports `coveredPathDelta: none`.
 - A 2026-05-12 dependency advisory remediation pass updated the Dusk repo Rust
   dependency graph for GitHub-reported advisories: `wasmtime` 25.0.3 -> 36.0.9,
   `openssl` 0.10.75 -> 0.10.79, `openssl-sys` 0.9.111 -> 0.9.115,
@@ -475,7 +476,7 @@ Result:
   protection/status-check policy handoff text, reviewer-facing latest
   clean-layout repro path delta handoff text, current Hyperlane upstream drift,
   no covered-path delta since latest clean-layout repro source ref
-  `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, and no placeholder matches in
+  `93ed3b07b26d8784610d2ba754a851490de15e21`, and no placeholder matches in
   tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
 - `make review-gates`: passed; this lightweight wrapper runs
   `make completion-audit-status`, `make archive-hygiene-test`,
