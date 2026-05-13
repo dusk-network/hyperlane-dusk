@@ -130,10 +130,10 @@ Observed:
   A 2026-05-13 `make dispatcher-merge-order-smoke` check from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` verified that current dispatcher
   head `a73cb10f0be7693a5d6eab4ebedcccb640b29655` and the implementation
-  head under test `ae937e79e60af2d1c6f02e303be8956bddf6a133` merge cleanly in either
+  head under test `539bfeb00b18d89fb96dfff653efab3817b1af0f` merge cleanly in either
   order, with no workflow/actionlint file drift after the combined merge.
   Latest command logs from the refreshed review-gates bundle were written under
-  `/tmp/hyperlane-merge-order-logs.eGzQ7Q`.
+  `/tmp/hyperlane-merge-order-logs.ZXtrp8`.
 - Split decision issues #4 through #9 are all open with `need:feedback` and
   `type:rfc` labels.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
@@ -165,9 +165,10 @@ Observed:
   alert triage is unavailable or includes vulnerable locked versions, unparsed
   vulnerable ranges, or missing patched-version data. In CI, it ignores its
   own current `GITHUB_RUN_ID` and briefly polls other concurrently-started
-  status checks before counting them, so the gate does not self-block while
-  still catching genuinely incomplete companion checks. It is not a
-  production-readiness proof.
+  status checks before counting them. It now also waits for the minimum expected
+  PR check count before treating the check rollup as settled, so a just-pushed
+  branch is not reported as having zero checks while GitHub Actions is still
+  creating check runs. It is not a production-readiness proof.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
   `archive/dusk-hyperlane-prototype-20260511`.
