@@ -70,7 +70,7 @@ Notes:
 - Dusk contract deployments are deterministic. Switching ISM modes requires a
   fresh rusk state (the script handles this via `stop-env/start-env`).
 - The script generates temporary agent configs in `/tmp` with restrictive file
-  permissions (they contain dev keys).
+  permissions, uses them only while agents run, and deletes them on exit.
 - Dusk consensus key passwords are passed to `dusk-tx` through environment
   variables instead of CLI arguments, so they do not appear in process argv.
   For production-style local testing, prefer `DUSK_CONSENSUS_PASSWORD_FILE`.
@@ -256,8 +256,9 @@ it does not appear in shell history or process argv.
 key files under `/tmp` with `umask 077`. The configs point at Dusk key files
 and still contain local Anvil signer material; neither the configs nor the key
 files may be committed, uploaded as CI artifacts, or reused for production.
-The E2E wrappers delete generated Dusk signer key files on exit after stopping
-running agents; logs and non-secret path references are left for debugging.
+The E2E wrappers delete generated Dusk signer key files and generated agent
+config files on exit after stopping running agents; logs and non-secret path
+references are left for debugging.
 The EVM private keys used by these scripts are Anvil dev keys only.
 
 Run `make secret-hygiene` before review. Before uploading CI or E2E artifacts,

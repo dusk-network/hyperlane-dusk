@@ -665,10 +665,11 @@ Result:
   `make review-hygiene` passed with export
   `/tmp/hyperlane-review-export-1778682025`.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
-  signer key files and remove them on exit after stopping agents. `bash -n`
-  passed for the touched E2E scripts listed above. `make secret-hygiene` now
-  fails if a future E2E wrapper calls `gen-agent-configs.sh` without both the
-  cleanup tracking variable and the generated-key `rm -f` cleanup call.
+  signer key files and generated agent config files and remove them on exit
+  after stopping agents. `bash -n` passed for the touched E2E scripts listed
+  above. `make secret-hygiene` now fails if a future E2E wrapper calls
+  `gen-agent-configs.sh` without both cleanup tracking variables and the
+  generated-key/config `rm -f` cleanup calls.
 - Review-head clean-layout repro run `1778586371` passed against Dusk
   `2ac225175b15aac465d100e748ba68f8b14bd545`, monorepo
   `a44020dc998b7fe868254a5d1a349b9eb8ded899`, and clean Rusk

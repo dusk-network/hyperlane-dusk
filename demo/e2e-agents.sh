@@ -36,6 +36,7 @@ TIMEOUT_SECS="${TIMEOUT_SECS:-240}"
 CURRENT_RELAYER_PID=""
 CURRENT_VALIDATOR_PID=""
 GENERATED_DUSK_SIGNER_KEY_FILES=()
+GENERATED_AGENT_CONFIG_FILES=()
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -91,6 +92,9 @@ cleanup() {
     kill_pid "$CURRENT_VALIDATOR_PID"
     if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
         rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
+    fi
+    if [ "${#GENERATED_AGENT_CONFIG_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_AGENT_CONFIG_FILES[@]}" 2>/dev/null || true
     fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
@@ -153,6 +157,10 @@ run_case() {
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
     validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
     dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+    GENERATED_AGENT_CONFIG_FILES+=("$relayer_cfg")
+    if [ -n "$validator_cfg" ]; then
+        GENERATED_AGENT_CONFIG_FILES+=("$validator_cfg")
+    fi
     if [ -n "$dusk_signer_key_file" ]; then
         GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
     fi
@@ -298,6 +306,10 @@ PY
     CURRENT_VALIDATOR_PID=""
     if [ -n "$dusk_signer_key_file" ]; then
         rm -f "$dusk_signer_key_file" 2>/dev/null || true
+    fi
+    rm -f "$relayer_cfg" 2>/dev/null || true
+    if [ -n "$validator_cfg" ]; then
+        rm -f "$validator_cfg" 2>/dev/null || true
     fi
 
     info "Stopping environment..."

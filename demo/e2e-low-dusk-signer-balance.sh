@@ -27,6 +27,7 @@ UNFUNDED_DUSK_SECRET_KEY="${UNFUNDED_DUSK_SECRET_KEY:-0x111111111111111111111111
 
 CURRENT_RELAYER_PID=""
 GENERATED_DUSK_SIGNER_KEY_FILES=()
+GENERATED_AGENT_CONFIG_FILES=()
 
 require_tools() {
     command -v jq >/dev/null 2>&1 || fail "jq not found"
@@ -59,6 +60,9 @@ cleanup() {
     kill_pid "$CURRENT_RELAYER_PID"
     if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
         rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
+    fi
+    if [ "${#GENERATED_AGENT_CONFIG_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_AGENT_CONFIG_FILES[@]}" 2>/dev/null || true
     fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
@@ -168,11 +172,13 @@ bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism testMock >"$deploy_log" 2>&1 || 
 cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$run_id")"
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
 generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+GENERATED_AGENT_CONFIG_FILES+=("$relayer_cfg")
 if [ -n "$generated_dusk_signer_key_file" ]; then
     GENERATED_DUSK_SIGNER_KEY_FILES+=("$generated_dusk_signer_key_file")
 fi
 low_relayer_cfg="/tmp/hyperlane-relayer-low-signer-testMock-${run_id}.json"
 funded_relayer_cfg="/tmp/hyperlane-relayer-funded-signer-testMock-${run_id}.json"
+GENERATED_AGENT_CONFIG_FILES+=("$low_relayer_cfg" "$funded_relayer_cfg")
 low_dusk_signer_key_file="/tmp/hyperlane-dusk-signer-low-testMock-${run_id}.key"
 GENERATED_DUSK_SIGNER_KEY_FILES+=("$low_dusk_signer_key_file")
 

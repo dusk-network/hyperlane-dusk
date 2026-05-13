@@ -46,6 +46,11 @@ while IFS= read -r script; do
         echo "$script" >&2
         fail "E2E scripts that generate agent configs must clean up Dusk signer key files"
     fi
+    if ! rg -q 'GENERATED_AGENT_CONFIG_FILES' "$script" ||
+       ! rg -q 'rm -f "\$\{GENERATED_AGENT_CONFIG_FILES\[@\]\}"' "$script"; then
+        echo "$script" >&2
+        fail "E2E scripts that generate agent configs must clean up generated agent config files"
+    fi
 done < <(git ls-files 'demo/*.sh' | xargs rg -l 'gen-agent-configs\.sh' || true)
 
 if [ "$#" -gt 0 ]; then

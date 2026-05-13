@@ -18,8 +18,8 @@ demo keys are not production keys.
 - Dusk `duskKey.keyFile` paths must point at regular files with no group/world
   permissions on Unix.
 - E2E wrappers that call `demo/gen-agent-configs.sh` remove generated Dusk
-  signer key files on exit after stopping any running agents. Logs and
-  non-secret path references may remain for debugging.
+  signer key files and generated agent config files on exit after stopping any
+  running agents. Logs and non-secret path references may remain for debugging.
 
 `PRODUCTION_SIGNER_POLICY.md` records the current `duskKey` signer-file/env
 support and the signer-custody choices that Dusk must accept, change, or

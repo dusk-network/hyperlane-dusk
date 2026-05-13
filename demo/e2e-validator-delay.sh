@@ -22,6 +22,7 @@ AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-1}"
 CURRENT_RELAYER_PID=""
 CURRENT_VALIDATOR_PID=""
 GENERATED_DUSK_SIGNER_KEY_FILES=()
+GENERATED_AGENT_CONFIG_FILES=()
 
 require_tools() {
     command -v jq >/dev/null 2>&1 || fail "jq not found"
@@ -55,6 +56,9 @@ cleanup() {
     kill_pid "$CURRENT_VALIDATOR_PID"
     if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
         rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
+    fi
+    if [ "${#GENERATED_AGENT_CONFIG_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_AGENT_CONFIG_FILES[@]}" 2>/dev/null || true
     fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
@@ -193,6 +197,7 @@ cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism messageIdMultisig --ru
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
 validator_cfg="$(echo "$cfg_json" | jq -r '.validator')"
 generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+GENERATED_AGENT_CONFIG_FILES+=("$relayer_cfg" "$validator_cfg")
 if [ -n "$generated_dusk_signer_key_file" ]; then
     GENERATED_DUSK_SIGNER_KEY_FILES+=("$generated_dusk_signer_key_file")
 fi
