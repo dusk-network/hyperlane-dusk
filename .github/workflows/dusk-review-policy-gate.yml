@@ -38,3 +38,33 @@ jobs:
           else
             git diff --check HEAD~1..HEAD
           fi
+
+      - name: Check review guard scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/github-review-hygiene.sh ] || [ ! -f scripts/fail-closed-self-test.sh ]; then
+            echo "Review guard scripts not present in this workflow-only branch; skipping script checks."
+            exit 0
+          fi
+
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
+          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
+            bash -n "$script"
+          done
+
+          stale_dispatcher_comments="$(mktemp)"
+          cat >"$stale_dispatcher_comments" <<'EOF'
+          COMMENT_ID=1
+          Latest clean-layout repro evidence: https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744
+          ---END---
+          EOF
+
+          if bash scripts/github-review-hygiene.sh --dispatcher-comment-scan-only "$stale_dispatcher_comments"; then
+            echo "::error::stale dispatcher repro evidence was accepted"
+            exit 1
+          fi
