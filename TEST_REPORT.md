@@ -792,6 +792,15 @@ Result:
   `/tmp/hyperlane-review-export-1778701047`, and dispatcher merge-order smoke
   logs `/tmp/hyperlane-merge-order-logs.prF75U` and
   `/tmp/hyperlane-merge-order-logs.758Ges`.
+- Secret hygiene now fails closed on `rg` errors in tracked-source and runtime
+  artifact scans. An unreadable runtime artifact probe failed as expected with
+  log `/tmp/hyperlane-secret-hygiene-unreadable.log`. `make secret-hygiene` and
+  `make archive-hygiene-test` passed after the guard update, and the post-edit
+  `make review-gates` runs passed with review-hygiene exports
+  `/tmp/hyperlane-review-export-1778701258` and
+  `/tmp/hyperlane-review-export-1778701318`, and dispatcher merge-order smoke
+  logs `/tmp/hyperlane-merge-order-logs.OHtUdQ` and
+  `/tmp/hyperlane-merge-order-logs.EX9psz`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
