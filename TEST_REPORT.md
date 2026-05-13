@@ -57,6 +57,21 @@ Notes:
   https://github.com/dusk-network/hyperlane-dusk/actions/runs/25804304358/job/75802609838
   and the expected `Production readiness guard` failure at
   https://github.com/dusk-network/hyperlane-dusk/actions/runs/25804304353/job/75802609692.
+- Dusk commit `13eaca26336820e27b862ecf3cfccc564a47e751` extends
+  `scripts/github-review-hygiene.sh` so active PR/issue handoff text must name
+  the full dispatcher validation command:
+  `actionlint .github/workflows/manual-repro-check.yml .github/workflows/manual-repro-dispatcher-gate.yml .github/workflows/dusk-review-policy-gate.yml`.
+  The same guard rejects the stale production-readiness run
+  `25797921067`/job `75779855203`. Post-push PR #1 status at that head showed
+  `Dusk review policy gate` success at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25819297778/job/75856037468
+  and the expected `Production readiness guard` failure at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25819297742/job/75856036345.
+  Local `make review-hygiene` also passed with export
+  `/tmp/hyperlane-review-export-1778697862`, and
+  `make completion-audit-status` passed with Dusk active ref
+  `13eaca26336820e27b862ecf3cfccc564a47e751` and monorepo active ref
+  `515fab074024271935bc7795604dbb4f0823a937`.
 - A 2026-05-12 supplemental `make repro-check-agent` run passed on the Dusk
   and monorepo review-branch heads at the time of the run, using `RUSK_DIR` to
   point at the clean detached Rusk worktree. `scripts/local-repro-check.sh`
@@ -606,12 +621,12 @@ Result:
   landing orders: dispatcher branch `origin/ci/manual-repro-workflow`
   `a73cb10f0be7693a5d6eab4ebedcccb640b29655` followed by implementation
   branch `origin/feat/dusk-hardening-v2`
-  `4eb984bf79daec589e63b55354d7a68bab6c10a9`, and the reverse order. In both
+  `13eaca26336820e27b862ecf3cfccc564a47e751`, and the reverse order. In both
   orders, `.github/workflows/manual-repro-check.yml`,
   `.github/workflows/dusk-review-policy-gate.yml`, and
   `.github/actionlint.yaml` had an empty diff against the implementation
   branch after the combined merge. Temporary command logs were written under
-  `/tmp/hyperlane-merge-order-logs.Gp0XlL`.
+  `/tmp/hyperlane-merge-order-logs.g5wgFz`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
@@ -717,9 +732,10 @@ Result:
   and `make review-gates` passed at guard commit
   `fac1134131d37d8dff5b7e2ca9dada40983ac688`; later current-head refreshes
   extended those guards through the current Dusk head
-  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba`. Latest focused
-  `make review-hygiene` export after the dispatcher checkout-v6 refresh:
-  `/tmp/hyperlane-review-export-1778696572`.
+  `13eaca26336820e27b862ecf3cfccc564a47e751`. Latest focused
+  `make review-hygiene` export from `make review-gates` after the full
+  dispatcher validation handoff refresh:
+  `/tmp/hyperlane-review-export-1778698110`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
