@@ -155,6 +155,9 @@ Decision:
 Evidence:
 
 - `CI_REPRO_STRATEGY.md`.
+- `CI_REPRO_STRATEGY.md` `Admin Provisioning Runbook`, also mirrored in
+  dusk-network/hyperlane-dusk#8:
+  https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841.
 - `.github/workflows/manual-repro-check.yml`.
 - `.github/workflows/production-readiness-gate.yml`, the lightweight
   status-check candidate for `make production-readiness-guard`.
