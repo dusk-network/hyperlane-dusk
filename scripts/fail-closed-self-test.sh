@@ -72,6 +72,9 @@ set -euo pipefail
 
 case "$*" in
     "workflow list --repo dusk-network/hyperlane-dusk --all")
+        if [ "${GH_MOCK_NO_WORKFLOWS:-0}" = "1" ]; then
+            exit 0
+        fi
         printf 'Dusk Review Policy Gate active 1\n'
         ;;
     "api repos/dusk-network/hyperlane-dusk/actions/runners")
@@ -98,6 +101,12 @@ expect_fail \
     production-readiness-missing-ci-runner \
     'no repo-level or org-level self-hosted runner with label dusk-hyperlane is visible' \
     env PATH="$workdir/ci-visibility-mock-bin:$PATH" CI_VISIBILITY_GATE_ONLY=1 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-missing-workflow-visibility \
+    'no GitHub Actions workflows are visible on the default branch' \
+    env PATH="$workdir/ci-visibility-mock-bin:$PATH" CI_VISIBILITY_GATE_ONLY=1 GH_MOCK_NO_WORKFLOWS=1 \
     bash scripts/production-readiness-guard.sh
 
 expect_fail \

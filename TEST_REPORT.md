@@ -914,10 +914,10 @@ Result:
   and `DUSK_ORG_READ_TOKEN` was not visible in the Dusk or monorepo repos.
 - `make fail-closed-self-test` now also covers production CI provisioning
   blockers with a mocked `gh` command and `CI_VISIBILITY_GATE_ONLY=1`. The mock
-  reports workflows visible but no repo/org runner with label `dusk-hyperlane`
-  and no `DUSK_ORG_READ_TOKEN` secret in either internal repo; the guard rejects
-  both the runner and required-secret blockers before a live PR can be treated
-  as production-ready.
+  covers missing workflow visibility, no repo/org runner with label
+  `dusk-hyperlane`, and no `DUSK_ORG_READ_TOKEN` secret in either internal repo;
+  the guard rejects workflow, runner, and required-secret blockers before a live
+  PR can be treated as production-ready.
 - `make gate-status-fresh` and `make production-readiness-guard` now report an
   upstream submission gate using GitHub search for open
   `hyperlane-xyz/hyperlane-monorepo` PRs from
