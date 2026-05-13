@@ -92,16 +92,20 @@ Observed:
   `make completion-audit-status`, `make dependency-alert-status`,
   `make review-hygiene`, and `make gate-status-fresh`.
 - `make production-readiness-guard` is a negative guard that must fail while
-  known machine-checkable production blockers remain open, including missing
-  default-branch protection/review/status-check requirements. It is not a
-  production-readiness proof.
+  known machine-checkable production blockers remain open. Current blockers are
+  open/unapproved internal PRs, unchecked sign-off items, open split decision
+  issues, missing `DUSK_ORG_READ_TOKEN` visibility in both internal repos, and
+  missing or unconfirmed `dusk-hyperlane` self-hosted runner visibility. It is
+  not a production-readiness proof.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
   `archive/dusk-hyperlane-prototype-20260511`.
-- `gh workflow list --repo dusk-network/hyperlane-dusk --all` currently
-  returns no discoverable workflows, matching the documented caveat that
-  `.github/workflows/manual-repro-check.yml` must land on the default branch
-  before it can replace local repro evidence.
+- `gh workflow list --repo dusk-network/hyperlane-dusk --all` and
+  `make gate-status-fresh` now report the Dusk review policy gate, manual
+  repro dispatcher gate, and production-readiness gate as active workflows.
+  The manual repro workflow still needs the default-branch dispatcher PR,
+  runner label, and read-only token provisioning before it can replace local
+  repro evidence.
 - Default-branch dispatcher PR dusk-network/hyperlane-dusk#3 now exists with
   only the manual workflow and actionlint config. It can make the workflow
   visible independently from the full Dusk Hyperlane implementation PR once
