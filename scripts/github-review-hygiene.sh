@@ -38,6 +38,7 @@ Exports reviewer-facing GitHub text and checks it for:
   - known stale SHA/run/comment wording patterns
   - explicit PR current-head claims against the live PR heads
   - stale "current/latest" evidence wording in active comments
+  - JSON-escaped PR/issue/comment body rendering
   - historical status snapshots that are not marked superseded
   - missing reviewer-facing links and review-gate handoff text
   - stale make review-gates descriptions that omit archive hygiene coverage
@@ -149,6 +150,13 @@ for issue in $DUSK_ISSUES; do
 done
 
 info "Exported review text to $EXPORT_DIR"
+
+json_escaped_hits="$EXPORT_DIR/json-escaped-review-text.txt"
+if rg -n '^".*\\n' "$EXPORT_DIR" >"$json_escaped_hits"; then
+    cat "$json_escaped_hits" >&2
+    fail "JSON-escaped reviewer-facing text found; update bodies/comments with raw Markdown"
+fi
+rm -f "$json_escaped_hits"
 
 stale_hits="$EXPORT_DIR/stale-review-hits.txt"
 if rg -n -e "$STALE_REVIEW_PATTERNS" "$EXPORT_DIR" >"$stale_hits"; then

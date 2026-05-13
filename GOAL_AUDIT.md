@@ -61,7 +61,7 @@ source contains `todo!`, `unimplemented!`, `panic!`, or `expect\(`. CI
 `Dusk review policy gate` passed on that head; CI `Dusk agent cargo check`
 still fails at the expected private companion-repo preflight until
 `DUSK_ORG_READ_TOKEN` is provisioned. The same live monorepo PR rollup now has
-no queued checks: 17 completed successes, 22 completed skips, and the one
+no queued checks: 18 completed successes, 22 completed skips, and the one
 expected Dusk agent failure.
 
 Dusk-side runtime hardening on 2026-05-13 moved
