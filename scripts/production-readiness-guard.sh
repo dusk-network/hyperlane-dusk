@@ -162,7 +162,7 @@ wait_for_status_checks() {
             return 0
         fi
 
-        printf '%sNonCompletedStatusChecksWaiting: %s\n' "$label" "$non_completed_count"
+        printf '%sNonCompletedStatusChecksWaiting: %s\n' "$label" "$non_completed_count" >&2
         sleep "$STATUS_CHECK_POLL_SECONDS"
         elapsed=$((elapsed + STATUS_CHECK_POLL_SECONDS))
     done

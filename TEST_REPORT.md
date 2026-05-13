@@ -521,6 +521,11 @@ Result:
   checks before reporting the count. This prevents the production-readiness
   workflow from self-blocking on its own in-progress check while preserving the
   queued/incomplete-check blocker for external checks.
+- After the Dusk head `65806dfdd64a2a1171d754b773e5b24224242289`, the
+  production-readiness CI exposed a wait-loop bug: progress lines for
+  non-completed companion checks were written to stdout and polluted the JSON
+  status rollup consumed by `jq`. The guard now writes those wait-progress
+  lines to stderr so captured stdout remains valid JSON.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   clean-layout run `1778671118` passed against Dusk source ref
