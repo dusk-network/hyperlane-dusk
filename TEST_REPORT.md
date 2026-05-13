@@ -375,12 +375,16 @@ Result:
 - `.github/workflows/manual-repro-check.yml`: added after the local repro run as
   a manual self-hosted workflow template for the same `make repro-check-agent`
   command. It requires Dusk to provide a `dusk-hyperlane` self-hosted runner and
-  `DUSK_ORG_READ_TOKEN` secret for private cross-repo checkout. The manual
-  inputs include `dusk_ref`, `rusk_ref`, and `monorepo_ref` so reviewers can run
-  the workflow from the default branch against exact review heads.
-  `CI_REPRO_STRATEGY.md` includes the `gh workflow run` command shape and says
-  to record both requested refs and resolved heads for release evidence. The
-  workflow logs the resolved checkout heads before running the repro command.
+  `DUSK_ORG_READ_TOKEN` secret for private cross-repo checkout. The documented
+  token scope is read-only source checkout for `dusk-network/hyperlane-dusk`,
+  `dusk-network/hyperlane-monorepo`, and `dusk-network/rusk-private`; it is not
+  a signer, runtime secret, relayer key, deployment key, or image-publishing
+  credential. The manual inputs include `dusk_ref`, `rusk_ref`, and
+  `monorepo_ref` so reviewers can run the workflow from the default branch
+  against exact review heads. `CI_REPRO_STRATEGY.md` includes the
+  `gh workflow run` command shape and says to record both requested refs and
+  resolved heads for release evidence. The workflow logs the resolved checkout
+  heads before running the repro command.
 - dusk-network/hyperlane-dusk#3: opened as a narrow default-branch dispatcher
   PR containing only `.github/workflows/manual-repro-check.yml` and
   `.github/actionlint.yaml`, so Dusk can make the manual workflow visible
