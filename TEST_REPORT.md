@@ -937,6 +937,17 @@ Result:
   `515fab074024271935bc7795604dbb4f0823a937`, no untracked source,
   `coveredPathDelta: none`, `monorepoCoveredPathDelta: none`, and the same
   external review/sign-off/runner/token blockers.
+- Dusk commit `c1388203d2757d8a47a23ccb9db3154c51a187e3` is a docs-only audit
+  refresh for that recorded gate sample. `gh pr view 1 --repo
+  dusk-network/hyperlane-dusk --json headRefOid,statusCheckRollup,reviewDecision,mergeable,state`
+  reported the live PR head as `c1388203d2757d8a47a23ccb9db3154c51a187e3`,
+  mergeable, open, and review-required. Its check rollup had `Dusk review
+  policy gate` passed at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25830505657/job/75894085847
+  and `Production readiness guard` failed closed at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25830505654/job/75894085922.
+  Future docs-only commits intentionally do not pin themselves as "latest";
+  live values are read from `make gate-status` and GitHub check rollups.
 - `make gate-status-fresh` and `make production-readiness-guard` now report an
   upstream submission gate using GitHub search for open
   `hyperlane-xyz/hyperlane-monorepo` PRs from
