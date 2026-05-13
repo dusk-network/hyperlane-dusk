@@ -30,6 +30,26 @@ info() {
     echo "[INFO] $*" >&2
 }
 
+rg_to_file() {
+    out_file="$1"
+    label="$2"
+    shift 2
+
+    set +e
+    rg "$@" >"$out_file"
+    rg_status=$?
+    set -e
+
+    if [ "$rg_status" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$rg_status" -eq 1 ]; then
+        return 1
+    fi
+    cat "$out_file" >&2
+    fail "$label scan failed"
+}
+
 usage() {
     cat <<EOF
 Usage: bash scripts/github-review-hygiene.sh [options]
@@ -152,14 +172,14 @@ done
 info "Exported review text to $EXPORT_DIR"
 
 json_escaped_hits="$EXPORT_DIR/json-escaped-review-text.txt"
-if rg -n '^".*\\n' "$EXPORT_DIR" >"$json_escaped_hits"; then
+if rg_to_file "$json_escaped_hits" "JSON-escaped review text" -n '^".*\\n' "$EXPORT_DIR"; then
     cat "$json_escaped_hits" >&2
     fail "JSON-escaped reviewer-facing text found; update bodies/comments with raw Markdown"
 fi
 rm -f "$json_escaped_hits"
 
 stale_hits="$EXPORT_DIR/stale-review-hits.txt"
-if rg -n -e "$STALE_REVIEW_PATTERNS" "$EXPORT_DIR" >"$stale_hits"; then
+if rg_to_file "$stale_hits" "stale review text" -n -e "$STALE_REVIEW_PATTERNS" "$EXPORT_DIR"; then
     cat "$stale_hits" >&2
     fail "stale reviewer-facing text found"
 fi
@@ -228,7 +248,7 @@ check_pr_head_claims() {
         ' "$file" >>"$filtered"
     done
 
-    if rg -n -o -e "$patterns" "$filtered" >"$claims"; then
+    if rg_to_file "$claims" "$label current-head claim" -n -o -e "$patterns" "$filtered"; then
         while IFS= read -r claim; do
             claim_sha="$(printf '%s\n' "$claim" | rg -o '[0-9a-f]{40}' | head -n1)"
             if [ "$claim_sha" != "$live_head" ]; then
@@ -319,7 +339,7 @@ stale_active_patterns="$stale_active_patterns|8b15eb607e83b80cc334c6402e6c752dcf
 stale_active_patterns="$stale_active_patterns|This refresh is aligned with Dusk \`[0-9a-f]{40}\`|Dusk PR #1 live head: \`[0-9a-f]{40}\`|Latest Dusk PR #1 review policy pass: https://github\\.com/dusk-network/hyperlane-dusk/actions/runs/[0-9]+/job/[0-9]+|Latest Dusk PR #1 production-readiness expected failure: https://github\\.com/dusk-network/hyperlane-dusk/actions/runs/[0-9]+/job/[0-9]+|Dusk PR #1: \`Dusk review policy gate\` passed on head \`[0-9a-f]{7,40}\`"
 stale_active_patterns="$stale_active_patterns|Latest monorepo \`Dusk review policy gate\` passed: https://github\\.com/dusk-network/hyperlane-monorepo/actions/runs/[0-9]+/job/[0-9]+|Latest \`Dusk agent cargo check\` failed.*https://github\\.com/dusk-network/hyperlane-monorepo/actions/runs/[0-9]+/job/[0-9]+|25816561587|25816561525|25816561571|75846502733|75846502758|75846503474"
 stale_active_hits="$EXPORT_DIR/stale-active-review-wording.txt"
-if rg -n -e "$stale_active_patterns" "$active_review_text" >"$stale_active_hits"; then
+if rg_to_file "$stale_active_hits" "stale active review wording" -n -e "$stale_active_patterns" "$active_review_text"; then
     cat "$stale_active_hits" >&2
     fail "stale current/latest wording found in active reviewer-facing text"
 fi
@@ -327,7 +347,7 @@ rm -f "$stale_active_hits"
 
 stale_review_gates_description='make review-gates` runs the lightweight non-E2E gate bundle: preservation audit, Dependabot vulnerable-range comparison, GitHub review-hygiene export/scan, and fresh live gate status'
 stale_review_gates_hits="$EXPORT_DIR/stale-review-gates-description.txt"
-if rg -n -F "$stale_review_gates_description" "$active_review_text" >"$stale_review_gates_hits"; then
+if rg_to_file "$stale_review_gates_hits" "stale review-gates description" -n -F "$stale_review_gates_description" "$active_review_text"; then
     cat "$stale_review_gates_hits" >&2
     fail "stale make review-gates description found; archive hygiene coverage is missing"
 fi

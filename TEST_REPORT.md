@@ -780,6 +780,18 @@ Result:
   `make review-gates` run passed with review-hygiene export
   `/tmp/hyperlane-review-export-1778700709` and dispatcher merge-order smoke
   log `/tmp/hyperlane-merge-order-logs.R5YjiY`.
+- GitHub review hygiene now also fails closed on `rg` errors in regex-backed
+  stale-text scans. `STALE_REVIEW_PATTERNS='[invalid' bash
+  scripts/github-review-hygiene.sh --export-dir
+  /tmp/hyperlane-review-invalid-pattern --no-keep` failed as expected with log
+  `/tmp/hyperlane-review-invalid-pattern.log`. The post-edit
+  `make review-hygiene` run passed with export
+  `/tmp/hyperlane-review-export-1778700945`; post-edit `make review-gates`
+  runs passed with review-hygiene exports
+  `/tmp/hyperlane-review-export-1778700968` and
+  `/tmp/hyperlane-review-export-1778701047`, and dispatcher merge-order smoke
+  logs `/tmp/hyperlane-merge-order-logs.prF75U` and
+  `/tmp/hyperlane-merge-order-logs.758Ges`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
