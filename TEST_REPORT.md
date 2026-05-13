@@ -351,10 +351,11 @@ bash scripts/secret-hygiene-check.sh "$scan_root"
   `manifest-unsafe-path`, and `manifest-missing-archive` fixtures that fail
   closed on an incorrect archive hash, unsafe expected-SHA path, non-`.tgz`
   expected-SHA name, unsafe manifest entry, or unmanifested archive. A
-  current-head `make review-gates` run against Dusk head
-  `da163ef67af641dbf68aeab9b331143acb459aa0` passed with review-hygiene export
-  `/tmp/hyperlane-review-export-1778707082` and dispatcher merge-order smoke log
-  `/tmp/hyperlane-merge-order-logs.okKxFJ`.
+  post-secret-guard `make review-gates` run against Dusk head
+  `28f834501f0f32b0d7333b5a1831059eb80fd4d1` and monorepo head
+  `515fab074024271935bc7795604dbb4f0823a937` passed with review-hygiene
+  export `/tmp/hyperlane-review-export-1778709581` and dispatcher merge-order
+  smoke log `/tmp/hyperlane-merge-order-logs.Vqk0sV`.
 
 ## Commands Run
 
@@ -892,7 +893,25 @@ Result:
   `privateKey`, or `private_key` assignments plus uppercase env/log key
   assignments with 32-byte hex keys. `make fail-closed-self-test` covers JSON
   `privateKey`, TOML `private_key`, single-quoted YAML `privateKey`, and
-  `DUSK_SIGNER_KEY` artifact fixtures.
+  `DUSK_SIGNER_KEY` artifact fixtures. This was pushed as Dusk commit
+  `28f834501f0f32b0d7333b5a1831059eb80fd4d1` after these local checks passed:
+  `bash -n scripts/secret-hygiene-check.sh scripts/fail-closed-self-test.sh &&
+  git diff --check`, `make secret-hygiene`, `make fail-closed-self-test`,
+  `make report-hygiene`, and `make review-gates`.
+- `gh pr checks 1 --repo dusk-network/hyperlane-dusk --watch --interval 10`
+  on Dusk commit `28f834501f0f32b0d7333b5a1831059eb80fd4d1` reported
+  `Dusk review policy gate` passed at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25828772990/job/75888475154
+  and `Production readiness guard` failed closed at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25828773013/job/75888475203.
+  The command exited nonzero because the expected fail-closed guard remained
+  blocked.
+- A post-push `make production-readiness-guard` run failed closed with
+  `productionReadinessGuard: blocked`: Dusk PR #1, monorepo PR #1, and workflow
+  dispatcher PR #3 were still open and review-required; production sign-off
+  issue #2 still had 7 unchecked items; split decision issues #4 through #9
+  remained open; no self-hosted runner with label `dusk-hyperlane` was visible;
+  and `DUSK_ORG_READ_TOKEN` was not visible in the Dusk or monorepo repos.
 - `make gate-status-fresh` and `make production-readiness-guard` now report an
   upstream submission gate using GitHub search for open
   `hyperlane-xyz/hyperlane-monorepo` PRs from
