@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout Dusk Hyperlane
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: hyperlane/dusk
           fetch-depth: 0
