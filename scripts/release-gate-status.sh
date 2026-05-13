@@ -20,6 +20,8 @@ DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-drive
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-ef8ee43cd99569299b9744b498ac1bbac69950bc}"
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
 LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-515fab074024271935bc7795604dbb4f0823a937}"
+UPSTREAM_SUBMISSION_REPO="${UPSTREAM_SUBMISSION_REPO:-hyperlane-xyz/hyperlane-monorepo}"
+UPSTREAM_SUBMISSION_HEAD="${UPSTREAM_SUBMISSION_HEAD:-dusk-network:feat/dusk-support-v2}"
 POST_REBASE_E2E_URL="${POST_REBASE_E2E_URL:-${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}}"
 POST_REBASE_E2E_ARCHIVE_URL="${POST_REBASE_E2E_ARCHIVE_URL:-${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}}"
 DEPENDENCY_REMEDIATED_E2E_URL="${DEPENDENCY_REMEDIATED_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389}"
@@ -140,6 +142,14 @@ Environment:
                        Hyperlane monorepo ref covered by the latest
                        clean-layout repro.
                        Default: $LATEST_REPRO_MONOREPO_REF
+  UPSTREAM_SUBMISSION_REPO
+                       Upstream Hyperlane repository checked for premature
+                       Dusk-head PRs.
+                       Default: $UPSTREAM_SUBMISSION_REPO
+  UPSTREAM_SUBMISSION_HEAD
+                       Head owner/branch searched in the upstream Hyperlane
+                       repository.
+                       Default: $UPSTREAM_SUBMISSION_HEAD
   POST_REBASE_E2E_URL  Post-rebase E2E evidence URL expected in active
                        reviewer-facing bodies.
                        Default: $POST_REBASE_E2E_URL
@@ -749,6 +759,23 @@ if [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" rev-parse --verify "$LATEST_
 else
     echo "latestReproMonorepoRefStatus: missing"
 fi
+
+section "Upstream Submission Gate"
+upstream_query="repo:$UPSTREAM_SUBMISSION_REPO is:pr is:open head:$UPSTREAM_SUBMISSION_HEAD"
+printf 'upstreamSubmissionRepo: %s\n' "$UPSTREAM_SUBMISSION_REPO"
+printf 'upstreamSubmissionHead: %s\n' "$UPSTREAM_SUBMISSION_HEAD"
+if upstream_prs_json="$(gh api -X GET search/issues -f "q=$upstream_query" 2>/tmp/hyperlane-gate-upstream-prs.$$.err)"; then
+    upstream_open_prs="$(printf '%s\n' "$upstream_prs_json" | jq -r .total_count)"
+    printf 'upstreamOpenPrsFromDuskHead: %s\n' "$upstream_open_prs"
+    if [ "$upstream_open_prs" -gt 0 ]; then
+        printf '%s\n' "$upstream_prs_json" \
+            | jq -r '.items[] | "  #\(.number) \(.html_url) \(.title)"'
+    fi
+else
+    echo "upstreamOpenPrsFromDuskHead: unknown"
+    sed 's/^/  /' /tmp/hyperlane-gate-upstream-prs.$$.err
+fi
+rm -f /tmp/hyperlane-gate-upstream-prs.$$.err
 
 section "Summary"
 echo "This script reports machine-checkable gates only."

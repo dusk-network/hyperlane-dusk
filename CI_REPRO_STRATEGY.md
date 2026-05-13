@@ -134,7 +134,9 @@ visibility, local `Cargo.lock` vulnerable-range comparison through
 `make review-gates`, and `make production-readiness-guard` handoff visibility,
 reviewer-facing branch protection/status-check policy handoff visibility,
 Hyperlane upstream drift, latest clean-layout repro path delta, and Dusk runtime
-placeholder scans.
+placeholder scans. It also reports whether any open upstream
+`hyperlane-xyz/hyperlane-monorepo` PRs already exist from
+`dusk-network:feat/dusk-support-v2` before the internal review gates close.
 `make gate-status-fresh` first fetches Hyperlane `upstream/main` before
 reporting drift. These commands do not close any production gates.
 

@@ -890,11 +890,12 @@ Result:
   `private_key` fields containing 32-byte hex keys in addition to `key` fields
   and `hexKey` signer markers. `make fail-closed-self-test` covers a
   `privateKey` artifact fixture.
-- `make production-readiness-guard` now reports an upstream submission gate
-  using GitHub search for open `hyperlane-xyz/hyperlane-monorepo` PRs from
+- `make gate-status-fresh` and `make production-readiness-guard` now report an
+  upstream submission gate using GitHub search for open
+  `hyperlane-xyz/hyperlane-monorepo` PRs from
   `dusk-network:feat/dusk-support-v2`. The current query reports zero open
   upstream PRs from that head; if any appear while internal blockers remain,
-  the guard treats that as premature upstream submission.
+  the production readiness guard treats that as premature upstream submission.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the
