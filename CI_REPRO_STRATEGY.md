@@ -106,7 +106,8 @@ make gate-status-fresh
 ```
 
 `make review-gates` runs the lightweight non-E2E gate bundle:
-`make completion-audit-status`, `make archive-hygiene`,
+`make completion-audit-status`, `make archive-hygiene-test`,
+`make archive-hygiene`,
 `make dependency-alert-status`, `make review-hygiene`, and
 `make gate-status-fresh`.
 
@@ -168,7 +169,8 @@ to produce a policy status check.
 `make review-gates` remains the local reviewer bundle because it verifies
 preserved backup archives and extracts/scans durable evidence archives under
 `.codex-backups`, which are intentionally not uploaded to GitHub-hosted
-runners.
+runners. It also regression-tests the archive scanner against safe, traversal,
+symlink, and secret-bearing archive cases.
 
 This workflow is intentionally a negative release gate. A failing run means at
 least one machine-checkable blocker remains open. A passing run would still

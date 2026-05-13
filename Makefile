@@ -106,6 +106,11 @@ secret-hygiene:
 archive-hygiene:
 	bash scripts/archive-hygiene-check.sh
 
+# Regression-test the archive hygiene scanner on safe and unsafe archives.
+.PHONY: archive-hygiene-test
+archive-hygiene-test:
+	bash scripts/archive-hygiene-self-test.sh
+
 # Export GitHub PR/issue review text and scan it for stale evidence/secrets.
 .PHONY: review-hygiene
 review-hygiene:
@@ -140,7 +145,7 @@ gate-status-fresh:
 # or E2E scripts; it verifies preservation evidence, dependency-alert triage,
 # reviewer-facing handoff text, and live PR/sign-off gate state.
 .PHONY: review-gates
-review-gates: completion-audit-status archive-hygiene dependency-alert-status review-hygiene gate-status-fresh
+review-gates: completion-audit-status archive-hygiene-test archive-hygiene dependency-alert-status review-hygiene gate-status-fresh
 
 .PHONY: production-readiness-guard
 production-readiness-guard:
@@ -178,6 +183,8 @@ help:
 	@echo "  test               Run all tests"
 	@echo "  secret-hygiene     Check source secret-handling guardrails"
 	@echo "  archive-hygiene    Check extracted evidence archives for secrets"
+	@echo "  archive-hygiene-test"
+	@echo "                     Regression-test archive hygiene scanner rejection paths"
 	@echo "  review-hygiene     Check GitHub review text for stale refs/secrets"
 	@echo "  dependency-alert-status"
 	@echo "                     Compare open Dependabot Cargo.lock alerts to the local lockfile"

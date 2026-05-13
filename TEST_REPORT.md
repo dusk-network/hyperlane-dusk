@@ -220,6 +220,9 @@ Notes:
   wrapper rejects unsafe archive member paths, non-regular/non-directory archive
   entries, and extracted symlinks or special files before treating archive
   contents as reviewer evidence.
+- `make archive-hygiene-test` covers the scanner regression cases: safe archive
+  acceptance plus rejection for traversal members, symlink members, and
+  secret-bearing archive contents.
 - `make archive-hygiene` wraps this command shape:
 
 ```bash
@@ -246,6 +249,7 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
+make archive-hygiene-test
 make archive-hygiene
 make dependency-alert-status
 make completion-audit-status
@@ -404,7 +408,8 @@ Result:
   `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, and no placeholder matches in
   tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
 - `make review-gates`: passed; this lightweight wrapper runs
-  `make completion-audit-status`, `make archive-hygiene`,
+  `make completion-audit-status`, `make archive-hygiene-test`,
+  `make archive-hygiene`,
   `make dependency-alert-status`, `make review-hygiene`, and
   `make gate-status-fresh`. It does not replace `make repro-check-agent`,
   clean-Rusk E2E, CI provisioning, or Dusk production sign-off.
