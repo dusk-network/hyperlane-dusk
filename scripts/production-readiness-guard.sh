@@ -92,15 +92,27 @@ status_rollup() {
     local repo="$1"
     local number="$2"
     local head_sha
+    local raw
+    local err_file
 
     head_sha="$(pr_head_sha "$repo" "$number")"
-    gh api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
-        --jq '[.check_runs[] | {
+    err_file="/tmp/hyperlane-readiness-check-runs.$$.err"
+    if ! raw="$(gh api "repos/$repo/commits/$head_sha/check-runs?per_page=100" 2>"$err_file")"; then
+        printf '[]\n'
+        sed 's/^/  gh: /' "$err_file" >&2
+        rm -f "$err_file"
+        return 0
+    fi
+    rm -f "$err_file"
+
+    if ! printf '%s\n' "$raw" | jq '[.check_runs[] | {
             name,
             status: (.status | ascii_upcase),
             conclusion: ((.conclusion // "") | ascii_upcase),
             detailsUrl: .html_url
-        }]'
+        }]'; then
+        printf '[]\n'
+    fi
 }
 
 count_non_completed_checks() {
