@@ -308,6 +308,14 @@ if rg -n -e "$stale_active_patterns" "$active_review_text" >"$stale_active_hits"
 fi
 rm -f "$stale_active_hits"
 
+stale_review_gates_description='make review-gates` runs the lightweight non-E2E gate bundle: preservation audit, Dependabot vulnerable-range comparison, GitHub review-hygiene export/scan, and fresh live gate status'
+stale_review_gates_hits="$EXPORT_DIR/stale-review-gates-description.txt"
+if rg -n -F "$stale_review_gates_description" "$active_review_text" >"$stale_review_gates_hits"; then
+    cat "$stale_review_gates_hits" >&2
+    fail "stale make review-gates description found; archive hygiene coverage is missing"
+fi
+rm -f "$stale_review_gates_hits"
+
 post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
 post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
 dependency_remediated_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389'
@@ -339,6 +347,10 @@ for file in \
         || fail "$file is missing make completion-audit-status handoff text"
     rg -q -F 'make review-gates' "$file" \
         || fail "$file is missing make review-gates handoff text"
+    rg -q -F 'archive hygiene self-tests' "$file" \
+        || fail "$file is missing make review-gates archive hygiene self-test handoff text"
+    rg -q -F 'extracted evidence archive hygiene scans' "$file" \
+        || fail "$file is missing make review-gates extracted archive hygiene handoff text"
     rg -q -F 'make production-readiness-guard' "$file" \
         || fail "$file is missing make production-readiness-guard handoff text"
     rg -q -F 'required status-check policy enabled' "$file" \

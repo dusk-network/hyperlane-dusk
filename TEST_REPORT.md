@@ -530,6 +530,11 @@ Result:
   superseded `1778607202`/`4433179148` repro evidence from those active bodies
   plus stale "no owner-routing file" wording. The wrapper passed after this
   guard was added.
+- `make review-hygiene` now rejects the stale pre-archive-hygiene
+  `make review-gates` bundle description in active reviewer-facing text and
+  requires Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies to mention
+  archive hygiene self-tests and extracted evidence archive hygiene scans. This
+  guard passed after the active PR and issue bodies were updated in place.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now
