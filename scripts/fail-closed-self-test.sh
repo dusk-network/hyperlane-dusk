@@ -121,6 +121,43 @@ expect_fail \
         GOAL_AUDIT_FILE="$path_only_repro_report" \
     bash scripts/report-hygiene-check.sh
 
+missing_archive_report="$workdir/missing-archive-report.md"
+missing_archive_path="$workdir/missing-archive.tgz"
+missing_archive_hash="0000000000000000000000000000000000000000000000000000000000000000"
+cat >"$missing_archive_report" <<EOF
+Latest checkout-v6 clean-layout repro evidence:
+- archive: $missing_archive_path
+- archive SHA256: $missing_archive_hash
+EOF
+expect_fail \
+    report-hygiene-missing-latest-repro-archive-file \
+    'latest repro durable archive file not found' \
+    env REPORT_FILES="$missing_archive_report" \
+        LATEST_REPRO_ARCHIVE_PATH="$missing_archive_path" \
+        LATEST_REPRO_ARCHIVE_SHA256="$missing_archive_hash" \
+        LATEST_REPRO_ARCHIVE_REQUIRED_FILES="$missing_archive_report" \
+        GOAL_AUDIT_FILE="$missing_archive_report" \
+    bash scripts/report-hygiene-check.sh
+
+hash_mismatch_report="$workdir/hash-mismatch-report.md"
+hash_mismatch_archive="$workdir/hash-mismatch.tgz"
+printf 'not the expected archive\n' >"$hash_mismatch_archive"
+hash_mismatch_expected="1111111111111111111111111111111111111111111111111111111111111111"
+cat >"$hash_mismatch_report" <<EOF
+Latest checkout-v6 clean-layout repro evidence:
+- archive: $hash_mismatch_archive
+- archive SHA256: $hash_mismatch_expected
+EOF
+expect_fail \
+    report-hygiene-latest-repro-archive-hash-mismatch \
+    'latest repro durable archive hash mismatch' \
+    env REPORT_FILES="$hash_mismatch_report" \
+        LATEST_REPRO_ARCHIVE_PATH="$hash_mismatch_archive" \
+        LATEST_REPRO_ARCHIVE_SHA256="$hash_mismatch_expected" \
+        LATEST_REPRO_ARCHIVE_REQUIRED_FILES="$hash_mismatch_report" \
+        GOAL_AUDIT_FILE="$hash_mismatch_report" \
+    bash scripts/report-hygiene-check.sh
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"

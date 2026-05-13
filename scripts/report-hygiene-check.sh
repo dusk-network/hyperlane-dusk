@@ -62,6 +62,7 @@ fi
 
 [ "$#" -eq 0 ] || fail "unknown argument: $1"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 
 stale_hits="$(mktemp -t hyperlane-report-hygiene.XXXXXX)"
 trap 'rm -f "$stale_hits"' EXIT
@@ -103,6 +104,14 @@ if [ -f "$GOAL_AUDIT_FILE" ]; then
 fi
 
 if [ -n "$LATEST_REPRO_ARCHIVE_PATH" ]; then
+    [ -f "$LATEST_REPRO_ARCHIVE_PATH" ] \
+        || fail "latest repro durable archive file not found: $LATEST_REPRO_ARCHIVE_PATH"
+    if [ -n "$LATEST_REPRO_ARCHIVE_SHA256" ]; then
+        actual_latest_repro_sha256="$(sha256sum "$LATEST_REPRO_ARCHIVE_PATH" | awk '{print $1}')"
+        [ "$actual_latest_repro_sha256" = "$LATEST_REPRO_ARCHIVE_SHA256" ] \
+            || fail "latest repro durable archive hash mismatch: $LATEST_REPRO_ARCHIVE_PATH"
+    fi
+
     for file in $LATEST_REPRO_ARCHIVE_REQUIRED_FILES; do
         [ -f "$file" ] || fail "latest repro archive required file not found: $file"
         if ! rg -q -F "$LATEST_REPRO_ARCHIVE_PATH" "$file"; then

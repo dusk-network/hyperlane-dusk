@@ -877,6 +877,11 @@ Result:
   path and hash visible. The post-edit `make review-gates` run passed with
   review-hygiene export `/tmp/hyperlane-review-export-1778704675` and
   dispatcher merge-order smoke log `/tmp/hyperlane-merge-order-logs.unXFvr`.
+- `make report-hygiene` now also verifies that the latest checkout-v6 durable
+  repro archive exists locally and matches the expected SHA256 before accepting
+  report mentions as evidence. `make fail-closed-self-test` covers missing
+  archive files and archive hash mismatches in addition to missing report path
+  and hash text.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the
