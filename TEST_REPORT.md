@@ -45,11 +45,14 @@ Notes:
 - Live monorepo PR status on 2026-05-13 after the checkout-v6 workflow
   hardening at `515fab074024271935bc7795604dbb4f0823a937` shows one expected
   completed failure (`Dusk agent cargo check`) until `DUSK_ORG_READ_TOKEN` is
-  provisioned and no queued checks. The earlier 52 queued inherited upstream
-  checks from `test`, `rust`, and `Rebalancer E2E Tests` are superseded by
-  monorepo `48dcc0c87efc12584904d841d5088c1ae4acef20` and later Dusk-fork
-  workflow guards; the `9050143` to `515fab0` covered-path delta is now covered
-  by checkout-v6 repro run `1778695627`.
+  provisioned and no queued checks. Fresh CI evidence is recorded in #8 at
+  https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4445189878;
+  the local job log is `/tmp/dusk-agent-cargo-check-75849383145.log`. The
+  earlier 52 queued inherited upstream checks from `test`, `rust`, and
+  `Rebalancer E2E Tests` are superseded by monorepo
+  `48dcc0c87efc12584904d841d5088c1ae4acef20` and later Dusk-fork workflow
+  guards; the `9050143` to `515fab0` covered-path delta is now covered by
+  checkout-v6 repro run `1778695627`.
 - Dusk commit `cc3d75a2688d4b9d1aed9b7bfc5c87547802aa74` extends
   `scripts/github-review-hygiene.sh` so stale Dusk handoff heads and old Dusk
   check URLs from the prior `54e56fa` gate refresh fail future review-hygiene
@@ -1345,6 +1348,14 @@ Result:
   Dusk agent `git grep` panic/placeholder scan all passed. Monorepo CI then
   reported no queued checks: 14 successes, 22 skips, and the expected
   `Dusk agent cargo check` failure at the private companion-repo preflight.
+- Fresh monorepo CI evidence for the same private-token preflight was posted to
+  #8 at
+  https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4445189878
+  after `Dusk agent cargo check` run
+  https://github.com/dusk-network/hyperlane-monorepo/actions/runs/25817401047/job/75849383145
+  failed with `gh: Not Found (HTTP 404)` while checking
+  `dusk-network/hyperlane-dusk` access through `DUSK_ORG_READ_TOKEN`. The saved
+  local log is `/tmp/dusk-agent-cargo-check-75849383145.log`.
 - `actionlint .github/workflows/dusk-agent-gate.yml` passed after replacing
   the CI runtime scan's runner-local `rg` dependency with `git grep`.
 - `actionlint .github/workflows/dusk-agent-gate.yml
