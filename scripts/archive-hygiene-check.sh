@@ -48,12 +48,13 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 archive_list="$(mktemp -t hyperlane-archive-list.XXXXXX)"
 archive_name_list="$(mktemp -t hyperlane-archive-names.XXXXXX)"
 manifest_name_list="$(mktemp -t hyperlane-archive-manifest-names.XXXXXX)"
+manifest_unsafe_hits="$(mktemp -t hyperlane-archive-manifest-unsafe.XXXXXX)"
 member_list="$(mktemp -t hyperlane-archive-members.XXXXXX)"
 member_details="$(mktemp -t hyperlane-archive-member-details.XXXXXX)"
 unsafe_member_hits="$(mktemp -t hyperlane-archive-unsafe-members.XXXXXX)"
 special_member_list="$(mktemp -t hyperlane-archive-special-members.XXXXXX)"
 scan_root="$(mktemp -d -t hyperlane-archive-hygiene.XXXXXX)"
-trap 'rm -rf "$scan_root"; rm -f "$archive_list" "$archive_name_list" "$manifest_name_list" "$member_list" "$member_details" "$unsafe_member_hits" "$special_member_list"' EXIT
+trap 'rm -rf "$scan_root"; rm -f "$archive_list" "$archive_name_list" "$manifest_name_list" "$manifest_unsafe_hits" "$member_list" "$member_details" "$unsafe_member_hits" "$special_member_list"' EXIT
 
 find "$ARCHIVE_DIR" -maxdepth 1 -type f -name '*.tgz' -print | sort >"$archive_list"
 [ -s "$archive_list" ] || fail "no .tgz archives found in $ARCHIVE_DIR"
@@ -62,6 +63,10 @@ sed 's#.*/##' "$archive_list" >"$archive_name_list"
 if [ -n "$ARCHIVE_SHA256_MANIFEST" ] && [ -f "$ARCHIVE_SHA256_MANIFEST" ]; then
     info "Checking archive SHA256 manifest $(basename "$ARCHIVE_SHA256_MANIFEST")"
     awk '{print $2}' "$ARCHIVE_SHA256_MANIFEST" | sort >"$manifest_name_list"
+    if rg_to_file "$manifest_unsafe_hits" "archive SHA256 manifest path" -n '(^/|/|(^|/)\.\.(/|$))' "$manifest_name_list"; then
+        cat "$manifest_unsafe_hits" >&2
+        fail "archive SHA256 manifest contains unsafe path"
+    fi
     if ! cmp -s "$archive_name_list" "$manifest_name_list"; then
         echo "Archive directory:" >&2
         cat "$archive_name_list" >&2

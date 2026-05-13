@@ -340,13 +340,14 @@ bash scripts/secret-hygiene-check.sh "$scan_root"
   checkout-v6 repro archive before extracting evidence archives. It now uses
   tracked manifest `EVIDENCE_ARCHIVES.sha256` to verify every durable `.tgz`
   evidence archive in `/home/hein_/projects/hyperlane/.codex-backups` when the
-  manifest is present, and fails if the manifest archive set differs from the
-  local evidence archive directory. The `make archive-hygiene-test` self-test
-  includes `sha-mismatch` and `manifest-missing-archive` fixtures that fail
-  closed on an incorrect archive hash or unmanifested archive. The
-  post-edit `make review-gates` run passed with review-hygiene export
-  `/tmp/hyperlane-review-export-1778705503` and dispatcher merge-order smoke log
-  `/tmp/hyperlane-merge-order-logs.OEKTR2`.
+  manifest is present, rejects unsafe manifest paths, and fails if the manifest
+  archive set differs from the local evidence archive directory. The
+  `make archive-hygiene-test` self-test includes `sha-mismatch`,
+  `manifest-unsafe-path`, and `manifest-missing-archive` fixtures that fail
+  closed on an incorrect archive hash, unsafe manifest entry, or unmanifested
+  archive. The post-edit `make review-gates` run passed with review-hygiene
+  export `/tmp/hyperlane-review-export-1778705749` and dispatcher merge-order
+  smoke log `/tmp/hyperlane-merge-order-logs.4UoRwG`.
 
 ## Commands Run
 
