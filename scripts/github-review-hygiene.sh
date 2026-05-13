@@ -315,6 +315,7 @@ stale_active_patterns='Current-head agent check refresh|Current monorepo agent-c
 stale_active_patterns="$stale_active_patterns|87f7ab90d2a15e9b86b1f59eec0ffacb1b68f3c0|25810152097|25810152068|75823888731|75823887863|25801754973|25801754962|75793438590|75793438604|COMPLETED:SUCCESS=17|17 completed successes|COMPLETED:SUCCESS=14|14 completed successes"
 stale_active_patterns="$stale_active_patterns|Rebased the monorepo branch onto upstream Hyperlane \`2b7db706023806b36a57e446205ae443537ae9ec\`|Rebased this branch onto upstream Hyperlane \`2b7db706023806b36a57e446205ae443537ae9ec\`|Monorepo branch is now rebased onto upstream Hyperlane \`2b7db706023806b36a57e446205ae443537ae9ec\`"
 stale_active_patterns="$stale_active_patterns|narrow default-branch dispatcher PR for the manual repro workflow|narrow dispatcher PR containing only|Opened dusk-network/hyperlane-dusk#3 as a narrow dispatcher|contains only.*manual-repro-check\\.yml.*actionlint\\.yaml|25767765098|25767765114|75684050585|75684050777|25818138725|25818138768|75851960627|75851960495|25797921067|75779855203"
+stale_active_patterns="$stale_active_patterns|8b15eb607e83b80cc334c6402e6c752dcfc9a1ba|25817675933|25817675973|75850331585|75850331611|aheadBehind.*43 0"
 stale_active_hits="$EXPORT_DIR/stale-active-review-wording.txt"
 if rg -n -e "$stale_active_patterns" "$active_review_text" >"$stale_active_hits"; then
     cat "$stale_active_hits" >&2

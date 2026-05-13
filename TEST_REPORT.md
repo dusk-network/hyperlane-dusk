@@ -626,7 +626,7 @@ Result:
   `.github/workflows/dusk-review-policy-gate.yml`, and
   `.github/actionlint.yaml` had an empty diff against the implementation
   branch after the combined merge. Temporary command logs were written under
-  `/tmp/hyperlane-merge-order-logs.eSTocw`.
+  `/tmp/hyperlane-merge-order-logs.eGzQ7Q`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
@@ -743,6 +743,15 @@ Result:
   to keep the current `1778695627`/`515fab074024271935bc7795604dbb4f0823a937`
   monorepo repro handoff text. `make review-gates` passed with review-hygiene
   export `/tmp/hyperlane-review-export-1778698688`.
+- The current gate refresh comment at
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587
+  was updated in place to Dusk `ba3fae374f2c9f7a010299a0c639bf124ae42313`,
+  monorepo `515fab074024271935bc7795604dbb4f0823a937`, and the current Dusk
+  PR #1 check URLs. `scripts/github-review-hygiene.sh` now rejects the stale
+  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba` gate-refresh head, old
+  `25817675933`/`25817675973` check runs, and the old `aheadBehind` `43 0`
+  wording. `make review-gates` passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778699420`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
