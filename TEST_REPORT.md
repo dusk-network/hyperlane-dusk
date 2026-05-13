@@ -112,7 +112,7 @@ Notes:
   note records that all 173 open Dependabot alerts visible in the monorepo fork
   are npm alerts in manifests outside the Dusk Rust integration diff, and that
   no open non-npm/Cargo alerts were returned by the Dependabot API.
-- Current-head clean-layout repro run `1778615349` passed at Dusk
+- Historical clean-layout repro run `1778615349` passed at Dusk
   `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, monorepo
   `006e49dd7041097384683a78b1c1973c83e90de8`, upstream base
   `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk
@@ -121,7 +121,7 @@ Notes:
   3 `dusk-tx` tests, secret hygiene, and the Hyperlane Rust agent check for
   `hyperlane-dusk`, `hyperlane-base`, `validator`, `relayer`, `scraper`, and
   `lander`.
-- Current-live-head clean-layout repro run `1778669495` passed at Dusk
+- Historical live-head clean-layout repro run `1778669495` passed at Dusk
   `0be9fbfa91ef39ecd912c79d360d036530fb524d`, monorepo
   `48dcc0c87efc12584904d841d5088c1ae4acef20`, upstream base
   `2b7db706023806b36a57e446205ae443537ae9ec`, and clean Rusk
@@ -683,7 +683,7 @@ Result:
   `lander`. Local log:
   `/tmp/hyperlane-dusk-repro-current-head-1778599935.log`. Durable archive:
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778599935.tgz`.
-- Current-head clean-layout repro run `1778604592` passed against Dusk source ref
+- Historical clean-layout repro run `1778604592` passed against Dusk source ref
   `aa278208b2c2b5f4abc38c32ec792295080014a9`, monorepo
   `09e62be2e55ecd87d3931f6f10623086befd7848`, and clean Rusk
   `c0c64db4659500d077bb253ad13acba0e347d3fc`. It covered Dusk contract WASM
@@ -693,7 +693,7 @@ Result:
   `lander`. Local log:
   `/tmp/hyperlane-dusk-repro-current-head-1778604592.log`. Durable archive:
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778604592.tgz`.
-- Current-head clean-layout repro run `1778607202` passed against Dusk source ref
+- Historical clean-layout repro run `1778607202` passed against Dusk source ref
   `836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253`, monorepo
   `1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3`, upstream base
   `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk
@@ -704,7 +704,7 @@ Result:
   `lander`. Local log:
   `/tmp/hyperlane-dusk-repro-current-head-1778607202.log`. Durable archive:
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778607202.tgz`.
-- Current-head clean-layout repro run `1778615349` passed against Dusk source ref
+- Historical clean-layout repro run `1778615349` passed against Dusk source ref
   `016eaa89e1afce0ef9a7534fe285d9aa16e26183`, monorepo
   `006e49dd7041097384683a78b1c1973c83e90de8`, upstream base
   `c6bce706316206ac7b5652155c9ea92e96f78c39`, and clean Rusk
@@ -715,7 +715,7 @@ Result:
   `lander`. Local log:
   `/tmp/hyperlane-dusk-repro-current-head-1778615349.log`. Durable archive:
   `/home/hein_/projects/hyperlane/.codex-backups/hyperlane-current-head-repro-1778615349.tgz`.
-- Current-live-head clean-layout repro run `1778669495` passed against Dusk
+- Historical live-head clean-layout repro run `1778669495` passed against Dusk
   source ref `0be9fbfa91ef39ecd912c79d360d036530fb524d`, monorepo
   `48dcc0c87efc12584904d841d5088c1ae4acef20`, upstream base
   `2b7db706023806b36a57e446205ae443537ae9ec`, and clean Rusk
@@ -973,7 +973,7 @@ Refs:
   clean detached worktree
   `/home/hein_/projects/hyperlane/rusk-private-clean-c0c64db` at
   `c0c64db4659500d077bb253ad13acba0e347d3fc`.
-- Current-head clean-layout repro Rusk path dependency checkout in the
+- Historical clean-layout repro Rusk path dependency checkout in the
   temporary layout:
   `/tmp/hyperlane-dusk-repro-current-1778582787/rusk-private`, symlinked to
   clean detached worktree
