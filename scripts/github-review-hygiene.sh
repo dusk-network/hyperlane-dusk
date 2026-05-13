@@ -39,6 +39,8 @@ Exports reviewer-facing GitHub text and checks it for:
   - explicit PR current-head claims against the live PR heads
   - stale "current/latest" evidence wording in active comments
   - historical status snapshots that are not marked superseded
+  - missing reviewer-facing links and review-gate handoff text
+  - stale make review-gates descriptions that omit archive hygiene coverage
   - source/artifact secret hygiene regressions
 
 Options:
