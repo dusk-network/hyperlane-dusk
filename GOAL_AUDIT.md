@@ -69,7 +69,7 @@ without changing runtime code. The current monorepo head
 that does not touch the Dusk Rust agent/runtime surface. That head also guards
 the inherited `rebalancer-sim-test.yml` Depot-backed workflow so Dusk-fork PRs
 skip it instead of staying queued. The live monorepo PR rollup now has no
-queued checks: 15 completed successes, 22 completed skips, and the one
+queued checks: 16 completed successes, 22 completed skips, and the one
 expected Dusk agent failure.
 
 Dusk-side runtime and secret-artifact hardening on 2026-05-13 moved
