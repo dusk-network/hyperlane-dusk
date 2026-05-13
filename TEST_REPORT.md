@@ -542,11 +542,11 @@ Result:
   Actions-secret, runner, and Dependabot alert visibility. The optional status
   token is only for `.github/workflows/production-readiness-gate.yml`; the
   manual repro workflow remains on the source-checkout token.
-- Recent CI `Production readiness guard` runs on Dusk PR #1 completed with the
-  same expected failure at Dusk head
-  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba`
-  (https://github.com/dusk-network/hyperlane-dusk/actions/runs/25817675973/job/75850331611).
-  The failed-job summary was limited to the known external blockers:
+- Recent CI `Production readiness guard` runs on Dusk PR #1 complete with the
+  same expected failure. The live PR check rollup is checked with `gh pr view 1
+  --repo dusk-network/hyperlane-dusk --json statusCheckRollup,headRefOid`
+  rather than pinned here, because docs-only report commits move the PR head.
+  The failed-job summary is limited to the known external blockers:
   unmerged/unapproved internal PRs, unknown branch-protection visibility from
   the Actions integration token, 7 unchecked production sign-off items, 6 open
   split decision issues, unavailable Dependabot alert triage in Actions,
