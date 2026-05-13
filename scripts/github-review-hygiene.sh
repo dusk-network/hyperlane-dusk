@@ -240,19 +240,19 @@ check_pr_head_claims \
     "Dusk PR #1" \
     "$DUSK_REPO" \
     1 \
-    "(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Dusk PR #1 head: .?[0-9a-f]{40}|Dusk PR #1 head .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
+    "(Companion )?Dusk PR #1 head is now .?[0-9a-f]{40}|Dusk PR #1 live head is .?[0-9a-f]{40}|Dusk PR #1 current head: .?[0-9a-f]{40}|Dusk PR #1 head: .?[0-9a-f]{40}|Dusk PR #1 head .?[0-9a-f]{40}|Current Dusk PR #1 head:? (is )?.?[0-9a-f]{40}|Dusk PR #1: .?[0-9a-f]{40}|current Dusk head .?[0-9a-f]{40}"
 
 check_pr_head_claims \
     "monorepo PR #1" \
     "$MONOREPO_REPO" \
     1 \
-    "Monorepo PR #1 current head: .?[0-9a-f]{40}|Monorepo PR #1 head: .?[0-9a-f]{40}|Monorepo PR #1: .?[0-9a-f]{40}"
+    "Monorepo PR #1 live head is .?[0-9a-f]{40}|Monorepo PR #1 current head: .?[0-9a-f]{40}|Monorepo PR #1 head: .?[0-9a-f]{40}|Monorepo PR #1: .?[0-9a-f]{40}"
 
 check_pr_head_claims \
     "workflow dispatcher PR #3" \
     "$DUSK_REPO" \
     3 \
-    "Manual workflow dispatcher PR #3 head: .?[0-9a-f]{40}|Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
+    "Workflow dispatcher PR #3 live head is .?[0-9a-f]{40}|Manual workflow dispatcher PR #3 head: .?[0-9a-f]{40}|Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
 
 active_review_text="$EXPORT_DIR/active-review-text.txt"
 for file in "$EXPORT_DIR"/*-body.txt; do
