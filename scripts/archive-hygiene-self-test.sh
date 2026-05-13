@@ -31,7 +31,8 @@ expect_pass() {
     local archive_dir="$2"
     local log="$workdir/$label.log"
 
-    if ARCHIVE_EXPECTED_SHA256S="${ARCHIVE_EXPECTED_SHA256S-}" \
+    if ARCHIVE_SHA256_MANIFEST="${ARCHIVE_SHA256_MANIFEST-}" \
+        ARCHIVE_EXPECTED_SHA256S="${ARCHIVE_EXPECTED_SHA256S-}" \
         bash scripts/archive-hygiene-check.sh "$archive_dir" >"$log" 2>&1; then
         info "$label: passed as expected"
     else
@@ -46,7 +47,8 @@ expect_fail() {
     local pattern="$3"
     local log="$workdir/$label.log"
 
-    if ARCHIVE_EXPECTED_SHA256S="${ARCHIVE_EXPECTED_SHA256S-}" \
+    if ARCHIVE_SHA256_MANIFEST="${ARCHIVE_SHA256_MANIFEST-}" \
+        ARCHIVE_EXPECTED_SHA256S="${ARCHIVE_EXPECTED_SHA256S-}" \
         bash scripts/archive-hygiene-check.sh "$archive_dir" >"$log" 2>&1; then
         cat "$log" >&2
         fail "$label: expected archive hygiene to fail"

@@ -8,6 +8,7 @@ cd "$ROOT"
 
 ARCHIVE_DIR="${1:-$ROOT/../.codex-backups}"
 ARCHIVE_UNSAFE_MEMBER_PATTERN="${ARCHIVE_UNSAFE_MEMBER_PATTERN:-(^/|(^|/)\.\.(/|$))}"
+ARCHIVE_SHA256_MANIFEST="${ARCHIVE_SHA256_MANIFEST-$ROOT/EVIDENCE_ARCHIVES.sha256}"
 ARCHIVE_EXPECTED_SHA256S="${ARCHIVE_EXPECTED_SHA256S-hyperlane-checkout-v6-repro-1778695627.tgz=1f16dd8caa86c54ff351f0a0fc41f9ee8083c25515514ac77afb2f60f7483ccb}"
 
 fail() {
@@ -55,7 +56,13 @@ trap 'rm -rf "$scan_root"; rm -f "$archive_list" "$member_list" "$member_details
 find "$ARCHIVE_DIR" -maxdepth 1 -type f -name '*.tgz' -print | sort >"$archive_list"
 [ -s "$archive_list" ] || fail "no .tgz archives found in $ARCHIVE_DIR"
 
-if [ -n "$ARCHIVE_EXPECTED_SHA256S" ]; then
+if [ -n "$ARCHIVE_SHA256_MANIFEST" ] && [ -f "$ARCHIVE_SHA256_MANIFEST" ]; then
+    info "Checking archive SHA256 manifest $(basename "$ARCHIVE_SHA256_MANIFEST")"
+    (
+        cd "$ARCHIVE_DIR"
+        sha256sum -c "$ARCHIVE_SHA256_MANIFEST"
+    ) >/dev/null
+elif [ -n "$ARCHIVE_EXPECTED_SHA256S" ]; then
     info "Checking expected archive SHA256 values"
     for entry in $ARCHIVE_EXPECTED_SHA256S; do
         archive_name="${entry%%=*}"

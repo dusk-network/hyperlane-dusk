@@ -48,7 +48,7 @@ tar -czf "$workdir/archive/archives/safe.tgz" -C "$workdir/archive/src" .
 expect_fail \
     archive-invalid-pattern \
     'archive member path scan failed' \
-    env ARCHIVE_EXPECTED_SHA256S='' ARCHIVE_UNSAFE_MEMBER_PATTERN='[invalid' \
+    env ARCHIVE_SHA256_MANIFEST='' ARCHIVE_EXPECTED_SHA256S='' ARCHIVE_UNSAFE_MEMBER_PATTERN='[invalid' \
     bash scripts/archive-hygiene-check.sh "$workdir/archive/archives"
 
 expect_fail \
