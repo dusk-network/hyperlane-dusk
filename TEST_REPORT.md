@@ -621,12 +621,12 @@ Result:
   landing orders: dispatcher branch `origin/ci/manual-repro-workflow`
   `a73cb10f0be7693a5d6eab4ebedcccb640b29655` followed by implementation
   branch `origin/feat/dusk-hardening-v2`
-  `13eaca26336820e27b862ecf3cfccc564a47e751`, and the reverse order. In both
+  `ae937e79e60af2d1c6f02e303be8956bddf6a133`, and the reverse order. In both
   orders, `.github/workflows/manual-repro-check.yml`,
   `.github/workflows/dusk-review-policy-gate.yml`, and
   `.github/actionlint.yaml` had an empty diff against the implementation
   branch after the combined merge. Temporary command logs were written under
-  `/tmp/hyperlane-merge-order-logs.g5wgFz`.
+  `/tmp/hyperlane-merge-order-logs.eSTocw`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
@@ -736,6 +736,13 @@ Result:
   `make review-hygiene` export from `make review-gates` after the full
   dispatcher validation handoff refresh:
   `/tmp/hyperlane-review-export-1778698110`.
+- After the live sign-off issue #2 body was corrected to remove stale
+  `1778683232`/`9050143c1ef12f76d117ee97effa79da8df3e334` monorepo
+  "latest" repro wording, `scripts/github-review-hygiene.sh` now rejects that
+  stale clean-layout repro pair in active PR/issue bodies and requires issue #2
+  to keep the current `1778695627`/`515fab074024271935bc7795604dbb4f0823a937`
+  monorepo repro handoff text. `make review-gates` passed with review-hygiene
+  export `/tmp/hyperlane-review-export-1778698688`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
