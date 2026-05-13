@@ -28,14 +28,14 @@ jobs:
 
     steps:
       - name: Checkout Dusk Hyperlane
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.dusk_ref }}
           path: hyperlane/dusk
           persist-credentials: false
 
       - name: Checkout private Rusk dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: dusk-network/rusk-private
           ref: ${{ inputs.rusk_ref }}
@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout Dusk Hyperlane monorepo fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: dusk-network/hyperlane-monorepo
           ref: ${{ inputs.monorepo_ref }}
