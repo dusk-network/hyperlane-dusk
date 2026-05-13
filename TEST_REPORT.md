@@ -889,9 +889,10 @@ Result:
 - Runtime artifact secret-text scanning now rejects JSON `privateKey` and
   `private_key` fields containing 32-byte hex keys in addition to `key` fields
   and `hexKey` signer markers, and also rejects TOML/YAML-style `key`,
-  `privateKey`, or `private_key` assignments with 32-byte hex keys. `make
-  fail-closed-self-test` covers JSON `privateKey` and TOML `private_key`
-  artifact fixtures.
+  `privateKey`, or `private_key` assignments plus uppercase env/log key
+  assignments with 32-byte hex keys. `make fail-closed-self-test` covers JSON
+  `privateKey`, TOML `private_key`, single-quoted YAML `privateKey`, and
+  `DUSK_SIGNER_KEY` artifact fixtures.
 - `make gate-status-fresh` and `make production-readiness-guard` now report an
   upstream submission gate using GitHub search for open
   `hyperlane-xyz/hyperlane-monorepo` PRs from

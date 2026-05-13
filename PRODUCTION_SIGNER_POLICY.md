@@ -129,8 +129,9 @@ bash scripts/secret-hygiene-check.sh <artifact-path>...
 
 These guardrails detect common source and artifact leaks, including generated
 `duskKey` and `hexKey` config markers plus JSON, TOML, and YAML-style `key`,
-`privateKey`, or `private_key` assignments containing 32-byte hex key material.
-They do not replace the custody decision above.
+`privateKey`, or `private_key` assignments and uppercase env/log key
+assignments containing 32-byte hex key material. They do not replace the custody
+decision above.
 
 The open decision remains tracked in
 https://github.com/dusk-network/hyperlane-dusk/issues/2.

@@ -88,10 +88,11 @@ exported PR/issue bodies and comments.
 
 The artifact scan intentionally fails on inline raw key fields in JSON,
 TOML, or YAML-style assignments, including `key`, `privateKey`, and
-`private_key` fields with 32-byte hex values. It also fails on `hexKey`
-signer config markers and secret-like files such as `*.key`, `*.keys`, and
-`*.pem`. Generated agent configs and Dusk signer key files should be kept on
-the runner and deleted after the run, not archived.
+`private_key` fields with 32-byte hex values, and on uppercase env/log
+assignments such as `PRIVATE_KEY=0x...` or `DUSK_SIGNER_KEY=0x...`. It also
+fails on `hexKey` signer config markers and secret-like files such as `*.key`,
+`*.keys`, and `*.pem`. Generated agent configs and Dusk signer key files should
+be kept on the runner and deleted after the run, not archived.
 
 The check is conservative: it is meant to guard release packaging and CI
 artifact upload steps, not to bless production custody. Production signer

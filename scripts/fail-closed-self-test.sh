@@ -192,6 +192,25 @@ expect_fail \
     'runtime artifact scan found' \
     bash scripts/secret-hygiene-check.sh "$workdir/toml-key-artifacts"
 
+mkdir -p "$workdir/single-quote-key-artifacts"
+cat >"$workdir/single-quote-key-artifacts/config.yaml" <<'EOF'
+signer:
+  privateKey: '0x3333333333333333333333333333333333333333333333333333333333333333'
+EOF
+expect_fail \
+    secret-hygiene-single-quote-private-key-artifact \
+    'runtime artifact scan found' \
+    bash scripts/secret-hygiene-check.sh "$workdir/single-quote-key-artifacts"
+
+mkdir -p "$workdir/env-key-artifacts"
+cat >"$workdir/env-key-artifacts/runner.log" <<'EOF'
+DUSK_SIGNER_KEY=0x4444444444444444444444444444444444444444444444444444444444444444
+EOF
+expect_fail \
+    secret-hygiene-env-private-key-artifact \
+    'runtime artifact scan found' \
+    bash scripts/secret-hygiene-check.sh "$workdir/env-key-artifacts"
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"
