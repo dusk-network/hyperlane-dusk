@@ -307,6 +307,7 @@ post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2
 post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
 dependency_remediated_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389'
 latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434277572'
+ci_provisioning_runbook='https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841'
 for file in \
     "$EXPORT_DIR/dusk-pr-1-body.txt" \
     "$EXPORT_DIR/monorepo-pr-1-body.txt" \
@@ -351,6 +352,8 @@ if [ -f "$EXPORT_DIR/dusk-pr-3-body.txt" ]; then
     rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/actions/runs/25767765114/job/75684050777' \
         "$EXPORT_DIR/dusk-pr-3-body.txt" \
         || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing current review policy gate run link"
+    rg -q -F "$ci_provisioning_runbook" "$EXPORT_DIR/dusk-pr-3-body.txt" \
+        || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing CI provisioning runbook link"
 fi
 
 if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then

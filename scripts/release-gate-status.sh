@@ -29,6 +29,7 @@ REVIEW_GATES_TEXT="${REVIEW_GATES_TEXT:-make review-gates}"
 PRODUCTION_READINESS_GUARD_TEXT="${PRODUCTION_READINESS_GUARD_TEXT:-make production-readiness-guard}"
 BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-required status-check policy enabled}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
+CI_PROVISIONING_RUNBOOK_URL="${CI_PROVISIONING_RUNBOOK_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 FETCH_UPSTREAM=0
@@ -132,6 +133,10 @@ Environment:
                        Text expected in active implementation PR and sign-off
                        bodies to expose latest clean-layout repro path delta.
                        Default: $REPRO_PATH_DELTA_TEXT
+  CI_PROVISIONING_RUNBOOK_URL
+                       Admin-side CI provisioning runbook URL expected in the
+                       manual workflow dispatcher PR body.
+                       Default: $CI_PROVISIONING_RUNBOOK_URL
 EOF
 }
 
@@ -350,6 +355,18 @@ print_reviewer_routing_presence() {
     fi
 }
 
+print_workflow_pr_handoff_presence() {
+    local label="$1"
+    local body="$2"
+
+    print_reviewer_routing_presence "$label" "$body"
+    if printf '%s\n' "$body" | grep -Fq "$CI_PROVISIONING_RUNBOOK_URL"; then
+        echo "  ciProvisioningRunbook: present"
+    else
+        echo "  ciProvisioningRunbook: missing"
+    fi
+}
+
 section "Local Worktrees"
 echo "dusk: $(git -C "$ROOT" rev-parse HEAD)"
 git -C "$ROOT" status --short --branch
@@ -405,7 +422,7 @@ print_link_presence "monorepoPR1" "$monorepo_pr_body"
 print_link_presence "signoffIssue2" "$issue_body"
 if gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json number >/dev/null 2>&1; then
     workflow_pr_body="$(gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json body --jq .body)"
-    print_reviewer_routing_presence "workflowPR$WORKFLOW_PR_NUMBER" "$workflow_pr_body"
+    print_workflow_pr_handoff_presence "workflowPR$WORKFLOW_PR_NUMBER" "$workflow_pr_body"
 fi
 
 section "Split Production Decision Issues"
