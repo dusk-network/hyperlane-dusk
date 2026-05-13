@@ -33,6 +33,7 @@ REVIEW_GATES_ARCHIVE_SCAN_TEXT="${REVIEW_GATES_ARCHIVE_SCAN_TEXT:-extracted evid
 PRODUCTION_READINESS_GUARD_TEXT="${PRODUCTION_READINESS_GUARD_TEXT:-make production-readiness-guard}"
 BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-required status-check policy enabled}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
+MONOREPO_REPRO_DELTA_TEXT="${MONOREPO_REPRO_DELTA_TEXT:-monorepoCoveredPathDelta}"
 CI_PROVISIONING_RUNBOOK_URL="${CI_PROVISIONING_RUNBOOK_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
@@ -156,6 +157,10 @@ Environment:
                        Text expected in active implementation PR and sign-off
                        bodies to expose latest clean-layout repro path delta.
                        Default: $REPRO_PATH_DELTA_TEXT
+  MONOREPO_REPRO_DELTA_TEXT
+                       Text expected in active reviewer-facing bodies to expose
+                       the monorepo clean-layout repro path delta.
+                       Default: $MONOREPO_REPRO_DELTA_TEXT
   CI_PROVISIONING_RUNBOOK_URL
                        Admin-side CI provisioning runbook URL expected in the
                        manual workflow dispatcher PR body.
@@ -382,6 +387,12 @@ print_link_presence() {
         echo "  reproPathDeltaHandoff: present"
     else
         echo "  reproPathDeltaHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$MONOREPO_REPRO_DELTA_TEXT"; then
+        echo "  monorepoReproDeltaHandoff: present"
+    else
+        echo "  monorepoReproDeltaHandoff: missing"
     fi
 }
 
