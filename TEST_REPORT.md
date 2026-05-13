@@ -357,10 +357,10 @@ Result:
   gates, unchecked sign-off items, open split decision issues, required
   status-check policy enabled, missing `DUSK_ORG_READ_TOKEN` visibility in
   both internal repos, missing self-hosted runner visibility for the
-  `dusk-hyperlane` label,
-  upstream freshness, and latest clean-layout repro covered-path delta. Passing
-  this guard would not by itself prove production readiness. Protected-branch
-  review baselines are now enabled on both Dusk org default branches.
+  `dusk-hyperlane` label, Dusk Cargo dependency alert triage, upstream
+  freshness, and latest clean-layout repro covered-path delta. Passing this
+  guard would not by itself prove production readiness. Protected-branch review
+  baselines are now enabled on both Dusk org default branches.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   current-head run `1778615349` passed against Dusk source ref

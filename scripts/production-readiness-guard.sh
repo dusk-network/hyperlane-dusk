@@ -164,6 +164,13 @@ if [ "$open_split_issues" -gt 0 ]; then
     add_blocker "$open_split_issues split production decision issues remain open"
 fi
 
+section "Dependency Alerts"
+dependency_alert_status=0
+bash "$ROOT/scripts/dependency-alert-status.sh" --summary-only || dependency_alert_status=$?
+if [ "$dependency_alert_status" -ne 0 ]; then
+    add_blocker "Dusk Cargo.lock dependency-alert triage has vulnerable, unparsed, or unpatchable open alerts"
+fi
+
 section "Workflow And CI Visibility"
 workflow_output="$(gh workflow list --repo "$DUSK_REPO" --all || true)"
 if [ -z "$workflow_output" ]; then

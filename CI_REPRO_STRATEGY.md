@@ -110,8 +110,8 @@ make gate-status-fresh
 remain open. It reports machine-checkable blockers such as open internal PRs,
 review gates, unchecked sign-off items, open split decision issues, missing
 `DUSK_ORG_READ_TOKEN` visibility in both internal repos, missing self-hosted
-runner visibility for the `dusk-hyperlane` label, upstream drift, and latest
-clean-layout repro covered-path delta.
+runner visibility for the `dusk-hyperlane` label, Dusk Cargo dependency-alert
+triage, upstream drift, and latest clean-layout repro covered-path delta.
 
 `make gate-status` calls `scripts/release-gate-status.sh`, which reports local
 worktree state, untracked source status, implementation PR and

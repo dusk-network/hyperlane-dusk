@@ -95,8 +95,10 @@ Observed:
   known machine-checkable production blockers remain open. Current blockers are
   open/unapproved internal PRs, unchecked sign-off items, open split decision
   issues, missing `DUSK_ORG_READ_TOKEN` visibility in both internal repos, and
-  missing or unconfirmed `dusk-hyperlane` self-hosted runner visibility. It is
-  not a production-readiness proof.
+  missing or unconfirmed `dusk-hyperlane` self-hosted runner visibility. It
+  also runs `make dependency-alert-status` in summary mode and blocks if open
+  Cargo alerts include vulnerable locked versions, unparsed vulnerable ranges,
+  or missing patched-version data. It is not a production-readiness proof.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
   `archive/dusk-hyperlane-prototype-20260511`.
