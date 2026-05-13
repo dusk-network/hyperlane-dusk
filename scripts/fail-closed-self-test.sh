@@ -58,6 +58,14 @@ expect_fail \
     bash scripts/release-gate-status.sh --placeholder-scan-only
 
 expect_fail \
+    production-readiness-premature-upstream-pr \
+    'upstream Hyperlane PRs are open' \
+    env UPSTREAM_SUBMISSION_GATE_ONLY=1 \
+        UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN=1 \
+        UPSTREAM_SUBMISSION_SEARCH_JSON='{"total_count":1,"items":[{"number":1,"html_url":"https://github.com/hyperlane-xyz/hyperlane-monorepo/pull/1","title":"Premature Dusk upstream PR"}]}' \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
     review-hygiene-invalid-agent-pattern \
     'Dusk agent runtime panic/placeholder scan failed' \
     env AGENT_PLACEHOLDER_PATTERN='[invalid' \

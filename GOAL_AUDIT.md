@@ -244,7 +244,7 @@ Observed:
 | Stress/reliability: duplicate relayer/no double-delivery | Clean Rusk run `1778524257` | Done |
 | Prepare internal Dusk PR for contracts/tooling/tests/audit notes | Dusk PR #1 is ready for review, open, and mergeable; body, handoff comments, and `PRODUCTION_REVIEW_DECISIONS.md` include current evidence and remaining gates | Done |
 | Prepare internal Dusk PR for Hyperlane agent/protocol integration | Monorepo PR #1 is ready for review, open, and mergeable; body, handoff comments, and `docs/dusk-upstream-compatibility-review.md` include companion Dusk evidence and remaining gates | Done |
-| Prepare upstream Hyperlane draft PRs only after internal review | Not started by design; PR bodies explicitly state upstream prep waits for internal Dusk review. `make gate-status-fresh` reports open `hyperlane-xyz/hyperlane-monorepo` PRs from `dusk-network:feat/dusk-support-v2`; `make production-readiness-guard` fails as premature if any are visible while internal blockers remain. | Gated |
+| Prepare upstream Hyperlane draft PRs only after internal review | Not started by design; PR bodies explicitly state upstream prep waits for internal Dusk review. `make gate-status-fresh` reports open `hyperlane-xyz/hyperlane-monorepo` PRs from `dusk-network:feat/dusk-support-v2`; `make production-readiness-guard` fails as premature if any are visible while internal blockers remain; `make fail-closed-self-test` covers the premature-upstream-PR blocker with a mocked search response. | Gated |
 
 ## Evidence Index
 

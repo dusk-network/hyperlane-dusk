@@ -25,6 +25,9 @@ MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
 MONOREPO_COMPARE_HEAD="${MONOREPO_COMPARE_HEAD:-dusk-network:feat/dusk-support-v2}"
 UPSTREAM_SUBMISSION_REPO="${UPSTREAM_SUBMISSION_REPO:-hyperlane-xyz/hyperlane-monorepo}"
 UPSTREAM_SUBMISSION_HEAD="${UPSTREAM_SUBMISSION_HEAD:-dusk-network:feat/dusk-support-v2}"
+UPSTREAM_SUBMISSION_GATE_ONLY="${UPSTREAM_SUBMISSION_GATE_ONLY:-0}"
+UPSTREAM_SUBMISSION_SEARCH_JSON="${UPSTREAM_SUBMISSION_SEARCH_JSON:-}"
+UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN="${UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN:-0}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
@@ -256,9 +259,66 @@ check_branch_protection() {
     rm -f "$err_file"
 }
 
+check_upstream_submission_gate() {
+    local upstream_query
+    local upstream_prs_json
+    local upstream_open_prs
+
+    section "Upstream Submission Gate"
+    upstream_query="repo:$UPSTREAM_SUBMISSION_REPO is:pr is:open head:$UPSTREAM_SUBMISSION_HEAD"
+    printf 'upstreamSubmissionRepo: %s\n' "$UPSTREAM_SUBMISSION_REPO"
+    printf 'upstreamSubmissionHead: %s\n' "$UPSTREAM_SUBMISSION_HEAD"
+
+    if [ -n "$UPSTREAM_SUBMISSION_SEARCH_JSON" ]; then
+        upstream_prs_json="$UPSTREAM_SUBMISSION_SEARCH_JSON"
+    elif ! upstream_prs_json="$(gh api -X GET search/issues -f "q=$upstream_query" 2>/tmp/hyperlane-readiness-upstream-prs.$$.err)"; then
+        echo "upstreamOpenPrsFromDuskHead: unknown"
+        sed 's/^/  /' /tmp/hyperlane-readiness-upstream-prs.$$.err
+        rm -f /tmp/hyperlane-readiness-upstream-prs.$$.err
+        add_blocker "upstream Hyperlane PR visibility for $UPSTREAM_SUBMISSION_HEAD is unknown"
+        return 0
+    fi
+    rm -f /tmp/hyperlane-readiness-upstream-prs.$$.err
+
+    if ! upstream_open_prs="$(printf '%s\n' "$upstream_prs_json" | jq -r .total_count)"; then
+        echo "upstreamOpenPrsFromDuskHead: unknown"
+        add_blocker "upstream Hyperlane PR search response for $UPSTREAM_SUBMISSION_HEAD is invalid"
+        return 0
+    fi
+
+    printf 'upstreamOpenPrsFromDuskHead: %s\n' "$upstream_open_prs"
+    if [ "$upstream_open_prs" -gt 0 ]; then
+        printf '%s\n' "$upstream_prs_json" \
+            | jq -r '.items[] | "  #\(.number) \(.html_url) \(.title)"'
+        if [ "${#blockers[@]}" -gt 0 ] || [ "$UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN" = "1" ]; then
+            add_blocker "upstream Hyperlane PRs are open from $UPSTREAM_SUBMISSION_HEAD before internal blockers are closed"
+        fi
+    fi
+}
+
+print_summary_and_exit() {
+    section "Summary"
+    if [ "${#blockers[@]}" -eq 0 ]; then
+        echo "productionReadinessGuard: passed"
+        echo "Known machine-checkable blockers are closed, but Dusk reviewer judgment and fresh release evidence still apply."
+        exit 0
+    fi
+
+    echo "productionReadinessGuard: blocked"
+    for blocker in "${blockers[@]}"; do
+        printf -- '- %s\n' "$blocker"
+    done
+    exit 1
+}
+
 require_cmd gh
 require_cmd git
 require_cmd jq
+
+if [ "$UPSTREAM_SUBMISSION_GATE_ONLY" = "1" ]; then
+    check_upstream_submission_gate
+    print_summary_and_exit
+fi
 
 section "Internal PRs"
 check_pr "dusk" "$DUSK_REPO" 1
@@ -575,36 +635,5 @@ else
     add_blocker "latest clean-layout monorepo repro ref $LATEST_REPRO_MONOREPO_REF is unavailable"
 fi
 
-section "Upstream Submission Gate"
-upstream_query="repo:$UPSTREAM_SUBMISSION_REPO is:pr is:open head:$UPSTREAM_SUBMISSION_HEAD"
-printf 'upstreamSubmissionRepo: %s\n' "$UPSTREAM_SUBMISSION_REPO"
-printf 'upstreamSubmissionHead: %s\n' "$UPSTREAM_SUBMISSION_HEAD"
-if upstream_prs_json="$(gh api -X GET search/issues -f "q=$upstream_query" 2>/tmp/hyperlane-readiness-upstream-prs.$$.err)"; then
-    upstream_open_prs="$(printf '%s\n' "$upstream_prs_json" | jq -r .total_count)"
-    printf 'upstreamOpenPrsFromDuskHead: %s\n' "$upstream_open_prs"
-    if [ "$upstream_open_prs" -gt 0 ]; then
-        printf '%s\n' "$upstream_prs_json" \
-            | jq -r '.items[] | "  #\(.number) \(.html_url) \(.title)"'
-        if [ "${#blockers[@]}" -gt 0 ]; then
-            add_blocker "upstream Hyperlane PRs are open from $UPSTREAM_SUBMISSION_HEAD before internal blockers are closed"
-        fi
-    fi
-else
-    echo "upstreamOpenPrsFromDuskHead: unknown"
-    sed 's/^/  /' /tmp/hyperlane-readiness-upstream-prs.$$.err
-    add_blocker "upstream Hyperlane PR visibility for $UPSTREAM_SUBMISSION_HEAD is unknown"
-fi
-rm -f /tmp/hyperlane-readiness-upstream-prs.$$.err
-
-section "Summary"
-if [ "${#blockers[@]}" -eq 0 ]; then
-    echo "productionReadinessGuard: passed"
-    echo "Known machine-checkable blockers are closed, but Dusk reviewer judgment and fresh release evidence still apply."
-    exit 0
-fi
-
-echo "productionReadinessGuard: blocked"
-for blocker in "${blockers[@]}"; do
-    printf -- '- %s\n' "$blocker"
-done
-exit 1
+check_upstream_submission_gate
+print_summary_and_exit

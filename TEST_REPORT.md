@@ -896,6 +896,8 @@ Result:
   `dusk-network:feat/dusk-support-v2`. The current query reports zero open
   upstream PRs from that head; if any appear while internal blockers remain,
   the production readiness guard treats that as premature upstream submission.
+  `make fail-closed-self-test` covers that premature-upstream-PR blocker with a
+  mocked search response.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the
