@@ -315,12 +315,13 @@ Notes:
   `bash scripts/secret-hygiene-check.sh "$scan_root"`. The extracted-content
   scan covered repro, E2E, dependency-remediation, and soak handoff archives
   and found no secret-like filenames or signer/password command text. The
-  wrapper rejects unsafe archive member paths, non-regular/non-directory archive
-  entries, and extracted symlinks or special files before treating archive
-  contents as reviewer evidence.
+  wrapper verifies the expected SHA256 for the latest checkout-v6 repro
+  archive, rejects unsafe archive member paths, non-regular/non-directory
+  archive entries, and extracted symlinks or special files before treating
+  archive contents as reviewer evidence.
 - `make archive-hygiene-test` covers the scanner regression cases: safe archive
-  acceptance plus rejection for traversal members, symlink members, and
-  secret-bearing archive contents.
+  acceptance plus rejection for archive SHA256 mismatch, traversal members,
+  symlink members, and secret-bearing archive contents.
 - `make archive-hygiene` wraps this command shape:
 
 ```bash
@@ -334,6 +335,14 @@ for archive in /home/hein_/projects/hyperlane/.codex-backups/*.tgz; do
 done
 bash scripts/secret-hygiene-check.sh "$scan_root"
 ```
+
+- `make archive-hygiene` now verifies the expected SHA256 for the latest
+  checkout-v6 repro archive before extracting evidence archives. The
+  `make archive-hygiene-test` self-test now includes a `sha-mismatch` fixture
+  that fails closed on an incorrect archive hash. The post-edit
+  `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778704993` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.f4ivRY`.
 
 ## Commands Run
 

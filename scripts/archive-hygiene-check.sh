@@ -8,6 +8,7 @@ cd "$ROOT"
 
 ARCHIVE_DIR="${1:-$ROOT/../.codex-backups}"
 ARCHIVE_UNSAFE_MEMBER_PATTERN="${ARCHIVE_UNSAFE_MEMBER_PATTERN:-(^/|(^|/)\.\.(/|$))}"
+ARCHIVE_EXPECTED_SHA256S="${ARCHIVE_EXPECTED_SHA256S-hyperlane-checkout-v6-repro-1778695627.tgz=1f16dd8caa86c54ff351f0a0fc41f9ee8083c25515514ac77afb2f60f7483ccb}"
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -39,6 +40,7 @@ rg_to_file() {
 }
 
 command -v rg >/dev/null 2>&1 || fail "rg is required"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 [ -d "$ARCHIVE_DIR" ] || fail "archive directory not found: $ARCHIVE_DIR"
 
@@ -52,6 +54,20 @@ trap 'rm -rf "$scan_root"; rm -f "$archive_list" "$member_list" "$member_details
 
 find "$ARCHIVE_DIR" -maxdepth 1 -type f -name '*.tgz' -print | sort >"$archive_list"
 [ -s "$archive_list" ] || fail "no .tgz archives found in $ARCHIVE_DIR"
+
+if [ -n "$ARCHIVE_EXPECTED_SHA256S" ]; then
+    info "Checking expected archive SHA256 values"
+    for entry in $ARCHIVE_EXPECTED_SHA256S; do
+        archive_name="${entry%%=*}"
+        expected_sha256="${entry#*=}"
+        archive_path="$ARCHIVE_DIR/$archive_name"
+        [ "$archive_name" != "$entry" ] || fail "invalid expected archive SHA256 entry: $entry"
+        [ -f "$archive_path" ] || fail "expected archive not found: $archive_path"
+        actual_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
+        [ "$actual_sha256" = "$expected_sha256" ] \
+            || fail "$archive_path expected sha256 $expected_sha256 but got $actual_sha256"
+    done
+fi
 
 info "Extracting archives from $ARCHIVE_DIR"
 while IFS= read -r archive; do
