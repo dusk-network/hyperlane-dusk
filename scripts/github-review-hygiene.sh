@@ -399,6 +399,17 @@ if [ -f "$EXPORT_DIR/dusk-pr-3-body.txt" ]; then
         || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing CI provisioning runbook link"
 fi
 
+if [ -f "$EXPORT_DIR/dusk-pr-3-comments.txt" ]; then
+    rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-pr-3-comments.txt" \
+        || fail "$EXPORT_DIR/dusk-pr-3-comments.txt is missing latest clean-layout repro evidence link"
+    if rg -n -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895' \
+        "$EXPORT_DIR/dusk-pr-3-comments.txt" >"$EXPORT_DIR/stale-pr-3-comments.txt"; then
+        cat "$EXPORT_DIR/stale-pr-3-comments.txt" >&2
+        fail "$EXPORT_DIR/dusk-pr-3-comments.txt contains stale dispatcher clean-layout repro evidence"
+    fi
+fi
+rm -f "$EXPORT_DIR/stale-pr-3-comments.txt"
+
 if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
     rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout repro evidence link"
