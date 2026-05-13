@@ -59,14 +59,17 @@ check_pr() {
     local state
     local review_decision
     local status_count
+    local non_completed_count
 
     state="$(pr_field "$repo" "$number" .state)"
     review_decision="$(pr_field "$repo" "$number" '.reviewDecision // ""')"
     status_count="$(pr_field "$repo" "$number" '.statusCheckRollup | length')"
+    non_completed_count="$(pr_field "$repo" "$number" '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length')"
 
     printf '%sState: %s\n' "$label" "$state"
     printf '%sReviewDecision: %s\n' "$label" "${review_decision:-none}"
     printf '%sStatusChecks: %s\n' "$label" "$status_count"
+    printf '%sNonCompletedStatusChecks: %s\n' "$label" "$non_completed_count"
 
     if [ "$state" != "MERGED" ]; then
         add_blocker "$label PR #$number is $state, not MERGED"
@@ -78,6 +81,10 @@ check_pr() {
 
     if [ "$status_count" -lt "$MIN_STATUS_CHECKS" ]; then
         add_blocker "$label PR #$number has $status_count status checks; expected at least $MIN_STATUS_CHECKS"
+    fi
+
+    if [ "$non_completed_count" -gt 0 ]; then
+        add_blocker "$label PR #$number has $non_completed_count non-completed status checks"
     fi
 }
 

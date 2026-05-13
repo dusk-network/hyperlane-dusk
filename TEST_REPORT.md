@@ -409,6 +409,7 @@ Result:
   `make dependency-alert-status`, and `make completion-audit-status` handoff
   text, reviewer-facing `make review-gates` and
   its archive hygiene self-test and extracted archive scan handoff text,
+  stale monorepo queued-check wording after inherited Depot workflow guards,
   `make production-readiness-guard` handoff text, reviewer-facing branch
   protection/status-check policy handoff text, reviewer-facing latest
   clean-layout repro path delta handoff text, current Hyperlane upstream drift,
@@ -423,9 +424,10 @@ Result:
   clean-Rusk E2E, CI provisioning, or Dusk production sign-off.
 - `make production-readiness-guard`: failed as expected while external
   production blockers remain open. It reports open internal PR/review/status
-  gates, unchecked sign-off items, open split decision issues, required
-  status-check policy enabled, missing `DUSK_ORG_READ_TOKEN` visibility in
-  both internal repos, missing self-hosted runner visibility for the
+  gates, non-completed PR status-check counts, unchecked sign-off items, open
+  split decision issues, required status-check policy enabled, missing
+  `DUSK_ORG_READ_TOKEN` visibility in both internal repos, missing self-hosted
+  runner visibility for the
   `dusk-hyperlane` label, Dusk Cargo dependency alert triage, upstream
   freshness, and latest clean-layout repro covered-path delta. Passing this
   guard would not by itself prove production readiness. Protected-branch review
