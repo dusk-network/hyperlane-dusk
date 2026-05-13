@@ -333,7 +333,7 @@ rg -q -F 'make dispatcher-merge-order-smoke' "$active_review_text" \
 post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
 post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
 dependency_remediated_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389'
-latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895'
+latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4442208973'
 ci_provisioning_runbook='https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841'
 for file in \
     "$EXPORT_DIR/dusk-pr-1-body.txt" \
