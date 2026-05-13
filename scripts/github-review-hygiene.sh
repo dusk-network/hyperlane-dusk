@@ -330,6 +330,8 @@ rm -f "$stale_review_gates_hits"
 
 rg -q -F 'make dispatcher-merge-order-smoke' "$active_review_text" \
     || fail "active reviewer-facing text is missing dispatcher merge-order smoke handoff text"
+rg -q -F 'monorepoCoveredPathDelta' "$active_review_text" \
+    || fail "active reviewer-facing text is missing monorepo clean-layout repro delta handoff text"
 
 post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
 post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
