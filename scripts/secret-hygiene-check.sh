@@ -96,6 +96,7 @@ if [ "$#" -gt 0 ]; then
         -e '"key"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' \
         -e '"privateKey"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' \
         -e '"private_key"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' \
+        -e '(^|[^[:alnum:]_])(key|privateKey|private_key)[[:space:]]*[:=][[:space:]]*"?0x[0-9a-fA-F]{64}"?' \
         -e '"type"[[:space:]]*:[[:space:]]*"hexKey"' \
         -e 'secret_key_bls' \
         -e 'DUSK_CONSENSUS_PASSWORD=' \

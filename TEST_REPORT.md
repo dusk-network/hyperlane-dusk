@@ -888,8 +888,10 @@ Result:
   artifact rejection before CI or reviewer evidence upload.
 - Runtime artifact secret-text scanning now rejects JSON `privateKey` and
   `private_key` fields containing 32-byte hex keys in addition to `key` fields
-  and `hexKey` signer markers. `make fail-closed-self-test` covers a
-  `privateKey` artifact fixture.
+  and `hexKey` signer markers, and also rejects TOML/YAML-style `key`,
+  `privateKey`, or `private_key` assignments with 32-byte hex keys. `make
+  fail-closed-self-test` covers JSON `privateKey` and TOML `private_key`
+  artifact fixtures.
 - `make gate-status-fresh` and `make production-readiness-guard` now report an
   upstream submission gate using GitHub search for open
   `hyperlane-xyz/hyperlane-monorepo` PRs from

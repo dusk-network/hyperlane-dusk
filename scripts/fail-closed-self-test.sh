@@ -182,6 +182,16 @@ expect_fail \
     'runtime artifact scan found' \
     bash scripts/secret-hygiene-check.sh "$workdir/private-key-artifacts"
 
+mkdir -p "$workdir/toml-key-artifacts"
+cat >"$workdir/toml-key-artifacts/config.toml" <<'EOF'
+[signer]
+private_key = "0x2222222222222222222222222222222222222222222222222222222222222222"
+EOF
+expect_fail \
+    secret-hygiene-toml-private-key-artifact \
+    'runtime artifact scan found' \
+    bash scripts/secret-hygiene-check.sh "$workdir/toml-key-artifacts"
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"
