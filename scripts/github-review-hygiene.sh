@@ -436,7 +436,7 @@ if rg -n \
 fi
 rm -f "$active_review_text" "$EXPORT_DIR/pre-rebase-only-e2e-wording.txt"
 
-snapshot_markers="Current output after push|Cross-repo handoff refresh on 2026-05-12|Pushed two docs/workflow-only updates|Docs-only wording refresh pushed"
+snapshot_markers="Current output after push|Cross-repo handoff refresh on 2026-05-12|Pushed two docs/workflow-only updates|Docs-only wording refresh pushed|no GitHub-enforced required status checks"
 snapshot_mismatches="$EXPORT_DIR/unsuperseded-status-snapshots.txt"
 for file in "$EXPORT_DIR"/*-comments.txt; do
     awk -v file="$file" -v out="$snapshot_mismatches" -v markers="$snapshot_markers" '
