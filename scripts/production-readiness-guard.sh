@@ -54,13 +54,53 @@ pr_field() {
         --jq "$field"
 }
 
-status_rollup() {
+pr_state() {
     local repo="$1"
     local number="$2"
 
-    gh pr view "$number" --repo "$repo" \
-        --json statusCheckRollup \
-        --jq .statusCheckRollup
+    gh api "repos/$repo/pulls/$number" \
+        --jq 'if .merged then "MERGED" else (.state | ascii_upcase) end'
+}
+
+pr_head_sha() {
+    local repo="$1"
+    local number="$2"
+
+    gh api "repos/$repo/pulls/$number" --jq .head.sha
+}
+
+pr_review_decision() {
+    local repo="$1"
+    local number="$2"
+    local err_file
+
+    err_file="/tmp/hyperlane-readiness-review.$$.err"
+    if gh pr view "$number" --repo "$repo" \
+        --json reviewDecision \
+        --jq '.reviewDecision // ""' \
+        2>"$err_file"; then
+        rm -f "$err_file"
+        return 0
+    fi
+
+    printf 'UNKNOWN\n'
+    sed 's/^/  gh: /' "$err_file" >&2
+    rm -f "$err_file"
+}
+
+status_rollup() {
+    local repo="$1"
+    local number="$2"
+    local head_sha
+
+    head_sha="$(pr_head_sha "$repo" "$number")"
+    gh api "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
+        --jq '[.check_runs[] | {
+            name,
+            status: (.status | ascii_upcase),
+            conclusion: ((.conclusion // "") | ascii_upcase),
+            detailsUrl: .html_url
+        }]'
 }
 
 count_non_completed_checks() {
@@ -112,8 +152,8 @@ check_pr() {
     local non_completed_count
     local rollup
 
-    state="$(pr_field "$repo" "$number" .state)"
-    review_decision="$(pr_field "$repo" "$number" '.reviewDecision // ""')"
+    state="$(pr_state "$repo" "$number")"
+    review_decision="$(pr_review_decision "$repo" "$number")"
     rollup="$(wait_for_status_checks "$label" "$repo" "$number")"
     status_count="$(printf '%s\n' "$rollup" | jq 'length')"
     non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
