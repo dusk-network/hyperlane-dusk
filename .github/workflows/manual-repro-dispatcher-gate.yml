@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Checkout Dusk Hyperlane
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -39,6 +39,7 @@ jobs:
           git diff --check HEAD~1..HEAD -- \
             .github/workflows/manual-repro-check.yml \
             .github/workflows/manual-repro-dispatcher-gate.yml \
+            .github/workflows/dusk-review-policy-gate.yml \
             .github/actionlint.yaml
 
       - name: Check dispatcher secret hygiene
@@ -47,4 +48,5 @@ jobs:
           set -euo pipefail
           ! grep -En "upload-artifact|hexKey|keyFile|keyEnv|password|--secret-key|BEGIN .*PRIVATE" \
             .github/workflows/manual-repro-check.yml \
+            .github/workflows/dusk-review-policy-gate.yml \
             .github/actionlint.yaml
