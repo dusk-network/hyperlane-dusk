@@ -343,6 +343,18 @@ for file in \
 done
 rm -f "$EXPORT_DIR/stale-repro-body.txt"
 
+for file in \
+    "$EXPORT_DIR/dusk-pr-1-body.txt" \
+    "$EXPORT_DIR/dusk-issue-2-body.txt" \
+    "$EXPORT_DIR/dusk-issue-8-body.txt"; do
+    if [ -f "$file" ]; then
+        rg -q -F 'DUSK_STATUS_READ_TOKEN' "$file" \
+            || fail "$file is missing DUSK_STATUS_READ_TOKEN status-visibility handoff text"
+        rg -q -F 'repoStatusSecretVisible' "$file" \
+            || fail "$file is missing repoStatusSecretVisible gate-status handoff text"
+    fi
+done
+
 if [ -f "$EXPORT_DIR/dusk-pr-3-body.txt" ]; then
     rg -q -F "$REVIEWER_ROUTING_URL" "$EXPORT_DIR/dusk-pr-3-body.txt" \
         || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing advisory reviewer routing link"
