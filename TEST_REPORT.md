@@ -495,10 +495,11 @@ Result:
   `make archive-hygiene`,
   `make dependency-alert-status`, `make review-hygiene`,
   `make dispatcher-merge-order-smoke`, and
-  `make gate-status-fresh`. Latest pass at Dusk
-  `53b6117b54fc7a3ab29d5aff4254bfa31ba32868` and monorepo
-  `9050143c1ef12f76d117ee97effa79da8df3e334` exported GitHub review text to
-  `/tmp/hyperlane-review-export-1778681965`. It does not replace
+  `make gate-status-fresh`. Exact current-head `make review-gates` evidence is
+  maintained in the current gate refresh handoff:
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4435213587`.
+  Recent exports include `/tmp/hyperlane-review-export-1778681965` and
+  `/tmp/hyperlane-review-export-1778682243`. This wrapper does not replace
   `make repro-check-agent`, clean-Rusk E2E, CI provisioning, or Dusk
   production sign-off.
 - `make production-readiness-guard`: failed as expected while external
