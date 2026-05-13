@@ -172,8 +172,9 @@ Observed:
   dependency-remediated E2E, latest clean-layout repro, reviewer-routing links,
   `make gate-status-fresh`, `make dependency-alert-status`,
   `make completion-audit-status`, `make review-gates`,
-  `make production-readiness-guard`, required status-check policy enabled, and
-  latest clean-layout repro path delta.
+  review-gates archive hygiene self-test coverage, review-gates extracted
+  archive scan coverage, `make production-readiness-guard`, required
+  status-check policy enabled, and latest clean-layout repro path delta.
 
 ## Prompt-To-Artifact Deliverable Checklist
 

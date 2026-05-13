@@ -26,6 +26,8 @@ GATE_STATUS_FRESH_TEXT="${GATE_STATUS_FRESH_TEXT:-make gate-status-fresh}"
 DEPENDENCY_ALERT_STATUS_TEXT="${DEPENDENCY_ALERT_STATUS_TEXT:-make dependency-alert-status}"
 COMPLETION_AUDIT_STATUS_TEXT="${COMPLETION_AUDIT_STATUS_TEXT:-make completion-audit-status}"
 REVIEW_GATES_TEXT="${REVIEW_GATES_TEXT:-make review-gates}"
+REVIEW_GATES_ARCHIVE_SELF_TEST_TEXT="${REVIEW_GATES_ARCHIVE_SELF_TEST_TEXT:-archive hygiene self-tests}"
+REVIEW_GATES_ARCHIVE_SCAN_TEXT="${REVIEW_GATES_ARCHIVE_SCAN_TEXT:-extracted evidence archive hygiene scans}"
 PRODUCTION_READINESS_GUARD_TEXT="${PRODUCTION_READINESS_GUARD_TEXT:-make production-readiness-guard}"
 BRANCH_PROTECTION_STATUS_TEXT="${BRANCH_PROTECTION_STATUS_TEXT:-required status-check policy enabled}"
 REPRO_PATH_DELTA_TEXT="${REPRO_PATH_DELTA_TEXT:-latest clean-layout repro path delta}"
@@ -123,6 +125,14 @@ Environment:
   REVIEW_GATES_TEXT    Text expected in active implementation PR and sign-off
                        bodies to expose the lightweight gate bundle.
                        Default: $REVIEW_GATES_TEXT
+  REVIEW_GATES_ARCHIVE_SELF_TEST_TEXT
+                       Text expected in active implementation PR and sign-off
+                       bodies to expose review-gates archive self-test coverage.
+                       Default: $REVIEW_GATES_ARCHIVE_SELF_TEST_TEXT
+  REVIEW_GATES_ARCHIVE_SCAN_TEXT
+                       Text expected in active implementation PR and sign-off
+                       bodies to expose review-gates extracted archive scans.
+                       Default: $REVIEW_GATES_ARCHIVE_SCAN_TEXT
   PRODUCTION_READINESS_GUARD_TEXT
                        Text expected in active implementation PR and sign-off
                        bodies to expose the blocking production readiness guard.
@@ -324,6 +334,18 @@ print_link_presence() {
         echo "  reviewGatesHandoff: present"
     else
         echo "  reviewGatesHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$REVIEW_GATES_ARCHIVE_SELF_TEST_TEXT"; then
+        echo "  reviewGatesArchiveSelfTestHandoff: present"
+    else
+        echo "  reviewGatesArchiveSelfTestHandoff: missing"
+    fi
+
+    if printf '%s\n' "$body" | grep -Fq "$REVIEW_GATES_ARCHIVE_SCAN_TEXT"; then
+        echo "  reviewGatesArchiveScanHandoff: present"
+    else
+        echo "  reviewGatesArchiveScanHandoff: missing"
     fi
 
     if printf '%s\n' "$body" | grep -Fq "$PRODUCTION_READINESS_GUARD_TEXT"; then

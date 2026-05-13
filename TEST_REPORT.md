@@ -401,6 +401,7 @@ Result:
   vulnerable-range comparison, reviewer-facing `make gate-status-fresh`,
   `make dependency-alert-status`, and `make completion-audit-status` handoff
   text, reviewer-facing `make review-gates` and
+  its archive hygiene self-test and extracted archive scan handoff text,
   `make production-readiness-guard` handoff text, reviewer-facing branch
   protection/status-check policy handoff text, reviewer-facing latest
   clean-layout repro path delta handoff text, current Hyperlane upstream drift,
