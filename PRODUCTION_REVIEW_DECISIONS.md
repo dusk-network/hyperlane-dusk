@@ -194,6 +194,12 @@ password, deployment key, relayer key, or image-publishing credential. Hyperlane
 image-publishing/GitHub App credentials are not required for the internal Dusk
 review path because the inherited Rust image workflow is skipped on the Dusk
 fork and remains enabled for the later upstream PR path.
+Keep branch protection, Actions-secret, runner-admin, and Dependabot-alert
+visibility separate from the source-checkout token. The production-readiness
+guard should remain blocked until those status APIs are visible through an
+approved admin/security-read local `gh` credential or a separate
+Dusk-approved CI credential; do not broaden `DUSK_ORG_READ_TOKEN` beyond source
+checkout unless Dusk explicitly changes the token policy.
 Keep the protected `main` and required-review baseline now enabled for
 `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, then add
 at least one required status check once the accepted CI path exists.

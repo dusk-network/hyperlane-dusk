@@ -360,7 +360,12 @@ Result:
   `dusk-hyperlane` label, Dusk Cargo dependency alert triage, upstream
   freshness, and latest clean-layout repro covered-path delta. Passing this
   guard would not by itself prove production readiness. Protected-branch review
-  baselines are now enabled on both Dusk org default branches.
+  baselines are now enabled on both Dusk org default branches. In CI, some
+  visibility checks can require permissions broader than source checkout;
+  `DUSK_ORG_READ_TOKEN` remains source-checkout-only, and Dusk must use an
+  approved admin/security-read local `gh` credential or separate approved CI
+  credential for branch protection, Actions-secret, runner, and Dependabot
+  alert visibility.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   current-head run `1778615349` passed against Dusk source ref

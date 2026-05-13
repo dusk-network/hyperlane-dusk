@@ -174,7 +174,7 @@ issue to be complete before any production-readiness claim.
 
 ## Access Token
 
-Use one GitHub secret:
+Use one GitHub secret for source checkout:
 
 ```text
 DUSK_ORG_READ_TOKEN
@@ -193,6 +193,22 @@ Forbidden uses:
   password, deployment key, or relayer key.
 - Do not persist it in local git config. The workflow sets
   `persist-credentials: false` on all checkout steps.
+
+Do not broaden `DUSK_ORG_READ_TOKEN` just to satisfy status-reporting APIs.
+It is intentionally scoped to source checkout for the manual repro workflow and
+the monorepo companion checkout path.
+
+The lightweight production-readiness guard also reports visibility for branch
+protection, Actions secrets, self-hosted runners, and Dependabot alerts. Those
+GitHub APIs can require admin, Actions-runner, or security-events permissions
+that are broader than source checkout. If the default `GITHUB_TOKEN` or
+`DUSK_ORG_READ_TOKEN` cannot read one of those APIs, the guard reports that
+visibility as unavailable and remains blocked. Dusk should satisfy those gates
+by either rerunning `make production-readiness-guard` with an approved admin or
+security-read local `gh` credential, or by provisioning a separate
+Dusk-approved CI credential specifically for status visibility. That credential
+must not be a signer, validator key, consensus password, deployment key,
+relayer key, or image-publishing credential.
 
 ## Admin Provisioning Runbook
 
@@ -229,7 +245,11 @@ make production-readiness-guard
 
 `make production-readiness-guard` should still fail until the remaining review,
 sign-off, internal merge, and upstream-prep blockers close; the token and
-runner-specific blockers should be gone.
+runner-specific blockers should be gone. If Dependabot alerts, branch
+protection, Actions secret, or runner visibility still reports `unknown` or
+`unavailable`, rerun the guard with Dusk-approved credentials that have the
+needed read/admin visibility, or record the approved alternate verification in
+the production sign-off issue.
 
 ## Manual Workflow
 

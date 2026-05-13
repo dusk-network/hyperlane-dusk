@@ -41,6 +41,13 @@ change, or replace.
 checkout. It must not be a Dusk signer, validator key, consensus key password,
 deployment secret, relayer key, or image-publishing credential.
 
+Do not add branch-protection, Actions-secret, runner-admin, or Dependabot-alert
+read scopes to `DUSK_ORG_READ_TOKEN` unless Dusk explicitly changes the token
+policy. Those APIs are production-readiness visibility gates, not source
+checkout requirements. Use an approved admin/security-read local `gh`
+credential or a separate Dusk-approved CI credential for those status checks if
+Dusk wants the GitHub Actions guard to see them.
+
 The workflow sets `persist-credentials: false` on checkout steps so the token is
 not left in local git config while the repro command runs.
 
