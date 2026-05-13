@@ -19,7 +19,7 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
 
 workdir="$(mktemp -d -t hyperlane-fail-closed-test.XXXXXX)"
-trap 'rm -rf "$workdir"' EXIT
+trap 'chmod -R u+rwX "$workdir" 2>/dev/null || true; rm -rf "$workdir"' EXIT
 
 expect_fail() {
     local label="$1"
@@ -67,5 +67,13 @@ expect_fail \
     'report hygiene scan failed' \
     env STALE_REPORT_PATTERNS='[invalid' \
     bash scripts/report-hygiene-check.sh
+
+mkdir -p "$workdir/secret-artifacts"
+printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
+chmod 000 "$workdir/secret-artifacts/unreadable.log"
+expect_fail \
+    secret-hygiene-unreadable-artifact \
+    'runtime artifact secret text scan failed' \
+    bash scripts/secret-hygiene-check.sh "$workdir/secret-artifacts"
 
 info "Fail-closed self-test passed"

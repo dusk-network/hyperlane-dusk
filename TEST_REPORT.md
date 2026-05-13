@@ -821,10 +821,11 @@ Result:
   `/tmp/hyperlane-merge-order-logs.0nGCze`.
 - `make fail-closed-self-test` now automates the archive member-path invalid
   regex, gate-status placeholder invalid regex, review-hygiene agent placeholder
-  invalid regex, and report-hygiene stale-pattern invalid regex probes. It is
-  part of `make review-gates`; the post-edit `make review-gates` run passed
-  with review-hygiene export `/tmp/hyperlane-review-export-1778702191` and
-  dispatcher merge-order smoke log `/tmp/hyperlane-merge-order-logs.hELDFL`.
+  invalid regex, report-hygiene stale-pattern invalid regex, and secret-hygiene
+  unreadable runtime artifact probes. It is part of `make review-gates`; the
+  post-edit `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778702391` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.AmzAll`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
