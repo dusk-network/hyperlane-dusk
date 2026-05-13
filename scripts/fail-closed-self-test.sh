@@ -115,6 +115,35 @@ expect_fail \
     env PATH="$workdir/ci-visibility-mock-bin:$PATH" CI_VISIBILITY_GATE_ONLY=1 \
     bash scripts/production-readiness-guard.sh
 
+mkdir -p "$workdir/branch-protection-mock-bin"
+cat >"$workdir/branch-protection-mock-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$*" in
+    "api repos/dusk-network/hyperlane-dusk --jq .default_branch" | \
+    "api repos/dusk-network/hyperlane-monorepo --jq .default_branch")
+        printf 'main\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/branches/main/protection --jq "* | \
+    "api repos/dusk-network/hyperlane-monorepo/branches/main/protection --jq "*)
+        echo "Branch not protected" >&2
+        exit 1
+        ;;
+    *)
+        echo "unexpected gh invocation: $*" >&2
+        exit 1
+        ;;
+esac
+EOF
+chmod +x "$workdir/branch-protection-mock-bin/gh"
+
+expect_fail \
+    production-readiness-missing-branch-protection \
+    'dusk default branch main is not protected' \
+    env PATH="$workdir/branch-protection-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
+    bash scripts/production-readiness-guard.sh
+
 expect_fail \
     review-hygiene-invalid-agent-pattern \
     'Dusk agent runtime panic/placeholder scan failed' \
