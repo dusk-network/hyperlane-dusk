@@ -544,8 +544,8 @@ Result:
   manual repro workflow remains on the source-checkout token.
 - Recent CI `Production readiness guard` runs on Dusk PR #1 completed with the
   same expected failure at Dusk head
-  `60ff8bad100a9a7c1ffb3548b21a7e78bba2bcfc`
-  (https://github.com/dusk-network/hyperlane-dusk/actions/runs/25814505935/job/75839305427).
+  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba`
+  (https://github.com/dusk-network/hyperlane-dusk/actions/runs/25817675973/job/75850331611).
   The failed-job summary was limited to the known external blockers:
   unmerged/unapproved internal PRs, unknown branch-protection visibility from
   the Actions integration token, 7 unchecked production sign-off items, 6 open
@@ -569,11 +569,13 @@ Result:
   lines to stderr so captured stdout remains valid JSON.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
-  clean-layout run `1778683232` passed against Dusk source ref
-  `8d3704e8f5a3ab0976b97fc3a68319e112e8affc`, monorepo
-  `9050143c1ef12f76d117ee97effa79da8df3e334`, upstream base
-  `2b7db706023806b36a57e446205ae443537ae9ec`, and clean Rusk
-  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+  checkout-v6 clean-layout run `1778695627` passed against Dusk source ref
+  `ef8ee43cd99569299b9744b498ac1bbac69950bc`, monorepo
+  `515fab074024271935bc7795604dbb4f0823a937`, upstream base
+  `7689ff65f4929a72ad0650a03e8dd7d987f0e802`, and clean Rusk
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`. Log:
+  `/tmp/hyperlane-review-checkout-v6-repro-1778695627.log`; SHA256:
+  `9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12`.
 - `bash scripts/local-repro-check.sh --agent-check`: passed. This wraps the
   same repeatable non-E2E checks plus the Hyperlane Rust agent check. It still
   requires local/private Rusk path dependencies and does not replace the
@@ -599,13 +601,13 @@ Result:
   temporary detached worktrees from `origin/main`
   `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` and verifies both current remote
   landing orders: dispatcher branch `origin/ci/manual-repro-workflow`
-  `e54d6d49588ac24908c22dde2ac2345ddb983291` followed by implementation
+  `a6cbd2e030dce61cb1abeab5fab970534bbbb068` followed by implementation
   branch `origin/feat/dusk-hardening-v2`
-  `d7a0a35ebc01a8790ca252fac215608b76559190`, and the reverse order. In both
+  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba`, and the reverse order. In both
   orders, `.github/workflows/manual-repro-check.yml` and
   `.github/actionlint.yaml` had an empty diff against the implementation
   branch after the combined merge. Temporary command logs were written under
-  `/tmp/hyperlane-merge-order-logs.FnF7KS`.
+  `/tmp/hyperlane-merge-order-logs.COXhBM`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight
@@ -710,11 +712,10 @@ Result:
   scripts/github-review-hygiene.sh`, `git diff --check`, `make review-hygiene`,
   and `make review-gates` passed at guard commit
   `fac1134131d37d8dff5b7e2ca9dada40983ac688`; later current-head refreshes
-  extended those guards through
-  `d7a0a35ebc01a8790ca252fac215608b76559190`. Recent `make review-hygiene`
-  exports included `/tmp/hyperlane-review-export-1778690375` and
-  `/tmp/hyperlane-review-export-1778690519`, and `make review-gates` exported
-  `/tmp/hyperlane-review-export-1778690383`.
+  extended those guards through the current Dusk head
+  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba`. Latest focused
+  `make review-hygiene` export after the dispatcher checkout-v6 refresh:
+  `/tmp/hyperlane-review-export-1778696572`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
