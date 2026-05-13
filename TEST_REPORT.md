@@ -548,6 +548,20 @@ Result:
   PR containing only `.github/workflows/manual-repro-check.yml` and
   `.github/actionlint.yaml`, so Dusk can make the manual workflow visible
   independently from the full implementation PR.
+- Dispatcher/implementation merge-order smoke check: passed on 2026-05-13.
+  Temporary detached worktrees from `origin/main`
+  `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` merged both current remote
+  heads cleanly: dispatcher branch `origin/ci/manual-repro-workflow`
+  `e54d6d49588ac24908c22dde2ac2345ddb983291` followed by implementation
+  branch `origin/feat/dusk-hardening-v2`
+  `c39273d918c7abcf506d2d2795b5f51bfea14b96`, and the reverse order. In both
+  orders, `.github/workflows/manual-repro-check.yml` and
+  `.github/actionlint.yaml` had an empty diff against the implementation
+  branch after the combined merge. Temporary command logs were written to
+  `/tmp/hyperlane-merge-order-a1.log`, `/tmp/hyperlane-merge-order-a2.log`,
+  `/tmp/hyperlane-merge-order-a-diff.log`,
+  `/tmp/hyperlane-merge-order-b1.log`, `/tmp/hyperlane-merge-order-b2.log`,
+  and `/tmp/hyperlane-merge-order-b-diff.log`.
 - `actionlint .github/workflows/manual-repro-check.yml`: passed after adding
   `.github/actionlint.yaml` for the custom self-hosted `dusk-hyperlane` label.
 - `.github/workflows/production-readiness-gate.yml`: added as a lightweight

@@ -121,6 +121,11 @@ Observed:
   `Manual repro dispatcher gate` and `Dusk review policy gate` passing, and
   contains only the workflow and actionlint files needed to make manual
   `workflow_dispatch` available from the default branch after Dusk review.
+  A 2026-05-13 merge-order smoke check from `origin/main`
+  `c5ce2135407dad6420d010bdafe82a0b9b4bb78d` verified that current dispatcher
+  head `e54d6d49588ac24908c22dde2ac2345ddb983291` and current implementation
+  head `c39273d918c7abcf506d2d2795b5f51bfea14b96` merge cleanly in either
+  order, with no workflow/actionlint file drift after the combined merge.
 - Split decision issues #4 through #9 are all open with `need:feedback` and
   `type:rfc` labels.
 - Upstream Hyperlane `main` and the monorepo branch merge-base both resolve to
