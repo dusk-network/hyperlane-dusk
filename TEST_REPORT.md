@@ -210,13 +210,14 @@ Notes:
   `5da9c5ff7768b1be227f00a5e4f8a7de2f6418057875ecf8e132bc0926a72a04`.
   `scripts/secret-hygiene-check.sh` passed over the repro log, archive staging
   directory, and tarball.
-- Archive hygiene audit on 2026-05-13: all durable `.tgz` evidence archives in
-  `/home/hein_/projects/hyperlane/.codex-backups` were extracted into a
-  temporary directory and scanned with `bash scripts/secret-hygiene-check.sh
-  "$scan_root"`. The extracted-content scan covered repro, E2E,
-  dependency-remediation, and soak handoff archives and found no secret-like
-  filenames or signer/password command text.
-- Command used for the extracted-content archive scan:
+- Archive hygiene audit on 2026-05-13: `make archive-hygiene` extracted all
+  durable `.tgz` evidence archives in
+  `/home/hein_/projects/hyperlane/.codex-backups` into a temporary directory
+  and scanned the extracted contents with
+  `bash scripts/secret-hygiene-check.sh "$scan_root"`. The extracted-content
+  scan covered repro, E2E, dependency-remediation, and soak handoff archives
+  and found no secret-like filenames or signer/password command text.
+- `make archive-hygiene` wraps this command shape:
 
 ```bash
 scan_root="$(mktemp -d -t hyperlane-archive-hygiene.XXXXXX)"
@@ -242,6 +243,7 @@ cargo test -p hyperlane-dusk-types
 cargo test -p hyperlane-dusk-integration-tests
 cargo test -p dusk-tx
 make secret-hygiene
+make archive-hygiene
 make dependency-alert-status
 make completion-audit-status
 make gate-status

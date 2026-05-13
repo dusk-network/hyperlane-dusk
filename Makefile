@@ -101,6 +101,11 @@ test: test-types test-integration
 secret-hygiene:
 	bash scripts/secret-hygiene-check.sh
 
+# Extract durable evidence archives and scan their contents for secrets.
+.PHONY: archive-hygiene
+archive-hygiene:
+	bash scripts/archive-hygiene-check.sh
+
 # Export GitHub PR/issue review text and scan it for stale evidence/secrets.
 .PHONY: review-hygiene
 review-hygiene:
@@ -172,6 +177,7 @@ help:
 	@echo "  dusk-tx            Build dusk-tx CLI tool"
 	@echo "  test               Run all tests"
 	@echo "  secret-hygiene     Check source secret-handling guardrails"
+	@echo "  archive-hygiene    Check extracted evidence archives for secrets"
 	@echo "  review-hygiene     Check GitHub review text for stale refs/secrets"
 	@echo "  dependency-alert-status"
 	@echo "                     Compare open Dependabot Cargo.lock alerts to the local lockfile"
