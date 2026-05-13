@@ -548,15 +548,17 @@ Result:
   manual repro workflow remains on the source-checkout token.
 - Recent CI `Production readiness guard` runs on Dusk PR #1 completed with the
   same expected failure at Dusk head
-  `d7a0a35ebc01a8790ca252fac215608b76559190`
-  (https://github.com/dusk-network/hyperlane-dusk/actions/runs/25812841652/job/75833452037).
+  `422ac0e0b0b6331f5b66f2acf02e86c7024e65c3`
+  (https://github.com/dusk-network/hyperlane-dusk/actions/runs/25814354020/job/75838763304).
   The failed-job summary was limited to the known external blockers:
   unmerged/unapproved internal PRs, unknown branch-protection visibility from
   the Actions integration token, 7 unchecked production sign-off items, 6 open
   split decision issues, unavailable Dependabot alert triage in Actions,
   unknown `dusk-hyperlane` runner visibility, unknown repo-level Actions
   secret visibility, and `coveredPathDelta: none` plus
-  `monorepoCoveredPathDelta: none`.
+  `monorepoCoveredPathDelta: none`. This run exercises the CI path that now
+  compares monorepo covered-path tree manifests instead of GitHub compare API
+  file lists, avoiding false positives after the monorepo branch is rebased.
 - After the Dusk head `803e855b3692706e38c630777230727d76a02afd`,
   `scripts/production-readiness-guard.sh` was hardened for CI status-check
   accounting: it ignores the current `GITHUB_RUN_ID` when counting

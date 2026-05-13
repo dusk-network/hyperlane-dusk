@@ -106,12 +106,13 @@ make gate-status-fresh
 Observed:
 
 - Dusk PR is ready for review and open; review is requested from `moCello`;
-  live head `d7a0a35ebc01a8790ca252fac215608b76559190` has
+  live head `422ac0e0b0b6331f5b66f2acf02e86c7024e65c3` has
   `Dusk review policy gate` passing at
-  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25812841609/job/75833452017
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25814354038/job/75838763538
   and `Production readiness guard` failing as expected at
-  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25812841652/job/75833452037.
-  The failed-job summary reaches the known external blockers and reports
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25814354020/job/75838763304.
+  The failed-job summary reaches the known external blockers, uses direct
+  covered-tree comparison for the monorepo latest-repro delta, and reports
   `coveredPathDelta: none` and `monorepoCoveredPathDelta: none`.
 - Monorepo PR is ready for review and open; review is requested from
   `Neotamandua`; `Dusk review policy gate` is passing and
