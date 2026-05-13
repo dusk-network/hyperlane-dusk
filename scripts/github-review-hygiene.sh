@@ -453,11 +453,14 @@ post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2
 post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
 dependency_remediated_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389'
 latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856'
+current_gate_refresh_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446061536'
 ci_provisioning_runbook='https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841'
 for file in \
     "$EXPORT_DIR/dusk-pr-1-body.txt" \
     "$EXPORT_DIR/monorepo-pr-1-body.txt" \
     "$EXPORT_DIR/dusk-issue-2-body.txt"; do
+    rg -q -F "$current_gate_refresh_comment" "$file" \
+        || fail "$file is missing current gate refresh link"
     rg -q -F "$latest_repro_comment" "$file" \
         || fail "$file is missing latest clean-layout repro evidence link"
     if rg -n -e '1778607202|4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253|1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3|1778683232|9050143c1ef12f76d117ee97effa79da8df3e334' "$file" >"$EXPORT_DIR/stale-repro-body.txt"; then
@@ -583,7 +586,7 @@ for issue in 4 5 6 7 8 9; do
             || fail "$file is missing current gate handoff section"
         rg -q -F 'currentGateRefreshHandoff' "$file" \
             || fail "$file is missing currentGateRefreshHandoff text"
-        rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446061536' \
+        rg -q -F "$current_gate_refresh_comment" \
             "$file" \
             || fail "$file is missing current gate refresh link"
         rg -q -F 'make review-gates' "$file" \
