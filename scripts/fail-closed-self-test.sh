@@ -165,6 +165,15 @@ expect_fail \
     'runtime artifact path includes secret-like file names' \
     bash scripts/secret-hygiene-check.sh "$workdir/env-artifacts"
 
+mkdir -p "$workdir/private-key-artifacts"
+cat >"$workdir/private-key-artifacts/config.json" <<'EOF'
+{"signer":{"privateKey":"0x1111111111111111111111111111111111111111111111111111111111111111"}}
+EOF
+expect_fail \
+    secret-hygiene-private-key-artifact \
+    'runtime artifact scan found' \
+    bash scripts/secret-hygiene-check.sh "$workdir/private-key-artifacts"
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"

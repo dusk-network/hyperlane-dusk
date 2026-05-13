@@ -886,6 +886,10 @@ Result:
   secret-like runtime artifact filenames, matching the tracked-source policy
   for local dev env files. `make fail-closed-self-test` covers `.env.bridge`
   artifact rejection before CI or reviewer evidence upload.
+- Runtime artifact secret-text scanning now rejects JSON `privateKey` and
+  `private_key` fields containing 32-byte hex keys in addition to `key` fields
+  and `hexKey` signer markers. `make fail-closed-self-test` covers a
+  `privateKey` artifact fixture.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the
