@@ -166,10 +166,17 @@ fi
 
 section "Dependency Alerts"
 dependency_alert_status=0
-bash "$ROOT/scripts/dependency-alert-status.sh" --summary-only || dependency_alert_status=$?
+dependency_alert_output="$(mktemp)"
+bash "$ROOT/scripts/dependency-alert-status.sh" --summary-only 2>&1 \
+    | tee "$dependency_alert_output" || dependency_alert_status=$?
 if [ "$dependency_alert_status" -ne 0 ]; then
-    add_blocker "Dusk Cargo.lock dependency-alert triage has vulnerable, unparsed, or unpatchable open alerts"
+    if grep -q '^dependencyAlertStatus: unavailable' "$dependency_alert_output"; then
+        add_blocker "Dusk Cargo.lock dependency-alert triage is unavailable"
+    else
+        add_blocker "Dusk Cargo.lock dependency-alert triage has vulnerable, unparsed, or unpatchable open alerts"
+    fi
 fi
+rm -f "$dependency_alert_output"
 
 section "Workflow And CI Visibility"
 workflow_output="$(gh workflow list --repo "$DUSK_REPO" --all || true)"

@@ -44,7 +44,10 @@ setup to accept, change, or replace.
   GitHub-hosted status-check candidate that runs
   `make production-readiness-guard`; it is expected to fail until the known
   review, sign-off, workflow runner/secret, and internal merge blockers are
-  closed.
+  closed. It requests `security-events: read` so the dependency-alert triage
+  helper can read same-repo Dependabot alerts when GitHub grants that
+  permission; otherwise the production guard reports dependency-alert triage as
+  unavailable and remains blocked.
 
 ## Proposed Runner
 

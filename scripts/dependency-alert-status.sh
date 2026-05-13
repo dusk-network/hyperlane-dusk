@@ -254,7 +254,8 @@ awk '
     }
 ' "$LOCKFILE" | sort -u >"$lock_versions"
 
-gh api "repos/$DUSK_REPO/dependabot/alerts?state=open&per_page=100" --paginate \
+alerts_err="$tmpdir/dependabot-alerts.err"
+if ! gh api "repos/$DUSK_REPO/dependabot/alerts?state=open&per_page=100" --paginate \
     --jq '.[] | select(.dependency.manifest_path == "Cargo.lock") | [
         .number,
         .dependency.package.name,
@@ -263,7 +264,11 @@ gh api "repos/$DUSK_REPO/dependabot/alerts?state=open&per_page=100" --paginate \
         .security_advisory.ghsa_id,
         (.security_vulnerability.first_patched_version.identifier // "none"),
         (.security_vulnerability.vulnerable_version_range // "none")
-    ] | @tsv' >"$alerts"
+    ] | @tsv' >"$alerts" 2>"$alerts_err"; then
+    echo "dependencyAlertStatus: unavailable"
+    sed 's/^/  /' "$alerts_err"
+    exit 1
+fi
 
 total=0
 no_vulnerable_locked=0
