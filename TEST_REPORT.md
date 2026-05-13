@@ -746,6 +746,8 @@ Result:
   `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895`
   and
   `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744`.
+  `make fail-closed-self-test` covers the stale dispatcher-comment scan through
+  `scripts/github-review-hygiene.sh --dispatcher-comment-scan-only`.
   This guard was added after the PR #3 exact-ref dispatch comment was updated
   in place. `bash -n scripts/github-review-hygiene.sh`, `git diff --check`,
   `make secret-hygiene`, and `make review-hygiene` passed; after push, the

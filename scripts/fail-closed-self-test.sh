@@ -171,6 +171,17 @@ expect_fail \
     env AGENT_PLACEHOLDER_PATTERN='[invalid' \
     bash scripts/github-review-hygiene.sh --agent-placeholder-scan-only
 
+stale_dispatcher_comments="$workdir/stale-dispatcher-comments.txt"
+cat >"$stale_dispatcher_comments" <<'EOF'
+COMMENT_ID=1
+Latest clean-layout repro evidence: https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744
+---END---
+EOF
+expect_fail \
+    review-hygiene-stale-dispatcher-evidence \
+    'stale dispatcher clean-layout repro evidence' \
+    bash scripts/github-review-hygiene.sh --dispatcher-comment-scan-only "$stale_dispatcher_comments"
+
 expect_fail \
     report-hygiene-invalid-pattern \
     'report hygiene scan failed' \

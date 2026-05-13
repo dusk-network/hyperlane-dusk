@@ -24,6 +24,8 @@ LATEST_REPRO_ARCHIVE_PATH="${LATEST_REPRO_ARCHIVE_PATH:-/home/hein_/projects/hyp
 LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-1f16dd8caa86c54ff351f0a0fc41f9ee8083c25515514ac77afb2f60f7483ccb}"
 AGENT_PLACEHOLDER_PATTERN="${AGENT_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!|expect\(}"
 AGENT_PLACEHOLDER_SCAN_ONLY=0
+DISPATCHER_COMMENT_SCAN_ONLY_FILE=""
+STALE_DISPATCHER_REPRO_PATTERN='https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895|https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744'
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -97,6 +99,9 @@ Options:
   --agent-placeholder-scan-only
                          Run only the local Dusk agent runtime
                          panic/placeholder scan.
+  --dispatcher-comment-scan-only FILE
+                         Run only the workflow PR #3 stale dispatcher
+                         evidence-link scan against an exported comments file.
   -h, --help             Show this help.
 
 Environment:
@@ -148,6 +153,11 @@ while [ "$#" -gt 0 ]; do
             AGENT_PLACEHOLDER_SCAN_ONLY=1
             shift
             ;;
+        --dispatcher-comment-scan-only)
+            DISPATCHER_COMMENT_SCAN_ONLY_FILE="${2:-}"
+            [ -n "$DISPATCHER_COMMENT_SCAN_ONLY_FILE" ] || fail "--dispatcher-comment-scan-only requires a path"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -159,6 +169,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 command -v git >/dev/null 2>&1 || fail "git is required"
+command -v rg >/dev/null 2>&1 || fail "rg is required"
 
 check_agent_placeholder_scan() {
     info "Checking local Dusk agent runtime panic/placeholder paths"
@@ -176,8 +187,23 @@ if [ "$AGENT_PLACEHOLDER_SCAN_ONLY" -eq 1 ]; then
     exit 0
 fi
 
+check_stale_dispatcher_comments() {
+    local comments_file="$1"
+    local hits_file="$2"
+
+    [ -f "$comments_file" ] || fail "missing dispatcher comments file: $comments_file"
+    if rg -n -e "$STALE_DISPATCHER_REPRO_PATTERN" "$comments_file" >"$hits_file"; then
+        cat "$hits_file" >&2
+        fail "$comments_file contains stale dispatcher clean-layout repro evidence"
+    fi
+}
+
+if [ -n "$DISPATCHER_COMMENT_SCAN_ONLY_FILE" ]; then
+    check_stale_dispatcher_comments "$DISPATCHER_COMMENT_SCAN_ONLY_FILE" "${EXPORT_DIR:-/tmp}/stale-pr-3-comments.txt"
+    exit 0
+fi
+
 command -v gh >/dev/null 2>&1 || fail "gh is required"
-command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 if [ -z "$EXPORT_DIR" ]; then
@@ -506,11 +532,7 @@ fi
 if [ -f "$EXPORT_DIR/dusk-pr-3-comments.txt" ]; then
     rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-pr-3-comments.txt" \
         || fail "$EXPORT_DIR/dusk-pr-3-comments.txt is missing latest clean-layout repro evidence link"
-    if rg -n -e 'https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895|https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744' \
-        "$EXPORT_DIR/dusk-pr-3-comments.txt" >"$EXPORT_DIR/stale-pr-3-comments.txt"; then
-        cat "$EXPORT_DIR/stale-pr-3-comments.txt" >&2
-        fail "$EXPORT_DIR/dusk-pr-3-comments.txt contains stale dispatcher clean-layout repro evidence"
-    fi
+    check_stale_dispatcher_comments "$EXPORT_DIR/dusk-pr-3-comments.txt" "$EXPORT_DIR/stale-pr-3-comments.txt"
 fi
 rm -f "$EXPORT_DIR/stale-pr-3-comments.txt"
 
