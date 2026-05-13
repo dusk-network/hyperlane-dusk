@@ -24,6 +24,8 @@ MONOREPO_COMPARE_HEAD="${MONOREPO_COMPARE_HEAD:-dusk-network:feat/dusk-support-v
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
+STATUS_CHECK_WAIT_SECONDS="${STATUS_CHECK_WAIT_SECONDS:-60}"
+STATUS_CHECK_POLL_SECONDS="${STATUS_CHECK_POLL_SECONDS:-5}"
 
 blockers=()
 
@@ -52,6 +54,54 @@ pr_field() {
         --jq "$field"
 }
 
+status_rollup() {
+    local repo="$1"
+    local number="$2"
+
+    gh pr view "$number" --repo "$repo" \
+        --json statusCheckRollup \
+        --jq .statusCheckRollup
+}
+
+count_non_completed_checks() {
+    local current_run_id="${GITHUB_RUN_ID:-}"
+
+    jq --arg run_id "$current_run_id" '
+        [
+            .[]
+            | select(.status != "COMPLETED")
+            | select(
+                ($run_id == "")
+                or (((.detailsUrl // "") | contains("/actions/runs/" + $run_id + "/")) | not)
+            )
+        ]
+        | length
+    '
+}
+
+wait_for_status_checks() {
+    local label="$1"
+    local repo="$2"
+    local number="$3"
+    local elapsed=0
+    local rollup
+    local non_completed_count
+
+    while true; do
+        rollup="$(status_rollup "$repo" "$number")"
+        non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
+
+        if [ "$non_completed_count" -eq 0 ] || [ "$elapsed" -ge "$STATUS_CHECK_WAIT_SECONDS" ]; then
+            printf '%s\n' "$rollup"
+            return 0
+        fi
+
+        printf '%sNonCompletedStatusChecksWaiting: %s\n' "$label" "$non_completed_count"
+        sleep "$STATUS_CHECK_POLL_SECONDS"
+        elapsed=$((elapsed + STATUS_CHECK_POLL_SECONDS))
+    done
+}
+
 check_pr() {
     local label="$1"
     local repo="$2"
@@ -60,11 +110,13 @@ check_pr() {
     local review_decision
     local status_count
     local non_completed_count
+    local rollup
 
     state="$(pr_field "$repo" "$number" .state)"
     review_decision="$(pr_field "$repo" "$number" '.reviewDecision // ""')"
-    status_count="$(pr_field "$repo" "$number" '.statusCheckRollup | length')"
-    non_completed_count="$(pr_field "$repo" "$number" '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length')"
+    rollup="$(wait_for_status_checks "$label" "$repo" "$number")"
+    status_count="$(printf '%s\n' "$rollup" | jq 'length')"
+    non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
 
     printf '%sState: %s\n' "$label" "$state"
     printf '%sReviewDecision: %s\n' "$label" "${review_decision:-none}"

@@ -166,6 +166,12 @@ reviewers should still use `make gate-status-fresh` when they have the adjacent
 monorepo checkout; the workflow avoids cloning the full Hyperlane monorepo just
 to produce a policy status check.
 
+When it runs in GitHub Actions, the guard ignores its own current
+`GITHUB_RUN_ID` while counting non-completed PR status checks and polls briefly
+for other concurrently-started checks before reporting the count. This avoids a
+self-blocking readiness check while still surfacing genuinely queued or
+incomplete companion checks.
+
 `make review-gates` remains the local reviewer bundle because it verifies
 preserved backup archives and extracts/scans durable evidence archives under
 `.codex-backups`, which are intentionally not uploaded to GitHub-hosted

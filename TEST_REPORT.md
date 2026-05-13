@@ -470,6 +470,13 @@ Result:
   split decision issues, unavailable Dependabot alert triage in Actions,
   unknown `dusk-hyperlane` runner visibility, and unknown repo-level Actions
   secret visibility.
+- After the Dusk head `803e855b3692706e38c630777230727d76a02afd`,
+  `scripts/production-readiness-guard.sh` was hardened for CI status-check
+  accounting: it ignores the current `GITHUB_RUN_ID` when counting
+  non-completed PR checks and polls briefly for other concurrently-started
+  checks before reporting the count. This prevents the production-readiness
+  workflow from self-blocking on its own in-progress check while preserving the
+  queued/incomplete-check blocker for external checks.
 - `make repro-check-agent`: added as a Makefile wrapper for the full local
   non-E2E repro command, including the Hyperlane Rust agent check. Latest
   current-live-head run `1778669495` passed against Dusk source ref

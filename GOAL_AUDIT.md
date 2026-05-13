@@ -139,7 +139,10 @@ Observed:
   also reports non-completed PR status-check counts, runs
   `make dependency-alert-status` in summary mode, and blocks if open Cargo
   alert triage is unavailable or includes vulnerable locked versions, unparsed
-  vulnerable ranges, or missing patched-version data. It is not a
+  vulnerable ranges, or missing patched-version data. In CI, it ignores its
+  own current `GITHUB_RUN_ID` and briefly polls other concurrently-started
+  status checks before counting them, so the gate does not self-block while
+  still catching genuinely incomplete companion checks. It is not a
   production-readiness proof.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
