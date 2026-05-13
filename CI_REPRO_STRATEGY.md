@@ -186,6 +186,43 @@ Forbidden uses:
 - Do not persist it in local git config. The workflow sets
   `persist-credentials: false` on all checkout steps.
 
+## Admin Provisioning Runbook
+
+If Dusk accepts this CI path, provision the read-only token in both internal
+repositories without placing the token on process argv:
+
+```bash
+gh secret set DUSK_ORG_READ_TOKEN --repo dusk-network/hyperlane-dusk < /path/to/read-only-token.txt
+gh secret set DUSK_ORG_READ_TOKEN --repo dusk-network/hyperlane-monorepo < /path/to/read-only-token.txt
+```
+
+Then confirm a self-hosted runner with the required labels is available to
+`dusk-network/hyperlane-dusk`. A repo-level check is:
+
+```bash
+gh api repos/dusk-network/hyperlane-dusk/actions/runners \
+  --jq '.runners[] | {name, status, labels:[.labels[].name]}'
+```
+
+If Dusk uses an org-level runner, the equivalent check requires org admin or
+Actions runner permissions:
+
+```bash
+gh api orgs/dusk-network/actions/runners \
+  --jq '.runners[] | {name, status, labels:[.labels[].name]}'
+```
+
+After provisioning, rerun:
+
+```bash
+make gate-status-fresh
+make production-readiness-guard
+```
+
+`make production-readiness-guard` should still fail until the remaining review,
+sign-off, internal merge, and upstream-prep blockers close; the token and
+runner-specific blockers should be gone.
+
 ## Manual Workflow
 
 The current workflow is:
