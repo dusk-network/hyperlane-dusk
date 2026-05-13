@@ -751,7 +751,10 @@ Result:
   The required `Dusk review policy gate` now also syntax-checks the review
   hygiene scripts and runs the same dispatcher stale-link scan against a CI
   fixture, so this regression is covered on every Dusk PR #1 push without
-  requiring private repositories or local evidence archives.
+  requiring private repositories or local evidence archives. The workflow skips
+  this script-specific check on the workflow-only dispatcher branch, where the
+  Dusk guard scripts are intentionally not present, so PR #3 can still land
+  before or after PR #1 without workflow drift.
   This guard was added after the PR #3 exact-ref dispatch comment was updated
   in place. `bash -n scripts/github-review-hygiene.sh`, `git diff --check`,
   `make secret-hygiene`, and `make review-hygiene` passed; after push, the

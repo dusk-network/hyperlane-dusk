@@ -43,6 +43,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ ! -f scripts/github-review-hygiene.sh ] || [ ! -f scripts/fail-closed-self-test.sh ]; then
+            echo "Review guard scripts not present in this workflow-only branch; skipping script checks."
+            exit 0
+          fi
+
           if ! command -v rg >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y ripgrep
