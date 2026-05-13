@@ -257,6 +257,9 @@ Evidence:
 - `dusk-network/hyperlane-monorepo#1`.
 - `dusk-network/hyperlane-dusk#2`.
 - `docs/dusk-upstream-compatibility-review.md` in the monorepo fork.
+- `make production-readiness-guard`, which reports whether any open upstream
+  `hyperlane-xyz/hyperlane-monorepo` PRs already exist from
+  `dusk-network:feat/dusk-support-v2` while internal blockers remain.
 
 Required condition:
 

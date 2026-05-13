@@ -23,6 +23,8 @@ MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
 MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monorepo}"
 MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
 MONOREPO_COMPARE_HEAD="${MONOREPO_COMPARE_HEAD:-dusk-network:feat/dusk-support-v2}"
+UPSTREAM_SUBMISSION_REPO="${UPSTREAM_SUBMISSION_REPO:-hyperlane-xyz/hyperlane-monorepo}"
+UPSTREAM_SUBMISSION_HEAD="${UPSTREAM_SUBMISSION_HEAD:-dusk-network:feat/dusk-support-v2}"
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
@@ -572,6 +574,27 @@ elif [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" rev-parse --verify "$LATES
 else
     add_blocker "latest clean-layout monorepo repro ref $LATEST_REPRO_MONOREPO_REF is unavailable"
 fi
+
+section "Upstream Submission Gate"
+upstream_query="repo:$UPSTREAM_SUBMISSION_REPO is:pr is:open head:$UPSTREAM_SUBMISSION_HEAD"
+printf 'upstreamSubmissionRepo: %s\n' "$UPSTREAM_SUBMISSION_REPO"
+printf 'upstreamSubmissionHead: %s\n' "$UPSTREAM_SUBMISSION_HEAD"
+if upstream_prs_json="$(gh api -X GET search/issues -f "q=$upstream_query" 2>/tmp/hyperlane-readiness-upstream-prs.$$.err)"; then
+    upstream_open_prs="$(printf '%s\n' "$upstream_prs_json" | jq -r .total_count)"
+    printf 'upstreamOpenPrsFromDuskHead: %s\n' "$upstream_open_prs"
+    if [ "$upstream_open_prs" -gt 0 ]; then
+        printf '%s\n' "$upstream_prs_json" \
+            | jq -r '.items[] | "  #\(.number) \(.html_url) \(.title)"'
+        if [ "${#blockers[@]}" -gt 0 ]; then
+            add_blocker "upstream Hyperlane PRs are open from $UPSTREAM_SUBMISSION_HEAD before internal blockers are closed"
+        fi
+    fi
+else
+    echo "upstreamOpenPrsFromDuskHead: unknown"
+    sed 's/^/  /' /tmp/hyperlane-readiness-upstream-prs.$$.err
+    add_blocker "upstream Hyperlane PR visibility for $UPSTREAM_SUBMISSION_HEAD is unknown"
+fi
+rm -f /tmp/hyperlane-readiness-upstream-prs.$$.err
 
 section "Summary"
 if [ "${#blockers[@]}" -eq 0 ]; then
