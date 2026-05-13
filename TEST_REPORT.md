@@ -496,9 +496,9 @@ Result:
   `make dependency-alert-status`, `make review-hygiene`,
   `make dispatcher-merge-order-smoke`, and
   `make gate-status-fresh`. Latest pass at Dusk
-  `cc3d75a2688d4b9d1aed9b7bfc5c87547802aa74` and monorepo
+  `53b6117b54fc7a3ab29d5aff4254bfa31ba32868` and monorepo
   `9050143c1ef12f76d117ee97effa79da8df3e334` exported GitHub review text to
-  `/tmp/hyperlane-review-export-1778681285`. It does not replace
+  `/tmp/hyperlane-review-export-1778681965`. It does not replace
   `make repro-check-agent`, clean-Rusk E2E, CI provisioning, or Dusk
   production sign-off.
 - `make production-readiness-guard`: failed as expected while external
@@ -654,6 +654,15 @@ Result:
   comment bodies that render as quoted strings with literal `\n` escapes. This
   guard passed after the Dusk PR #1, monorepo PR #1, and #8 runbook comment
   bodies were repaired with raw Markdown update payloads.
+- `make review-hygiene` now rejects stale Dusk handoff heads and check URLs
+  from the prior `54e56fa`, `db863ed`, and `cc3d75a` gate refreshes in active
+  reviewer-facing text. After the #8 runbook comment was refreshed to Dusk
+  `53b6117b54fc7a3ab29d5aff4254bfa31ba32868`, latest Dusk review-policy job
+  `https://github.com/dusk-network/hyperlane-dusk/actions/runs/25804689562/job/75804009086`,
+  and latest expected production-readiness failure
+  `https://github.com/dusk-network/hyperlane-dusk/actions/runs/25804689294/job/75804008587`,
+  `make review-hygiene` passed with export
+  `/tmp/hyperlane-review-export-1778682025`.
 - E2E wrappers that call `demo/gen-agent-configs.sh` now track generated Dusk
   signer key files and remove them on exit after stopping agents. `bash -n`
   passed for the touched E2E scripts listed above. `make secret-hygiene` now
