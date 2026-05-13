@@ -461,7 +461,41 @@ else
     add_blocker "latest clean-layout repro ref $LATEST_REPRO_DUSK_REF is unavailable"
 fi
 
-if [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" rev-parse --verify "$LATEST_REPRO_MONOREPO_REF^{commit}" >/dev/null 2>&1; then
+check_monorepo_repro_delta() {
+    local all_delta="$1"
+    local covered_delta=""
+    local changed_path
+    local covered_path
+
+    while IFS= read -r changed_path; do
+        [ -n "$changed_path" ] || continue
+        for covered_path in $MONOREPO_REPRO_COVERED_PATHS; do
+            if [ "$changed_path" = "$covered_path" ] || [[ "$changed_path" == "$covered_path/"* ]]; then
+                covered_delta="${covered_delta}${changed_path}"$'\n'
+                break
+            fi
+        done
+    done <<<"$all_delta"
+
+    if [ -n "$covered_delta" ]; then
+        echo "monorepoCoveredPathDelta: present"
+        printf '%s' "$covered_delta" | sed 's/^/  /'
+        add_blocker "monorepo runtime/agent/CI covered paths changed since latest clean-layout repro"
+    else
+        echo "monorepoCoveredPathDelta: none"
+    fi
+}
+
+if [ "$MONOREPO_COMPARE_VIA_GH" = "1" ]; then
+    monorepo_delta_head="${MONOREPO_COMPARE_HEAD#*:}"
+    if monorepo_delta_json="$(gh api "repos/$MONOREPO_REPO/compare/$LATEST_REPRO_MONOREPO_REF...$monorepo_delta_head" 2>/tmp/hyperlane-readiness-monorepo-delta.$$.err)"; then
+        check_monorepo_repro_delta "$(printf '%s\n' "$monorepo_delta_json" | jq -r '.files[]?.filename')"
+    else
+        sed 's/^/  /' /tmp/hyperlane-readiness-monorepo-delta.$$.err
+        add_blocker "monorepo latest clean-layout repro delta compare is unavailable"
+    fi
+    rm -f /tmp/hyperlane-readiness-monorepo-delta.$$.err
+elif [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" rev-parse --verify "$LATEST_REPRO_MONOREPO_REF^{commit}" >/dev/null 2>&1; then
     monorepo_covered_delta="$(git -C "$MONOREPO_DIR" diff --name-only "$LATEST_REPRO_MONOREPO_REF"..HEAD -- $MONOREPO_REPRO_COVERED_PATHS)"
     if [ -n "$monorepo_covered_delta" ]; then
         echo "monorepoCoveredPathDelta: present"
