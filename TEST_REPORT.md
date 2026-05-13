@@ -742,8 +742,10 @@ Result:
 - `make review-hygiene` now checks workflow PR #3 comments for the current
   clean-layout repro evidence link
   `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856`
-  and rejects the stale dispatcher repro evidence link
-  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895`.
+  and rejects stale dispatcher repro evidence links
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895`
+  and
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744`.
   This guard was added after the PR #3 exact-ref dispatch comment was updated
   in place. `bash -n scripts/github-review-hygiene.sh`, `git diff --check`,
   `make secret-hygiene`, and `make review-hygiene` passed; after push, the

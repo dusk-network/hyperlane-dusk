@@ -506,7 +506,7 @@ fi
 if [ -f "$EXPORT_DIR/dusk-pr-3-comments.txt" ]; then
     rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-pr-3-comments.txt" \
         || fail "$EXPORT_DIR/dusk-pr-3-comments.txt is missing latest clean-layout repro evidence link"
-    if rg -n -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895' \
+    if rg -n -e 'https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895|https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744' \
         "$EXPORT_DIR/dusk-pr-3-comments.txt" >"$EXPORT_DIR/stale-pr-3-comments.txt"; then
         cat "$EXPORT_DIR/stale-pr-3-comments.txt" >&2
         fail "$EXPORT_DIR/dusk-pr-3-comments.txt contains stale dispatcher clean-layout repro evidence"
