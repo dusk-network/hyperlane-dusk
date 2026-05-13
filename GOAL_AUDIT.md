@@ -85,10 +85,13 @@ Observed:
 
 - Dusk PR is ready for review and open; review is requested from `moCello`;
   `Dusk review policy gate` is passing and `Production readiness guard` is
-  failing as expected while production blockers remain. The latest CI guard
-  run completed at Dusk head `746935a2e8e4f0a2dc9e216b7b91a510e3a41e20`:
-  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25790821003/job/75755608816.
-  Its failed-job summary was limited to the known external blockers:
+  failing as expected while production blockers remain. Recent CI guard runs
+  completed with the same expected failure at Dusk heads
+  `746935a2e8e4f0a2dc9e216b7b91a510e3a41e20`
+  (https://github.com/dusk-network/hyperlane-dusk/actions/runs/25790821003/job/75755608816)
+  and `cffcacc39b3408af891cd1c12c59e388540f2c81`
+  (https://github.com/dusk-network/hyperlane-dusk/actions/runs/25791389384/job/75757564450).
+  The failed-job summaries were limited to the known external blockers:
   unmerged/unapproved internal PRs, unknown branch-protection visibility from
   the Actions integration token, unchecked sign-off items, open split decision
   issues, unavailable Dependabot alert triage in Actions, unknown
