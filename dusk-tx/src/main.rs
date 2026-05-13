@@ -655,7 +655,7 @@ async fn cmd_call(
     gas_price: u64,
 ) -> Result<(), String> {
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
 
     // Parse contract ID
     let contract_bytes = hex::decode(contract_hex)
@@ -728,7 +728,7 @@ async fn cmd_deploy_hyperlane(
     multisig_threshold: u8,
 ) -> Result<(), String> {
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
 
     let default_ism = parse_default_ism(default_ism)?;
     let (multisig_validators, multisig_threshold) = match default_ism {
@@ -1195,7 +1195,7 @@ async fn cmd_query(
     arg_u32: Option<u32>,
     arg_bytes32: Option<String>,
 ) -> Result<(), String> {
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
     let contract_id = parse_bytes32(contract_hex)?;
 
     match return_type {
@@ -1292,7 +1292,7 @@ async fn cmd_dispatch(
     gas_price: u64,
 ) -> Result<(), String> {
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
 
     let mailbox_id = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
     let test_recipient_id = ContractId::from_bytes(parse_bytes32(test_recipient_hex)?);
@@ -1343,7 +1343,7 @@ async fn cmd_process(
     gas_price: u64,
 ) -> Result<(), String> {
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
 
     let mailbox_id = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
 
@@ -1429,7 +1429,7 @@ async fn cmd_enroll_router(
     gas_price: u64,
 ) -> Result<(), String> {
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
 
     let warp_id = ContractId::from_bytes(parse_bytes32(warp_contract_hex)?);
     let router = parse_bytes32(router_hex)?;
@@ -1471,7 +1471,7 @@ async fn cmd_register_account(
     gas_price: u64,
 ) -> Result<(), String> {
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
 
     let warp_id = ContractId::from_bytes(parse_bytes32(warp_contract_hex)?);
 
@@ -1518,7 +1518,7 @@ async fn cmd_transfer_remote(
     gas_price: u64,
 ) -> Result<(), String> {
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url);
+    let client = RuesClient::new(rues_url)?;
 
     let warp_id = ContractId::from_bytes(parse_bytes32(warp_contract_hex)?);
     let recipient = parse_bytes32(recipient_hex)?;

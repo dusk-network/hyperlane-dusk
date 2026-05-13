@@ -148,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Hyperlane-Dusk E2E Test ===");
     println!("RUES URL: {rues_url}");
 
-    let client = RuesClient::new(&rues_url);
+    let client = RuesClient::new(&rues_url)?;
 
     // Step 1: Test basic RUES connectivity
     println!("\n--- Step 1: Test RUES connectivity ---");

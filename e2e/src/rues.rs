@@ -19,15 +19,15 @@ pub struct RuesClient {
 }
 
 impl RuesClient {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("Failed to build reqwest client");
-        Self {
+            .map_err(|e| format!("Failed to build RUES HTTP client: {e}"))?;
+        Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-        }
+        })
     }
 
     /// Query chain_id from the transfer contract.
