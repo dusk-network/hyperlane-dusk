@@ -38,3 +38,22 @@ jobs:
           else
             git diff --check HEAD~1..HEAD
           fi
+
+      - name: Check review guard scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v rg >/dev/null 2>&1
+          bash -n scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh
+
+          stale_dispatcher_comments="$(mktemp)"
+          cat >"$stale_dispatcher_comments" <<'EOF'
+          COMMENT_ID=1
+          Latest clean-layout repro evidence: https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744
+          ---END---
+          EOF
+
+          if bash scripts/github-review-hygiene.sh --dispatcher-comment-scan-only "$stale_dispatcher_comments"; then
+            echo "::error::stale dispatcher repro evidence was accepted"
+            exit 1
+          fi
