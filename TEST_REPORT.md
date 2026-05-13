@@ -1,7 +1,7 @@
 # Dusk Hyperlane Test Report
 
 Date: 2026-05-11
-Last updated: 2026-05-13
+Last updated: 2026-05-14
 
 This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
@@ -924,6 +924,19 @@ Result:
   with `DEPENDENCY_ALERT_GATE_ONLY=1` and a mocked dependency-alert helper that
   emits `dependencyAlertStatus: unavailable`. The production-readiness guard
   rejects that path before a PR can be treated as production-ready.
+- Dusk commit `6f6854d3f8ec797cf21afda2c4df482fb42bea16` is a docs-only
+  evidence refresh linking the latest dependency-alert guardrail comment. Local
+  `git diff --check`, `make report-hygiene`, and `make completion-audit-status`
+  passed. `gh pr checks 1 --repo dusk-network/hyperlane-dusk --watch
+  --interval 10` reported `Dusk review policy gate` passed at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25830381479/job/75893688438
+  and `Production readiness guard` failed closed at
+  https://github.com/dusk-network/hyperlane-dusk/actions/runs/25830381459/job/75893688355.
+  A subsequent `make gate-status` run reported Dusk head
+  `6f6854d3f8ec797cf21afda2c4df482fb42bea16`, monorepo head
+  `515fab074024271935bc7795604dbb4f0823a937`, no untracked source,
+  `coveredPathDelta: none`, `monorepoCoveredPathDelta: none`, and the same
+  external review/sign-off/runner/token blockers.
 - `make gate-status-fresh` and `make production-readiness-guard` now report an
   upstream submission gate using GitHub search for open
   `hyperlane-xyz/hyperlane-monorepo` PRs from
