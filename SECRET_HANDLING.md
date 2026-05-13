@@ -86,8 +86,10 @@ known stale evidence refs/wording, including stale current-head refs and wrong
 clean-repro tested-SHA refs, and runs the same secret hygiene scanner over the
 exported PR/issue bodies and comments.
 
-The artifact scan intentionally fails on inline raw key fields, `hexKey`
-signer config markers, and secret-like files such as `*.key`, `*.keys`, and
+The artifact scan intentionally fails on inline raw key fields in JSON,
+TOML, or YAML-style assignments, including `key`, `privateKey`, and
+`private_key` fields with 32-byte hex values. It also fails on `hexKey`
+signer config markers and secret-like files such as `*.key`, `*.keys`, and
 `*.pem`. Generated agent configs and Dusk signer key files should be kept on
 the runner and deleted after the run, not archived.
 
