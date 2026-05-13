@@ -93,6 +93,20 @@ expect_fail \
     env REPORT_FILES="$stale_goal_audit" GOAL_AUDIT_FILE="$stale_goal_audit" \
     bash scripts/report-hygiene-check.sh
 
+tmp_only_repro_report="$workdir/tmp-only-repro-report.md"
+cat >"$tmp_only_repro_report" <<'EOF'
+Latest checkout-v6 clean-layout repro evidence:
+- log: /tmp/hyperlane-review-checkout-v6-repro-1778695627.log
+- SHA256: 9384e858bdd00f88665969a91cfa583048c4437177b615c7ddf49c676a4c2c12
+EOF
+expect_fail \
+    report-hygiene-missing-latest-repro-archive \
+    'latest repro durable archive missing' \
+    env REPORT_FILES="$tmp_only_repro_report" \
+        LATEST_REPRO_ARCHIVE_REQUIRED_FILES="$tmp_only_repro_report" \
+        GOAL_AUDIT_FILE="$tmp_only_repro_report" \
+    bash scripts/report-hygiene-check.sh
+
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"
 chmod 000 "$workdir/secret-artifacts/unreadable.log"
