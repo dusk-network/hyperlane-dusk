@@ -14,6 +14,8 @@ WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_PLACEHOLDER_PATHS="${DUSK_PLACEHOLDER_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo}"
+DUSK_PLACEHOLDER_PATTERN="${DUSK_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!}"
+AGENT_PLACEHOLDER_PATTERN="${AGENT_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!|expect\(}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo Cargo.toml Cargo.lock}"
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-ef8ee43cd99569299b9744b498ac1bbac69950bc}"
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
@@ -39,6 +41,32 @@ REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 FETCH_UPSTREAM=0
+
+fail() {
+    echo "[FAIL] $*" >&2
+    exit 1
+}
+
+git_grep_to_file() {
+    out_file="$1"
+    label="$2"
+    repo="$3"
+    shift 3
+
+    set +e
+    git -C "$repo" grep "$@" >"$out_file"
+    grep_status=$?
+    set -e
+
+    if [ "$grep_status" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$grep_status" -eq 1 ]; then
+        return 1
+    fi
+    cat "$out_file" >&2
+    fail "$label scan failed"
+}
 
 usage() {
     cat <<EOF
@@ -84,6 +112,14 @@ Environment:
                        Space-separated tracked Dusk repo paths scanned for
                        runtime placeholder macros.
                        Default: $DUSK_PLACEHOLDER_PATHS
+  DUSK_PLACEHOLDER_PATTERN
+                       Extended regex used for tracked Dusk repo runtime
+                       placeholder scans.
+                       Default: $DUSK_PLACEHOLDER_PATTERN
+  AGENT_PLACEHOLDER_PATTERN
+                       Extended regex used for Dusk agent runtime
+                       panic/placeholder scans.
+                       Default: $AGENT_PLACEHOLDER_PATTERN
   DUSK_REPRO_COVERED_PATHS
                        Space-separated Dusk repo paths whose changes would make
                        the latest clean-layout repro stale for runtime/test
@@ -626,7 +662,7 @@ fi
 
 section "Runtime Placeholder Scan"
 echo "duskRepoPaths: $DUSK_PLACEHOLDER_PATHS"
-if git -C "$ROOT" grep -n -E 'todo!|unimplemented!|panic!' -- $DUSK_PLACEHOLDER_PATHS >/tmp/hyperlane-dusk-repo-placeholder-scan.$$; then
+if git_grep_to_file /tmp/hyperlane-dusk-repo-placeholder-scan.$$ "Dusk repo runtime placeholder" "$ROOT" -n -E "$DUSK_PLACEHOLDER_PATTERN" -- $DUSK_PLACEHOLDER_PATHS; then
     cat /tmp/hyperlane-dusk-repo-placeholder-scan.$$
     rm -f /tmp/hyperlane-dusk-repo-placeholder-scan.$$
 else
@@ -635,7 +671,7 @@ else
 fi
 
 if [ -d "$MONOREPO_DIR/rust/main/chains/hyperlane-dusk" ]; then
-    if git -C "$MONOREPO_DIR" grep -n -E 'todo!|unimplemented!|panic!|expect\(' -- rust/main/chains/hyperlane-dusk/src >/tmp/hyperlane-dusk-placeholder-scan.$$; then
+    if git_grep_to_file /tmp/hyperlane-dusk-placeholder-scan.$$ "Dusk agent runtime panic/placeholder" "$MONOREPO_DIR" -n -E "$AGENT_PLACEHOLDER_PATTERN" -- rust/main/chains/hyperlane-dusk/src; then
         cat /tmp/hyperlane-dusk-placeholder-scan.$$
         rm -f /tmp/hyperlane-dusk-placeholder-scan.$$
     else

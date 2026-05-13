@@ -809,6 +809,16 @@ Result:
   `make review-gates` run passed with review-hygiene export
   `/tmp/hyperlane-review-export-1778701507` and dispatcher merge-order smoke log
   `/tmp/hyperlane-merge-order-logs.ebdc5r`.
+- Runtime placeholder scans now fail closed on `git grep` errors in both
+  `make gate-status` and `make review-hygiene`. Invalid pattern probes with
+  `DUSK_PLACEHOLDER_PATTERN='[invalid' bash scripts/release-gate-status.sh` and
+  `AGENT_PLACEHOLDER_PATTERN='[invalid' bash scripts/github-review-hygiene.sh`
+  failed as expected with logs
+  `/tmp/hyperlane-gate-status-invalid-placeholder-pattern.log` and
+  `/tmp/hyperlane-review-invalid-agent-pattern.log`. The post-edit
+  `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778701892` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.0nGCze`.
 - `make report-hygiene`: added as a local report guard for `GOAL_AUDIT.md` and
   `TEST_REPORT.md`. It rejects the stale Dusk CI URLs, dispatcher merge-order
   implementation head, monorepo success count, and old export paths that were
