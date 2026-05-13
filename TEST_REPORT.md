@@ -62,8 +62,8 @@ Notes:
   the full dispatcher validation command:
   `actionlint .github/workflows/manual-repro-check.yml .github/workflows/manual-repro-dispatcher-gate.yml .github/workflows/dusk-review-policy-gate.yml`.
   The same guard rejects the stale production-readiness run
-  `25797921067`/job `75779855203`. Post-push PR #1 status at that head showed
-  `Dusk review policy gate` success at
+  `25797921067`/job `75779855203`. The PR #1 post-push status at that head
+  showed `Dusk review policy gate` success at
   https://github.com/dusk-network/hyperlane-dusk/actions/runs/25819297778/job/75856037468
   and the expected `Production readiness guard` failure at
   https://github.com/dusk-network/hyperlane-dusk/actions/runs/25819297742/job/75856036345.
