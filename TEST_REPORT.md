@@ -232,9 +232,9 @@ Notes:
   `make gate-status`. Latest clean-layout repro run `1778683232` covers
   Dusk implementation source ref
   `8d3704e8f5a3ab0976b97fc3a68319e112e8affc` and validated monorepo runtime
-  ref `9050143c1ef12f76d117ee97effa79da8df3e334`; later Dusk docs/guard-only
-  commits are outside `DUSK_REPRO_COVERED_PATHS`, and the guard reports
-  `coveredPathDelta: none`.
+  ref `9050143c1ef12f76d117ee97effa79da8df3e334`; later Dusk docs, guard,
+  and decision-record commits are outside `DUSK_REPRO_COVERED_PATHS`, and the
+  guard reports `coveredPathDelta: none`.
 - A 2026-05-12 dependency advisory remediation pass updated the Dusk repo Rust
   dependency graph for GitHub-reported advisories: `wasmtime` 25.0.3 -> 36.0.9,
   `openssl` 0.10.75 -> 0.10.79, `openssl-sys` 0.9.111 -> 0.9.115,
