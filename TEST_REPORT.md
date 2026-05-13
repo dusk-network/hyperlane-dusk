@@ -706,7 +706,7 @@ Result:
   passed against the updated GitHub review surface.
 - `make review-hygiene` now also requires the latest clean-layout repro
   evidence link
-  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744`,
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856`,
   dependency-remediated E2E link
   `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389`,
   and advisory reviewer routing link
@@ -741,7 +741,7 @@ Result:
   `/tmp/hyperlane-review-export-1778682025`.
 - `make review-hygiene` now checks workflow PR #3 comments for the current
   clean-layout repro evidence link
-  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744`
+  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856`
   and rejects the stale dispatcher repro evidence link
   `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895`.
   This guard was added after the PR #3 exact-ref dispatch comment was updated
