@@ -849,6 +849,13 @@ Result:
   required report files. The post-edit `make review-gates` run passed with
   review-hygiene export `/tmp/hyperlane-review-export-1778704417` and
   dispatcher merge-order smoke log `/tmp/hyperlane-merge-order-logs.zqIcx0`.
+- `make fail-closed-self-test` now also injects a temporary latest-repro report
+  that names the durable checkout-v6 repro archive path without its tarball
+  SHA256 and verifies `make report-hygiene` rejects it. `make review-hygiene`
+  also requires active reviewer-facing text to keep both the durable archive
+  path and hash visible. The post-edit `make review-gates` run passed with
+  review-hygiene export `/tmp/hyperlane-review-export-1778704675` and
+  dispatcher merge-order smoke log `/tmp/hyperlane-merge-order-logs.unXFvr`.
 - `make production-readiness-guard` now waits for the minimum expected PR check
   count as well as non-completed checks, avoiding transient zero-check snapshots
   immediately after a push while still failing if checks never appear before the

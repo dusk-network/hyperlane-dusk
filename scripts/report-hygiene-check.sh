@@ -12,6 +12,7 @@ STALE_REPORT_PATTERNS="${STALE_REPORT_PATTERNS:-25790821003|25791389384|75755608
 GOAL_AUDIT_FILE="${GOAL_AUDIT_FILE:-GOAL_AUDIT.md}"
 GOAL_AUDIT_STALE_PATTERNS="${GOAL_AUDIT_STALE_PATTERNS:-head under test \`[0-9a-f][0-9a-f]+\`|Latest command logs.*hyperlane-merge-order-logs\\.[A-Za-z0-9]+}"
 LATEST_REPRO_ARCHIVE_PATH="${LATEST_REPRO_ARCHIVE_PATH:-/home/hein_/projects/hyperlane/.codex-backups/hyperlane-checkout-v6-repro-1778695627.tgz}"
+LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-1f16dd8caa86c54ff351f0a0fc41f9ee8083c25515514ac77afb2f60f7483ccb}"
 LATEST_REPRO_ARCHIVE_REQUIRED_FILES="${LATEST_REPRO_ARCHIVE_REQUIRED_FILES:-GOAL_AUDIT.md TEST_REPORT.md}"
 
 fail() {
@@ -44,9 +45,12 @@ Environment:
   LATEST_REPRO_ARCHIVE_PATH
                          Durable archive path required for latest repro evidence.
                          Default: $LATEST_REPRO_ARCHIVE_PATH
+  LATEST_REPRO_ARCHIVE_SHA256
+                         Durable archive hash required for latest repro evidence.
+                         Default: $LATEST_REPRO_ARCHIVE_SHA256
   LATEST_REPRO_ARCHIVE_REQUIRED_FILES
                          Space-separated files that must mention the durable
-                         latest repro evidence archive.
+                         latest repro evidence archive and hash.
                          Default: $LATEST_REPRO_ARCHIVE_REQUIRED_FILES
 EOF
 }
@@ -103,6 +107,10 @@ if [ -n "$LATEST_REPRO_ARCHIVE_PATH" ]; then
         [ -f "$file" ] || fail "latest repro archive required file not found: $file"
         if ! rg -q -F "$LATEST_REPRO_ARCHIVE_PATH" "$file"; then
             fail "latest repro durable archive missing from $file"
+        fi
+        if [ -n "$LATEST_REPRO_ARCHIVE_SHA256" ] \
+            && ! rg -q -F "$LATEST_REPRO_ARCHIVE_SHA256" "$file"; then
+            fail "latest repro durable archive hash missing from $file"
         fi
     done
 fi
