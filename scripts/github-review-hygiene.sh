@@ -12,6 +12,7 @@ cd "$ROOT"
 
 DUSK_REPO="${DUSK_REPO:-dusk-network/hyperlane-dusk}"
 MONOREPO_REPO="${MONOREPO_REPO:-dusk-network/hyperlane-monorepo}"
+MONOREPO_DIR="${MONOREPO_DIR:-$ROOT/../hyperlane-monorepo}"
 DUSK_PRS="${DUSK_PRS:-1 3}"
 MONOREPO_PRS="${MONOREPO_PRS:-1}"
 DUSK_ISSUES="${DUSK_ISSUES:-2 4 5 6 7 8 9}"
@@ -51,6 +52,9 @@ Environment:
                          Default: $DUSK_REPO
   MONOREPO_REPO          Hyperlane monorepo fork.
                          Default: $MONOREPO_REPO
+  MONOREPO_DIR           Local Hyperlane monorepo checkout for Dusk agent
+                         runtime panic/placeholder scanning.
+                         Default: $MONOREPO_DIR
   DUSK_PRS               Space-separated Dusk PR numbers to export.
                          Default: $DUSK_PRS
   MONOREPO_PRS           Space-separated monorepo PR numbers to export.
@@ -87,6 +91,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 command -v gh >/dev/null 2>&1 || fail "gh is required"
+command -v git >/dev/null 2>&1 || fail "git is required"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
@@ -496,6 +501,15 @@ if [ -s "$snapshot_mismatches" ]; then
     fail "historical status snapshot comments must be marked superseded"
 fi
 rm -f "$snapshot_mismatches"
+
+info "Checking local Dusk agent runtime panic/placeholder paths"
+[ -d "$MONOREPO_DIR/.git" ] || fail "missing local monorepo checkout at $MONOREPO_DIR"
+agent_hits="$EXPORT_DIR/dusk-agent-panic-placeholder-hits.txt"
+if git -C "$MONOREPO_DIR" grep -n -E 'todo!|unimplemented!|panic!|expect\(' -- rust/main/chains/hyperlane-dusk/src >"$agent_hits"; then
+    cat "$agent_hits" >&2
+    fail "Dusk agent runtime panic/placeholder path found"
+fi
+rm -f "$agent_hits"
 
 bash scripts/secret-hygiene-check.sh "$EXPORT_DIR"
 

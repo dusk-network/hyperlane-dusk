@@ -55,7 +55,7 @@ Prints the current machine-checkable review status:
     comparison
   - Hyperlane upstream/main drift for the local monorepo checkout
   - Dusk path delta since the latest clean-layout repro source ref
-  - Dusk agent placeholder scan in rust/main/chains/hyperlane-dusk
+  - Dusk agent panic/placeholder scan in rust/main/chains/hyperlane-dusk/src
 
 Options:
   --fetch-upstream     Run git fetch <upstream-remote> main before drift check.
@@ -584,12 +584,12 @@ else
 fi
 
 if [ -d "$MONOREPO_DIR/rust/main/chains/hyperlane-dusk" ]; then
-    if git -C "$MONOREPO_DIR" grep -n -E 'todo!|unimplemented!|panic!' -- rust/main/chains/hyperlane-dusk >/tmp/hyperlane-dusk-placeholder-scan.$$; then
+    if git -C "$MONOREPO_DIR" grep -n -E 'todo!|unimplemented!|panic!|expect\(' -- rust/main/chains/hyperlane-dusk/src >/tmp/hyperlane-dusk-placeholder-scan.$$; then
         cat /tmp/hyperlane-dusk-placeholder-scan.$$
         rm -f /tmp/hyperlane-dusk-placeholder-scan.$$
     else
         rm -f /tmp/hyperlane-dusk-placeholder-scan.$$
-        echo "no matches in rust/main/chains/hyperlane-dusk"
+        echo "no panic/placeholder matches in rust/main/chains/hyperlane-dusk/src"
     fi
 else
     echo "missing Dusk chain crate in monorepo checkout"
