@@ -16,6 +16,8 @@ UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_PLACEHOLDER_PATHS="${DUSK_PLACEHOLDER_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo Cargo.toml Cargo.lock}"
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-8d3704e8f5a3ab0976b97fc3a68319e112e8affc}"
+MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
+LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-9050143c1ef12f76d117ee97effa79da8df3e334}"
 POST_REBASE_E2E_URL="${POST_REBASE_E2E_URL:-${CURRENT_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683}}"
 POST_REBASE_E2E_ARCHIVE_URL="${POST_REBASE_E2E_ARCHIVE_URL:-${CURRENT_E2E_ARCHIVE_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278}}"
 DEPENDENCY_REMEDIATED_E2E_URL="${DEPENDENCY_REMEDIATED_E2E_URL:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389}"
@@ -89,6 +91,15 @@ Environment:
   LATEST_REPRO_DUSK_REF
                        Dusk source ref covered by the latest clean-layout repro.
                        Default: $LATEST_REPRO_DUSK_REF
+  MONOREPO_REPRO_COVERED_PATHS
+                       Space-separated Hyperlane monorepo paths whose changes
+                       would make the latest clean-layout repro stale for
+                       runtime, agent, or CI workflow coverage.
+                       Default: $MONOREPO_REPRO_COVERED_PATHS
+  LATEST_REPRO_MONOREPO_REF
+                       Hyperlane monorepo ref covered by the latest
+                       clean-layout repro.
+                       Default: $LATEST_REPRO_MONOREPO_REF
   POST_REBASE_E2E_URL  Post-rebase E2E evidence URL expected in active
                        reviewer-facing bodies.
                        Default: $POST_REBASE_E2E_URL
@@ -648,6 +659,31 @@ if git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/nul
     rm -f "$all_delta" "$covered_delta"
 else
     echo "latestReproDuskRefStatus: missing"
+fi
+
+echo "latestReproMonorepoRef: $LATEST_REPRO_MONOREPO_REF"
+echo "monorepoReproCoveredPaths: $MONOREPO_REPRO_COVERED_PATHS"
+if [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" rev-parse --verify "$LATEST_REPRO_MONOREPO_REF^{commit}" >/dev/null 2>&1; then
+    monorepo_all_delta="/tmp/hyperlane-monorepo-latest-repro-all-delta.$$"
+    monorepo_covered_delta="/tmp/hyperlane-monorepo-latest-repro-covered-delta.$$"
+    git -C "$MONOREPO_DIR" diff --name-only "$LATEST_REPRO_MONOREPO_REF"..HEAD >"$monorepo_all_delta"
+    git -C "$MONOREPO_DIR" diff --name-only "$LATEST_REPRO_MONOREPO_REF"..HEAD -- $MONOREPO_REPRO_COVERED_PATHS >"$monorepo_covered_delta"
+    echo "monorepoChangedPathsSinceLatestRepro: $(wc -l <"$monorepo_all_delta" | tr -d ' ')"
+    if [ -s "$monorepo_covered_delta" ]; then
+        echo "monorepoCoveredPathDelta: present"
+        sed 's/^/  /' "$monorepo_covered_delta"
+    else
+        echo "monorepoCoveredPathDelta: none"
+    fi
+    if [ -s "$monorepo_all_delta" ]; then
+        echo "monorepoAllPathDelta:"
+        sed 's/^/  /' "$monorepo_all_delta"
+    else
+        echo "monorepoAllPathDelta: none"
+    fi
+    rm -f "$monorepo_all_delta" "$monorepo_covered_delta"
+else
+    echo "latestReproMonorepoRefStatus: missing"
 fi
 
 section "Summary"

@@ -16,6 +16,8 @@ SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo Cargo.toml Cargo.lock}"
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-8d3704e8f5a3ab0976b97fc3a68319e112e8affc}"
+MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
+LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-9050143c1ef12f76d117ee97effa79da8df3e334}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-1}"
 MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
 MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monorepo}"
@@ -457,6 +459,19 @@ if git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/nul
     fi
 else
     add_blocker "latest clean-layout repro ref $LATEST_REPRO_DUSK_REF is unavailable"
+fi
+
+if [ -d "$MONOREPO_DIR" ] && git -C "$MONOREPO_DIR" rev-parse --verify "$LATEST_REPRO_MONOREPO_REF^{commit}" >/dev/null 2>&1; then
+    monorepo_covered_delta="$(git -C "$MONOREPO_DIR" diff --name-only "$LATEST_REPRO_MONOREPO_REF"..HEAD -- $MONOREPO_REPRO_COVERED_PATHS)"
+    if [ -n "$monorepo_covered_delta" ]; then
+        echo "monorepoCoveredPathDelta: present"
+        printf '%s\n' "$monorepo_covered_delta" | sed 's/^/  /'
+        add_blocker "monorepo runtime/agent/CI covered paths changed since latest clean-layout repro"
+    else
+        echo "monorepoCoveredPathDelta: none"
+    fi
+else
+    add_blocker "latest clean-layout monorepo repro ref $LATEST_REPRO_MONOREPO_REF is unavailable"
 fi
 
 section "Summary"

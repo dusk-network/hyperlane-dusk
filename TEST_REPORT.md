@@ -234,7 +234,11 @@ Notes:
   `8d3704e8f5a3ab0976b97fc3a68319e112e8affc` and validated monorepo runtime
   ref `9050143c1ef12f76d117ee97effa79da8df3e334`; later Dusk docs, guard,
   and decision-record commits are outside `DUSK_REPRO_COVERED_PATHS`, and the
-  guard reports `coveredPathDelta: none`.
+  guard reports `coveredPathDelta: none`. The gate also compares the live
+  monorepo PR head to the latest clean-layout repro monorepo ref and reports
+  `monorepoCoveredPathDelta: none`; the current monorepo delta is limited to
+  `docs/dusk-upstream-compatibility-review.md` and
+  `docs/dusk-upstream-pr-plan.md`.
 - A 2026-05-12 dependency advisory remediation pass updated the Dusk repo Rust
   dependency graph for GitHub-reported advisories: `wasmtime` 25.0.3 -> 36.0.9,
   `openssl` 0.10.75 -> 0.10.79, `openssl-sys` 0.9.111 -> 0.9.115,
@@ -504,9 +508,13 @@ Result:
   `make production-readiness-guard` handoff text, reviewer-facing branch
   protection/status-check policy handoff text, reviewer-facing latest
   clean-layout repro path delta handoff text, current Hyperlane upstream drift,
-  no covered-path delta since latest clean-layout repro source ref
+  no Dusk covered-path delta since latest clean-layout repro source ref
   `8d3704e8f5a3ab0976b97fc3a68319e112e8affc`, and no placeholder matches in
   tracked Dusk repo runtime paths or `rust/main/chains/hyperlane-dusk`.
+  It also reports the monorepo delta since latest clean-layout repro monorepo
+  ref `9050143c1ef12f76d117ee97effa79da8df3e334` and verifies
+  `monorepoCoveredPathDelta: none` for the scoped Dusk agent/runtime/workflow
+  paths.
 - `make review-gates`: passed; this lightweight wrapper runs
   `make completion-audit-status`, `make archive-hygiene-test`,
   `make archive-hygiene`,
