@@ -205,7 +205,10 @@ workflow only and must not be used by manual repro checkout steps or any Dusk
 runtime process.
 Keep the protected `main` and required-review baseline now enabled for
 `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, then add
-at least one required status check once the accepted CI path exists.
+the accepted CI/repro check in addition to the existing
+`Dusk review policy gate` once the accepted CI path exists. The production
+readiness guard expects at least two required status checks on each protected
+default branch before it can pass.
 When running it from the default branch, resolve the live Dusk and monorepo PR
 heads immediately before dispatch and pass those exact SHAs as `dusk_ref` and
 `monorepo_ref`; keep `rusk_ref` pinned to the reviewed clean Rusk commit unless
