@@ -13,9 +13,12 @@ setup to accept, change, or replace.
 - Public GitHub-hosted runners cannot reproduce the full workspace without
   private Dusk repository access.
 - The internal PRs now have GitHub status-check rollups. Both Dusk org default
-  branches require the shared `Dusk review policy gate`; heavy repro and E2E
-  evidence in `TEST_REPORT.md` is still local/clean-Rusk evidence until the
-  private runner/token path is accepted and provisioned.
+  branches enforce strict required status checks. `dusk-network/hyperlane-dusk`
+  requires `Dusk review policy gate` and `Production readiness guard`;
+  `dusk-network/hyperlane-monorepo` requires `Dusk review policy gate` and
+  `Dusk agent cargo check`. Heavy repro and E2E evidence in `TEST_REPORT.md`
+  is still local/clean-Rusk evidence until the private runner/token path is
+  accepted and provisioned.
 - A 2026-05-12 permission probe showed repo-level Actions is enabled on both
   `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, with
   allowed actions set to `all` and default workflow permissions set to `write`.
@@ -29,7 +32,7 @@ setup to accept, change, or replace.
 - Both Dusk org repos now have protected `main` branches with required PR
   review, stale-review dismissal, last-push approval, conversation resolution,
   admin enforcement, force-push/delete disabled, and strict required status
-  checks for `Dusk review policy gate`.
+  checks for the policy and CI/provisioning guard contexts listed above.
 - `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
@@ -428,19 +431,23 @@ Recommended sequence:
 4. Only after the manual run is stable, decide whether to make the non-E2E
    repro check required on internal PRs.
 5. Keep protected `main` settings on `dusk-network/hyperlane-dusk` and
-   `dusk-network/hyperlane-monorepo`; both already require PR review and the
-   shared `Dusk review policy gate`. Require the accepted CI/repro check after
-   runner/token provisioning before treating either repo as production-ready.
+   `dusk-network/hyperlane-monorepo`; both already require PR review, the
+   shared `Dusk review policy gate`, and the proposed CI/provisioning guard
+   contexts. Do not treat either repo as production-ready until the required
+   checks are passing under the accepted runner/token path and the remaining
+   sign-off gates close.
 6. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides
    a runner specifically intended for long-running local network tests.
 
 ### Required Check Promotion
 
-After #8 is accepted and the runner/token path has produced at least one stable
-manual run, update required status checks without dropping the existing review
-policy gate. If Dusk accepts the proposed GitHub Actions path, the expected
-check names are `Production readiness guard` for `dusk-network/hyperlane-dusk`
-and `Dusk agent cargo check` for `dusk-network/hyperlane-monorepo`.
+Required status-check promotion was completed on 2026-05-14 without dropping
+the existing review-policy gate. `make gate-status` reports
+`missingRequiredStatusChecks: none` for both protected default branches. The
+remaining #8 gates are Dusk accepting or replacing this CI/repro path,
+publishing the manual workflow from #3 to the default branch, provisioning the
+read-only checkout token, providing visible `dusk-hyperlane` runner capacity,
+and recording a stable exact-ref run.
 
 ```bash
 gh api -X PATCH \

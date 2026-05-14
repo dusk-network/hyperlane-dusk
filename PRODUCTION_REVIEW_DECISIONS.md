@@ -150,7 +150,8 @@ Decision:
 - [ ] Replace it with another Dusk private CI system and equivalent branch
       required status-check policy.
 - [ ] Keep PR evidence local/manual and explicitly accept that branch
-      required status checks are not release gates yet.
+      required status checks are enforced but not release gates until the
+      accepted CI/repro path is provisioned and passing.
 
 Evidence:
 
@@ -163,6 +164,11 @@ Evidence:
   status-check candidate for `make production-readiness-guard`.
 - `.github/workflows/dusk-review-policy-gate.yml`, the shared required
   status-check policy gate now required by both Dusk org default branches.
+- Required status-check promotion completed on 2026-05-14:
+  `dusk-network/hyperlane-dusk` requires `Dusk review policy gate` and
+  `Production readiness guard`, and `dusk-network/hyperlane-monorepo` requires
+  `Dusk review policy gate` and `Dusk agent cargo check`. `make gate-status`
+  reports `missingRequiredStatusChecks: none` for both repos.
 - dusk-network/hyperlane-dusk#3, the narrow default-branch dispatcher PR.
 - `scripts/local-repro-check.sh`.
 - `make repro-check-agent`.
@@ -204,15 +210,16 @@ token policy. The status token, if used, is for the production-readiness
 workflow only and must not be used by manual repro checkout steps or any Dusk
 runtime process.
 Keep the protected `main` and required-review baseline now enabled for
-`dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, then add
-the accepted CI/repro check in addition to the existing
-`Dusk review policy gate` once the accepted CI path exists. For the proposed
-GitHub Actions path, those exact second contexts are `Production readiness
+`dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`. The
+proposed GitHub Actions contexts are already enforced: `Production readiness
 guard` on `dusk-network/hyperlane-dusk` and `Dusk agent cargo check` on
-`dusk-network/hyperlane-monorepo`. If Dusk chooses another private CI system,
-record the replacement contexts in #8 and #2 and override the guard's accepted
-context list accordingly. The production readiness guard expects at least two
-required status checks on each protected default branch before it can pass.
+`dusk-network/hyperlane-monorepo`, each alongside `Dusk review policy gate`.
+If Dusk chooses another private CI system, record the replacement contexts in
+#8 and #2 and override the guard's accepted context list accordingly. The
+production readiness guard still expects at least two required status checks on
+each protected default branch before it can pass, but the current blockers have
+moved to acceptance, runner/token/status visibility, open reviews, open
+decision issues, and internal merges.
 When running it from the default branch, resolve the live Dusk and monorepo PR
 heads immediately before dispatch and pass those exact SHAs as `dusk_ref` and
 `monorepo_ref`; keep `rusk_ref` pinned to the reviewed clean Rusk commit unless
