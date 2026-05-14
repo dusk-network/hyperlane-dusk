@@ -2501,6 +2501,24 @@ Result:
   passed with export `/tmp/hyperlane-review-export-1778724624`, and
   `scripts/report-hygiene-check.sh` now rejects local report wording that pins a
   live PR head with `live ... PR head to <sha>`.
+- Follow-up current gate refreshes updated the existing issue #2 handoff comment
+  and reviewer action queue in place, then updated the #8 CI/admin provisioning
+  runbook observed-blocker section. The handoff comments now point reviewers to
+  live PR headers or `gh pr view ... --json headRefOid` for moving refs instead
+  of pinning live PR-head SHAs.
+- Latest aggregate local gate evidence recorded in those comments:
+  `make review-gates` passed with review hygiene export
+  `/tmp/hyperlane-review-export-1778724892` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.uXBq9C`; `make gate-status-fresh` reported
+  `coveredPathDelta: none`, `monorepoCoveredPathDelta: none`, required status
+  checks present, and zero open upstream Hyperlane PRs from
+  `dusk-network:feat/dusk-support-v2`; `make production-readiness-guard` failed
+  closed on the expected review, sign-off, runner, and token blockers.
+- Post-comment validation passed: `make review-hygiene` exports
+  `/tmp/hyperlane-review-export-1778724988`,
+  `/tmp/hyperlane-review-export-1778725055`, and
+  `/tmp/hyperlane-review-export-1778725111` after refreshing the gate handoff,
+  reviewer queue, and #8 runbook respectively.
 
 ## Remaining Work Before Production Readiness
 
