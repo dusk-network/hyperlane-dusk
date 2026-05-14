@@ -2496,6 +2496,11 @@ Result:
   `dusk-hyperlane` is visible; org runner visibility still requires admin or
   runner permissions; and `DUSK_ORG_READ_TOKEN` is not visible in either
   internal repo.
+- Follow-up after the docs refresh removed moving Dusk PR-head pins from the
+  gate handoff, reviewer queue, and #8 runbook comments. `make review-hygiene`
+  passed with export `/tmp/hyperlane-review-export-1778724624`, and
+  `scripts/report-hygiene-check.sh` now rejects local report wording that pins a
+  live PR head with `live ... PR head to <sha>`.
 
 ## Remaining Work Before Production Readiness
 
