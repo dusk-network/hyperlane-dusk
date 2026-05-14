@@ -473,7 +473,7 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 23 new security tests (70 total, up from 47) |
+| `tests/tests/integration.rs` | 25 new security tests (72 total, up from 47) |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -483,11 +483,14 @@ documented deviations:
 | `test_warp_drc20_transfer_remote_rejects_zero_amount` | Zero-amount assertion fires before any state mutation |
 | `test_warp_drc20_admin_rejects_non_owner` | WarpDrc20 admin path rejects a Moonlight sender that is not the configured owner |
 | `test_warp_drc20_admin_accepts_owner_moonlight_sender` | WarpDrc20 direct Moonlight owner admin path still succeeds after caller-aware sender resolution |
+| `test_warp_drc20_handle_rejects_invalid_token_message` | Synthetic warp route rejects a malformed inbound TokenMessage, leaves the message undelivered, and does not mint tokens |
 | `test_warp_native_transfer_remote_rejects_zero_amount` | Native warp send rejects zero amounts before deposit handling |
+| `test_warp_native_handle_rejects_invalid_token_message` | Native warp route rejects a malformed inbound TokenMessage, leaves the message undelivered, and does not escrow funds |
 | `test_warp_native_handle_escrows_unregistered_recipient` | Unregistered recipient goes to escrow instead of panicking; `pending_balance` returns correct amount |
 | `test_warp_native_escrow_accumulates` | Multiple inbound messages to same unregistered recipient accumulate correctly |
 | `test_warp_native_claim_pending_requires_pending` | `claim_pending` panics if no pending balance exists |
 | `test_warp_collateral_register_account` | Registration round-trip: `is_registered` returns false before, true after |
+| `test_warp_collateral_handle_rejects_invalid_token_message` | Collateral warp route rejects a malformed inbound TokenMessage, leaves the message undelivered, and does not escrow funds |
 | `test_warp_collateral_handle_rejects_insufficient_locked_balance` | Collateral unlock fails if the route does not hold enough wrapped-token balance |
 | `test_warp_collateral_handle_escrows_unregistered_recipient` | Unregistered collateral recipient goes to escrow instead of a synthetic contract account |
 | `test_warp_collateral_claim_pending_transfers_after_registration` | Registered recipient can claim escrowed collateral tokens and the collateral balance decreases exactly once |

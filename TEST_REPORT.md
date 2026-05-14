@@ -2386,6 +2386,11 @@ documented recovery/failure modes do not depend on the dirty local Rusk patch.
 - Added tests for WarpDrc20 owner/non-owner admin resolution, WarpNative
   zero-amount remote sends, and WarpDrc20Collateral unlock attempts without
   sufficient locked wrapped-token balance.
+- Added malformed inbound TokenMessage coverage for WarpDrc20, WarpNative, and
+  WarpDrc20Collateral. The synthetic route test now also verifies the failed
+  delivery does not mark the message delivered or mint tokens, while the
+  native/collateral route tests verify the failed delivery does not mark the
+  message delivered or create pending escrow.
 - Added WarpDrc20Collateral escrow tests for unregistered recipients and
   post-registration pending-claim release.
 - Reviewed remaining `#[contract(no_event)]` uses. They are now limited to
@@ -2429,8 +2434,11 @@ Result:
   above.
 - `cargo test -p hyperlane-dusk-types` passed:
   `28 passed; 0 failed; 0 ignored`.
-- `cargo test -p hyperlane-dusk-integration-tests` passed:
-  `70 passed; 0 failed; 0 ignored`.
+- `cargo test -p hyperlane-dusk-integration-tests invalid_token_message -- --nocapture`
+  passed:
+  `3 passed; 0 failed; 0 ignored; 69 filtered out`.
+- `cargo test -p hyperlane-dusk-integration-tests -- --nocapture` passed:
+  `72 passed; 0 failed; 0 ignored`.
 
 ## Remaining Work Before Production Readiness
 

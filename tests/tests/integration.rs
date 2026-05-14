@@ -2082,6 +2082,7 @@ fn test_warp_drc20_handle_rejects_invalid_token_message() {
         WARP_DRC20_ID.to_bytes(),
         &short_body,
     );
+    let message_id = message::id(&encoded);
 
     let result = session.direct_call::<_, ()>(
         MAILBOX_ID,
@@ -2092,6 +2093,18 @@ fn test_warp_drc20_handle_rejects_invalid_token_message() {
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpDrc20: invalid token message\")",
     );
+
+    let delivered: bool = session
+        .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message_id,))
+        .expect("delivered query should succeed")
+        .data;
+    assert!(!delivered, "malformed warp message must not be marked delivered");
+
+    let supply: u64 = session
+        .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
+        .expect("total_supply should succeed")
+        .data;
+    assert_eq!(supply, 0, "malformed warp message must not mint tokens");
 }
 
 #[test]
@@ -2300,6 +2313,45 @@ fn test_warp_native_handle_rejects_unenrolled_origin() {
     );
 }
 
+#[test]
+fn test_warp_native_handle_rejects_invalid_token_message() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+
+    let short_body = vec![0u8; 32]; // only 32 bytes, need 64
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &short_body,
+    );
+    let message_id = message::id(&encoded);
+
+    let result = session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), encoded),
+    );
+    assert_contract_panic(
+        result,
+        "Mailbox: recipient handle failed: Panic(\"WarpNative: invalid token message\")",
+    );
+
+    let delivered: bool = session
+        .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message_id,))
+        .expect("delivered query should succeed")
+        .data;
+    assert!(!delivered, "malformed native warp message must not be marked delivered");
+
+    let pending: u64 = session
+        .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_balance", &([0x11u8; 32],))
+        .expect("pending_balance should succeed")
+        .data;
+    assert_eq!(pending, 0, "malformed native warp message must not escrow funds");
+}
+
 // =============================================================================
 // Tests: WarpDrc20Collateral flow tests
 // =============================================================================
@@ -2472,6 +2524,55 @@ fn test_warp_collateral_handle_rejects_unenrolled_origin() {
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpCollateral: sender is not enrolled router for origin\")",
+    );
+}
+
+#[test]
+fn test_warp_collateral_handle_rejects_invalid_token_message() {
+    let (mut session, remote_router) = session_with_warp_collateral_flow();
+
+    let short_body = vec![0u8; 32]; // only 32 bytes, need 64
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &short_body,
+    );
+    let message_id = message::id(&encoded);
+
+    let result = session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), encoded),
+    );
+    assert_contract_panic(
+        result,
+        "Mailbox: recipient handle failed: Panic(\"WarpCollateral: invalid token message\")",
+    );
+
+    let delivered: bool = session
+        .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message_id,))
+        .expect("delivered query should succeed")
+        .data;
+    assert!(
+        !delivered,
+        "malformed collateral warp message must not be marked delivered"
+    );
+
+    let pending: u64 = session
+        .direct_call::<_, u64>(
+            WARP_DRC20_COLLATERAL_ID,
+            "pending_balance",
+            &([0x11u8; 32],),
+        )
+        .expect("pending_balance should succeed")
+        .data;
+    assert_eq!(
+        pending, 0,
+        "malformed collateral warp message must not escrow funds"
     );
 }
 
