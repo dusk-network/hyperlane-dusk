@@ -268,6 +268,19 @@ expect_fail \
     env REPORT_FILES="$stale_goal_audit" GOAL_AUDIT_FILE="$stale_goal_audit" \
     bash scripts/report-hygiene-check.sh
 
+stale_decision_record="$workdir/stale-production-decisions.md"
+cat >"$stale_decision_record" <<'EOF'
+Latest clean-layout repro evidence at
+https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744.
+EOF
+expect_fail \
+    report-hygiene-stale-production-decision-evidence \
+    'stale production decision evidence found' \
+    env REPORT_FILES="$stale_decision_record" \
+        GOAL_AUDIT_FILE="$stale_decision_record" \
+        DECISION_RECORD_FILE="$stale_decision_record" \
+    bash scripts/report-hygiene-check.sh
+
 tmp_only_repro_report="$workdir/tmp-only-repro-report.md"
 cat >"$tmp_only_repro_report" <<'EOF'
 Latest clean-layout repro evidence:

@@ -11,6 +11,8 @@ REPORT_FILES="${REPORT_FILES:-GOAL_AUDIT.md TEST_REPORT.md CI_REPRO_STRATEGY.md}
 STALE_REPORT_PATTERNS="${STALE_REPORT_PATTERNS:-25790821003|25791389384|75755608816|75757564450|0c5a7fa10152b117c1e60fbbcfd2618db370aec4|1778686937|1778686993|1778687061|https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4442208973|https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443848247|contains only.*manual-repro-check\\.yml.*and.*actionlint\\.yaml|latest clean-layout repro source ref[[:space:]]+\`8d3704e8f5a3ab0976b97fc3a68319e112e8affc\`|latest clean-layout repro monorepo[[:space:]]+ref \`9050143c1ef12f76d117ee97effa79da8df3e334\`|25819297778|25819297742|25804689562|25804689294|75856037468|75856036345|75804009086|75804008587|ae937e79e60af2d1c6f02e303be8956bddf6a133|/tmp/hyperlane-merge-order-logs\\.eGzQ7Q|live [A-Za-z -]*PR head is \`[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]+\`|current [A-Za-z -]*PR head is \`[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]+\`}"
 GOAL_AUDIT_FILE="${GOAL_AUDIT_FILE:-GOAL_AUDIT.md}"
 GOAL_AUDIT_STALE_PATTERNS="${GOAL_AUDIT_STALE_PATTERNS:-head under test \`[0-9a-f][0-9a-f]+\`|Latest command logs.*hyperlane-merge-order-logs\\.[A-Za-z0-9]+}"
+DECISION_RECORD_FILE="${DECISION_RECORD_FILE:-PRODUCTION_REVIEW_DECISIONS.md}"
+DECISION_RECORD_STALE_PATTERNS="${DECISION_RECORD_STALE_PATTERNS:-https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744}"
 LATEST_REPRO_ARCHIVE_PATH="${LATEST_REPRO_ARCHIVE_PATH:-/home/hein_/projects/hyperlane/.codex-backups/hyperlane-warp-unwrap-repro-1778712399.tgz}"
 LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-56b3659a46d76b9becac859fb6737af57f6a5b3eef76f13c631e792097490a17}"
 LATEST_REPRO_ARCHIVE_REQUIRED_FILES="${LATEST_REPRO_ARCHIVE_REQUIRED_FILES:-GOAL_AUDIT.md TEST_REPORT.md}"
@@ -42,6 +44,12 @@ Environment:
                          Extended regex for stale moving evidence in
                          the goal audit file.
                          Default: current goal-audit stale-report set.
+  DECISION_RECORD_FILE   Production decision record to scan for stale
+                         reviewer-facing evidence links.
+                         Default: $DECISION_RECORD_FILE
+  DECISION_RECORD_STALE_PATTERNS
+                         Extended regex for stale decision-record evidence.
+                         Default: current decision-record stale-report set.
   LATEST_REPRO_ARCHIVE_PATH
                          Durable archive path required for latest repro evidence.
                          Default: $LATEST_REPRO_ARCHIVE_PATH
@@ -100,6 +108,22 @@ if [ -f "$GOAL_AUDIT_FILE" ]; then
     if [ "$rg_status" -ne 1 ]; then
         cat "$stale_hits" >&2
         fail "goal-audit hygiene scan failed"
+    fi
+fi
+
+if [ -f "$DECISION_RECORD_FILE" ]; then
+    set +e
+    rg -n -e "$DECISION_RECORD_STALE_PATTERNS" "$DECISION_RECORD_FILE" >"$stale_hits"
+    rg_status=$?
+    set -e
+
+    if [ "$rg_status" -eq 0 ]; then
+        cat "$stale_hits" >&2
+        fail "stale production decision evidence found"
+    fi
+    if [ "$rg_status" -ne 1 ]; then
+        cat "$stale_hits" >&2
+        fail "production decision hygiene scan failed"
     fi
 fi
 

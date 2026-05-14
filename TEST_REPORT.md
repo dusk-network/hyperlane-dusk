@@ -757,7 +757,10 @@ Result:
   before or after PR #1 without workflow drift.
   This guard was added after the PR #3 exact-ref dispatch comment was updated
   in place. `bash -n scripts/github-review-hygiene.sh`, `git diff --check`,
-  `make secret-hygiene`, and `make review-hygiene` passed; after push, the
+  `make secret-hygiene`, and `make review-hygiene` passed. The same stale
+  clean-layout evidence link was also removed from
+  `PRODUCTION_REVIEW_DECISIONS.md`, and `make report-hygiene` now rejects that
+  stale link in the production decision record.
   Dusk review policy job passed and the production-readiness job failed with the
   expected blocker summary.
 - `make review-hygiene` now rejects the active reviewer-facing phrase
