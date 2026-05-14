@@ -178,6 +178,34 @@ expect_fail \
     env PATH="$workdir/branch-protection-one-check-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
     bash scripts/production-readiness-guard.sh
 
+mkdir -p "$workdir/branch-protection-wrong-check-mock-bin"
+cat >"$workdir/branch-protection-wrong-check-mock-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$*" in
+    "api repos/dusk-network/hyperlane-dusk --jq .default_branch" | \
+    "api repos/dusk-network/hyperlane-monorepo --jq .default_branch")
+        printf 'main\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/branches/main/protection --jq "* | \
+    "api repos/dusk-network/hyperlane-monorepo/branches/main/protection --jq "*)
+        printf '{"requiredStatusChecks":["Dusk review policy gate","Unrelated CI"],"requiresReviews":true}\n'
+        ;;
+    *)
+        echo "unexpected gh invocation: $*" >&2
+        exit 1
+        ;;
+esac
+EOF
+chmod +x "$workdir/branch-protection-wrong-check-mock-bin/gh"
+
+expect_fail \
+    production-readiness-missing-required-check-context \
+    'dusk default branch is missing required status check: Production readiness guard' \
+    env PATH="$workdir/branch-protection-wrong-check-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
+    bash scripts/production-readiness-guard.sh
+
 dependency_alert_unavailable="$workdir/dependency-alert-unavailable.sh"
 cat >"$dependency_alert_unavailable" <<'EOF'
 #!/usr/bin/env bash

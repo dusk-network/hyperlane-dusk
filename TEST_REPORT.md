@@ -926,9 +926,10 @@ Result:
 - `make fail-closed-self-test` now also covers production CI provisioning
   blockers with mocked `gh` commands and isolated guard modes. The mock covers
   missing default-branch protection and protected branches that still require
-  only one status check with `BRANCH_PROTECTION_GATE_ONLY=1`, plus missing
-  workflow visibility, no repo/org runner with label `dusk-hyperlane`, and no
-  `DUSK_ORG_READ_TOKEN` secret in either internal repo with
+  only one status check or require the wrong second status check with
+  `BRANCH_PROTECTION_GATE_ONLY=1`, plus missing workflow visibility, no
+  repo/org runner with label `dusk-hyperlane`, and no `DUSK_ORG_READ_TOKEN`
+  secret in either internal repo with
   `CI_VISIBILITY_GATE_ONLY=1`; the guard rejects branch-protection, workflow,
   runner, and required-secret blockers before a live PR can be treated as
   production-ready.

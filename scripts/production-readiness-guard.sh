@@ -19,6 +19,8 @@ LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-eff5e3bc181707756eead42880c71ccd
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
 LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-515fab074024271935bc7795604dbb4f0823a937}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-2}"
+DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
+MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent cargo check}"
 MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
 MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monorepo}"
 MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
@@ -224,11 +226,13 @@ check_pr() {
 check_branch_protection() {
     local repo="$1"
     local label="$2"
+    local required_contexts="${3:-}"
     local default_branch
     local protection_json
     local status_count
     local requires_reviews
     local err_file
+    local context
 
     default_branch="$(gh api "repos/$repo" --jq .default_branch)"
     printf '%sDefaultBranch: %s\n' "$label" "$default_branch"
@@ -245,6 +249,18 @@ check_branch_protection() {
 
         if [ "$status_count" -lt "$MIN_STATUS_CHECKS" ]; then
             add_blocker "$label default branch has $status_count required status checks; expected at least $MIN_STATUS_CHECKS"
+        fi
+
+        if [ -n "$required_contexts" ]; then
+            while IFS= read -r context; do
+                [ -n "$context" ] || continue
+                if ! printf '%s\n' "$protection_json" | jq -e --arg context "$context" \
+                    '.requiredStatusChecks | index($context) != null' >/dev/null; then
+                    add_blocker "$label default branch is missing required status check: $context"
+                fi
+            done <<EOF
+$(printf '%s\n' "$required_contexts" | tr '|' '\n')
+EOF
         fi
 
         if [ "$requires_reviews" != "true" ]; then
@@ -469,8 +485,8 @@ fi
 
 if [ "$BRANCH_PROTECTION_GATE_ONLY" = "1" ]; then
     section "Branch Protection"
-    check_branch_protection "$DUSK_REPO" "dusk"
-    check_branch_protection "$MONOREPO_REPO" "monorepo"
+    check_branch_protection "$DUSK_REPO" "dusk" "$DUSK_REQUIRED_STATUS_CONTEXTS"
+    check_branch_protection "$MONOREPO_REPO" "monorepo" "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
     print_summary_and_exit
 fi
 
@@ -490,8 +506,8 @@ else
 fi
 
 section "Branch Protection"
-check_branch_protection "$DUSK_REPO" "dusk"
-check_branch_protection "$MONOREPO_REPO" "monorepo"
+check_branch_protection "$DUSK_REPO" "dusk" "$DUSK_REQUIRED_STATUS_CONTEXTS"
+check_branch_protection "$MONOREPO_REPO" "monorepo" "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
 
 section "Production Sign-Off"
 issue_body="$(gh issue view 2 --repo "$DUSK_REPO" --json body --jq .body)"
