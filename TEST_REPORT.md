@@ -248,11 +248,16 @@ Notes:
 - The live Dusk and monorepo PR heads are checked through GitHub and
   `make gate-status`. Latest clean-layout repro run `1778712399` covers Dusk
   source ref `eff5e3bc181707756eead42880c71ccd1e685d34` and monorepo ref
-  `515fab074024271935bc7795604dbb4f0823a937`; later Dusk docs/report commits
-  are outside `DUSK_REPRO_COVERED_PATHS`, and the guard reports
-  `coveredPathDelta: none`. The gate also compares the live monorepo PR head to
-  the latest clean-layout repro monorepo ref and reports
-  `monorepoCoveredPathDelta: none`.
+  `515fab074024271935bc7795604dbb4f0823a937`. `DUSK_REPRO_COVERED_PATHS`
+  includes runtime, tooling, demo, and VM integration test source
+  (`contracts types data-driver dusk-tx e2e wasm-bindings demo tests Cargo.toml
+  Cargo.lock`) so test-source changes are visible to repro-delta reporting.
+  Later Dusk docs/report/guard commits are outside that covered path set, but
+  the malformed warp-token VM test slice in `tests/tests/integration.rs` is a
+  covered-path change and must remain visible as `coveredPathDelta: present`
+  until a new clean-layout repro covers the updated 72-test suite. The gate
+  also compares the live monorepo PR head to the latest clean-layout repro
+  monorepo ref and reports `monorepoCoveredPathDelta`.
 - A 2026-05-12 dependency advisory remediation pass updated the Dusk repo Rust
   dependency graph for GitHub-reported advisories: `wasmtime` 25.0.3 -> 36.0.9,
   `openssl` 0.10.75 -> 0.10.79, `openssl-sys` 0.9.111 -> 0.9.115,
@@ -910,7 +915,10 @@ Result:
   invalid regex, report-hygiene stale-pattern invalid regex, report-hygiene
   stale dispatcher smoke evidence, and secret-hygiene unreadable runtime
   artifact probes. It also creates a temporary untracked repo file and verifies
-  `make completion-audit-status` rejects it. It is part of `make review-gates`;
+  `make completion-audit-status` rejects it. It now also pins the pre-malformed
+  warp-token test slice ref and verifies production readiness fails closed when
+  `tests/tests/integration.rs` is a latest-repro covered-path delta. It is part
+  of `make review-gates`;
   the post-edit `make review-gates` run passed with review-hygiene export
   `/tmp/hyperlane-review-export-1778702613` and dispatcher merge-order smoke log
   `/tmp/hyperlane-merge-order-logs.YO0Zpk`.

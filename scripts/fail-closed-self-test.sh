@@ -222,6 +222,13 @@ expect_fail \
     bash scripts/production-readiness-guard.sh
 
 expect_fail \
+    production-readiness-covered-test-delta \
+    'runtime/test covered paths changed since latest clean-layout repro' \
+    env LATEST_REPRO_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
+        DUSK_REPRO_COVERED_PATHS=tests/tests/integration.rs \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
     review-hygiene-invalid-agent-pattern \
     'Dusk agent runtime panic/placeholder scan failed' \
     env AGENT_PLACEHOLDER_PATTERN='[invalid' \
