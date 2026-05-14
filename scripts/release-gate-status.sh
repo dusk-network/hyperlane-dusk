@@ -43,6 +43,8 @@ CI_PROVISIONING_RUNBOOK_URL="${CI_PROVISIONING_RUNBOOK_URL:-https://github.com/d
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
+DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
+MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent cargo check}"
 FETCH_UPSTREAM=0
 PLACEHOLDER_SCAN_ONLY=0
 
@@ -350,8 +352,10 @@ print_issue() {
 
 print_repo_merge_policy() {
     local repo="$1"
+    local required_contexts="${2:-}"
     local default_branch
     local protection_json
+    local missing_contexts
 
     gh api "repos/$repo" \
         --jq '
@@ -366,6 +370,23 @@ print_repo_merge_policy() {
     if protection_json="$(gh api "repos/$repo/branches/$default_branch/protection" --jq '{requiredStatusChecks: (.required_status_checks.contexts // []), requiresReviews: (.required_pull_request_reviews != null)}' 2>/tmp/hyperlane-dusk-protection.$$.err)"; then
         echo "branchProtection: enabled"
         printf '%s\n' "$protection_json" | sed 's/^/  /'
+        if [ -n "$required_contexts" ]; then
+            echo "  expectedRequiredStatusChecks: $(printf '%s\n' "$required_contexts" | tr '|' ',')"
+            missing_contexts="$(
+                printf '%s\n' "$required_contexts" | tr '|' '\n' | while IFS= read -r context; do
+                    [ -n "$context" ] || continue
+                    if ! printf '%s\n' "$protection_json" | jq -e --arg context "$context" \
+                        '.requiredStatusChecks | index($context) != null' >/dev/null; then
+                        printf '%s\n' "$context"
+                    fi
+                done
+            )"
+            if [ -n "$missing_contexts" ]; then
+                echo "  missingRequiredStatusChecks: $(printf '%s\n' "$missing_contexts" | paste -sd ',' -)"
+            else
+                echo "  missingRequiredStatusChecks: none"
+            fi
+        fi
     else
         if printf '%s\n' "$protection_json" | grep -q '"message":"Branch not protected"'; then
             echo "branchProtection: none"
@@ -527,8 +548,8 @@ else
 fi
 
 section "Branch Protection And Merge Settings"
-print_repo_merge_policy "$DUSK_REPO"
-print_repo_merge_policy "$MONOREPO_REPO"
+print_repo_merge_policy "$DUSK_REPO" "$DUSK_REQUIRED_STATUS_CONTEXTS"
+print_repo_merge_policy "$MONOREPO_REPO" "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
 
 section "Untracked Source Check"
 dusk_untracked="$(git -C "$ROOT" ls-files --others --exclude-standard)"
