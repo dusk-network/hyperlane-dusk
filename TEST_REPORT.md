@@ -2457,6 +2457,46 @@ Result:
 - `cargo test -p hyperlane-dusk-integration-tests -- --nocapture` passed:
   `72 passed; 0 failed; 0 ignored`.
 
+## Latest Review Handoff Refresh
+
+On 2026-05-14, after Dusk commit
+`a73a7eae616496572107f0d782e46f76eea9da58`, PR #3 reviewer-facing comments
+were checked for stale clean-layout repro and gate handoff links. Three
+historical dispatcher comments were edited in place so they now point at:
+
+- latest clean-layout repro evidence:
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446653484
+- current gate handoff:
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446717505
+- reviewer action queue:
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446734652
+
+Validation:
+
+```bash
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo fetch upstream main
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-parse FETCH_HEAD
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo merge-base HEAD FETCH_HEAD
+git -C /home/hein_/projects/hyperlane/hyperlane-monorepo rev-list --left-right --count HEAD...FETCH_HEAD
+make review-hygiene
+make production-readiness-guard
+```
+
+Result:
+
+- Hyperlane upstream `main` remained at
+  `7689ff65f4929a72ad0650a03e8dd7d987f0e802`; the Dusk monorepo branch
+  remained 44 commits ahead and 0 behind that base.
+- `make review-hygiene` passed with export
+  `/tmp/hyperlane-review-export-1778724099`.
+- `make production-readiness-guard` failed closed as expected: Dusk PR #1,
+  monorepo PR #1, and dispatcher PR #3 are still open and review-required;
+  production sign-off issue #2 still has 7 unchecked items; split decision
+  issues #4 through #9 remain open; no repo-level self-hosted runner with label
+  `dusk-hyperlane` is visible; org runner visibility still requires admin or
+  runner permissions; and `DUSK_ORG_READ_TOKEN` is not visible in either
+  internal repo.
+
 ## Remaining Work Before Production Readiness
 
 - Continue expanding negative/security coverage; current coverage includes
