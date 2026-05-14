@@ -554,13 +554,12 @@ Result:
   `make dependency-alert-status`, `make report-hygiene`,
   `make review-hygiene`,
   `make dispatcher-merge-order-smoke`, and
-  `make gate-status-fresh`. Exact current-head `make review-gates` evidence is
-  maintained in the current gate refresh handoff:
-  `https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446061536`.
-  Recent exports include `/tmp/hyperlane-review-export-1778681965` and
-  `/tmp/hyperlane-review-export-1778682243`. This wrapper does not replace
-  `make repro-check-agent`, clean-Rusk E2E, CI provisioning, or Dusk
-  production sign-off.
+  `make gate-status-fresh`. Moving PR heads and check rollups are read through
+  GitHub and `make gate-status` instead of pinned to one "current" handoff
+  comment. Recent exports include `/tmp/hyperlane-review-export-1778717975`
+  and `/tmp/hyperlane-review-export-1778718283`. This wrapper does not replace
+  `make repro-check-agent`, clean-Rusk E2E, CI provisioning, or Dusk production
+  sign-off.
 - `make production-readiness-guard`: failed as expected while external
   production blockers remain open. It reports open internal PR/review/status
   gates, non-completed PR status-check counts, unchecked sign-off items, open
@@ -724,6 +723,11 @@ Result:
 - `make review-hygiene` now also requires active reviewer-facing text to
   mention `make dispatcher-merge-order-smoke`, so the new PR #3 / PR #1
   landing-order check remains visible in the review handoff.
+- `make review-hygiene` now requires current head/gate handoff text in active
+  PR/sign-off bodies without pinning one specific "current" comment URL. Moving
+  heads and check URLs remain live values from GitHub PR headers and
+  `make gate-status`, which avoids a new handoff-comment churn cycle for each
+  docs-only guardrail commit.
 - `make review-hygiene` now rejects stale active reviewer-facing wording that
   claims the live monorepo branch is rebased onto upstream Hyperlane
   `2b7db706023806b36a57e446205ae443537ae9ec`; historical clean-layout repro
