@@ -2519,6 +2519,13 @@ Result:
   `/tmp/hyperlane-review-export-1778725055`, and
   `/tmp/hyperlane-review-export-1778725111` after refreshing the gate handoff,
   reviewer queue, and #8 runbook respectively.
+- Latest aggregate gate refresh at Dusk head read live from GitHub:
+  `make review-gates` passed with review hygiene export
+  `/tmp/hyperlane-review-export-1778725623` and dispatcher merge-order smoke log
+  `/tmp/hyperlane-merge-order-logs.fENhf4`. The refreshed issue #2 handoff,
+  reviewer queue, and #8 runbook now reference that aggregate evidence, and
+  `make review-hygiene` passed after those GitHub-only edits with export
+  `/tmp/hyperlane-review-export-1778725734`.
 
 ## Remaining Work Before Production Readiness
 
