@@ -206,9 +206,13 @@ runtime process.
 Keep the protected `main` and required-review baseline now enabled for
 `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, then add
 the accepted CI/repro check in addition to the existing
-`Dusk review policy gate` once the accepted CI path exists. The production
-readiness guard expects at least two required status checks on each protected
-default branch before it can pass.
+`Dusk review policy gate` once the accepted CI path exists. For the proposed
+GitHub Actions path, those exact second contexts are `Production readiness
+guard` on `dusk-network/hyperlane-dusk` and `Dusk agent cargo check` on
+`dusk-network/hyperlane-monorepo`. If Dusk chooses another private CI system,
+record the replacement contexts in #8 and #2 and override the guard's accepted
+context list accordingly. The production readiness guard expects at least two
+required status checks on each protected default branch before it can pass.
 When running it from the default branch, resolve the live Dusk and monorepo PR
 heads immediately before dispatch and pass those exact SHAs as `dusk_ref` and
 `monorepo_ref`; keep `rusk_ref` pinned to the reviewed clean Rusk commit unless
