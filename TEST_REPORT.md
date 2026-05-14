@@ -733,6 +733,11 @@ Result:
   `515fab074024271935bc7795604dbb4f0823a937`, and clean Rusk
   `c0c64db4659500d077bb253ad13acba0e347d3fc`; `make review-hygiene` now
   rejects the stale older tested-ref text in that issue body.
+- Active Dusk PR #1, monorepo PR #1, and sign-off issue #2 bodies were updated
+  to call run `1778712399` the latest clean-layout repro and to demote
+  checkout-v6 run `1778695627` to prior workflow-checkout evidence. `make
+  review-hygiene` now rejects stale `Latest checkout-v6 clean-layout` wording
+  in those active bodies.
 - `make review-hygiene` now rejects stale active reviewer-facing wording that
   claims the live monorepo branch is rebased onto upstream Hyperlane
   `2b7db706023806b36a57e446205ae443537ae9ec`; historical clean-layout repro

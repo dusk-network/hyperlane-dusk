@@ -463,6 +463,16 @@ for file in \
         || fail "$file is missing current gate refresh handoff text"
     rg -q -F "$latest_repro_comment" "$file" \
         || fail "$file is missing latest clean-layout repro evidence link"
+    rg -q -F '1778712399' "$file" \
+        || fail "$file is missing latest clean-layout repro run id"
+    rg -q -F 'eff5e3bc181707756eead42880c71ccd1e685d34' "$file" \
+        || fail "$file is missing latest clean-layout Dusk source ref"
+    rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$file" \
+        || fail "$file is missing latest clean-layout clean-Rusk ref"
+    if rg -n -F 'Latest checkout-v6 clean-layout' "$file" >"$EXPORT_DIR/stale-repro-body.txt"; then
+        cat "$EXPORT_DIR/stale-repro-body.txt" >&2
+        fail "$file contains stale latest checkout-v6 wording"
+    fi
     if rg -n -e '1778607202|4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253|1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3|1778683232|9050143c1ef12f76d117ee97effa79da8df3e334' "$file" >"$EXPORT_DIR/stale-repro-body.txt"; then
         cat "$EXPORT_DIR/stale-repro-body.txt" >&2
         fail "$file contains stale clean-layout repro body evidence"
@@ -497,7 +507,7 @@ done
 rm -f "$EXPORT_DIR/stale-repro-body.txt"
 
 if [ -f "$EXPORT_DIR/dusk-issue-2-body.txt" ]; then
-    rg -q -F 'Latest checkout-v6 clean-layout repro run `1778695627` tested monorepo `515fab074024271935bc7795604dbb4f0823a937`' \
+    rg -q -F 'Latest clean-layout repro run `1778712399` tested Dusk `eff5e3bc181707756eead42880c71ccd1e685d34` and monorepo `515fab074024271935bc7795604dbb4f0823a937`' \
         "$EXPORT_DIR/dusk-issue-2-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-2-body.txt is missing current monorepo clean-layout repro handoff text"
 fi
