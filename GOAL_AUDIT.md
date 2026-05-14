@@ -181,9 +181,10 @@ Observed:
   branch is not reported as having zero checks while GitHub Actions is still
   creating check runs. `make fail-closed-self-test` covers unavailable
   dependency-alert triage with `DEPENDENCY_ALERT_GATE_ONLY=1`, missing default
-  branch protection with `BRANCH_PROTECTION_GATE_ONLY=1`, and missing workflow
-  visibility, missing runner, and `DUSK_ORG_READ_TOKEN` provisioning with a
-  mocked GitHub API response through `CI_VISIBILITY_GATE_ONLY=1`. It is not a
+  branch protection and insufficient required status-check count with
+  `BRANCH_PROTECTION_GATE_ONLY=1`, and missing workflow visibility, missing
+  runner, and `DUSK_ORG_READ_TOKEN` provisioning with a mocked GitHub API
+  response through `CI_VISIBILITY_GATE_ONLY=1`. It is not a
   production-readiness proof.
 - `dusk-network/hyperlane-dusk` default branch is `main`. The preserved
   prototype archive branch remains available as
