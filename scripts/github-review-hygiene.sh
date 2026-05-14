@@ -20,8 +20,8 @@ EXPORT_DIR="${EXPORT_DIR:-}"
 KEEP_EXPORT="${KEEP_EXPORT:-1}"
 STALE_REVIEW_PATTERNS="${STALE_REVIEW_PATTERNS:-356239661c5121e79e81930fd2b18995bf375b11|78b0cfd19b59705c49639cd8200baa2404344d2c|c0036501b26cc98fb64259807e4cbca929487aec|d192269aedee625be4355a34a6ec5672c4141ec8|10721dcb645adc0d7fc8b4952362e57355c2c67e|bb2fbd685e1bccd0c468de9bbd3f2bb49bbac1d4|0cc3732046181576cd57a536bce585c079c776c2|519478c418498d3520aee650e76292ff2aad1e64|7a00aed51e1a39ec6fd58a5fb8added3a0350f37|e2d5db3f01bb2bc0ef5a0d4eda560cc34ee21862|0aca118ce9cae9ae86c7757f207f49d76face371|06dbf75e5f880ec74d29d59e44c4059298a49685|06dbf75e2d67b0bbc5aa450066bfb5743f79bdd2|1778574482|1778576530|1778577847|28d07e01d1bbc0cf59575a811cde55e844a2abb7|2dcc3409c38107caf2b1e67c913a265fba51df7e|d25d18155dd28ffdee30793b416e6956dd4c4799|25771131928|25771131956|25771131995|25771347654|25771347630|25771347609|75694299679|75694299650|75694300152|75694938855|75694938818|75694949161|25802657899|25802657910|75796678440|75796678527|54e56fa139343df5250ac01b1589ae7052cbedeb|ahead/behind .31 0|ahead/behind .32 0|Dusk PR #1 head is now .889a00bb11d589d268ee928d0855e3724dfab0fe|Companion Dusk PR #1 head is now .889a00bb11d589d268ee928d0855e3724dfab0fe|runtime commit|Dusk runtime commit|repeatable cargo clippy|only adds evidence-doc updates|evidence-doc updates only|17 0}"
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
-LATEST_REPRO_ARCHIVE_PATH="${LATEST_REPRO_ARCHIVE_PATH:-/home/hein_/projects/hyperlane/.codex-backups/hyperlane-clean-repro-current-head-1778750702.tgz}"
-LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-090ed23b59f4a29d5f498fea9019c55164180876ce37a94729128d3ad389a5eb}"
+LATEST_REPRO_ARCHIVE_PATH="${LATEST_REPRO_ARCHIVE_PATH:-/home/hein_/projects/hyperlane/.codex-backups/hyperlane-clean-repro-current-head-1778751867.tgz}"
+LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-9e08ce22389f4a209d3d1ed79aa90de8d5384ce77ca7c142019c3264b799b7e7}"
 AGENT_PLACEHOLDER_PATTERN="${AGENT_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!|expect\(}"
 AGENT_PLACEHOLDER_SCAN_ONLY=0
 DISPATCHER_COMMENT_SCAN_ONLY_FILE=""
@@ -452,7 +452,7 @@ rg -q -F "$LATEST_REPRO_ARCHIVE_SHA256" "$active_review_text" \
 post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
 post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
 dependency_remediated_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389'
-latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4449464522'
+latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4449591043'
 current_gate_refresh_text='head and gate refresh:'
 ci_provisioning_runbook='https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841'
 for file in \
@@ -463,9 +463,9 @@ for file in \
         || fail "$file is missing current gate refresh handoff text"
     rg -q -F "$latest_repro_comment" "$file" \
         || fail "$file is missing latest clean-layout repro evidence link"
-    rg -q -F '1778750702' "$file" \
+    rg -q -F '1778751867' "$file" \
         || fail "$file is missing latest clean-layout repro run id"
-    rg -q -F 'ae215d061d22924dfeea64e90b4cb4803604aac4' "$file" \
+    rg -q -F '2dd0d227cf0c33033cd9206151c1cbca6cddfffb' "$file" \
         || fail "$file is missing latest clean-layout Dusk source ref"
     rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$file" \
         || fail "$file is missing latest clean-layout clean-Rusk ref"
@@ -507,7 +507,7 @@ done
 rm -f "$EXPORT_DIR/stale-repro-body.txt"
 
 if [ -f "$EXPORT_DIR/dusk-issue-2-body.txt" ]; then
-    rg -q -F 'Latest clean-layout repro run `1778750702` tested Dusk `ae215d061d22924dfeea64e90b4cb4803604aac4` and monorepo `99f718dfca395076285d3cc1226128599d67148c`' \
+    rg -q -F 'Latest clean-layout repro run `1778751867` tested Dusk `2dd0d227cf0c33033cd9206151c1cbca6cddfffb` and monorepo `3b7d9f64d7d9465eaa868770d970243d98bc53c6`' \
         "$EXPORT_DIR/dusk-issue-2-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-2-body.txt is missing current monorepo clean-layout repro handoff text"
 fi
@@ -552,7 +552,7 @@ rm -f "$EXPORT_DIR/stale-pr-3-comments.txt"
 if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
     rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout repro evidence link"
-    rg -q -F 'ae215d061d22924dfeea64e90b4cb4803604aac4' "$EXPORT_DIR/dusk-issue-8-body.txt" \
+    rg -q -F '2dd0d227cf0c33033cd9206151c1cbca6cddfffb' "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout Dusk source ref"
     rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout clean-Rusk ref"

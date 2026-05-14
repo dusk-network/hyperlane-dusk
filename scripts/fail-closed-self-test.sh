@@ -291,8 +291,8 @@ expect_fail \
 tmp_only_repro_report="$workdir/tmp-only-repro-report.md"
 cat >"$tmp_only_repro_report" <<'EOF'
 Latest clean-layout repro evidence:
-- log: /tmp/hyperlane-clean-repro-current-head-1778750702.log
-- SHA256: 4169a677e58c6366c66d55e6ded684c4d8f095f99795de5f57e2f94868c0f8fc
+- log: /tmp/hyperlane-clean-repro-current-head-1778751867.log
+- SHA256: df88d712f4bfada0b1958a9b4d7c1b96b0b2ec4754482c524dca91b0c83e738d
 EOF
 expect_fail \
     report-hygiene-missing-latest-repro-archive \
@@ -305,8 +305,8 @@ expect_fail \
 path_only_repro_report="$workdir/path-only-repro-report.md"
 cat >"$path_only_repro_report" <<'EOF'
 Latest clean-layout repro evidence:
-- archive: /home/hein_/projects/hyperlane/.codex-backups/hyperlane-clean-repro-current-head-1778750702.tgz
-- log SHA256: 4169a677e58c6366c66d55e6ded684c4d8f095f99795de5f57e2f94868c0f8fc
+- archive: /home/hein_/projects/hyperlane/.codex-backups/hyperlane-clean-repro-current-head-1778751867.tgz
+- log SHA256: df88d712f4bfada0b1958a9b4d7c1b96b0b2ec4754482c524dca91b0c83e738d
 EOF
 expect_fail \
     report-hygiene-missing-latest-repro-archive-hash \
