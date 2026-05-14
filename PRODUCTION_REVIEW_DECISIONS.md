@@ -31,8 +31,8 @@ Evidence:
 - `test_dispatch_via_recipient_proxy`.
 - Clean-Rusk TestMock and MessageIdMultisig E2E in `TEST_REPORT.md`.
 - Latest clean-layout repro evidence at
-  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856,
-  including 70 VM integration tests and the Hyperlane Rust agent check.
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446653484,
+  including 72 VM integration tests and the Hyperlane Rust agent check.
 
 Recommended stance:
 
@@ -61,8 +61,8 @@ Evidence:
 - `SECURITY_REVIEW.md`, "Open Production Review Decisions".
 - WarpDrc20, WarpDrc20Collateral, and WarpNative registration tests.
 - Latest clean-layout repro evidence at
-  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856,
-  including 70 VM integration tests and the Hyperlane Rust agent check.
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446653484,
+  including 72 VM integration tests and the Hyperlane Rust agent check.
 
 Recommended stance:
 
@@ -94,8 +94,8 @@ Evidence:
 - `test_warp_collateral_handle_escrows_unregistered_recipient`.
 - `test_warp_collateral_claim_pending_transfers_after_registration`.
 - Latest clean-layout repro evidence at
-  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856,
-  including 70 VM integration tests and the Hyperlane Rust agent check.
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446653484,
+  including 72 VM integration tests and the Hyperlane Rust agent check.
 
 Recommended stance:
 
@@ -124,7 +124,7 @@ Evidence:
 - `cargo test -p hyperlane-base dusk` in the companion monorepo, including the
   Unix loose-permission rejection case for `duskKey.keyFile`.
 - Latest clean-layout repro evidence at
-  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4445830856,
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446653484,
   including `make secret-hygiene` and the Hyperlane Rust agent check.
 - Dependency-remediated clean-Rusk E2E evidence at
   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389.
