@@ -728,6 +728,11 @@ Result:
   heads and check URLs remain live values from GitHub PR headers and
   `make gate-status`, which avoids a new handoff-comment churn cycle for each
   docs-only guardrail commit.
+- Issue #8 was corrected so its latest clean-layout repro link names the tested
+  Dusk source ref `eff5e3bc181707756eead42880c71ccd1e685d34`, monorepo ref
+  `515fab074024271935bc7795604dbb4f0823a937`, and clean Rusk
+  `c0c64db4659500d077bb253ad13acba0e347d3fc`; `make review-hygiene` now
+  rejects the stale older tested-ref text in that issue body.
 - `make review-hygiene` now rejects stale active reviewer-facing wording that
   claims the live monorepo branch is rebased onto upstream Hyperlane
   `2b7db706023806b36a57e446205ae443537ae9ec`; historical clean-layout repro

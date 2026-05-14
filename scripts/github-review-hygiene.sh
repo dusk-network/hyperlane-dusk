@@ -542,12 +542,21 @@ rm -f "$EXPORT_DIR/stale-pr-3-comments.txt"
 if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
     rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout repro evidence link"
+    rg -q -F 'eff5e3bc181707756eead42880c71ccd1e685d34' "$EXPORT_DIR/dusk-issue-8-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout Dusk source ref"
+    rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$EXPORT_DIR/dusk-issue-8-body.txt" \
+        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout clean-Rusk ref"
     rg -q -F 'required status-check policy enabled' "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing required status-check policy text"
     if rg -n -e '4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253' \
         "$EXPORT_DIR/dusk-issue-8-body.txt" >"$EXPORT_DIR/stale-issue-8-body.txt"; then
         cat "$EXPORT_DIR/stale-issue-8-body.txt" >&2
         fail "$EXPORT_DIR/dusk-issue-8-body.txt contains stale clean-layout repro body evidence"
+    fi
+    if rg -n -F 'That run tested Dusk source ref `ef8ee43cd99569299b9744b498ac1bbac69950bc`' \
+        "$EXPORT_DIR/dusk-issue-8-body.txt" >"$EXPORT_DIR/stale-issue-8-body.txt"; then
+        cat "$EXPORT_DIR/stale-issue-8-body.txt" >&2
+        fail "$EXPORT_DIR/dusk-issue-8-body.txt contains stale latest-repro tested-ref text"
     fi
 fi
 rm -f "$EXPORT_DIR/stale-issue-8-body.txt"
