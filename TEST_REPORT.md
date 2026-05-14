@@ -819,20 +819,26 @@ Result:
   to keep the current `1778695627`/`515fab074024271935bc7795604dbb4f0823a937`
   monorepo repro handoff text. `make review-gates` passed with review-hygiene
   export `/tmp/hyperlane-review-export-1778698688`.
-- The current gate refresh comment at
+- The previous gate refresh comment at
   https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446061536
   and the #8 CI/repro runbook comment were updated in place to avoid pinning
-  moving Dusk PR-head SHAs or moving Dusk PR #1 check-run URLs. They now point
-  reviewers to live PR check rollups for moving state and keep fixed refs only
-  for reproducible evidence. `scripts/github-review-hygiene.sh` now rejects the
-  stale `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba` gate-refresh head, old
+  moving Dusk PR-head SHAs or moving Dusk PR #1 check-run URLs. A later
+  handoff at
+  https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4446372895,
+  which records Dusk head `2df0582ac5ecf2b8232be996f302755d87ac5701`, required
+  status-check promotion with `missingRequiredStatusChecks: none`, the passing
+  `Dusk review policy gate` run, and the expected failed-closed
+  `Production readiness guard` run. Active bodies were repointed to that
+  handoff while live PR check rollups remained the source for moving state.
+  `scripts/github-review-hygiene.sh` rejects the stale
+  `8b15eb607e83b80cc334c6402e6c752dcfc9a1ba` gate-refresh head, old
   `25817675933`/`25817675973` check runs, the old `aheadBehind` `43 0`
   wording, and future active comments that pin moving Dusk PR #1 heads or
-  Dusk PR #1 check-run URLs. The post-edit `make review-hygiene` run passed
-  with export `/tmp/hyperlane-review-export-1778699750`; the post-edit
-  `make review-gates` run passed with review-hygiene export
-  `/tmp/hyperlane-review-export-1778699848` and dispatcher merge-order smoke
-  log `/tmp/hyperlane-merge-order-logs.5G96x2`.
+  Dusk PR #1 check-run URLs. The latest post-edit `make review-hygiene` run
+  passed with export `/tmp/hyperlane-review-export-1778719946`; the latest
+  post-edit `make review-gates` run passed with review-hygiene export
+  `/tmp/hyperlane-review-export-1778719621` and dispatcher merge-order smoke
+  log `/tmp/hyperlane-merge-order-logs.C1vFVc`.
 - The monorepo PR #1 body was updated in place to avoid pinning moving
   monorepo PR check-run URLs for `Dusk review policy gate`,
   `Dusk agent cargo check`, and inherited fork-skipped checks. It now points
