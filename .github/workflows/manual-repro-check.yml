@@ -11,7 +11,7 @@ on:
       rusk_ref:
         description: "dusk-network/rusk-private ref to checkout"
         required: true
-        default: "c0c64db4659500d077bb253ad13acba0e347d3fc"
+        default: "bc281d2cd1e789db92e99bc59849c92363524e37"
       monorepo_ref:
         description: "dusk-network/hyperlane-monorepo ref to checkout"
         required: true
@@ -54,13 +54,17 @@ jobs:
 
       - name: Report resolved checkout heads
         shell: bash
+        env:
+          REQUESTED_DUSK_REF: ${{ inputs.dusk_ref }}
+          REQUESTED_RUSK_REF: ${{ inputs.rusk_ref }}
+          REQUESTED_MONOREPO_REF: ${{ inputs.monorepo_ref }}
         run: |
           set -euo pipefail
-          printf 'dusk_ref=%s\n' '${{ inputs.dusk_ref }}'
+          printf 'dusk_ref=%s\n' "$REQUESTED_DUSK_REF"
           git -C hyperlane/dusk rev-parse HEAD
-          printf 'rusk_ref=%s\n' '${{ inputs.rusk_ref }}'
+          printf 'rusk_ref=%s\n' "$REQUESTED_RUSK_REF"
           git -C rusk-private rev-parse HEAD
-          printf 'monorepo_ref=%s\n' '${{ inputs.monorepo_ref }}'
+          printf 'monorepo_ref=%s\n' "$REQUESTED_MONOREPO_REF"
           git -C hyperlane/hyperlane-monorepo rev-parse HEAD
 
       - name: Run local repro check

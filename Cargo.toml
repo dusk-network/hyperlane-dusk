@@ -31,7 +31,7 @@ hyperlane-dusk-types = { path = "./types" }
 # Dusk
 # Use the current Dusk private stack for contract ABI, VM tests, and host functions.
 dusk-core = { path = "../../rusk-private/core" }
-dusk-forge = { git = "https://github.com/dusk-network/forge", rev = "dd7a43719e6f6c6bb257b2332e9d2632f58934ce" }
+dusk-forge = { git = "https://github.com/dusk-network/forge", rev = "d1e39a16ad5e2cd0675c7aafa6e2c459310bcb1a" }
 dusk-data-driver = { path = "../../rusk-private/data-drivers/data-driver" }
 
 # Serialization
@@ -62,3 +62,11 @@ time-core = "=0.1.6"
 # Enable overflow checks in release builds for contract safety
 [profile.release]
 overflow-checks = true
+
+[patch.crates-io]
+# Keep consumers of the current Rusk workspace on the same compatibility
+# revisions used by Rusk itself. Workspace patches do not propagate through
+# path dependencies.
+dusk-plonk = { git = "https://github.com/dusk-network/plonk-private.git", rev = "f63cfb0c4a5e5f485361c83ae15584257d3339ab" }
+phoenix-core = { git = "https://github.com/dusk-network/phoenix-private.git", rev = "68d48a1d6ad124bfd17b6d4770f6308778422d02" }
+phoenix-circuits = { git = "https://github.com/dusk-network/phoenix-private.git", rev = "68d48a1d6ad124bfd17b6d4770f6308778422d02" }

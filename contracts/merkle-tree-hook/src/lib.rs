@@ -19,7 +19,7 @@
 #![allow(clippy::used_underscore_binding)]
 
 /// Hyperlane MerkleTreeHook contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [events::Initialized, events::InsertedIntoTree])]
 mod merkle_tree_hook {
     extern crate alloc;
 
@@ -53,7 +53,6 @@ mod merkle_tree_hook {
         }
 
         /// Initialize with the Mailbox contract ID.
-        #[contract(emits = [(events::Initialized::TOPIC, events::Initialized)])]
         pub fn init(&mut self, mailbox: ContractId) {
             assert!(
                 self.mailbox == ZERO_CONTRACT,
@@ -78,7 +77,6 @@ mod merkle_tree_hook {
         /// Called by the Mailbox after a message is dispatched.
         ///
         /// Inserts the message ID into the Merkle tree and emits an event.
-        #[contract(emits = [(events::InsertedIntoTree::TOPIC, events::InsertedIntoTree)])]
         pub fn post_dispatch(&mut self, _metadata: Vec<u8>, encoded_message: Vec<u8>) {
             // Verify caller is the Mailbox.
             let caller = abi::caller().expect("MerkleTreeHook: no caller");

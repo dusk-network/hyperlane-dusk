@@ -8,9 +8,10 @@ publish = false
 [dependencies]
 bytecheck = { workspace = true }
 dusk-core = { workspace = true, optional = true }
+dusk-forge = { workspace = true, optional = true }
 rkyv = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [features]
 serde = ["dep:serde"]
-abi = ["dep:dusk-core", "dusk-core/abi-dlmalloc"]
+abi = ["dep:dusk-core", "dep:dusk-forge", "dusk-core/abi-dlmalloc"]

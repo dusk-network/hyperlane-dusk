@@ -21,7 +21,17 @@
 #![allow(clippy::cast_possible_truncation)]
 
 /// Hyperlane WarpDrc20 synthetic token contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::AccountRegistered,
+    events::Drc20Transfer,
+    events::HookSet,
+    events::Initialized,
+    events::IsmSet,
+    events::OwnershipTransferred,
+    events::ReceivedTransferRemote,
+    events::RemoteRouterEnrolled,
+    events::SentTransferRemote,
+])]
 mod warp_drc20 {
     extern crate alloc;
 
@@ -41,7 +51,7 @@ mod warp_drc20 {
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::token_message;
-    use hyperlane_dusk_types::{H256, MessageId};
+    use hyperlane_dusk_types::{MessageId, H256};
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -162,10 +172,6 @@ mod warp_drc20 {
         // =================================================================
 
         /// Initialize the warp route.
-        #[contract(emits = [
-            (events::Initialized::TOPIC, events::Initialized),
-            (events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)
-        ])]
         pub fn init(
             &mut self,
             mailbox: ContractId,
@@ -209,10 +215,9 @@ mod warp_drc20 {
         ///
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
-        #[contract(emits = [(events::AccountRegistered::TOPIC, events::AccountRegistered)])]
         pub fn register_account(&mut self) {
-            let pk = abi::public_sender()
-                .expect("WarpDrc20: register_account requires Moonlight TX");
+            let pk =
+                abi::public_sender().expect("WarpDrc20: register_account requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
             self.registered_accounts.insert(h, pk);
             abi::emit(
@@ -256,7 +261,6 @@ mod warp_drc20 {
         }
 
         /// Transfer tokens from the caller to a recipient.
-        #[contract(emits = [(events::Drc20Transfer::TOPIC, events::Drc20Transfer)])]
         pub fn transfer(&mut self, to: Account, value: u64) {
             let from = sender_account();
             self.do_transfer(from, to, value);
@@ -270,10 +274,6 @@ mod warp_drc20 {
         ///
         /// Burns `amount` from the caller and dispatches a Hyperlane message
         /// to the enrolled router on the destination domain.
-        #[contract(emits = [
-            (events::SentTransferRemote::TOPIC, events::SentTransferRemote),
-            (events::Drc20Transfer::TOPIC, events::Drc20Transfer)
-        ])]
         pub fn transfer_remote(
             &mut self,
             destination: u32,
@@ -323,10 +323,6 @@ mod warp_drc20 {
         ///
         /// Called by the Mailbox when a message is delivered. Mints tokens
         /// to the recipient specified in the token message body.
-        #[contract(emits = [
-            (events::ReceivedTransferRemote::TOPIC, events::ReceivedTransferRemote),
-            (events::Drc20Transfer::TOPIC, events::Drc20Transfer)
-        ])]
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpDrc20: cannot determine caller");
@@ -343,17 +339,15 @@ mod warp_drc20 {
             );
 
             // Decode token message
-            let msg =
-                token_message::decode(&body).expect("WarpDrc20: invalid token message");
+            let msg = token_message::decode(&body).expect("WarpDrc20: invalid token message");
 
             // Resolve the recipient: if a BLS key is registered for this H256,
             // mint to the External account; otherwise mint to Contract account.
-            let recipient_account =
-                if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
-                    Account::External(*pk)
-                } else {
-                    Account::Contract(ContractId::from_bytes(msg.recipient))
-                };
+            let recipient_account = if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
+                Account::External(*pk)
+            } else {
+                Account::Contract(ContractId::from_bytes(msg.recipient))
+            };
             self.mint(recipient_account, msg.amount);
 
             abi::emit(
@@ -406,7 +400,6 @@ mod warp_drc20 {
         // =================================================================
 
         /// Enroll a remote router for a domain. Owner only.
-        #[contract(emits = [(events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)])]
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
             self.enrolled_routers.insert(domain, router);
@@ -417,7 +410,6 @@ mod warp_drc20 {
         }
 
         /// Set the hook override. Owner only.
-        #[contract(emits = [(events::HookSet::TOPIC, events::HookSet)])]
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
@@ -430,7 +422,6 @@ mod warp_drc20 {
         }
 
         /// Set the ISM override. Owner only.
-        #[contract(emits = [(events::IsmSet::TOPIC, events::IsmSet)])]
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
@@ -443,7 +434,6 @@ mod warp_drc20 {
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
             let previous_owner = self.owner.expect("WarpDrc20: no owner set");
@@ -464,10 +454,7 @@ mod warp_drc20 {
         /// Transfer tokens between accounts.
         fn do_transfer(&mut self, from: Account, to: Account, value: u64) {
             let from_balance = self.balances.get(&from).copied().unwrap_or(0);
-            assert!(
-                from_balance >= value,
-                "WarpDrc20: insufficient balance"
-            );
+            assert!(from_balance >= value, "WarpDrc20: insufficient balance");
             *self.balances.entry(from).or_insert(0) -= value;
             let to_balance = self.balances.entry(to).or_insert(0);
             *to_balance = to_balance

@@ -22,7 +22,17 @@
 #![allow(clippy::cast_possible_truncation)]
 
 /// Hyperlane WarpDrc20Collateral contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::AccountRegistered,
+    events::HookSet,
+    events::Initialized,
+    events::IsmSet,
+    events::OwnershipTransferred,
+    events::PendingTransferClaimed,
+    events::ReceivedTransferRemote,
+    events::RemoteRouterEnrolled,
+    events::SentTransferRemote,
+])]
 mod warp_drc20_collateral {
     extern crate alloc;
 
@@ -40,7 +50,7 @@ mod warp_drc20_collateral {
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::token_message;
-    use hyperlane_dusk_types::{H256, MessageId};
+    use hyperlane_dusk_types::{MessageId, H256};
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -83,8 +93,7 @@ mod warp_drc20_collateral {
     fn sender_account() -> Account {
         if abi::callstack().len() == 1 {
             Account::External(
-                abi::public_sender()
-                    .expect("WarpCollateral: shielded transactions not supported"),
+                abi::public_sender().expect("WarpCollateral: shielded transactions not supported"),
             )
         } else {
             Account::Contract(abi::caller().expect("WarpCollateral: missing caller"))
@@ -142,10 +151,6 @@ mod warp_drc20_collateral {
         // =================================================================
 
         /// Initialize the collateral warp route.
-        #[contract(emits = [
-            (events::Initialized::TOPIC, events::Initialized),
-            (events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)
-        ])]
         pub fn init(
             &mut self,
             wrapped_token: ContractId,
@@ -153,10 +158,7 @@ mod warp_drc20_collateral {
             owner: ContractId,
             enrolled_routers: Vec<(u32, H256)>,
         ) {
-            assert!(
-                self.owner.is_none(),
-                "WarpCollateral: already initialized"
-            );
+            assert!(self.owner.is_none(), "WarpCollateral: already initialized");
             assert!(
                 wrapped_token != ZERO_CONTRACT,
                 "WarpCollateral: wrapped token cannot be zero"
@@ -191,7 +193,6 @@ mod warp_drc20_collateral {
         ///
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
-        #[contract(emits = [(events::AccountRegistered::TOPIC, events::AccountRegistered)])]
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpCollateral: register_account requires Moonlight TX");
@@ -212,10 +213,9 @@ mod warp_drc20_collateral {
         /// registered.
         ///
         /// The caller must have previously called `register_account`.
-        #[contract(emits = [(events::PendingTransferClaimed::TOPIC, events::PendingTransferClaimed)])]
         pub fn claim_pending(&mut self) {
-            let pk = abi::public_sender()
-                .expect("WarpCollateral: claim_pending requires Moonlight TX");
+            let pk =
+                abi::public_sender().expect("WarpCollateral: claim_pending requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
 
             let amount = self.pending_transfers.remove(&h).unwrap_or(0);
@@ -249,7 +249,6 @@ mod warp_drc20_collateral {
         ///
         /// The caller must have approved this contract to spend `amount`
         /// of the wrapped DRC20 token via `approve()`.
-        #[contract(emits = [(events::SentTransferRemote::TOPIC, events::SentTransferRemote)])]
         pub fn transfer_remote(
             &mut self,
             destination: u32,
@@ -304,7 +303,6 @@ mod warp_drc20_collateral {
         ///
         /// Called by the Mailbox when a message is delivered. Unlocks
         /// wrapped DRC20 tokens to the recipient.
-        #[contract(emits = [(events::ReceivedTransferRemote::TOPIC, events::ReceivedTransferRemote)])]
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpCollateral: cannot determine caller");
@@ -321,8 +319,7 @@ mod warp_drc20_collateral {
             );
 
             // Decode token message
-            let msg = token_message::decode(&body)
-                .expect("WarpCollateral: invalid token message");
+            let msg = token_message::decode(&body).expect("WarpCollateral: invalid token message");
 
             // If the recipient is registered, transfer immediately.
             // Otherwise, hold the wrapped tokens in this contract's DRC20
@@ -393,7 +390,6 @@ mod warp_drc20_collateral {
         // =================================================================
 
         /// Enroll a remote router for a domain. Owner only.
-        #[contract(emits = [(events::RemoteRouterEnrolled::TOPIC, events::RemoteRouterEnrolled)])]
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
             self.enrolled_routers.insert(domain, router);
@@ -404,7 +400,6 @@ mod warp_drc20_collateral {
         }
 
         /// Set the hook override. Owner only.
-        #[contract(emits = [(events::HookSet::TOPIC, events::HookSet)])]
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
@@ -417,7 +412,6 @@ mod warp_drc20_collateral {
         }
 
         /// Set the ISM override. Owner only.
-        #[contract(emits = [(events::IsmSet::TOPIC, events::IsmSet)])]
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
@@ -430,7 +424,6 @@ mod warp_drc20_collateral {
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             let previous_owner = self.owner.expect("WarpCollateral: no owner set");
@@ -450,13 +443,9 @@ mod warp_drc20_collateral {
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller =
-                abi::caller().expect("WarpCollateral: cannot determine caller");
+            let caller = abi::caller().expect("WarpCollateral: cannot determine caller");
             let owner = self.owner.expect("WarpCollateral: no owner set");
-            assert!(
-                caller == owner,
-                "WarpCollateral: caller is not the owner"
-            );
+            assert!(caller == owner, "WarpCollateral: caller is not the owner");
         }
     }
 }

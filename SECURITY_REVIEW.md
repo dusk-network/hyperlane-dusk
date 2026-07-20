@@ -384,10 +384,12 @@ This follows checks-effects-interactions and prevents replay. A message ID canno
 
 Dusk VM does not support reentrancy. When contract A calls contract B, contract A's execution is suspended until B returns. B cannot call back into A during the same transaction. This eliminates an entire class of vulnerabilities.
 
-### Event surface and `no_event` annotations
+### Event surface
 
-Production-facing methods that emit protocol or operational events now have
-explicit `#[contract(emits = ...)]` annotations:
+Forge 0.3 declares the event surface once at the contract module level. The
+contracts list their protocol and operational events with
+`#[dusk_forge::contract(events = [...])]`, and the shared event types implement
+Forge's `ContractEvent` trait:
 
 - Mailbox `dispatch`, `dispatch_default`, `process`, `set_default_ism`,
   `set_default_hook`, `set_required_hook`, initialization, ownership transfer,
@@ -411,9 +413,22 @@ updates: Mailbox initial hook/ISM values, ProtocolFee initial fee/beneficiary,
 IGP initial domain gas configs and beneficiary, MessageIdMultisigISM initial
 validator set, and initially enrolled warp routers.
 
-Remaining explicit `#[contract(no_event)]` uses are limited to test-only
-contracts (`TestMock` and `TestRecipient`). Production contracts no longer use
-`#[contract(no_event)]`.
+Test contracts use the same module-level event declaration model. The removed
+per-method `emits` and `no_event` attributes belong to the pre-0.3 Forge API.
+
+### Hook fee collection is not implemented
+
+`ProtocolFee` and `InterchainGasPaymaster` currently quote fees, increment
+counters, and emit payment events, but neither contract collects or transfers
+native DUSK. `Mailbox.dispatch` likewise does not claim a transaction deposit
+or forward funds to the configured hooks. In addition, each hook's
+`post_dispatch` method can be called directly, so an arbitrary caller can
+create accounting records without going through the Mailbox.
+
+This means the current fee surface is useful only as a functional model. It is
+not production fee enforcement. A production design must define Dusk-native
+deposit/forwarding semantics and restrict payment recording to the configured
+Mailbox before the fee counters or IGP payment events are trusted.
 
 ### Placeholder panic scan
 
@@ -447,11 +462,11 @@ documented deviations:
 | Native value transfer | WarpNative uses the Dusk transfer contract's exact `deposit` check instead of Solidity `msg.value`. | Remote mint/burn accounting depends on Rusk transfer-contract semantics. The direct VM integration tests cannot simulate this transitory deposit state; live-Rusk E2E remains the relevant verification path. |
 | Reverts | Dusk contract errors are explicit `assert!`/`expect(...)` panics that revert the full transaction. | This matches Dusk VM behavior but differs from Solidity custom errors. Error strings are part of test evidence and should stay stable enough for diagnostics. |
 | Upgradeability | No proxy or in-place upgrade pattern is implemented for the Dusk contracts. Deterministic contract IDs are treated as immutable deployment identities. | Production upgrades require new deployments and routing/config migration. Dirty redeploy refusal is intentional and tested. |
-| Events/indexing | Production entrypoints now declare protocol and operational events explicitly. Test-only mock contracts still use `#[contract(no_event)]`. | Off-chain agents should rely on the exposed query surfaces and events documented here; no hidden production no-event path is expected. |
+| Events/indexing | Contracts declare protocol and operational events through Forge 0.3 module-level metadata. | Off-chain agents should rely on the exposed query surfaces and declared events documented here. |
 | Address mapping | External Dusk recipients are represented by `keccak256(bls_public_key_bytes)` and must register their BLS public key on Dusk for account delivery. | The mapping is deterministic and non-updatable. Lost or compromised keys are a user/account-management issue, not recoverable by current contracts. |
 | Unregistered recipients | WarpNative and WarpDrc20Collateral escrow unregistered recipients. | Inbound funds are not stranded at a synthetic contract account. Recipients must register the matching BLS key and call `claim_pending()`. |
 | Multisig metadata | MessageIdMultisigISM requires sorted validator sets, a valid threshold, initialized state, and exact fixed-width signature metadata. | This is stricter than accepting trailing metadata bytes and is intended to prevent malformed metadata acceptance. |
-| Fee accounting | ProtocolFee and IGP lifetime counters, IGP fee quote conversion, Mailbox total-fee addition, and fixed-width query counts fail closed on overflow/truncation. | Fee undercharging and silent accounting pinning/truncation are prevented by rejecting unrepresentable values. |
+| Fee accounting | ProtocolFee and IGP arithmetic fails closed on overflow, but the hooks do not collect DUSK and `post_dispatch` is not restricted to the Mailbox. | Fee enforcement and payment indexing are not production-ready; native value movement and caller authorization remain an architectural blocker. |
 | Secret handling | Demo/E2E configs use local dev keys and `/tmp` artifacts. `dusk-tx` supports `DUSK_CONSENSUS_PASSWORD_FILE`, password environment variables, and `--secret-key-stdin`; demo scripts no longer pass Dusk consensus passwords through CLI argv. `SECRET_HANDLING.md` and `make secret-hygiene` add source/artifact guardrails. Production use must still avoid logs, committed config, and CI artifact leakage for Dusk secrets. | This is a release gate outside the WASM contracts. Current scripts are acceptable only for local deterministic dev/test environments, and production signer storage/config generation needs operational sign-off. |
 
 ## Files Modified

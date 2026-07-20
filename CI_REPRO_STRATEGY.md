@@ -300,7 +300,7 @@ It is `workflow_dispatch` only and accepts:
 
 - `dusk_ref`: defaults to `feat/dusk-hardening-v2`.
 - `rusk_ref`: defaults to clean Rusk reference
-  `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+  `bc281d2cd1e789db92e99bc59849c92363524e37`.
 - `monorepo_ref`: defaults to `feat/dusk-support-v2`.
 
 Set `dusk_ref` to a PR branch or exact commit SHA when running the workflow
@@ -317,7 +317,7 @@ exact commits used for release evidence:
 ```bash
 dusk_ref="$(gh pr view 1 --repo dusk-network/hyperlane-dusk --json headRefOid --jq .headRefOid)"
 monorepo_ref="$(gh pr view 1 --repo dusk-network/hyperlane-monorepo --json headRefOid --jq .headRefOid)"
-rusk_ref="c0c64db4659500d077bb253ad13acba0e347d3fc"
+rusk_ref="bc281d2cd1e789db92e99bc59849c92363524e37"
 
 gh workflow run manual-repro-check.yml \
   --repo dusk-network/hyperlane-dusk \
@@ -330,7 +330,7 @@ gh workflow run manual-repro-check.yml \
 Expected resolved heads:
 
 - Dusk: the live head of dusk-network/hyperlane-dusk#1.
-- Rusk: `c0c64db4659500d077bb253ad13acba0e347d3fc`.
+- Rusk: `bc281d2cd1e789db92e99bc59849c92363524e37`.
 - Monorepo: the live head of dusk-network/hyperlane-monorepo#1.
 
 Record the workflow URL, requested refs, resolved heads, and pass/fail result

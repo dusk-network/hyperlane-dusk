@@ -20,7 +20,10 @@
 #![allow(clippy::used_underscore_binding)]
 
 /// Hyperlane ValidatorAnnounce contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::Initialized,
+    events::ValidatorAnnouncement,
+])]
 mod validator_announce {
     extern crate alloc;
 
@@ -67,7 +70,6 @@ mod validator_announce {
         }
 
         /// Initialize with domain and mailbox.
-        #[contract(emits = [(events::Initialized::TOPIC, events::Initialized)])]
         pub fn init(&mut self, local_domain: u32, mailbox: ContractId) {
             assert!(
                 self.mailbox == ZERO_CONTRACT,
@@ -94,7 +96,6 @@ mod validator_announce {
         ///
         /// The signature must be a valid ECDSA signature by the validator
         /// over the announcement digest.
-        #[contract(emits = [(events::ValidatorAnnouncement::TOPIC, events::ValidatorAnnouncement)])]
         pub fn announce(
             &mut self,
             validator: EthAddress,
@@ -192,8 +193,7 @@ mod validator_announce {
             let domain_hash = keccak256(&domain_preimage);
 
             // Inner hash
-            let mut inner_preimage =
-                Vec::with_capacity(32 + storage_location.len());
+            let mut inner_preimage = Vec::with_capacity(32 + storage_location.len());
             inner_preimage.extend_from_slice(&domain_hash);
             inner_preimage.extend_from_slice(storage_location.as_bytes());
             let inner_hash = keccak256(&inner_preimage);
@@ -206,10 +206,7 @@ mod validator_announce {
         }
 
         /// Compute replay ID for a (validator, location) pair.
-        fn compute_replay_id(
-            validator: &EthAddress,
-            storage_location: &str,
-        ) -> [u8; 32] {
+        fn compute_replay_id(validator: &EthAddress, storage_location: &str) -> [u8; 32] {
             let mut preimage = Vec::with_capacity(20 + storage_location.len());
             preimage.extend_from_slice(&validator.0);
             preimage.extend_from_slice(storage_location.as_bytes());
@@ -224,8 +221,8 @@ mod validator_announce {
         let mut sig_arr = [0u8; 65];
         sig_arr.copy_from_slice(sig);
 
-        let pubkey = abi::secp256k1_recover(*digest, sig_arr)
-            .expect("ValidatorAnnounce: ecrecover failed");
+        let pubkey =
+            abi::secp256k1_recover(*digest, sig_arr).expect("ValidatorAnnounce: ecrecover failed");
 
         let hash = keccak256(&pubkey[1..]);
         let mut addr = [0u8; 20];

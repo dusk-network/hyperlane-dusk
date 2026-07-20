@@ -25,7 +25,18 @@
 #![allow(clippy::module_name_repetitions)]
 
 /// Hyperlane Mailbox contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::DefaultHookSet,
+    events::DefaultIsmSet,
+    events::Dispatch,
+    events::DispatchId,
+    events::Initialized,
+    events::OwnershipRenounced,
+    events::OwnershipTransferred,
+    events::Process,
+    events::ProcessId,
+    events::RequiredHookSet,
+])]
 mod mailbox {
     extern crate alloc;
 
@@ -38,7 +49,7 @@ mod mailbox {
 
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
-    use hyperlane_dusk_types::{DeliveryRecord, H256, MessageId, VERSION};
+    use hyperlane_dusk_types::{DeliveryRecord, MessageId, H256, VERSION};
 
     // =====================================================================
     // Constants
@@ -106,12 +117,6 @@ mod mailbox {
         ///
         /// Must be called once after deployment. Panics if already
         /// initialized (owner is set).
-        #[contract(emits = [
-            (events::Initialized::TOPIC, events::Initialized),
-            (events::DefaultIsmSet::TOPIC, events::DefaultIsmSet),
-            (events::DefaultHookSet::TOPIC, events::DefaultHookSet),
-            (events::RequiredHookSet::TOPIC, events::RequiredHookSet)
-        ])]
         pub fn init(
             &mut self,
             local_domain: u32,
@@ -166,10 +171,6 @@ mod mailbox {
         /// hook and default hook's `post_dispatch` methods.
         ///
         /// Returns the message ID.
-        #[contract(emits = [
-            (events::Dispatch::TOPIC, events::Dispatch),
-            (events::DispatchId::TOPIC, events::DispatchId)
-        ])]
         pub fn dispatch(
             &mut self,
             destination: u32,
@@ -203,10 +204,7 @@ mod mailbox {
             self.latest_dispatched_id = id;
             self.dispatched_messages.push(encoded.clone());
             self.dispatched_block_heights.push(abi::block_height());
-            self.nonce = self
-                .nonce
-                .checked_add(1)
-                .expect("Mailbox: nonce overflow");
+            self.nonce = self.nonce.checked_add(1).expect("Mailbox: nonce overflow");
 
             // Emit events
             abi::emit(
@@ -240,10 +238,6 @@ mod mailbox {
         }
 
         /// Dispatch with default hook and empty metadata.
-        #[contract(emits = [
-            (events::Dispatch::TOPIC, events::Dispatch),
-            (events::DispatchId::TOPIC, events::DispatchId)
-        ])]
         pub fn dispatch_default(
             &mut self,
             destination: u32,
@@ -261,19 +255,11 @@ mod mailbox {
         ///
         /// Verifies the message via the recipient's ISM (or the default
         /// ISM) and then calls `handle` on the recipient contract.
-        #[contract(emits = [
-            (events::Process::TOPIC, events::Process),
-            (events::ProcessId::TOPIC, events::ProcessId)
-        ])]
         pub fn process(&mut self, metadata: Vec<u8>, encoded_message: Vec<u8>) {
             // Decode and validate the message.
-            let msg = message::decode(&encoded_message)
-                .expect("Mailbox: invalid message encoding");
+            let msg = message::decode(&encoded_message).expect("Mailbox: invalid message encoding");
 
-            assert!(
-                msg.version == VERSION,
-                "Mailbox: bad version"
-            );
+            assert!(msg.version == VERSION, "Mailbox: bad version");
             assert!(
                 msg.destination == self.local_domain,
                 "Mailbox: unexpected destination"
@@ -295,12 +281,7 @@ mod mailbox {
             self.processed_block_heights.push(block_height);
 
             // Mark as delivered BEFORE external calls (checks-effects-interactions).
-            self.delivered.insert(
-                id,
-                DeliveryRecord {
-                    block_height,
-                },
-            );
+            self.delivered.insert(id, DeliveryRecord { block_height });
 
             // Emit events
             abi::emit(
@@ -317,21 +298,13 @@ mod mailbox {
             );
 
             // Verify via ISM
-            let verified: bool = abi::call(
-                ism,
-                "verify",
-                &(metadata, encoded_message),
-            )
-            .expect("Mailbox: ISM call failed");
+            let verified: bool = abi::call(ism, "verify", &(metadata, encoded_message))
+                .expect("Mailbox: ISM call failed");
             assert!(verified, "Mailbox: ISM verification failed");
 
             // Deliver to recipient
-            let _: () = abi::call(
-                recipient_id,
-                "handle",
-                &(msg.origin, msg.sender, msg.body),
-            )
-            .expect("Mailbox: recipient handle failed");
+            let _: () = abi::call(recipient_id, "handle", &(msg.origin, msg.sender, msg.body))
+                .expect("Mailbox: recipient handle failed");
         }
 
         // =================================================================
@@ -362,9 +335,7 @@ mod mailbox {
         ///
         /// Returns 0 if the message hasn't been delivered.
         pub fn delivered_at(&self, id: MessageId) -> u64 {
-            self.delivered
-                .get(&id)
-                .map_or(0, |d| d.block_height)
+            self.delivered.get(&id).map_or(0, |d| d.block_height)
         }
 
         /// Returns the encoded dispatched message at the given nonce.
@@ -455,12 +426,8 @@ mod mailbox {
             )
             .expect("Mailbox: required hook quote failed");
 
-            let hook_fee: u64 = abi::call(
-                hook,
-                "quote_dispatch",
-                &(metadata, encoded),
-            )
-            .expect("Mailbox: hook quote failed");
+            let hook_fee: u64 = abi::call(hook, "quote_dispatch", &(metadata, encoded))
+                .expect("Mailbox: hook quote failed");
 
             required_fee
                 .checked_add(hook_fee)
@@ -480,7 +447,6 @@ mod mailbox {
         // =================================================================
 
         /// Set the default ISM. Owner only.
-        #[contract(emits = [(events::DefaultIsmSet::TOPIC, events::DefaultIsmSet)])]
         pub fn set_default_ism(&mut self, module: ContractId) {
             self.only_owner();
             assert!(module != ZERO_CONTRACT, "Mailbox: ISM cannot be zero");
@@ -494,7 +460,6 @@ mod mailbox {
         }
 
         /// Set the default post-dispatch hook. Owner only.
-        #[contract(emits = [(events::DefaultHookSet::TOPIC, events::DefaultHookSet)])]
         pub fn set_default_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");
@@ -508,7 +473,6 @@ mod mailbox {
         }
 
         /// Set the required post-dispatch hook. Owner only.
-        #[contract(emits = [(events::RequiredHookSet::TOPIC, events::RequiredHookSet)])]
         pub fn set_required_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");
@@ -522,7 +486,6 @@ mod mailbox {
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             let previous_owner = self.owner.expect("Mailbox: no owner set");
@@ -537,7 +500,6 @@ mod mailbox {
         }
 
         /// Renounce ownership. Owner only.
-        #[contract(emits = [(events::OwnershipRenounced::TOPIC, events::OwnershipRenounced)])]
         pub fn renounce_ownership(&mut self) {
             self.only_owner();
             let previous_owner = self.owner.expect("Mailbox: no owner set");
@@ -566,8 +528,8 @@ mod mailbox {
                 id if id == TRANSFER_CONTRACT => {
                     // Direct Moonlight transaction — derive sender from
                     // the BLS public key of the account that signed the TX.
-                    let pk = abi::public_sender()
-                        .expect("Mailbox: shielded transactions not supported");
+                    let pk =
+                        abi::public_sender().expect("Mailbox: shielded transactions not supported");
                     message::keccak256(&pk.to_bytes())
                 }
                 id => {

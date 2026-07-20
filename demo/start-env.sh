@@ -43,11 +43,10 @@ port_in_use() {
 wait_for_url() {
     local url="$1" max_wait="${2:-30}" i=0
     while [ "$i" -lt "$max_wait" ]; do
-        # Rusk RUES endpoints require a POST and a version header.
+        # Rusk RUES endpoints require a POST.
         if [[ "$url" == *"/on/"* ]]; then
             if curl -sf --max-time 2 -X POST \
                 -H "Content-Type: application/octet-stream" \
-                -H "rusk-version: 1.0.0-rc.0" \
                 "$url" >/dev/null 2>&1; then
                 return 0
             fi

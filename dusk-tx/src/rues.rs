@@ -7,8 +7,7 @@ use rkyv::ser::Serializer;
 use rkyv::validation::validators::DefaultValidator;
 use rkyv::{check_archived_root, Archive, Deserialize, Infallible, Serialize};
 
-const TRANSFER_CONTRACT: &str =
-    "0100000000000000000000000000000000000000000000000000000000000000";
+const TRANSFER_CONTRACT: &str = "0100000000000000000000000000000000000000000000000000000000000000";
 
 pub struct RuesClient {
     client: reqwest::Client,
@@ -43,10 +42,7 @@ impl RuesClient {
     }
 
     /// Query account data (nonce + balance) for a BLS public key.
-    pub async fn query_account(
-        &self,
-        pk: &BlsPublicKey,
-    ) -> Result<(u64, u64), String> {
+    pub async fn query_account(&self, pk: &BlsPublicKey) -> Result<(u64, u64), String> {
         let body = rkyv_serialize(pk);
         let response = self
             .raw_contract_query(TRANSFER_CONTRACT, "account", &body)
@@ -65,8 +61,7 @@ impl RuesClient {
     where
         I: Serialize<AllocSerializer<256>>,
         O: Archive,
-        O::Archived:
-            Deserialize<O, Infallible> + for<'b> rkyv::CheckBytes<DefaultValidator<'b>>,
+        O::Archived: Deserialize<O, Infallible> + for<'b> rkyv::CheckBytes<DefaultValidator<'b>>,
     {
         let body = rkyv_serialize(args);
         let hex_id = hex::encode(contract_id);
@@ -82,7 +77,6 @@ impl RuesClient {
             .client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
-            .header("rusk-version", "1.0.0-rc.0")
             .body(tx_bytes.to_vec())
             .send()
             .await
@@ -100,7 +94,6 @@ impl RuesClient {
             .client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
-            .header("rusk-version", "1.0.0-rc.0")
             .body(tx_bytes.to_vec())
             .send()
             .await
@@ -124,7 +117,6 @@ impl RuesClient {
             .client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
-            .header("rusk-version", "1.0.0-rc.0")
             .body(Vec::new())
             .send()
             .await
@@ -159,15 +151,11 @@ impl RuesClient {
         method: &str,
         body: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let url = format!(
-            "{}/on/contracts:{}/{}",
-            self.base_url, contract_hex, method
-        );
+        let url = format!("{}/on/contracts:{}/{}", self.base_url, contract_hex, method);
         let response = self
             .client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
-            .header("rusk-version", "1.0.0-rc.0")
             .body(body.to_vec())
             .send()
             .await
@@ -199,11 +187,10 @@ where
 pub fn rkyv_deserialize<T>(bytes: &[u8]) -> Result<T, String>
 where
     T: Archive,
-    T::Archived:
-        Deserialize<T, Infallible> + for<'b> rkyv::CheckBytes<DefaultValidator<'b>>,
+    T::Archived: Deserialize<T, Infallible> + for<'b> rkyv::CheckBytes<DefaultValidator<'b>>,
 {
-    let archived = check_archived_root::<T>(bytes)
-        .map_err(|e| format!("rkyv deserialization error: {e}"))?;
+    let archived =
+        check_archived_root::<T>(bytes).map_err(|e| format!("rkyv deserialization error: {e}"))?;
     archived
         .deserialize(&mut Infallible)
         .map_err(|e| format!("rkyv deserialize error: {e:?}"))

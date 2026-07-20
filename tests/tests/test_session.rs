@@ -8,13 +8,14 @@
 use dusk_core::abi::{
     ContractError, ContractId, Metadata, StandardBufSerializer, CONTRACT_ID_BYTES,
 };
+use dusk_core::plonk::PlonkVersion;
 use dusk_core::signatures::bls::{PublicKey as AccountPublicKey, SecretKey as AccountSecretKey};
 use dusk_core::stake::STAKE_CONTRACT;
 use dusk_core::transfer::data::ContractCall;
 use dusk_core::transfer::moonlight::AccountData;
 use dusk_core::transfer::{Transaction, TRANSFER_CONTRACT};
 use dusk_core::LUX;
-use dusk_vm::host_queries::{set_hard_fork, HardFork};
+use dusk_vm::host_queries::{set_host_query_policy, HardFork, HostQueryPolicy};
 use dusk_vm::{execute, CallReceipt, ContractData, Error as VMError, ExecutionConfig, Session, VM};
 use rkyv::bytecheck::CheckBytes;
 use rkyv::ser::serializers::{BufferScratch, BufferSerializer, CompositeSerializer};
@@ -32,10 +33,15 @@ const CONFIG: ExecutionConfig = ExecutionConfig {
     min_deploy_gas_price: 0u64,
     with_public_sender: true,
     with_blob: true,
-    disable_wasm64: false,
+    disable_wasm64: true,
     disable_wasm32: false,
     disable_3rd_party: false,
-    phoenix_refund_check: false,
+    disable_phoenix: true,
+    with_reference_types: true,
+    phoenix_refund_check: true,
+    deploy_remaining_gas_check: true,
+    charge_init_gas: true,
+    withdrawal_nullifier_check: true,
 };
 
 /// VM Session with transfer + stake contracts deployed and funded accounts.
@@ -52,7 +58,9 @@ impl TestSession {
         A: 'a + for<'b> Serialize<StandardBufSerializer<'b>>,
         D: Into<ContractData<'a, A>>,
     {
-        self.0.deploy(bytecode, deploy_data, u64::MAX)
+        self.0
+            .deploy::<A, (), D>(bytecode, deploy_data, u64::MAX)
+            .map(|(contract_id, _)| contract_id)
     }
 
     /// Returns the current block-height.
@@ -139,7 +147,10 @@ impl TestSession {
         )
         .expect("Creating moonlight transaction should succeed");
 
-        let _hard_fork = set_hard_fork(HardFork::Aegis);
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         let receipt = execute(&mut self.0, &transaction, &CONFIG)
             .unwrap_or_else(|e| panic!("Unspendable transaction due to '{e}'"));
 
@@ -165,7 +176,7 @@ impl TestSession {
         // Deploy transfer contract
         let transfer_contract = include_bytes!("genesis-contracts/transfer_contract.wasm");
         session
-            .deploy(
+            .deploy::<_, (), _>(
                 transfer_contract,
                 ContractData::builder()
                     .owner(ZERO_ADDRESS.to_bytes())
@@ -177,7 +188,7 @@ impl TestSession {
         // Deploy stake contract
         let stake_contract = include_bytes!("genesis-contracts/stake_contract.wasm");
         session
-            .deploy(
+            .deploy::<_, (), _>(
                 stake_contract,
                 ContractData::builder()
                     .owner(ZERO_ADDRESS.to_bytes())

@@ -14,7 +14,18 @@ use alloc::vec::Vec;
 use bytecheck::CheckBytes;
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{DomainGasConfig, EthAddress, H256, MessageId};
+use crate::{DomainGasConfig, EthAddress, MessageId, H256};
+
+#[cfg(feature = "abi")]
+macro_rules! impl_contract_events {
+    ($($event:ty),+ $(,)?) => {
+        $(
+            impl dusk_forge::ContractEvent for $event {
+                const TOPICS: &'static [&'static str] = &[<$event>::TOPIC];
+            }
+        )+
+    };
+}
 
 // =========================================================================
 // Contract identifiers for generic operational events
@@ -490,3 +501,33 @@ impl ReceivedTransferRemote {
     /// Event topic.
     pub const TOPIC: &'static str = "received_transfer_remote";
 }
+
+#[cfg(feature = "abi")]
+impl_contract_events!(
+    Initialized,
+    OwnershipTransferred,
+    OwnershipRenounced,
+    AccountRegistered,
+    RemoteRouterEnrolled,
+    HookSet,
+    IsmSet,
+    BeneficiarySet,
+    ProtocolFeeSet,
+    DomainGasConfigSet,
+    ValidatorsAndThresholdSet,
+    PendingTransferClaimed,
+    Dispatch,
+    DispatchId,
+    Process,
+    ProcessId,
+    DefaultIsmSet,
+    DefaultHookSet,
+    RequiredHookSet,
+    InsertedIntoTree,
+    ValidatorAnnouncement,
+    ProtocolFeePaid,
+    GasPayment,
+    Drc20Transfer,
+    SentTransferRemote,
+    ReceivedTransferRemote,
+);

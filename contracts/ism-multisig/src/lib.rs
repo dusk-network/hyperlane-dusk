@@ -37,7 +37,10 @@
 #![allow(clippy::cast_possible_truncation)]
 
 /// Hyperlane MessageIdMultisigISM contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::Initialized,
+    events::ValidatorsAndThresholdSet,
+])]
 mod ism_multisig {
     extern crate alloc;
 
@@ -83,10 +86,6 @@ mod ism_multisig {
         ///
         /// Validators must be sorted by address (ascending). The threshold
         /// must be > 0 and <= number of validators.
-        #[contract(emits = [
-            (events::Initialized::TOPIC, events::Initialized),
-            (events::ValidatorsAndThresholdSet::TOPIC, events::ValidatorsAndThresholdSet)
-        ])]
         pub fn init(&mut self, owner: [u8; 32], validators: Vec<EthAddress>, threshold: u8) {
             assert!(self.owner.is_none(), "MultisigISM: already initialized");
             assert!(!validators.is_empty(), "MultisigISM: no validators");
@@ -222,7 +221,6 @@ mod ism_multisig {
         // =================================================================
 
         /// Update validators and threshold. Owner only.
-        #[contract(emits = [(events::ValidatorsAndThresholdSet::TOPIC, events::ValidatorsAndThresholdSet)])]
         pub fn set_validators_and_threshold(&mut self, validators: Vec<EthAddress>, threshold: u8) {
             self.only_owner();
 

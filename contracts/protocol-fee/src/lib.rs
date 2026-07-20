@@ -19,7 +19,13 @@
 #![allow(clippy::used_underscore_binding)]
 
 /// Hyperlane ProtocolFee hook contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::BeneficiarySet,
+    events::Initialized,
+    events::OwnershipTransferred,
+    events::ProtocolFeePaid,
+    events::ProtocolFeeSet,
+])]
 mod protocol_fee {
     extern crate alloc;
 
@@ -67,11 +73,6 @@ mod protocol_fee {
         ///
         /// Must be called once after deployment. Panics if already
         /// initialized.
-        #[contract(emits = [
-            (events::Initialized::TOPIC, events::Initialized),
-            (events::ProtocolFeeSet::TOPIC, events::ProtocolFeeSet),
-            (events::BeneficiarySet::TOPIC, events::BeneficiarySet)
-        ])]
         pub fn init(
             &mut self,
             protocol_fee: u64,
@@ -120,7 +121,6 @@ mod protocol_fee {
         /// Called by the Mailbox after a message is dispatched.
         ///
         /// Records the protocol fee and emits a `ProtocolFeePaid` event.
-        #[contract(emits = [(events::ProtocolFeePaid::TOPIC, events::ProtocolFeePaid)])]
         pub fn post_dispatch(&mut self, _metadata: Vec<u8>, encoded_message: Vec<u8>) {
             let sender = message::sender(&encoded_message);
             self.collected_fees = self
@@ -185,7 +185,6 @@ mod protocol_fee {
         /// Set the protocol fee. Owner only.
         ///
         /// Panics if the new fee exceeds `max_protocol_fee`.
-        #[contract(emits = [(events::ProtocolFeeSet::TOPIC, events::ProtocolFeeSet)])]
         pub fn set_protocol_fee(&mut self, fee: u64) {
             self.only_owner();
             assert!(
@@ -200,7 +199,6 @@ mod protocol_fee {
         }
 
         /// Set the beneficiary. Owner only.
-        #[contract(emits = [(events::BeneficiarySet::TOPIC, events::BeneficiarySet)])]
         pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
             self.only_owner();
             assert!(
@@ -217,7 +215,6 @@ mod protocol_fee {
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             let previous_owner = self.owner.expect("ProtocolFee: no owner set");

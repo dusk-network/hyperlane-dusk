@@ -20,7 +20,13 @@
 #![allow(clippy::cast_possible_truncation)]
 
 /// Hyperlane InterchainGasPaymaster hook contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::BeneficiarySet,
+    events::DomainGasConfigSet,
+    events::GasPayment,
+    events::Initialized,
+    events::OwnershipTransferred,
+])]
 mod igp {
     extern crate alloc;
 
@@ -75,11 +81,6 @@ mod igp {
         ///
         /// Must be called once after deployment. Optionally accepts initial
         /// gas configurations for known domains.
-        #[contract(emits = [
-            (events::Initialized::TOPIC, events::Initialized),
-            (events::BeneficiarySet::TOPIC, events::BeneficiarySet),
-            (events::DomainGasConfigSet::TOPIC, events::DomainGasConfigSet)
-        ])]
         pub fn init(
             &mut self,
             owner: ContractId,
@@ -125,7 +126,6 @@ mod igp {
         ///
         /// Calculates the gas payment for the message's destination,
         /// records the payment, and emits a `GasPayment` event.
-        #[contract(emits = [(events::GasPayment::TOPIC, events::GasPayment)])]
         pub fn post_dispatch(&mut self, hook_metadata: Vec<u8>, encoded_message: Vec<u8>) {
             let destination = message::destination(&encoded_message);
             let gas_limit = metadata::gas_limit(&hook_metadata);
@@ -155,11 +155,7 @@ mod igp {
         }
 
         /// Returns the fee required for this hook.
-        pub fn quote_dispatch(
-            &self,
-            hook_metadata: Vec<u8>,
-            encoded_message: Vec<u8>,
-        ) -> u64 {
+        pub fn quote_dispatch(&self, hook_metadata: Vec<u8>, encoded_message: Vec<u8>) -> u64 {
             let destination = message::destination(&encoded_message);
             let gas_limit = metadata::gas_limit(&hook_metadata);
             self.quote_gas_payment(destination, gas_limit)
@@ -241,12 +237,7 @@ mod igp {
         // =================================================================
 
         /// Set the gas configuration for a single domain. Owner only.
-        #[contract(emits = [(events::DomainGasConfigSet::TOPIC, events::DomainGasConfigSet)])]
-        pub fn set_domain_gas_config(
-            &mut self,
-            domain: u32,
-            config: DomainGasConfig,
-        ) {
+        pub fn set_domain_gas_config(&mut self, domain: u32, config: DomainGasConfig) {
             self.only_owner();
             self.domain_gas_configs.insert(domain, config);
             abi::emit(
@@ -256,11 +247,7 @@ mod igp {
         }
 
         /// Set gas configurations for multiple domains. Owner only.
-        #[contract(emits = [(events::DomainGasConfigSet::TOPIC, events::DomainGasConfigSet)])]
-        pub fn set_domain_gas_configs(
-            &mut self,
-            configs: Vec<(u32, DomainGasConfig)>,
-        ) {
+        pub fn set_domain_gas_configs(&mut self, configs: Vec<(u32, DomainGasConfig)>) {
             self.only_owner();
             for (domain, config) in configs {
                 self.domain_gas_configs.insert(domain, config);
@@ -272,7 +259,6 @@ mod igp {
         }
 
         /// Set the beneficiary. Owner only.
-        #[contract(emits = [(events::BeneficiarySet::TOPIC, events::BeneficiarySet)])]
         pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
             self.only_owner();
             assert!(
@@ -289,7 +275,6 @@ mod igp {
         }
 
         /// Transfer ownership. Owner only.
-        #[contract(emits = [(events::OwnershipTransferred::TOPIC, events::OwnershipTransferred)])]
         pub fn transfer_ownership(&mut self, new_owner: ContractId) {
             self.only_owner();
             let previous_owner = self.owner.expect("IGP: no owner set");

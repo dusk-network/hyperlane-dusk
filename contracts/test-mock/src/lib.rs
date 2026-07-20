@@ -45,7 +45,6 @@ mod test_mock {
         // =================================================================
 
         /// Always returns `true` — no verification performed.
-        #[contract(no_event)]
         pub fn verify(&mut self, _metadata: Vec<u8>, _message: Vec<u8>) -> bool {
             self.verify_count += 1;
             true
@@ -62,7 +61,6 @@ mod test_mock {
         // =================================================================
 
         /// No-op post dispatch. Does nothing.
-        #[contract(no_event)]
         pub fn post_dispatch(&mut self, _metadata: Vec<u8>, _message: Vec<u8>) {
             self.post_dispatch_count += 1;
         }

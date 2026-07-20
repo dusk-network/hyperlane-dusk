@@ -123,7 +123,6 @@ ok "Anvil reachable"
 
 DUSK_CHAIN_ID=$(curl -s -X POST \
     -H "Content-Type: application/octet-stream" \
-    -H "rusk-version: 1.0.0-rc.0" \
     "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
     --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
 [ -n "$DUSK_CHAIN_ID" ] || fail "Cannot connect to Dusk RUES at $DUSK_RUES_URL"

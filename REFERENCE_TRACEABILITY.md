@@ -35,7 +35,7 @@ Reference checkout state verified on 2026-05-12:
 | Ownership/admin checks | Mailbox hook/ISM setters, warp route router/hook/ISM/admin paths, ProtocolFee, IGP, and MessageIdMultisigISM admin paths are covered by owner/admin tests and production review decisions. |
 | Replay and domain separation | Mailbox delivered-message tracking, ValidatorAnnounce replay protection, MessageIdMultisig checkpoint/message-id verification, and test coverage for wrong domains/duplicate delivery are recorded in `SECURITY_REVIEW.md` and `TEST_REPORT.md`. |
 | Pausing/admin recovery caution | Hyperlane v1 does not add broad emergency drains for pending escrow. `PRODUCTION_REVIEW_DECISIONS.md` makes the no-admin-drain decision explicit for Dusk review. |
-| Typed event surface | Production contracts now use explicit event annotations for protocol and operational paths. Remaining `no_event` usage is limited to test-only contracts. |
+| Typed event surface | Production and test contracts declare their event sets through Forge 0.3's module-level contract metadata and `ContractEvent` implementations. |
 | Multisig/governance caution | MessageIdMultisigISM rejects invalid thresholds, unsorted validator sets, insufficient signatures, corrupt signatures, and malformed metadata; production signer/governance custody remains a review gate. |
 | Secret and artifact hygiene | `SECRET_HANDLING.md`, `PRODUCTION_SIGNER_POLICY.md`, `CI_REPRO_STRATEGY.md`, and `scripts/secret-hygiene-check.sh` turn signer/key handling into explicit local and production decisions. |
 

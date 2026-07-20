@@ -24,7 +24,7 @@ mod test_recipient {
 
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
 
-    use hyperlane_dusk_types::{H256, MessageId};
+    use hyperlane_dusk_types::{MessageId, H256};
 
     /// Zero contract ID (meaning "no ISM override").
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -63,7 +63,6 @@ mod test_recipient {
         /// Handle an incoming Hyperlane message.
         ///
         /// Called by the Mailbox when a message is delivered to this contract.
-        #[contract(no_event)]
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
             self.last_origin = origin;
             self.last_sender = sender;
@@ -112,7 +111,6 @@ mod test_recipient {
         // =================================================================
 
         /// Set the ISM override. Pass zero `ContractId` to use the Mailbox's default.
-        #[contract(no_event)]
         pub fn set_interchain_security_module(&mut self, ism: ContractId) {
             self.ism = ism;
         }
@@ -133,12 +131,9 @@ mod test_recipient {
             recipient: H256,
             body: Vec<u8>,
         ) -> MessageId {
-            let id: MessageId = abi::call(
-                mailbox,
-                "dispatch_default",
-                &(destination, recipient, body),
-            )
-            .expect("TestRecipient: dispatch_message failed");
+            let id: MessageId =
+                abi::call(mailbox, "dispatch_default", &(destination, recipient, body))
+                    .expect("TestRecipient: dispatch_message failed");
             id
         }
     }
