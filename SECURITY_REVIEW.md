@@ -525,7 +525,7 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 82 total VM tests, including shared authorization, fee custody/aggregation, native custody, and current-ABI DRC20 allowance/collateral coverage |
+| `tests/tests/integration.rs` | 86 total VM tests, including shared authorization, fee custody/aggregation and withdrawal, native custody, and current-ABI DRC20 allowance/collateral coverage |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
 | `demo/start-env.sh` | Uses an explicit state archive and consensus-key path, refuses mismatched contract/node Rusk checkouts, and avoids explorer assets when the explorer is skipped |
 | `demo/stop-env.sh` | Stops only the Rusk process using the demo's exact state archive |
@@ -581,7 +581,7 @@ All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
 `29 passed; 0 failed; 0 ignored`; the integration package reported
-`82 passed; 0 failed; 0 ignored` on current Rusk.
+`86 passed; 0 failed; 0 ignored` on current Rusk.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use

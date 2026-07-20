@@ -35,6 +35,38 @@ This is local clean-layout evidence, not a replacement for the still-blocked
 private-runner status check or a fresh bidirectional agent E2E after both
 stacked PR heads are finalized.
 
+## 2026-07-20 Dispatch-Credit Withdrawal Validation
+
+The focused stacked branch `feat/dispatch-credit-withdrawal` was validated at
+`7c1449ad2681e0a863a9dc822fc01b0829051e9d` against a clean detached current
+Rusk `origin/master` at
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
+
+`scripts/local-repro-check.sh` ran in an isolated compatible checkout layout
+and passed:
+
+- all 12 contract WASM builds;
+- the production contract/type WASM clippy surface;
+- 29 type tests;
+- 86 VM integration tests;
+- 3 `dusk-tx` tests; and
+- tracked-source secret hygiene.
+
+The added VM cases prove that permissionless third-party funding does not grant
+withdrawal authority, another Moonlight payer cannot withdraw the named
+payer's credit, zero withdrawals fail, partial and full withdrawals reduce
+both accounting and native custody exactly, and only the configured owner of
+each WarpDrc20, WarpNative, or WarpDrc20Collateral route can withdraw that
+route's contract-keyed credit. A separate release WASM check for the data
+driver also passed with the funded, paid, and withdrawn dispatch-fee event
+decoders.
+
+An initial compatibility probe against historical clean Rusk
+`c0c64db4659500d077bb253ad13acba0e347d3fc` built every contract and passed
+contract clippy, but resolved Dusk VM 1.6 and stopped before integration tests
+because that older VM lacks the current host-query and execution-config API.
+It is not validation evidence for this branch; the current-Rusk run above is.
+
 ## 2026-07-20 Remediation Validation (Current)
 
 This section supersedes “current” wording in the May evidence and the earlier
@@ -50,7 +82,8 @@ the exact commits they name.
 
 Results:
 
-- `cargo test -p hyperlane-dusk-integration-tests`: 82 passed, 0 failed.
+- `cargo test -p hyperlane-dusk-integration-tests`: 86 passed, 0 failed at the
+  focused withdrawal head; the earlier remediation anchor had 82 tests.
 - All 12 contract WASMs build and the production contract/type clippy surface
   passes.
 - The VM suite validates the shared Moonlight/contract owner model, rejects
