@@ -232,13 +232,16 @@ bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism testMock >"$deploy_log" 2>&1 || 
     fail "deploy.sh failed (log: $deploy_log)"
 }
 
+expected_relayer_cfg="/tmp/hyperlane-relayer-testMock-${run_id}.json"
+expected_dusk_signer_key_file="/tmp/hyperlane-dusk-signer-testMock-${run_id}.key"
+GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
+GENERATED_DUSK_SIGNER_KEY_FILES+=("$expected_dusk_signer_key_file")
 cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$run_id")"
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
 generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
-GENERATED_AGENT_CONFIG_FILES+=("$relayer_cfg")
-if [ -n "$generated_dusk_signer_key_file" ]; then
-    GENERATED_DUSK_SIGNER_KEY_FILES+=("$generated_dusk_signer_key_file")
-fi
+[ "$relayer_cfg" = "$expected_relayer_cfg" ] || fail "generator returned an unexpected relayer config path"
+[ "$generated_dusk_signer_key_file" = "$expected_dusk_signer_key_file" ] \
+    || fail "generator returned an unexpected Dusk signer path"
 
 info "Building relayer binary..."
 (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer >/dev/null)

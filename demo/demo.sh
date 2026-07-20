@@ -313,8 +313,8 @@ if [ "${1:-}" = "--skip-deploy" ]; then
     DUSK_WARP_VERSION=$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
         --contract "$DUSK_WARP" --method state_version --return-type u32 \
         2>/dev/null | jq -er '.value | tonumber') \
-        || fail "Saved WarpDrc20 predates state version 1; redeploy"
-    [ "$DUSK_WARP_VERSION" = 1 ] \
+        || fail "Saved WarpDrc20 predates state version 2; redeploy"
+    [ "$DUSK_WARP_VERSION" = 2 ] \
         || fail "Saved WarpDrc20 has unsupported state version $DUSK_WARP_VERSION"
 fi
 

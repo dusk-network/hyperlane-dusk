@@ -110,6 +110,8 @@ mod warp_drc20 {
         /// hashed Moonlight public key or a contract ID. Keep the amount
         /// unminted until one of those recipient types proves ownership.
         pending_transfers: BTreeMap<H256, u64>,
+        /// Aggregate not-yet-minted liability reserved for pending claims.
+        pending_total: u64,
     }
 
     impl WarpDrc20 {
@@ -129,6 +131,7 @@ mod warp_drc20 {
                 enrolled_routers: BTreeMap::new(),
                 registered_accounts: BTreeMap::new(),
                 pending_transfers: BTreeMap::new(),
+                pending_total: 0,
             }
         }
 
@@ -230,10 +233,15 @@ mod warp_drc20 {
             self.pending_transfers.get(&h).copied().unwrap_or(0)
         }
 
+        /// Returns the aggregate synthetic liability reserved for claims.
+        pub fn pending_total(&self) -> u64 {
+            self.pending_total
+        }
+
         /// Storage/escrow ABI version for deployment compatibility checks.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            1
+            2
         }
 
         // =================================================================
@@ -391,12 +399,18 @@ mod warp_drc20 {
             // fabricate an account type. Keep the value unminted until the
             // external account or contract proves that it owns the key.
             if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
+                self.ensure_mint_capacity(msg.amount);
                 self.mint(Account::External(*pk), msg.amount);
             } else {
+                self.ensure_mint_capacity(msg.amount);
                 let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
                 *pending = pending
                     .checked_add(msg.amount)
                     .expect("WarpDrc20: pending overflow");
+                self.pending_total = self
+                    .pending_total
+                    .checked_add(msg.amount)
+                    .expect("WarpDrc20: pending total overflow");
             }
 
             abi::emit(
@@ -508,11 +522,24 @@ mod warp_drc20 {
         fn claim_pending_to(&mut self, recipient: H256, account: Account) {
             let amount = self.pending_transfers.remove(&recipient).unwrap_or(0);
             assert!(amount > 0, "WarpDrc20: no pending transfers");
+            self.pending_total = self
+                .pending_total
+                .checked_sub(amount)
+                .expect("WarpDrc20: pending total underflow");
             self.mint(account, amount);
             abi::emit(
                 events::PendingTransferClaimed::TOPIC,
                 events::PendingTransferClaimed { recipient, amount },
             );
+        }
+
+        /// Ensure a direct mint or new pending liability cannot consume the
+        /// supply capacity already promised to pending recipients.
+        fn ensure_mint_capacity(&self, amount: u64) {
+            self.supply
+                .checked_add(self.pending_total)
+                .and_then(|reserved| reserved.checked_add(amount))
+                .expect("WarpDrc20: insufficient supply capacity");
         }
 
         /// Transfer tokens between accounts.

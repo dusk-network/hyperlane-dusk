@@ -180,13 +180,13 @@ does not replace a custody decision.
 
 Decision:
 
-- [ ] Accept fresh deployment for the v1 Merkle/escrow state model.
+- [ ] Accept fresh deployment for the versioned Merkle/escrow state model.
 - [ ] Design and review an explicit in-place migration before production.
 
 Current implementation:
 
-- MerkleTreeHook, WarpDrc20, and WarpNative add persisted history or pending
-  liability state and expose `state_version() == 1`.
+- MerkleTreeHook and WarpNative expose `state_version() == 1`; WarpDrc20
+  exposes version 2 after adding aggregate pending synthetic supply capacity.
 - Existing serialized instances are not treated as compatible. The demo
   `--skip-deploy` path probes the version and fails closed when it is absent.
 - The compatible contract set and Rust agent must be deployed from the pinned
@@ -226,7 +226,7 @@ Evidence:
 - Required status-check promotion completed on 2026-05-14:
   `dusk-network/hyperlane-dusk` requires `Dusk review policy gate` and
   `Production readiness guard`, and `dusk-network/hyperlane-monorepo` requires
-  `Dusk review policy gate` and `Dusk agent cargo check`. `make gate-status`
+  `Dusk review policy gate` and `Dusk agent validation`. `make gate-status`
   reports `missingRequiredStatusChecks: none` for both repos.
 - dusk-network/hyperlane-dusk#3, the narrow default-branch dispatcher PR.
 - `scripts/local-repro-check.sh`.
@@ -271,7 +271,7 @@ runtime process.
 Keep the protected `main` and required-review baseline now enabled for
 `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`. The
 proposed GitHub Actions contexts are already enforced: `Production readiness
-guard` on `dusk-network/hyperlane-dusk` and `Dusk agent cargo check` on
+guard` on `dusk-network/hyperlane-dusk` and `Dusk agent validation` on
 `dusk-network/hyperlane-monorepo`, each alongside `Dusk review policy gate`.
 If Dusk chooses another private CI system, record the replacement contexts in
 #8 and #2 and override the guard's accepted context list accordingly. The

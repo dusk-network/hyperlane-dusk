@@ -151,6 +151,22 @@ mod merkle_tree_hook {
                 .expect("MerkleTreeHook: insertion index out of bounds")
         }
 
+        /// Returns a bounded consecutive page of inserted message IDs.
+        pub fn message_ids(&self, start: u32, limit: u32) -> Vec<H256> {
+            const MAX_PAGE_SIZE: usize = 256;
+            let start = start as usize;
+            assert!(
+                start <= self.inserted_message_ids.len(),
+                "MerkleTreeHook: insertion index out of bounds"
+            );
+            let limit = usize::try_from(limit).expect("MerkleTreeHook: page size overflow");
+            assert!(limit <= MAX_PAGE_SIZE, "MerkleTreeHook: page too large");
+            let end = start
+                .saturating_add(limit)
+                .min(self.inserted_message_ids.len());
+            self.inserted_message_ids[start..end].to_vec()
+        }
+
         /// Returns the block height at which `index` was inserted.
         pub fn inserted_block_height(&self, index: u32) -> u64 {
             self.inserted_block_heights

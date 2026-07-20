@@ -20,7 +20,7 @@ MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/h
 LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-a931f75b3d23d2e15e75f2e064470a1a01289abb}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-2}"
 DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
-MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent cargo check}"
+MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent validation}"
 MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
 MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monorepo}"
 MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
@@ -278,6 +278,7 @@ check_branch_protection() {
     local protection_json
     local status_count
     local requires_reviews
+    local strict_status_checks
     local err_file
     local context
 
@@ -286,16 +287,22 @@ check_branch_protection() {
 
     err_file="/tmp/hyperlane-readiness-protection.$$.err"
     if protection_json="$(gh api "repos/$repo/branches/$default_branch/protection" \
-        --jq '{requiredStatusChecks: (.required_status_checks.contexts // []), requiresReviews: (.required_pull_request_reviews != null)}' \
+        --jq '{requiredStatusChecks: (.required_status_checks.contexts // []), strictStatusChecks: .required_status_checks.strict, requiresReviews: (.required_pull_request_reviews != null)}' \
         2>"$err_file")"; then
         status_count="$(printf '%s\n' "$protection_json" | jq '.requiredStatusChecks | length')"
         requires_reviews="$(printf '%s\n' "$protection_json" | jq -r .requiresReviews)"
+        strict_status_checks="$(printf '%s\n' "$protection_json" | jq -r '.strictStatusChecks // "missing"')"
         printf '%sBranchProtection: enabled\n' "$label"
         printf '%sRequiredStatusChecks: %s\n' "$label" "$status_count"
+        printf '%sStrictStatusChecks: %s\n' "$label" "$strict_status_checks"
         printf '%sRequiresReviews: %s\n' "$label" "$requires_reviews"
 
         if [ "$status_count" -lt "$MIN_STATUS_CHECKS" ]; then
             add_blocker "$label default branch has $status_count required status checks; expected at least $MIN_STATUS_CHECKS"
+        fi
+
+        if [ "$strict_status_checks" != "true" ]; then
+            add_blocker "$label default branch does not require branches to be up to date before merging"
         fi
 
         if [ -n "$required_contexts" ]; then

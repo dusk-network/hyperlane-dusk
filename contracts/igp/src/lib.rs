@@ -285,6 +285,20 @@ mod igp {
             self.gas_payments[index as usize]
         }
 
+        /// Returns a bounded consecutive page of gas-payment records.
+        pub fn gas_payments(&self, start: u32, limit: u32) -> Vec<GasPaymentRecord> {
+            const MAX_PAGE_SIZE: usize = 256;
+            let start = start as usize;
+            assert!(
+                start <= self.gas_payments.len(),
+                "IGP: gas payment index out of bounds"
+            );
+            let limit = usize::try_from(limit).expect("IGP: page size overflow");
+            assert!(limit <= MAX_PAGE_SIZE, "IGP: page too large");
+            let end = start.saturating_add(limit).min(self.gas_payments.len());
+            self.gas_payments[start..end].to_vec()
+        }
+
         /// Returns collected native DUSK not yet claimed by the beneficiary.
         pub fn claimable_fees(&self) -> u64 {
             self.claimable_fees

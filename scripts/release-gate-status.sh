@@ -44,7 +44,7 @@ REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
-MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent cargo check}"
+MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent validation}"
 FETCH_UPSTREAM=0
 PLACEHOLDER_SCAN_ONLY=0
 
@@ -367,9 +367,12 @@ print_repo_merge_policy() {
         '
 
     default_branch="$(gh api "repos/$repo" --jq .default_branch)"
-    if protection_json="$(gh api "repos/$repo/branches/$default_branch/protection" --jq '{requiredStatusChecks: (.required_status_checks.contexts // []), requiresReviews: (.required_pull_request_reviews != null)}' 2>/tmp/hyperlane-dusk-protection.$$.err)"; then
+    if protection_json="$(gh api "repos/$repo/branches/$default_branch/protection" --jq '{requiredStatusChecks: (.required_status_checks.contexts // []), strictStatusChecks: .required_status_checks.strict, requiresReviews: (.required_pull_request_reviews != null)}' 2>/tmp/hyperlane-dusk-protection.$$.err)"; then
         echo "branchProtection: enabled"
         printf '%s\n' "$protection_json" | sed 's/^/  /'
+        if ! printf '%s\n' "$protection_json" | jq -e '.strictStatusChecks == true' >/dev/null; then
+            echo "  strictStatusChecksMismatch: required true"
+        fi
         if [ -n "$required_contexts" ]; then
             echo "  expectedRequiredStatusChecks: $(printf '%s\n' "$required_contexts" | tr '|' ',')"
             missing_contexts="$(

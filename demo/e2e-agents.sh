@@ -167,18 +167,39 @@ run_case() {
         }
     fi
 
+    # Exercise the complete saved-topology validation against the live fresh
+    # deployment before any agent config is generated from that state.
+    local warm_validate_log="/tmp/hyperlane-warm-validate-${ism}-${run_id}.log"
+    bash "$SCRIPT_DIR/deploy.sh" --skip-deploy >"$warm_validate_log" 2>&1 || {
+        tail -n 200 "$warm_validate_log" >&2 || true
+        fail "saved deployment validation failed (log: $warm_validate_log)"
+    }
+
+    # Register the generator's deterministic paths before invoking it. If the
+    # generator succeeds but JSON parsing fails, the parent EXIT trap still
+    # owns every emitted config and signer file.
+    local cfg_json relayer_cfg validator_cfg generated_signer_key_file
+    local expected_relayer_cfg expected_validator_cfg
+    expected_relayer_cfg="/tmp/hyperlane-relayer-${ism}-${run_id}.json"
+    expected_validator_cfg="/tmp/hyperlane-validator-anvil-${ism}-${run_id}.json"
+    dusk_signer_key_file="/tmp/hyperlane-dusk-signer-${ism}-${run_id}.key"
+    GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
+    if [ "$ism" = "messageIdMultisig" ]; then
+        GENERATED_AGENT_CONFIG_FILES+=("$expected_validator_cfg")
+    fi
+    GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
+
     # Generate agent configs.
-    local cfg_json relayer_cfg validator_cfg
     cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id")"
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
     validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
-    dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
-    GENERATED_AGENT_CONFIG_FILES+=("$relayer_cfg")
-    if [ -n "$validator_cfg" ]; then
-        GENERATED_AGENT_CONFIG_FILES+=("$validator_cfg")
-    fi
-    if [ -n "$dusk_signer_key_file" ]; then
-        GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
+    generated_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+    [ "$relayer_cfg" = "$expected_relayer_cfg" ] || fail "generator returned an unexpected relayer config path"
+    [ "$generated_signer_key_file" = "$dusk_signer_key_file" ] || fail "generator returned an unexpected Dusk signer path"
+    if [ "$ism" = "messageIdMultisig" ]; then
+        [ "$validator_cfg" = "$expected_validator_cfg" ] || fail "generator returned an unexpected validator config path"
+    else
+        [ -z "$validator_cfg" ] || fail "TestMock generator unexpectedly returned a validator config"
     fi
 
     # Build agent binaries (incremental).

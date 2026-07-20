@@ -62,11 +62,39 @@ DUSK_MERKLE_TREE_HOOK="$(jq -r '.dusk.merkle_tree_hook' "$STATE_FILE")"
 
 EVM_DOMAIN="$(jq -r '.evm_domain' "$STATE_FILE")"
 DUSK_DOMAIN="$(jq -r '.dusk_domain' "$STATE_FILE")"
+DUSK_DEFAULT_ISM="$(jq -er '.dusk_default_ism | strings' "$STATE_FILE")" \
+    || fail "Deployment state lacks dusk_default_ism; redeploy"
+[ "$DUSK_DEFAULT_ISM" = "$ISM" ] \
+    || fail "Requested --ism $ISM does not match deployed Dusk Mailbox policy $DUSK_DEFAULT_ISM"
 
-# ChainId for Dusk is an 8-bit value on Moonlight; pull from the Dusk deploy output if present.
-DUSK_CHAIN_ID="$(jq -r '.chain_id // 0' /tmp/hyperlane-demo-dusk-deploy.json 2>/dev/null || echo 0)"
-if [ -z "$DUSK_CHAIN_ID" ] || [ "$DUSK_CHAIN_ID" = "null" ]; then
-    DUSK_CHAIN_ID="0"
+DUSK_TEST_MOCK="$(jq -er '.dusk.test_mock | strings | select(length == 64)' "$STATE_FILE")" \
+    || fail "Deployment state lacks Dusk TestMock contract ID; redeploy"
+DUSK_ISM_MULTISIG="$(jq -er '.dusk.ism_multisig // ""' "$STATE_FILE")"
+DUSK_DEFAULT_ISM_ID="$(jq -er '.dusk.default_ism | strings | select(length == 64)' "$STATE_FILE")" \
+    || fail "Deployment state lacks Dusk default ISM contract ID; redeploy"
+if [ "$ISM" = "messageIdMultisig" ]; then
+    [ -n "$DUSK_ISM_MULTISIG" ] && [ "$DUSK_ISM_MULTISIG" != "null" ] \
+        || fail "Multisig agent mode requires a deployed Dusk multisig ISM"
+    [ "${DUSK_DEFAULT_ISM_ID,,}" = "${DUSK_ISM_MULTISIG,,}" ] \
+        || fail "Deployed Dusk Mailbox policy does not match the multisig ISM"
+else
+    [ -z "$DUSK_ISM_MULTISIG" ] || fail "TestMock deployment unexpectedly records a multisig ISM"
+    [ "${DUSK_DEFAULT_ISM_ID,,}" = "${DUSK_TEST_MOCK,,}" ] \
+        || fail "Deployed Dusk Mailbox policy does not match TestMock"
+fi
+
+# ChainId is persisted as the canonical one-byte Moonlight value in hex.
+DUSK_CHAIN_ID_HEX="$(jq -er '.dusk_chain_id | strings | select(test("^[0-9A-Fa-f]{2}$"))' "$STATE_FILE")" \
+    || fail "Deployment state has an invalid Dusk chain ID; redeploy"
+DUSK_CHAIN_ID=$((16#$DUSK_CHAIN_ID_HEX))
+
+if [ "${AGENT_CONFIG_VALIDATE_ONLY:-0}" = "1" ]; then
+    jq -n \
+        --arg ism "$ISM" \
+        --arg default_ism "$DUSK_DEFAULT_ISM_ID" \
+        --argjson chain_id "$DUSK_CHAIN_ID" \
+        '{valid: true, ism: $ism, defaultIsm: $default_ism, chainId: $chain_id}'
+    exit 0
 fi
 
 # Gas settings for Dusk tx submission (passed through to dusk-tx).

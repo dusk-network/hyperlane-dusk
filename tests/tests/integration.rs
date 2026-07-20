@@ -26,7 +26,9 @@ use hyperlane_dusk_types::drc20::{
     Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
     BalanceOf as Drc20BalanceOf,
 };
-use hyperlane_dusk_types::{message, DomainGasConfig, EthAddress, MessageId, H256, VERSION};
+use hyperlane_dusk_types::{
+    message, DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256, VERSION,
+};
 
 mod test_session;
 use test_session::{assert_contract_panic, TestSession};
@@ -783,6 +785,13 @@ fn test_dispatch_via_transaction() {
         .expect("root should succeed")
         .data;
     assert_eq!(root_at, root);
+    assert_eq!(
+        s.session
+            .direct_call::<_, Vec<H256>>(MERKLE_TREE_HOOK_ID, "message_ids", &(0u32, 256u32))
+            .expect("message_ids should succeed")
+            .data,
+        vec![message_id]
+    );
 
     // Verify dispatched_message is stored and decodable
     let encoded = s.mailbox_dispatched_message(0);
@@ -1039,6 +1048,18 @@ fn test_multisig_ism_admin_accepts_owner_moonlight_sender() {
             &(vec![EthAddress([2; 20])], 1u8),
         )
         .expect("MultisigISM owner should update the validator set");
+
+    assert_eq!(
+        session
+            .direct_call::<_, (Vec<EthAddress>, u8)>(
+                ISM_MULTISIG_ID,
+                "validators_and_threshold",
+                &(),
+            )
+            .expect("combined validator configuration query should succeed")
+            .data,
+        (vec![EthAddress([2; 20])], 1)
+    );
 }
 
 // =============================================================================
@@ -1648,6 +1669,12 @@ fn test_igp_records_payment_on_dispatch() {
             .expect("IGP balance query should succeed"),
         50_000
     );
+    let records = session
+        .direct_call::<_, Vec<GasPaymentRecord>>(IGP_ID, "gas_payments", &(0u32, 256u32))
+        .expect("gas_payments should succeed")
+        .data;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].payment, 50_000);
 }
 
 #[test]
@@ -1843,7 +1870,7 @@ fn test_warp_drc20_init() {
             .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        1
+        2
     );
 }
 
@@ -2369,6 +2396,13 @@ fn test_warp_drc20_handle_mints_tokens() {
             .data,
         mint_amount
     );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        mint_amount
+    );
 
     session
         .direct_call::<_, ()>(
@@ -2387,6 +2421,13 @@ fn test_warp_drc20_handle_mints_tokens() {
             .expect("total_supply should succeed")
             .data,
         mint_amount
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        0
     );
 }
 
@@ -2433,6 +2474,13 @@ fn test_warp_drc20_handle_multiple_mints() {
             .data,
         3_000_000
     );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        3_000_000
+    );
 
     session
         .direct_call::<_, ()>(
@@ -2447,6 +2495,105 @@ fn test_warp_drc20_handle_multiple_mints() {
             .expect("total_supply should succeed")
             .data,
         3_000_000
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        0
+    );
+}
+
+#[test]
+fn test_warp_drc20_pending_supply_capacity_is_reserved() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    let pending_recipient = TEST_RECIPIENT_ID.to_bytes();
+    let reserved = u64::MAX - 5;
+
+    let first = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(pending_recipient, reserved),
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), first))
+        .expect("first pending transfer should reserve supply capacity");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        reserved
+    );
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let registered_recipient = message::keccak256(&OWNER_PK.to_bytes());
+    let direct = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(registered_recipient, 6),
+    );
+    let direct_id = message::id(&direct);
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), direct));
+    assert_contract_panic_contains(result, "WarpDrc20: insufficient supply capacity");
+    assert!(
+        !session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(direct_id,))
+            .expect("delivered should succeed")
+            .data
+    );
+
+    let second_pending = message::encode(
+        VERSION,
+        2,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode([0xA5; 32], 6),
+    );
+    let second_pending_id = message::id(&second_pending);
+    let result =
+        session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), second_pending));
+    assert_contract_panic_contains(result, "WarpDrc20: insufficient supply capacity");
+    assert!(
+        !session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(second_pending_id,))
+            .expect("delivered should succeed")
+            .data
+    );
+
+    session
+        .direct_call::<_, ()>(
+            TEST_RECIPIENT_ID,
+            "claim_synthetic_pending",
+            &(WARP_DRC20_ID,),
+        )
+        .expect("reserved pending transfer should remain claimable");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        reserved
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        0
     );
 }
 

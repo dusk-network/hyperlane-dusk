@@ -193,14 +193,19 @@ bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism messageIdMultisig \
         fail "deploy.sh failed (log: $deploy_log)"
     }
 
+expected_relayer_cfg="/tmp/hyperlane-relayer-messageIdMultisig-${run_id}.json"
+expected_validator_cfg="/tmp/hyperlane-validator-anvil-messageIdMultisig-${run_id}.json"
+expected_dusk_signer_key_file="/tmp/hyperlane-dusk-signer-messageIdMultisig-${run_id}.key"
+GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg" "$expected_validator_cfg")
+GENERATED_DUSK_SIGNER_KEY_FILES+=("$expected_dusk_signer_key_file")
 cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism messageIdMultisig --run-id "$run_id")"
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
 validator_cfg="$(echo "$cfg_json" | jq -r '.validator')"
 generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
-GENERATED_AGENT_CONFIG_FILES+=("$relayer_cfg" "$validator_cfg")
-if [ -n "$generated_dusk_signer_key_file" ]; then
-    GENERATED_DUSK_SIGNER_KEY_FILES+=("$generated_dusk_signer_key_file")
-fi
+[ "$relayer_cfg" = "$expected_relayer_cfg" ] || fail "generator returned an unexpected relayer config path"
+[ "$validator_cfg" = "$expected_validator_cfg" ] || fail "generator returned an unexpected validator config path"
+[ "$generated_dusk_signer_key_file" = "$expected_dusk_signer_key_file" ] \
+    || fail "generator returned an unexpected Dusk signer path"
 
 info "Building agent binaries..."
 (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer -p validator >/dev/null)

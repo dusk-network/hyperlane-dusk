@@ -165,6 +165,7 @@ validate_dusk_query() {
 validate_dusk_state_version() {
     local contract="$1"
     local label="$2"
+    local expected_version="${3:-1}"
     local response version
 
     response=$("$DUSK_TX" query \
@@ -172,16 +173,37 @@ validate_dusk_state_version() {
         --contract "$contract" \
         --method state_version \
         --return-type u32 2>/dev/null) \
-        || fail "Saved $label predates state version 1; redeploy"
+        || fail "Saved $label predates state version $expected_version; redeploy"
     version=$(jq -er '.value | tonumber' <<<"$response") \
         || fail "Saved $label returned a malformed state version; redeploy"
-    [ "$version" = 1 ] \
-        || fail "Saved $label has unsupported state version $version; expected 1"
+    [ "$version" = "$expected_version" ] \
+        || fail "Saved $label has unsupported state version $version; expected $expected_version"
+}
+
+query_dusk_bytes32() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type bytes32 2>/dev/null) \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+    jq -er '.value | ascii_downcase' <<<"$response" \
+        || fail "Saved $label returned a malformed bytes32 value"
 }
 
 validate_saved_deployment() {
-    local saved_evm_chain_id saved_dusk_chain_id
-    local evm_mailbox evm_token dusk_mailbox dusk_merkle dusk_warp dusk_warp_native
+    local saved_evm_chain_id saved_dusk_chain_id saved_dusk_ism
+    local evm_mailbox evm_token evm_native_token evm_collateral_token evm_ism evm_hook
+    local evm_merkle evm_validator_announce evm_igp evm_recipient
+    local dusk_mailbox dusk_test_mock dusk_ism_multisig dusk_default_ism
+    local dusk_merkle dusk_warp dusk_warp_native dusk_warp_collateral
+    local dusk_validator_announce dusk_igp dusk_protocol_fee dusk_aggregation_hook
+    local dusk_test_recipient expected_default_ism live_default_ism
 
     jq -e 'type == "object" and (.evm | type == "object") and (.dusk | type == "object")' \
         "$BRIDGE_STATE_FILE" >/dev/null \
@@ -195,20 +217,69 @@ validate_saved_deployment() {
         || fail "Saved EVM chain ID $saved_evm_chain_id does not match running chain $EVM_CHAIN_ID"
     [ "$saved_dusk_chain_id" = "$DUSK_CHAIN_ID" ] \
         || fail "Saved Dusk chain ID does not match the running chain"
+    saved_dusk_ism="$(jq -er '.dusk_default_ism | strings | select(. == "testMock" or . == "messageIdMultisig")' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks a supported dusk_default_ism; redeploy"
 
     evm_mailbox="$(jq -er '.evm.mailbox' "$BRIDGE_STATE_FILE")"
     evm_token="$(jq -er '.evm.token' "$BRIDGE_STATE_FILE")"
+    evm_native_token="$(jq -er '.evm.native_token' "$BRIDGE_STATE_FILE")"
+    evm_collateral_token="$(jq -er '.evm.collateral_token' "$BRIDGE_STATE_FILE")"
+    evm_ism="$(jq -er '.evm.ism' "$BRIDGE_STATE_FILE")"
+    evm_hook="$(jq -er '.evm.hook' "$BRIDGE_STATE_FILE")"
+    evm_merkle="$(jq -er '.evm.merkle_tree_hook' "$BRIDGE_STATE_FILE")"
+    evm_validator_announce="$(jq -er '.evm.validator_announce' "$BRIDGE_STATE_FILE")"
+    evm_igp="$(jq -er '.evm.igp' "$BRIDGE_STATE_FILE")"
+    evm_recipient="$(jq -er '.evm.recipient' "$BRIDGE_STATE_FILE")"
     dusk_mailbox="$(jq -er '.dusk.mailbox' "$BRIDGE_STATE_FILE")"
+    dusk_test_mock="$(jq -er '.dusk.test_mock' "$BRIDGE_STATE_FILE")"
+    dusk_ism_multisig="$(jq -er '.dusk.ism_multisig // ""' "$BRIDGE_STATE_FILE")"
+    dusk_default_ism="$(jq -er '.dusk.default_ism' "$BRIDGE_STATE_FILE")"
     dusk_merkle="$(jq -er '.dusk.merkle_tree_hook' "$BRIDGE_STATE_FILE")"
     dusk_warp="$(jq -er '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")"
     dusk_warp_native="$(jq -er '.dusk.warp_native' "$BRIDGE_STATE_FILE")"
+    dusk_warp_collateral="$(jq -er '.dusk.warp_drc20_collateral' "$BRIDGE_STATE_FILE")"
+    dusk_validator_announce="$(jq -er '.dusk.validator_announce' "$BRIDGE_STATE_FILE")"
+    dusk_igp="$(jq -er '.dusk.igp' "$BRIDGE_STATE_FILE")"
+    dusk_protocol_fee="$(jq -er '.dusk.protocol_fee' "$BRIDGE_STATE_FILE")"
+    dusk_aggregation_hook="$(jq -er '.dusk.aggregation_hook' "$BRIDGE_STATE_FILE")"
+    dusk_test_recipient="$(jq -er '.dusk.test_recipient' "$BRIDGE_STATE_FILE")"
 
     validate_evm_contract "$evm_mailbox" "EVM Mailbox"
     validate_evm_contract "$evm_token" "EVM warp token"
+    validate_evm_contract "$evm_native_token" "EVM native route token"
+    validate_evm_contract "$evm_collateral_token" "EVM collateral route token"
+    validate_evm_contract "$evm_ism" "EVM ISM"
+    validate_evm_contract "$evm_hook" "EVM hook"
+    validate_evm_contract "$evm_merkle" "EVM MerkleTreeHook"
+    validate_evm_contract "$evm_validator_announce" "EVM ValidatorAnnounce"
+    validate_evm_contract "$evm_igp" "EVM IGP"
+    validate_evm_contract "$evm_recipient" "EVM test recipient"
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
+    validate_dusk_query "$dusk_test_mock" verify_count u32 "Dusk TestMock"
+    if [ "$saved_dusk_ism" = "messageIdMultisig" ]; then
+        [ -n "$dusk_ism_multisig" ] \
+            || fail "Saved multisig deployment lacks its Dusk ISM contract ID; redeploy"
+        validate_dusk_query "$dusk_ism_multisig" module_type u8 "Dusk multisig ISM"
+        expected_default_ism="$dusk_ism_multisig"
+    else
+        [ -z "$dusk_ism_multisig" ] \
+            || fail "Saved TestMock deployment unexpectedly records a multisig ISM; redeploy"
+        expected_default_ism="$dusk_test_mock"
+    fi
+    [ "${dusk_default_ism,,}" = "${expected_default_ism,,}" ] \
+        || fail "Saved Dusk default ISM does not match saved dusk_default_ism policy; redeploy"
+    live_default_ism="$(query_dusk_bytes32 "$dusk_mailbox" default_ism "Dusk Mailbox default ISM")"
+    [ "$live_default_ism" = "${expected_default_ism,,}" ] \
+        || fail "Running Dusk Mailbox default ISM does not match saved deployment policy; redeploy"
     validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"
-    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route"
+    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 2
     validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"
+    validate_dusk_query "$dusk_warp_collateral" mailbox bytes32 "Dusk collateral warp route"
+    validate_dusk_query "$dusk_validator_announce" local_domain u32 "Dusk ValidatorAnnounce"
+    validate_dusk_query "$dusk_igp" hook_type u8 "Dusk IGP"
+    validate_dusk_query "$dusk_protocol_fee" hook_type u8 "Dusk ProtocolFee"
+    validate_dusk_query "$dusk_aggregation_hook" hook_type u8 "Dusk AggregationHook"
+    validate_dusk_query "$dusk_test_recipient" handled_count u32 "Dusk test recipient"
 }
 
 # ── Check for existing deployment ────────────────────────────────────────────
@@ -430,6 +501,7 @@ fi
 # Parse deployment output
 DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_FILE")
 DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_FILE")
+DUSK_TEST_MOCK=$(jq -r '.contracts.test_mock' "$DUSK_DEPLOY_FILE")
 DUSK_ISM_MULTISIG=$(jq -r '.contracts.ism_multisig // empty' "$DUSK_DEPLOY_FILE")
 DUSK_VALIDATOR_ANNOUNCE=$(jq -r '.contracts.validator_announce' "$DUSK_DEPLOY_FILE")
 DUSK_IGP=$(jq -r '.contracts.igp' "$DUSK_DEPLOY_FILE")
@@ -442,8 +514,14 @@ DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
 
 if [ "$SKIP_DEPLOY" = true ]; then
     validate_dusk_state_version "$DUSK_MERKLE" "Dusk MerkleTreeHook"
-    validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route"
+    validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route" 2
     validate_dusk_state_version "$DUSK_WARP_NATIVE" "Dusk native warp route"
+fi
+
+if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
+    DUSK_DEFAULT_ISM_ID="$DUSK_ISM_MULTISIG"
+else
+    DUSK_DEFAULT_ISM_ID="$DUSK_TEST_MOCK"
 fi
 
 info "  Mailbox:        $DUSK_MAILBOX"
@@ -602,7 +680,9 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
     },
     "dusk": {
         "mailbox": "$DUSK_MAILBOX",
+        "test_mock": "$DUSK_TEST_MOCK",
         "ism_multisig": "${DUSK_ISM_MULTISIG:-}",
+        "default_ism": "$DUSK_DEFAULT_ISM_ID",
         "warp_drc20": "$DUSK_WARP",
         "warp_native": "$DUSK_WARP_NATIVE",
         "warp_drc20_collateral": "$DUSK_WARP_COLLATERAL",
@@ -618,6 +698,7 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
     "dusk_domain": $DUSK_DOMAIN,
     "evm_chain_id": "$EVM_CHAIN_ID",
     "dusk_chain_id": "$DUSK_CHAIN_ID",
+    "dusk_default_ism": "$DUSK_DEFAULT_ISM",
     "token_symbol": "$TOKEN_SYMBOL",
     "initial_supply": "$INITIAL_SUPPLY",
     "deployed_at": "$(date -Iseconds)"

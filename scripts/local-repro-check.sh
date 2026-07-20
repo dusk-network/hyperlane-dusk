@@ -99,6 +99,15 @@ if [ "$RUSK_DIR" != "$DEFAULT_RUSK_DIR" ] && [ "${HYPERLANE_DUSK_REPRO_LAYOUT:-0
     [ -d "$RUSK_DIR/rusk-prover" ] || fail "missing Rusk path dependency: $RUSK_DIR/rusk-prover"
     [ -d "$RUSK_DIR/data-drivers/data-driver" ] || fail "missing Rusk path dependency: $RUSK_DIR/data-drivers/data-driver"
 
+    dusk_status="$(git -C "$ROOT" status --porcelain --untracked-files=all)"
+    [ -z "$dusk_status" ] || fail \
+        "custom-Rusk repro requires a clean Dusk checkout; commit/stash changes or use the default compatible layout"
+    if [ "$RUN_AGENT_CHECK" -eq 1 ]; then
+        monorepo_status="$(git -C "$MONOREPO_DIR" status --porcelain --untracked-files=all)"
+        [ -z "$monorepo_status" ] || fail \
+            "custom-Rusk agent repro requires a clean Hyperlane monorepo checkout"
+    fi
+
     if [ -n "${HYPERLANE_DUSK_REPRO_WORKDIR:-}" ]; then
         REPRO_DIR="$HYPERLANE_DUSK_REPRO_WORKDIR"
         mkdir -p "$REPRO_DIR"
@@ -162,6 +171,12 @@ cargo test -p hyperlane-dusk-integration-tests
 
 info "Running dusk-tx tests"
 cargo test -p dusk-tx
+
+info "Running data-driver tests"
+cargo test -p hyperlane-dusk-data-driver
+
+info "Checking standalone E2E operator binary"
+cargo check -p hyperlane-dusk-e2e
 
 info "Running secret hygiene checks"
 make secret-hygiene

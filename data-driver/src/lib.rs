@@ -20,7 +20,7 @@ use dusk_data_driver::{
 
 use hyperlane_dusk_types::drc20::{Allowance, BalanceOf};
 use hyperlane_dusk_types::events;
-use hyperlane_dusk_types::{DomainGasConfig, GasPaymentRecord, MessageId, H256};
+use hyperlane_dusk_types::{DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256};
 
 /// Data driver for Hyperlane Dusk contracts (Mailbox, hooks, warp routes).
 ///
@@ -44,7 +44,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "claimable_fees"
             | "gas_payment_count"
             | "hooks"
-            | "pending_total" => json_to_rkyv::<()>(json),
+            | "pending_total"
+            | "validators_and_threshold" => json_to_rkyv::<()>(json),
             // Mailbox queries with args
             "delivered" | "delivered_at" => json_to_rkyv::<(MessageId,)>(json),
             "dispatched_message"
@@ -52,6 +53,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "processed_at_index"
             | "processed_block_height_at_index"
             | "gas_payment_at" => json_to_rkyv::<(u32,)>(json),
+            "message_ids" | "gas_payments" => json_to_rkyv::<(u32, u32)>(json),
             "recipient_ism" | "fee_credit" => json_to_rkyv::<(H256,)>(json),
             // Hook queries
             "hook_type" | "total_gas_payments" | "collected_fees" | "protocol_fee"
@@ -94,6 +96,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "gas_payment_count"
             | "hooks"
             | "pending_total"
+            | "validators_and_threshold"
             | "hook_type"
             | "total_gas_payments"
             | "collected_fees"
@@ -114,6 +117,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "processed_at_index"
             | "processed_block_height_at_index"
             | "gas_payment_at" => rkyv_to_json::<(u32,)>(rkyv),
+            "message_ids" | "gas_payments" => rkyv_to_json::<(u32, u32)>(rkyv),
             "recipient_ism" | "fee_credit" => rkyv_to_json::<(H256,)>(rkyv),
             "quote_dispatch" => rkyv_to_json::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
                 .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv)),
@@ -168,12 +172,14 @@ impl ConvertibleContract for HyperlaneDataDriver {
             // Vec<u8> outputs
             "dispatched_message" => rkyv_to_json::<Vec<u8>>(rkyv),
             // Vec<H256> outputs
-            "hooks" => rkyv_to_json::<Vec<H256>>(rkyv),
+            "hooks" | "message_ids" => rkyv_to_json::<Vec<H256>>(rkyv),
             // String outputs
             "name" | "symbol" => rkyv_to_json::<String>(rkyv),
             // Struct outputs
             "domain_gas_config" => rkyv_to_json::<DomainGasConfig>(rkyv),
             "gas_payment_at" => rkyv_to_json::<GasPaymentRecord>(rkyv),
+            "gas_payments" => rkyv_to_json::<Vec<GasPaymentRecord>>(rkyv),
+            "validators_and_threshold" => rkyv_to_json::<(Vec<EthAddress>, u8)>(rkyv),
             // u64 from quote_dispatch / quote_gas_payment
             "quote_dispatch" | "quote_gas_payment" => rkyv_to_json_u64(rkyv),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
@@ -239,11 +245,12 @@ dusk_data_driver::generate_wasm_entrypoint!(HyperlaneDataDriver);
 mod tests {
     use alloc::string::ToString;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use super::{ConvertibleContract, HyperlaneDataDriver};
     use dusk_data_driver::{json_to_rkyv, to_json};
     use hyperlane_dusk_types::events;
-    use hyperlane_dusk_types::GasPaymentRecord;
+    use hyperlane_dusk_types::{EthAddress, GasPaymentRecord};
 
     #[test]
     fn owner_output_decodes_optional_owner_state() {
@@ -294,6 +301,7 @@ mod tests {
             "gas_payment_count",
             "hooks",
             "pending_total",
+            "validators_and_threshold",
         ] {
             let encoded = driver
                 .encode_input_fn(name, "null")
@@ -325,6 +333,16 @@ mod tests {
                 .expect("indexed accounting query should decode");
         }
 
+        let page_json = to_json((3u32, 256u32)).unwrap().to_string();
+        for name in ["message_ids", "gas_payments"] {
+            let encoded = driver
+                .encode_input_fn(name, &page_json)
+                .expect("paged query should encode");
+            driver
+                .decode_input_fn(name, &encoded)
+                .expect("paged query should decode");
+        }
+
         let u64_json = to_json(42u64).unwrap().to_string();
         let u64_output = json_to_rkyv::<u64>(&u64_json).unwrap();
         for name in [
@@ -351,6 +369,26 @@ mod tests {
         driver
             .decode_output_fn("gas_payment_at", &record_output)
             .expect("gas-payment record should decode");
+
+        let records_json = to_json(vec![record]).unwrap().to_string();
+        let records_output = json_to_rkyv::<Vec<GasPaymentRecord>>(&records_json).unwrap();
+        driver
+            .decode_output_fn("gas_payments", &records_output)
+            .expect("gas-payment page should decode");
+
+        let message_ids = vec![[2u8; 32], [3u8; 32]];
+        let message_ids_json = to_json(message_ids).unwrap().to_string();
+        let message_ids_output = json_to_rkyv::<Vec<[u8; 32]>>(&message_ids_json).unwrap();
+        driver
+            .decode_output_fn("message_ids", &message_ids_output)
+            .expect("message-ID page should decode");
+
+        let validator_config = (vec![EthAddress([4u8; 20])], 1u8);
+        let validator_json = to_json(validator_config).unwrap().to_string();
+        let validator_output = json_to_rkyv::<(Vec<EthAddress>, u8)>(&validator_json).unwrap();
+        driver
+            .decode_output_fn("validators_and_threshold", &validator_output)
+            .expect("validator configuration should decode");
     }
 
     #[test]

@@ -37,6 +37,7 @@ use rues::{RuesClient, TransactionStatus};
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
 const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
+const MAX_CALL_ARGS_BYTES: usize = 60 * 1024;
 
 // ── CLI definition ──────────────────────────────────────────────────────────
 
@@ -80,6 +81,9 @@ enum Command {
         /// Gas price in LUX.
         #[arg(long, default_value = "2000")]
         gas_price: u64,
+        /// Execute against an ephemeral Rusk session without propagation.
+        #[arg(long)]
+        simulate_only: bool,
     },
     /// Deploy the full Hyperlane contract stack.
     DeployHyperlane {
@@ -149,7 +153,7 @@ enum Command {
         /// Method name.
         #[arg(long)]
         method: String,
-        /// Return type: u32, u64, bool, bytes32, bytes.
+        /// Return type: u8, u32, u64, bool, bytes32, bytes, string.
         #[arg(long, name = "return-type", default_value = "u32")]
         return_type: String,
         /// Optional u32 argument.
@@ -408,6 +412,7 @@ async fn main() {
             args,
             gas_limit,
             gas_price,
+            simulate_only,
         } => {
             cmd_call(
                 &rues_url,
@@ -420,6 +425,7 @@ async fn main() {
                 &args,
                 gas_limit,
                 gas_price,
+                simulate_only,
             )
             .await
         }
@@ -796,8 +802,9 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_moonlight_nonce, read_secret_key_hex, resolve_keys_password,
-        wait_for_transaction_with, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
+        confirmation_error_with_hash, next_moonlight_nonce, read_secret_key_hex,
+        resolve_keys_password, submission_error_with_hash, wait_for_transaction_with,
+        MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::TransactionStatus;
     use std::collections::VecDeque;
@@ -891,6 +898,31 @@ mod tests {
         assert!(next_moonlight_nonce(u64::MAX)
             .unwrap_err()
             .contains("exhausted"));
+    }
+
+    #[test]
+    fn submission_error_preserves_reconciliation_hash() {
+        let error = submission_error_with_hash(
+            "aabbcc",
+            "Propagation outcome unknown: response stream closed",
+        );
+        assert!(error.contains("aabbcc"));
+        assert!(error.contains("outcome unknown"));
+        assert!(error.contains("reconcile this exact hash before retrying"));
+    }
+
+    #[test]
+    fn confirmation_timeout_preserves_reconciliation_hash() {
+        let error = confirmation_error_with_hash(
+            "aabbcc",
+            "Transaction aabbcc was not confirmed within 60s",
+        );
+        assert!(error.contains("confirmation outcome unknown"));
+        assert!(error.contains("tx_id=aabbcc"));
+
+        let rejected =
+            confirmation_error_with_hash("aabbcc", "Transaction aabbcc failed: contract rejected");
+        assert_eq!(rejected, "Transaction aabbcc failed: contract rejected");
     }
 
     #[tokio::test]
@@ -1097,8 +1129,7 @@ async fn cmd_fund_dispatch(
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
     let output = json!({
         "success": true,
         "mailbox": mailbox_hex,
@@ -1134,11 +1165,9 @@ async fn cmd_call(
     args_hex: &str,
     gas_limit: u64,
     gas_price: u64,
+    simulate_only: bool,
 ) -> Result<(), String> {
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url)?;
-
-    // Parse contract ID
+    // Reject malformed public inputs before reading one-shot signer material.
     let contract_bytes =
         hex::decode(contract_hex).map_err(|e| format!("Invalid contract hex: {e}"))?;
     if contract_bytes.len() != 32 {
@@ -1155,6 +1184,13 @@ async fn cmd_call(
     } else {
         hex::decode(args_hex).map_err(|e| format!("Invalid args hex: {e}"))?
     };
+    if fn_args.len() > MAX_CALL_ARGS_BYTES {
+        return Err(format!(
+            "Call arguments exceed the {MAX_CALL_ARGS_BYTES}-byte helper transport limit"
+        ));
+    }
+    let client = RuesClient::new(rues_url)?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
     // Query chain ID and account nonce
     let chain_id = client.query_chain_id().await?;
@@ -1174,8 +1210,25 @@ async fn cmd_call(
 
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
-    client.propagate_tx(&tx_bytes).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    if simulate_only {
+        let simulation = client.simulate_tx(&tx_bytes).await?;
+        if let Some(error) = simulation.error {
+            return Err(format!(
+                "Transaction {tx_id} simulation rejected contract execution: {error}"
+            ));
+        }
+        let output = json!({
+            "success": true,
+            "simulated": true,
+            "contract": contract_hex,
+            "fn_name": fn_name,
+            "gas_spent": simulation.gas_spent,
+            "tx_id": tx_id,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+    propagate_and_wait(&client, &tx_id, &tx_bytes).await?;
 
     let output = json!({
         "success": true,
@@ -1185,6 +1238,23 @@ async fn cmd_call(
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+fn submission_error_with_hash(tx_id: &str, error: &str) -> String {
+    format!(
+        "Transaction {tx_id} submission failed: {error}; retain tx_id={tx_id} and reconcile this exact hash before retrying if the propagation outcome is unknown"
+    )
+}
+
+fn confirmation_error_with_hash(tx_id: &str, error: &str) -> String {
+    let timeout_prefix = format!("Transaction {tx_id} was not confirmed");
+    if error.starts_with(&timeout_prefix) {
+        format!(
+            "Transaction {tx_id} confirmation outcome unknown: {error}; retain tx_id={tx_id} and reconcile this exact hash before retrying"
+        )
+    } else {
+        error.to_owned()
+    }
 }
 
 // ── cmd_deploy_hyperlane ────────────────────────────────────────────────────
@@ -1873,11 +1943,7 @@ async fn deploy_one(
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
-    client
-        .propagate_tx(&tx_bytes)
-        .await
-        .map_err(|e| format!("Failed to deploy {name}: {e}"))?;
-    wait_for_transaction(client, &tx_id)
+    propagate_and_wait(client, &tx_id, &tx_bytes)
         .await
         .map_err(|e| format!("Failed to deploy {name}: {e}"))?;
     eprintln!("  {name} TX {tx_id} executed");
@@ -1914,6 +1980,22 @@ async fn wait_for_transaction(client: &RuesClient, tx_id: &str) -> Result<(), St
         std::time::Duration::from_secs(60),
     )
     .await
+}
+
+/// Submit a transaction while preserving its exact reconciliation hash across
+/// both propagation ambiguity and confirmation timeouts.
+async fn propagate_and_wait(
+    client: &RuesClient,
+    tx_id: &str,
+    tx_bytes: &[u8],
+) -> Result<(), String> {
+    client
+        .propagate_tx(tx_bytes)
+        .await
+        .map_err(|error| submission_error_with_hash(tx_id, &error))?;
+    wait_for_transaction(client, tx_id)
+        .await
+        .map_err(|error| confirmation_error_with_hash(tx_id, &error))
 }
 
 async fn wait_for_transaction_with<F, Fut>(
@@ -1983,6 +2065,16 @@ async fn cmd_query(
     let contract_id = parse_bytes32(contract_hex)?;
 
     match return_type {
+        "u8" => {
+            let result: u8 = if let Some(val) = arg_u32 {
+                let arg = u8::try_from(val).map_err(|_| "u8 query argument is out of range")?;
+                client.contract_query(&contract_id, method, &arg).await?
+            } else {
+                client.contract_query(&contract_id, method, &()).await?
+            };
+            let output = json!({ "success": true, "value": result });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
         "u32" => {
             let result: u32 = if let Some(val) = arg_u32 {
                 client.contract_query(&contract_id, method, &val).await?
@@ -2055,7 +2147,7 @@ async fn cmd_query(
         }
         _ => {
             return Err(format!(
-            "Unsupported return type: {return_type}. Use: u32, u64, bool, bytes32, bytes, string"
+            "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, bytes, string"
         ))
         }
     }
@@ -2111,8 +2203,7 @@ async fn cmd_dispatch(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
     let output = json!({
         "success": true,
@@ -2170,8 +2261,7 @@ async fn cmd_process(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
     let output = json!({
         "success": true,
@@ -2264,8 +2354,7 @@ async fn cmd_enroll_router(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
     let output = json!({
         "success": true,
@@ -2314,8 +2403,7 @@ async fn cmd_register_account(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
     // Compute the H256 = keccak256(pk.to_bytes()) for display
     let pk_bytes = pk.to_bytes();
@@ -2367,8 +2455,7 @@ async fn cmd_drc20_approve(
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
@@ -2457,8 +2544,7 @@ async fn cmd_transfer_remote(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
     let output = json!({
         "success": true,

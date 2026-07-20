@@ -2625,13 +2625,13 @@ Result:
 - `dusk-tx`: 12 passed, 0 failed; and
 - secret-hygiene checks passed.
 
-The VM set includes live `state_version() == 1` queries, native custody reserve
-priority, rejection of unbacked native delivery, authorization-delayed
-synthetic minting for ambiguous recipients, external and contract pending
-claims, realistic collateral custody, and hook-owned message ID, insertion
-height, and historical-root queries. The storage additions require fresh
-deployment; the demo reuse paths reject a missing, malformed, or non-1 state
-version.
+The VM set includes live per-contract state-version queries, native custody
+reserve priority, rejection of unbacked native delivery,
+authorization-delayed synthetic minting for ambiguous recipients, external and
+contract pending claims, realistic collateral custody, and hook-owned message
+ID, insertion height, and historical-root queries. The storage additions
+require fresh deployment; the demo reuse paths require MerkleTreeHook and
+WarpNative version 1 and WarpDrc20 version 2.
 
 The companion agent regression at this stage also passed:
 

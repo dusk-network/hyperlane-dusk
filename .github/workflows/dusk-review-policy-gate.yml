@@ -90,7 +90,15 @@ jobs:
           ---END---
           EOF
 
-          if bash scripts/github-review-hygiene.sh --dispatcher-comment-scan-only "$stale_dispatcher_comments"; then
+          stale_scan_log="$(mktemp)"
+          if bash scripts/github-review-hygiene.sh \
+              --dispatcher-comment-scan-only "$stale_dispatcher_comments" \
+              >"$stale_scan_log" 2>&1; then
             echo "::error::stale dispatcher repro evidence was accepted"
+            exit 1
+          fi
+          if ! rg -Fq 'stale dispatcher clean-layout repro evidence' "$stale_scan_log"; then
+            cat "$stale_scan_log" >&2
+            echo "::error::stale dispatcher negative test failed outside the expected policy branch"
             exit 1
           fi

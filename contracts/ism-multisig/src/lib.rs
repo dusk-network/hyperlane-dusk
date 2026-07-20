@@ -226,6 +226,15 @@ mod ism_multisig {
             self.threshold
         }
 
+        /// Returns one coherent validator configuration snapshot.
+        ///
+        /// Agents must prefer this over separate `validators` and `threshold`
+        /// queries so an owner update cannot be observed half-applied across
+        /// two independent RUES requests.
+        pub fn validators_and_threshold(&self) -> (Vec<EthAddress>, u8) {
+            (self.validators.clone(), self.threshold)
+        }
+
         /// Returns the owner identity.
         pub fn owner(&self) -> Option<H256> {
             self.owner

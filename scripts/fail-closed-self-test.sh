@@ -17,6 +17,7 @@ info() {
 
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
+command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 workdir="$(mktemp -d -t hyperlane-fail-closed-test.XXXXXX)"
 untracked_probe=""
@@ -137,6 +138,7 @@ case "$*" in
     "api repos/dusk-network/hyperlane-dusk --jq .default_branch" | \
     "api repos/dusk-network/hyperlane-monorepo --jq .default_branch")
         printf 'main\n'
+        exit 0
         ;;
     "api repos/dusk-network/hyperlane-dusk/branches/main/protection --jq "* | \
     "api repos/dusk-network/hyperlane-monorepo/branches/main/protection --jq "*)
@@ -169,7 +171,7 @@ case "$*" in
         ;;
     "api repos/dusk-network/hyperlane-dusk/branches/main/protection --jq "* | \
     "api repos/dusk-network/hyperlane-monorepo/branches/main/protection --jq "*)
-        printf '{"requiredStatusChecks":["Dusk review policy gate"],"requiresReviews":true}\n'
+        printf '{"requiredStatusChecks":["Dusk review policy gate"],"strictStatusChecks":true,"requiresReviews":true}\n'
         ;;
     *)
         echo "unexpected gh invocation: $*" >&2
@@ -197,7 +199,7 @@ case "$*" in
         ;;
     "api repos/dusk-network/hyperlane-dusk/branches/main/protection --jq "* | \
     "api repos/dusk-network/hyperlane-monorepo/branches/main/protection --jq "*)
-        printf '{"requiredStatusChecks":["Dusk review policy gate","Unrelated CI"],"requiresReviews":true}\n'
+        printf '{"requiredStatusChecks":["Dusk review policy gate","Unrelated CI"],"strictStatusChecks":true,"requiresReviews":true}\n'
         ;;
     *)
         echo "unexpected gh invocation: $*" >&2
@@ -212,6 +214,97 @@ expect_fail \
     'dusk default branch is missing required status check: Production readiness guard' \
     env PATH="$workdir/branch-protection-wrong-check-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
     bash scripts/production-readiness-guard.sh
+
+mkdir -p "$workdir/branch-protection-strict-mock-bin"
+cat >"$workdir/branch-protection-strict-mock-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$*" in
+    "api repos/dusk-network/hyperlane-dusk --jq .default_branch" | \
+    "api repos/dusk-network/hyperlane-monorepo --jq .default_branch")
+        printf 'main\n'
+        exit 0
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/branches/main/protection --jq "*)
+        contexts='["Dusk review policy gate","Production readiness guard"]'
+        ;;
+    "api repos/dusk-network/hyperlane-monorepo/branches/main/protection --jq "*)
+        contexts='["Dusk review policy gate","Dusk agent validation"]'
+        ;;
+    *)
+        echo "unexpected gh invocation: $*" >&2
+        exit 1
+        ;;
+esac
+
+case "${GH_MOCK_STRICT_MODE:-false}" in
+    false)
+        printf '{"requiredStatusChecks":%s,"strictStatusChecks":false,"requiresReviews":true}\n' "$contexts"
+        ;;
+    missing)
+        printf '{"requiredStatusChecks":%s,"requiresReviews":true}\n' "$contexts"
+        ;;
+    *)
+        echo "unexpected GH_MOCK_STRICT_MODE" >&2
+        exit 1
+        ;;
+esac
+EOF
+chmod +x "$workdir/branch-protection-strict-mock-bin/gh"
+
+expect_fail \
+    production-readiness-nonstrict-status-checks \
+    'dusk default branch does not require branches to be up to date before merging' \
+    env PATH="$workdir/branch-protection-strict-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
+        GH_MOCK_STRICT_MODE=false \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-missing-strict-status-checks \
+    'dusk default branch does not require branches to be up to date before merging' \
+    env PATH="$workdir/branch-protection-strict-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
+        GH_MOCK_STRICT_MODE=missing \
+    bash scripts/production-readiness-guard.sh
+
+agent_state="$workdir/agent-state.json"
+agent_id_a="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+agent_id_b="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+jq -n \
+    --arg a "$agent_id_a" \
+    '{
+        evm: {mailbox:$a, token:$a, igp:$a, validator_announce:$a, merkle_tree_hook:$a},
+        dusk: {
+            mailbox:$a, igp:$a, validator_announce:$a, merkle_tree_hook:$a,
+            test_mock:$a, ism_multisig:"", default_ism:$a
+        },
+        evm_domain:31338, dusk_domain:4242, dusk_chain_id:"00",
+        dusk_default_ism:"testMock"
+    }' >"$agent_state"
+
+env AGENT_CONFIG_VALIDATE_ONLY=1 BRIDGE_STATE_FILE="$agent_state" \
+    bash demo/gen-agent-configs.sh --ism testMock --run-id validation >/dev/null \
+    || fail "matching saved agent policy should validate"
+
+expect_fail \
+    agent-config-requested-ism-mismatch \
+    'does not match deployed Dusk Mailbox policy' \
+    env AGENT_CONFIG_VALIDATE_ONLY=1 BRIDGE_STATE_FILE="$agent_state" \
+    bash demo/gen-agent-configs.sh --ism messageIdMultisig --run-id validation
+
+jq --arg b "$agent_id_b" '.dusk.default_ism = $b' "$agent_state" >"$workdir/agent-state-wrong-id.json"
+expect_fail \
+    agent-config-default-ism-id-mismatch \
+    'does not match TestMock' \
+    env AGENT_CONFIG_VALIDATE_ONLY=1 BRIDGE_STATE_FILE="$workdir/agent-state-wrong-id.json" \
+    bash demo/gen-agent-configs.sh --ism testMock --run-id validation
+
+jq '.dusk_chain_id = "0000"' "$agent_state" >"$workdir/agent-state-wrong-chain.json"
+expect_fail \
+    agent-config-chain-id-mismatch \
+    'invalid Dusk chain ID' \
+    env AGENT_CONFIG_VALIDATE_ONLY=1 BRIDGE_STATE_FILE="$workdir/agent-state-wrong-chain.json" \
+    bash demo/gen-agent-configs.sh --ism testMock --run-id validation
 
 dependency_alert_unavailable="$workdir/dependency-alert-unavailable.sh"
 cat >"$dependency_alert_unavailable" <<'EOF'
