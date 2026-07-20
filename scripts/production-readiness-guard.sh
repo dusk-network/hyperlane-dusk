@@ -15,9 +15,9 @@ WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo tests Cargo.toml Cargo.lock}"
-LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-2dd0d227cf0c33033cd9206151c1cbca6cddfffb}"
+LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-e8d6596f93c7cb90e87a76ee76126a23608339b5}"
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
-LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-3b7d9f64d7d9465eaa868770d970243d98bc53c6}"
+LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-a931f75b3d23d2e15e75f2e064470a1a01289abb}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-2}"
 DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
 MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent cargo check}"
@@ -39,6 +39,8 @@ STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
 STATUS_CHECK_WAIT_SECONDS="${STATUS_CHECK_WAIT_SECONDS:-60}"
 STATUS_CHECK_POLL_SECONDS="${STATUS_CHECK_POLL_SECONDS:-5}"
+READINESS_MODE="${READINESS_MODE:-production}"
+CURRENT_PR_NUMBER="${CURRENT_PR_NUMBER:-1}"
 
 blockers=()
 
@@ -158,6 +160,27 @@ count_non_completed_checks() {
     '
 }
 
+count_failed_checks() {
+    local current_run_id="${GITHUB_RUN_ID:-}"
+
+    jq --arg run_id "$current_run_id" '
+        [
+            .[]
+            | select(.status == "COMPLETED")
+            | select(
+                .conclusion != "SUCCESS"
+                and .conclusion != "NEUTRAL"
+                and .conclusion != "SKIPPED"
+            )
+            | select(
+                ($run_id == "")
+                or (((.detailsUrl // "") | contains("/actions/runs/" + $run_id + "/")) | not)
+            )
+        ]
+        | length
+    '
+}
+
 wait_for_status_checks() {
     local label="$1"
     local repo="$2"
@@ -193,24 +216,29 @@ check_pr() {
     local review_decision
     local status_count
     local non_completed_count
+    local failed_count
     local rollup
+    local require_merged="${4:-1}"
+    local require_approved="${5:-1}"
 
     state="$(pr_state "$repo" "$number")"
     review_decision="$(pr_review_decision "$repo" "$number")"
     rollup="$(wait_for_status_checks "$label" "$repo" "$number")"
     status_count="$(printf '%s\n' "$rollup" | jq 'length')"
     non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
+    failed_count="$(printf '%s\n' "$rollup" | count_failed_checks)"
 
     printf '%sState: %s\n' "$label" "$state"
     printf '%sReviewDecision: %s\n' "$label" "${review_decision:-none}"
     printf '%sStatusChecks: %s\n' "$label" "$status_count"
     printf '%sNonCompletedStatusChecks: %s\n' "$label" "$non_completed_count"
+    printf '%sFailedStatusChecks: %s\n' "$label" "$failed_count"
 
-    if [ "$state" != "MERGED" ]; then
+    if [ "$require_merged" = "1" ] && [ "$state" != "MERGED" ]; then
         add_blocker "$label PR #$number is $state, not MERGED"
     fi
 
-    if [ "$review_decision" != "APPROVED" ]; then
+    if [ "$require_approved" = "1" ] && [ "$review_decision" != "APPROVED" ]; then
         add_blocker "$label PR #$number reviewDecision is ${review_decision:-empty}, not APPROVED"
     fi
 
@@ -220,6 +248,10 @@ check_pr() {
 
     if [ "$non_completed_count" -gt 0 ]; then
         add_blocker "$label PR #$number has $non_completed_count non-completed status checks"
+    fi
+
+    if [ "$failed_count" -gt 0 ]; then
+        add_blocker "$label PR #$number has $failed_count failed status checks"
     fi
 }
 
@@ -457,12 +489,22 @@ check_dependency_alerts() {
 print_summary_and_exit() {
     section "Summary"
     if [ "${#blockers[@]}" -eq 0 ]; then
-        echo "productionReadinessGuard: passed"
-        echo "Known machine-checkable blockers are closed, but Dusk reviewer judgment and fresh release evidence still apply."
+        if [ "$READINESS_MODE" = "premerge" ]; then
+            echo "premergeReadinessGuard: passed"
+            echo "productionReadinessGuard: deferred"
+            echo "Merge prerequisites are closed; the production-only audit still requires a manual dispatch."
+        else
+            echo "productionReadinessGuard: passed"
+            echo "Known machine-checkable blockers are closed, but Dusk reviewer judgment and fresh release evidence still apply."
+        fi
         exit 0
     fi
 
-    echo "productionReadinessGuard: blocked"
+    if [ "$READINESS_MODE" = "premerge" ]; then
+        echo "premergeReadinessGuard: blocked"
+    else
+        echo "productionReadinessGuard: blocked"
+    fi
     for blocker in "${blockers[@]}"; do
         printf -- '- %s\n' "$blocker"
     done
@@ -472,6 +514,15 @@ print_summary_and_exit() {
 require_cmd gh
 require_cmd git
 require_cmd jq
+
+case "$READINESS_MODE" in
+    premerge|production)
+        ;;
+    *)
+        echo "[FAIL] READINESS_MODE must be premerge or production, got: $READINESS_MODE" >&2
+        exit 1
+        ;;
+esac
 
 if [ "$UPSTREAM_SUBMISSION_GATE_ONLY" = "1" ]; then
     check_upstream_submission_gate
@@ -496,7 +547,15 @@ if [ "$DEPENDENCY_ALERT_GATE_ONLY" = "1" ]; then
 fi
 
 section "Internal PRs"
-check_pr "dusk" "$DUSK_REPO" 1
+printf 'readinessMode: %s\n' "$READINESS_MODE"
+if [ "$READINESS_MODE" = "premerge" ]; then
+    # Branch protection owns approval and merge-state enforcement for the PR
+    # that is currently producing this required check. Requiring this PR to be
+    # merged here would make the required check impossible to satisfy.
+    check_pr "dusk" "$DUSK_REPO" "$CURRENT_PR_NUMBER" 0 0
+else
+    check_pr "dusk" "$DUSK_REPO" 1
+fi
 check_pr "monorepo" "$MONOREPO_REPO" 1
 
 if gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json state >/dev/null 2>&1; then
@@ -505,37 +564,41 @@ else
     add_blocker "workflow dispatcher PR #$WORKFLOW_PR_NUMBER is missing or inaccessible"
 fi
 
-section "Branch Protection"
-check_branch_protection "$DUSK_REPO" "dusk" "$DUSK_REQUIRED_STATUS_CONTEXTS"
-check_branch_protection "$MONOREPO_REPO" "monorepo" "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
+if [ "$READINESS_MODE" = "production" ]; then
+    section "Branch Protection"
+    check_branch_protection "$DUSK_REPO" "dusk" "$DUSK_REQUIRED_STATUS_CONTEXTS"
+    check_branch_protection "$MONOREPO_REPO" "monorepo" "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
 
-section "Production Sign-Off"
-issue_body="$(gh issue view 2 --repo "$DUSK_REPO" --json body --jq .body)"
-unchecked_count="$(printf '%s\n' "$issue_body" | grep -c '^- \[ \]' || true)"
-checked_count="$(printf '%s\n' "$issue_body" | grep -c '^- \[x\]' || true)"
-printf 'uncheckedItems: %s\n' "$unchecked_count"
-printf 'checkedItems: %s\n' "$checked_count"
-if [ "$unchecked_count" -gt 0 ]; then
-    add_blocker "production sign-off issue #2 has $unchecked_count unchecked checklist items"
-fi
-
-section "Split Decision Issues"
-open_split_issues=0
-for issue in $SIGNOFF_ISSUES; do
-    state="$(gh issue view "$issue" --repo "$DUSK_REPO" --json state --jq .state)"
-    printf '#%s: %s\n' "$issue" "$state"
-    if [ "$state" = "OPEN" ]; then
-        open_split_issues=$((open_split_issues + 1))
+    section "Production Sign-Off"
+    issue_body="$(gh issue view 2 --repo "$DUSK_REPO" --json body --jq .body)"
+    unchecked_count="$(printf '%s\n' "$issue_body" | grep -c '^- \[ \]' || true)"
+    checked_count="$(printf '%s\n' "$issue_body" | grep -c '^- \[x\]' || true)"
+    printf 'uncheckedItems: %s\n' "$unchecked_count"
+    printf 'checkedItems: %s\n' "$checked_count"
+    if [ "$unchecked_count" -gt 0 ]; then
+        add_blocker "production sign-off issue #2 has $unchecked_count unchecked checklist items"
     fi
-done
-printf 'openSplitIssues: %s\n' "$open_split_issues"
-if [ "$open_split_issues" -gt 0 ]; then
-    add_blocker "$open_split_issues split production decision issues remain open"
+
+    section "Split Decision Issues"
+    open_split_issues=0
+    for issue in $SIGNOFF_ISSUES; do
+        state="$(gh issue view "$issue" --repo "$DUSK_REPO" --json state --jq .state)"
+        printf '#%s: %s\n' "$issue" "$state"
+        if [ "$state" = "OPEN" ]; then
+            open_split_issues=$((open_split_issues + 1))
+        fi
+    done
+    printf 'openSplitIssues: %s\n' "$open_split_issues"
+    if [ "$open_split_issues" -gt 0 ]; then
+        add_blocker "$open_split_issues split production decision issues remain open"
+    fi
+
+    check_dependency_alerts
+    check_ci_visibility
+else
+    section "Production-Only Gates"
+    echo "productionOnlyGates: deferred until workflow_dispatch"
 fi
-
-check_dependency_alerts
-
-check_ci_visibility
 
 section "Freshness"
 if [ "$MONOREPO_COMPARE_VIA_GH" = "1" ]; then

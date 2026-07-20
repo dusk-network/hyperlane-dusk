@@ -45,12 +45,14 @@ setup to accept, change, or replace.
 - The implementation branch now also proposes
   `.github/workflows/production-readiness-gate.yml`. This is a lightweight
   GitHub-hosted status-check candidate that runs
-  `make production-readiness-guard`; it is expected to fail until the known
-  review, sign-off, workflow runner/secret, and internal merge blockers are
-  closed. It requests `security-events: read` so the dependency-alert triage
-  helper can read same-repo Dependabot alerts when GitHub grants that
-  permission; otherwise the production guard reports dependency-alert triage as
-  unavailable and remains blocked.
+  `make production-readiness-guard` in one of two modes. Pull requests use
+  `READINESS_MODE=premerge`: the current PR is not required to be already
+  merged or self-approved, while prerequisite PRs, status checks, upstream
+  freshness, and exact-ref repro freshness still fail closed. Manual dispatch
+  uses `READINESS_MODE=production` and additionally enforces final sign-off,
+  branch-protection visibility, dependency-alert visibility, runner/secret
+  provisioning, and all production decision issues. This avoids making a
+  required PR check depend circularly on its own prior merge.
 
 ## Proposed Runner
 
@@ -114,9 +116,10 @@ make gate-status-fresh
 `make dependency-alert-status`, `make review-hygiene`, and
 `make gate-status-fresh`.
 
-`make production-readiness-guard` is expected to fail while production blockers
-remain open. It reports machine-checkable blockers such as open internal PRs,
-review gates, unchecked sign-off items, open split decision issues, missing
+`make production-readiness-guard` defaults to the full production mode and is
+expected to fail while production blockers remain open. It reports
+machine-checkable blockers such as open internal PRs, review gates, unchecked
+sign-off items, open split decision issues, missing
 `DUSK_ORG_READ_TOKEN` visibility in both internal repos, missing self-hosted
 runner visibility for the `dusk-hyperlane` label, Dusk Cargo dependency-alert
 triage, upstream drift, and latest clean-layout repro covered-path delta.
@@ -151,7 +154,9 @@ The implementation branch includes:
 .github/workflows/production-readiness-gate.yml
 ```
 
-It runs on pull requests to `main` and through `workflow_dispatch`. The job is:
+It runs on pull requests to `main` and through `workflow_dispatch`. Pull-request
+runs are merge-readiness checks; manual runs are the full production-readiness
+audit. The job context remains:
 
 ```text
 Production readiness guard
@@ -165,8 +170,10 @@ GitHub's compare API for monorepo upstream freshness:
 make production-readiness-guard
 ```
 
-For manual dispatch, set `monorepo_ref` to the monorepo PR branch or ref. On
-pull requests, the default monorepo ref is `feat/dusk-support-v2`. Local
+For manual dispatch, set `monorepo_ref` to the monorepo PR branch or ref. Manual
+dispatch sets `READINESS_MODE=production`; pull requests set
+`READINESS_MODE=premerge` and obtain `CURRENT_PR_NUMBER` from the event. On pull
+requests, the default monorepo ref is `feat/dusk-support-v2`. Local
 reviewers should still use `make gate-status-fresh` when they have the adjacent
 monorepo checkout; the workflow avoids cloning the full Hyperlane monorepo just
 to produce a policy status check.

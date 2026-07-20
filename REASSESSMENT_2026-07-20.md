@@ -9,7 +9,7 @@ contract changes identified by the first reassessment pass.
 - Hyperlane upstream `main`:
   `197b1e0d1a7b7ee5539e9ad38a02a23a7eb0a0b3`.
 - Hyperlane Dusk agent branch: `feat/dusk-support-v2` at
-  `a931f75b3db75e2e86bc866b16ad6f71c488f1ba`, rebased onto that upstream.
+  `a931f75b3d23d2e15e75f2e064470a1a01289abb`, rebased onto that upstream.
 - Clean Rusk private `master` used for VM and live checks:
   `bc281d2cd1e789db92e99bc59849c92363524e37`.
 - Forge used by the contracts:
@@ -115,7 +115,7 @@ The live runs used a fresh state archive, matching current-Rusk consensus keys,
 contract WASMs built from the same Rusk checkout as the node, and clean service
 shutdown. They executed the Dusk agent tree at
 `eaa43c3c4decdf007085b19ec6b7d586f150457e`. The final upstream-only rebase
-created `a931f75b3db75e2e86bc866b16ad6f71c488f1ba`; a covered-path diff between
+created `a931f75b3d23d2e15e75f2e064470a1a01289abb`; a covered-path diff between
 those heads is empty, and the Dusk chain plus base, validator, relayer, scraper,
 and lander packages pass `cargo check` at the final head.
 

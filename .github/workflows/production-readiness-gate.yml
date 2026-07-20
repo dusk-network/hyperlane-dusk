@@ -30,6 +30,8 @@ jobs:
       DUSK_STATUS_READ_TOKEN_CONFIGURED: ${{ secrets.DUSK_STATUS_READ_TOKEN != '' }}
       DUSK_ORG_READ_TOKEN_CONFIGURED: ${{ secrets.DUSK_ORG_READ_TOKEN != '' }}
       DUSK_DIR: ${{ github.workspace }}/hyperlane/dusk
+      READINESS_MODE: ${{ github.event_name == 'pull_request' && 'premerge' || 'production' }}
+      CURRENT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
       MONOREPO_REF: ${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
       MONOREPO_COMPARE_VIA_GH: "1"
       MONOREPO_COMPARE_HEAD: dusk-network:${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
@@ -50,6 +52,8 @@ jobs:
           git -C "$DUSK_DIR" rev-parse HEAD
           printf 'monorepo_ref=%s\n' "$MONOREPO_REF"
           printf 'monorepo_compare_head=%s\n' "$MONOREPO_COMPARE_HEAD"
+          printf 'readiness_mode=%s\n' "$READINESS_MODE"
+          printf 'current_pr_number=%s\n' "$CURRENT_PR_NUMBER"
           printf 'dusk_status_read_token_configured=%s\n' "$DUSK_STATUS_READ_TOKEN_CONFIGURED"
           printf 'dusk_org_read_token_configured=%s\n' "$DUSK_ORG_READ_TOKEN_CONFIGURED"
           if [ "$DUSK_STATUS_READ_TOKEN_CONFIGURED" = "true" ]; then

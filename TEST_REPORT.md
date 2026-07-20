@@ -15,8 +15,8 @@ the exact commits they name.
 
 | Component | Validated reference |
 |---|---|
-| Dusk contracts/tooling | `feat/dusk-hardening-v2`, including the caller, fee-custody, aggregation-hook, current-DRC20, deployment, and route-matrix changes described in `REASSESSMENT_2026-07-20.md` |
-| Hyperlane agent integration | `feat/dusk-support-v2` at `a931f75b3db75e2e86bc866b16ad6f71c488f1ba`, rebased on upstream `197b1e0d1a7b7ee5539e9ad38a02a23a7eb0a0b3` |
+| Dusk contracts/tooling | `feat/dusk-hardening-v2`; validated runtime anchor `e8d6596f93c7cb90e87a76ee76126a23608339b5`, including the caller, fee-custody, aggregation-hook, current-DRC20, deployment, and route-matrix changes described in `REASSESSMENT_2026-07-20.md` |
+| Hyperlane agent integration | `feat/dusk-support-v2` at `a931f75b3d23d2e15e75f2e064470a1a01289abb`, rebased on upstream `197b1e0d1a7b7ee5539e9ad38a02a23a7eb0a0b3` |
 | Rusk | Clean `bc281d2cd1e789db92e99bc59849c92363524e37`, with a fresh state archive and that checkout's consensus keys |
 | Forge | `d1e39a16ad5e2cd0675c7aafa6e2c459310bcb1a` (Forge 0.3.0) |
 
@@ -46,6 +46,13 @@ instead of accepting an existing, potentially stale artifact. The live cases
 executed agent head `eaa43c3c4decdf007085b19ec6b7d586f150457e`; the Dusk-agent covered paths
 are byte-identical at the final rebased head, whose six affected Rust packages
 also pass `cargo check`.
+
+The required GitHub check now has distinct phases. Pull-request events run a
+pre-merge gate that does not require the current PR to have already merged or
+self-approved. `workflow_dispatch` retains the full production audit, including
+human decision issues and privileged repository/runner/secret visibility. The
+same hardening also makes completed failed dependency checks fail the guard;
+previously it counted only missing or still-running checks.
 
 ## Repository State
 
