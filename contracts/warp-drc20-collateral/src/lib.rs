@@ -406,6 +406,20 @@ mod warp_drc20_collateral {
             );
         }
 
+        /// Withdraw this route's unused Mailbox dispatch-fee credit.
+        ///
+        /// Owner only. The Mailbox sees this route as the payer and sends the
+        /// withdrawn native DUSK to the explicit Moonlight recipient.
+        pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
+            self.only_owner();
+            let _: () = abi::call(
+                self.mailbox,
+                "withdraw_dispatch_credit",
+                &(recipient, amount),
+            )
+            .expect("WarpCollateral: dispatch credit withdrawal failed");
+        }
+
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();

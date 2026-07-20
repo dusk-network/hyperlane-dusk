@@ -31,6 +31,7 @@
     events::Dispatch,
     events::DispatchFeeFunded,
     events::DispatchFeePaid,
+    events::DispatchFeeWithdrawn,
     events::DispatchId,
     events::Initialized,
     events::OwnershipRenounced,
@@ -46,8 +47,10 @@ mod mailbox {
     use alloc::string::String;
     use alloc::vec::Vec;
 
+    use dusk_bytes::Serializable;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
-    use dusk_core::transfer::{ContractToContract, TRANSFER_CONTRACT};
+    use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
+    use dusk_core::transfer::{ContractToAccount, ContractToContract, TRANSFER_CONTRACT};
 
     use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
@@ -187,6 +190,44 @@ mod mailbox {
             abi::emit(
                 events::DispatchFeeFunded::TOPIC,
                 events::DispatchFeeFunded { payer, amount },
+            );
+        }
+
+        /// Withdraw native DUSK from the caller's dispatch-fee credit.
+        ///
+        /// The effective caller is always the payer: a direct Moonlight call
+        /// withdraws that account's credit, while an inter-contract call
+        /// withdraws the calling contract's credit. The payer may direct the
+        /// funds to any explicit Moonlight account.
+        pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
+            assert!(amount > 0, "Mailbox: withdrawal amount is zero");
+
+            let payer = Self::resolve_sender();
+            let credit = self.fee_credits.get(&payer).copied().unwrap_or(0);
+            assert!(credit >= amount, "Mailbox: insufficient fee credit");
+
+            let remaining = credit - amount;
+            if remaining == 0 {
+                self.fee_credits.remove(&payer);
+            } else {
+                self.fee_credits.insert(payer, remaining);
+            }
+
+            let recipient_hash = message::keccak256(&recipient.to_bytes());
+            let transfer = ContractToAccount {
+                account: recipient,
+                value: amount,
+            };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
+                .expect("Mailbox: dispatch credit withdrawal failed");
+
+            abi::emit(
+                events::DispatchFeeWithdrawn::TOPIC,
+                events::DispatchFeeWithdrawn {
+                    payer,
+                    recipient: recipient_hash,
+                    amount,
+                },
             );
         }
 

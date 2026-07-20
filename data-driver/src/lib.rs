@@ -211,6 +211,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             events::Dispatch::TOPIC => rkyv_to_json::<events::Dispatch>(rkyv),
             events::DispatchId::TOPIC => rkyv_to_json::<events::DispatchId>(rkyv),
             events::DispatchFeeFunded::TOPIC => rkyv_to_json::<events::DispatchFeeFunded>(rkyv),
+            events::DispatchFeeWithdrawn::TOPIC => {
+                rkyv_to_json::<events::DispatchFeeWithdrawn>(rkyv)
+            }
             events::DispatchFeePaid::TOPIC => rkyv_to_json::<events::DispatchFeePaid>(rkyv),
             events::Process::TOPIC => rkyv_to_json::<events::Process>(rkyv),
             events::ProcessId::TOPIC => rkyv_to_json::<events::ProcessId>(rkyv),

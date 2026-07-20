@@ -190,6 +190,30 @@ enum Command {
         #[arg(long, default_value = "2000")]
         gas_price: u64,
     },
+    /// Withdraw unused dispatch-fee credit to the signing Moonlight account.
+    WithdrawDispatch {
+        #[arg(long, default_value = "http://localhost:18090/")]
+        rues_url: String,
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        #[arg(long, default_value = "password")]
+        password: String,
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin.
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// Mailbox for account credit, or an owned warp route for route credit.
+        #[arg(long)]
+        target: String,
+        /// Native DUSK amount in LUX.
+        #[arg(long)]
+        amount: u64,
+        #[arg(long, default_value = "30000000")]
+        gas_limit: u64,
+        #[arg(long, default_value = "2000")]
+        gas_price: u64,
+    },
     /// Dispatch a message via TestRecipient proxy.
     Dispatch {
         #[arg(long, default_value = "http://localhost:18090/")]
@@ -509,6 +533,30 @@ async fn main() {
                 secret_key_stdin,
                 &mailbox,
                 &payer,
+                amount,
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
+        Command::WithdrawDispatch {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            target,
+            amount,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_withdraw_dispatch(
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &target,
                 amount,
                 gas_limit,
                 gas_price,
@@ -1134,6 +1182,53 @@ async fn cmd_fund_dispatch(
         "success": true,
         "mailbox": mailbox_hex,
         "payer": payer_hex,
+        "amount": amount,
+        "tx_id": tx_id,
+    });
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+// ── cmd_withdraw_dispatch ────────────────────────────────────────────────
+
+async fn cmd_withdraw_dispatch(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    target_hex: &str,
+    amount: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    if amount == 0 {
+        return Err("Withdrawal amount must be greater than zero".into());
+    }
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let client = RuesClient::new(rues_url)?;
+    let target = ContractId::from_bytes(parse_bytes32(target_hex)?);
+    let args = rkyv_serialize(&(pk, amount));
+    let chain_id = client.query_chain_id().await?;
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call_with_deposit(
+        &sk,
+        target,
+        "withdraw_dispatch_credit",
+        args,
+        0,
+        gas_limit,
+        gas_price,
+        nonce + 1,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    let output = json!({
+        "success": true,
+        "target": target_hex,
+        "recipient_public_key": hex::encode(pk.to_bytes()),
         "amount": amount,
         "tx_id": tx_id,
     });

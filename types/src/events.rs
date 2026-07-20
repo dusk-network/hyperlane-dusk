@@ -298,6 +298,24 @@ impl DispatchFeeFunded {
     pub const TOPIC: &'static str = "dispatch_fee_funded";
 }
 
+/// Emitted when native DUSK is withdrawn from a Mailbox dispatch-fee credit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DispatchFeeWithdrawn {
+    /// Message sender identity whose credit was withdrawn.
+    pub payer: H256,
+    /// Keccak256 hash of the recipient Moonlight public key.
+    pub recipient: H256,
+    /// Amount withdrawn in LUX.
+    pub amount: u64,
+}
+
+impl DispatchFeeWithdrawn {
+    /// Event topic.
+    pub const TOPIC: &'static str = "dispatch_fee_withdrawn";
+}
+
 /// Emitted when a dispatch consumes native DUSK fee credit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
@@ -573,6 +591,7 @@ impl_contract_events!(
     Dispatch,
     DispatchId,
     DispatchFeeFunded,
+    DispatchFeeWithdrawn,
     DispatchFeePaid,
     Process,
     ProcessId,

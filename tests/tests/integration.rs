@@ -1396,6 +1396,110 @@ fn test_dispatch_rejects_sender_without_native_fee_credit() {
 }
 
 #[test]
+fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
+    let mut s = HyperlaneSession::new();
+    let funded = 4_000_000u64;
+    let partial = 1_500_000u64;
+
+    // Funding is intentionally permissionless. Funding another payer does not
+    // grant the funder authority over that payer's resulting credit.
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, funded),
+            funded,
+        )
+        .expect("third-party dispatch funding should succeed");
+
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded
+    );
+
+    let result = s.session.call_public::<_, ()>(
+        &RELAYER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, partial),
+    );
+    assert_contract_panic(result, "Mailbox: insufficient fee credit");
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, 0u64),
+    );
+    assert_contract_panic(result, "Mailbox: withdrawal amount is zero");
+
+    let relayer_balance_before = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .balance;
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*RELAYER_PK, partial),
+        )
+        .expect("payer should withdraw its own dispatch credit");
+    let relayer_balance_after = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .balance;
+    assert_eq!(relayer_balance_after, relayer_balance_before + partial);
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded - partial
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded - partial
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*OWNER_PK, funded - partial),
+        )
+        .expect("payer should withdraw the remaining dispatch credit");
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        0
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        0
+    );
+}
+
+#[test]
 fn test_protocol_fee_rejects_unbacked_direct_post_dispatch() {
     let mut s = HyperlaneSession::new();
 
@@ -1766,6 +1870,73 @@ fn warp_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u6
         .data
 }
 
+fn assert_route_dispatch_credit_withdrawal(
+    mut session: TestSession,
+    route: ContractId,
+    owner_error: &str,
+) {
+    let funded = 3_000_000u64;
+    let withdrawn = 1_000_000u64;
+    let payer = route.to_bytes();
+
+    session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(payer, funded),
+            funded,
+        )
+        .expect("third-party route funding should succeed");
+
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        route,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, withdrawn),
+    );
+    assert_contract_panic(result, owner_error);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+            .expect("route fee_credit should succeed")
+            .data,
+        funded
+    );
+
+    let recipient_balance_before = session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            route,
+            "withdraw_dispatch_credit",
+            &(*RELAYER_PK, withdrawn),
+        )
+        .expect("route owner should withdraw the route's dispatch credit");
+    let recipient_balance_after = session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+
+    assert_eq!(recipient_balance_after, recipient_balance_before + withdrawn);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+            .expect("route fee_credit should succeed")
+            .data,
+        funded - withdrawn
+    );
+    assert_eq!(
+        session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded - withdrawn
+    );
+}
+
 /// Deploy a WarpDrc20 alongside Mailbox with TestMock hooks.
 fn session_with_warp_drc20() -> TestSession {
     let mut session = TestSession::instantiate(vec![
@@ -1933,6 +2104,15 @@ fn test_warp_drc20_admin_accepts_owner_moonlight_sender() {
         .expect("ism should succeed")
         .data;
     assert_eq!(ism, TEST_MOCK_ID);
+}
+
+#[test]
+fn test_warp_drc20_owner_can_withdraw_route_dispatch_credit() {
+    assert_route_dispatch_credit_withdrawal(
+        session_with_warp_drc20(),
+        WARP_DRC20_ID,
+        "WarpDrc20: caller is not the owner",
+    );
 }
 
 // =============================================================================
@@ -2879,6 +3059,16 @@ fn test_warp_native_admin_accepts_owner_and_rejects_non_owner() {
 }
 
 #[test]
+fn test_warp_native_owner_can_withdraw_route_dispatch_credit() {
+    let (session, _) = session_with_warp_native_flow();
+    assert_route_dispatch_credit_withdrawal(
+        session,
+        WARP_NATIVE_ID,
+        "WarpNative: caller is not the owner",
+    );
+}
+
+#[test]
 fn test_warp_native_roundtrip_moves_real_dusk() {
     let (mut session, remote_router) = session_with_warp_native_flow();
     let amount = 1_000_000u64;
@@ -3205,6 +3395,16 @@ fn test_warp_collateral_admin_accepts_owner_and_rejects_non_owner() {
         &(MERKLE_TREE_HOOK_ID,),
     );
     assert_contract_panic(result, "WarpCollateral: caller is not the owner");
+}
+
+#[test]
+fn test_warp_collateral_owner_can_withdraw_route_dispatch_credit() {
+    let (session, _) = session_with_warp_collateral_flow();
+    assert_route_dispatch_credit_withdrawal(
+        session,
+        WARP_DRC20_COLLATERAL_ID,
+        "WarpCollateral: caller is not the owner",
+    );
 }
 
 #[test]

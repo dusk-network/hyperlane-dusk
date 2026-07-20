@@ -70,13 +70,50 @@ Accept immutable registration for v1. A different BLS key naturally produces a
 different recipient hash, and admin-controlled remapping would introduce a
 privileged path over user recipient identity.
 
+### Dispatch Fee Credit Ownership and Withdrawal
+
+Tracking issue: dusk-network/hyperlane-dusk#2.
+
+Decision (accepted 2026-07-20):
+
+- [x] Keep credit authority with the effective payer and allow withdrawal to
+  an explicit Moonlight account.
+- [x] Give each production warp route an owner-only proxy for its own
+  contract-keyed credit.
+- [x] Do not give the Mailbox owner a global credit-drain power.
+- [x] Defer contract-recipient withdrawal until a callback ABI and receiving
+  contract requirements are specified.
+
+Semantics:
+
+- `fund_dispatch` remains permissionless. A third party may fund a user or
+  route, but funding does not create a separate refund claim: the resulting
+  credit belongs to the named payer identity.
+- A direct Moonlight `withdraw_dispatch_credit` call resolves the signing
+  account as the payer. An inter-contract call resolves the immediate calling
+  contract as the payer. Callers cannot supply or impersonate a different
+  payer.
+- The payer selects an explicit Moonlight public key as recipient. State is
+  debited before the transfer-contract call, and the transaction reverts both
+  changes if that transfer fails.
+- WarpDrc20, WarpNative, and WarpDrc20Collateral expose the same method only to
+  their configured owner. The nested Mailbox call can withdraw only that
+  route's credit.
+
+Evidence:
+
+- `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed`.
+- `test_warp_drc20_owner_can_withdraw_route_dispatch_credit`.
+- `test_warp_native_owner_can_withdraw_route_dispatch_credit`.
+- `test_warp_collateral_owner_can_withdraw_route_dispatch_credit`.
+
 ### Pending Escrow Without Admin Drain
 
 Tracking issue: dusk-network/hyperlane-dusk#6.
 
-Decision:
+Decision (accepted 2026-07-20):
 
-- [ ] Accept no admin drain/recovery path for pending escrow.
+- [x] Accept no admin drain/recovery path for pending escrow.
 - [ ] Request a governed recovery design before release.
 
 Current implementation:
@@ -114,6 +151,12 @@ Recommended stance:
 Accept no admin drain for v1 if Dusk wants a non-custodial failure mode. If Dusk
 wants recovery for lost keys or wrong recipient hashes, design that separately
 with governance, timelock, audit, and user-dispute rules.
+
+This decision does not claim that lost-key or wrong-hash funds are recoverable.
+It records that adding unilateral route-owner seizure is a worse default. A
+future recovery design would need message/source provenance, an eligible refund
+destination, a delay and dispute window, governance authorization, events, and
+cross-chain replay/double-spend analysis.
 
 ### Permissionless Dispatch-Credit Funding
 

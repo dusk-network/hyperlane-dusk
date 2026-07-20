@@ -55,8 +55,12 @@ default hook is IGP, so every deployed demo dispatch exercises both the
 required aggregation and gas-payment path.
 
 The demo pre-funds each deployed warp route's Mailbox credit. Credits are an
-explicit prepayment model; production policy still needs to define who funds
-them and whether unused credit needs a withdrawal or refund surface.
+explicit prepayment model. Permissionless funding does not confer withdrawal
+rights: the effective payer owns the credit. Moonlight payers may withdraw to
+an explicit Moonlight key, and each production warp route exposes an
+owner-only proxy for its own contract-keyed credit. There is no Mailbox-owner
+global drain. Contract-recipient payouts remain deferred until a callback ABI
+is specified.
 
 ### Current DRC20 compatibility
 
@@ -135,9 +139,10 @@ surface:
 - The agent crate still depends on an adjacent Dusk types checkout, which is
   appropriate for the paired internal repositories but is not a self-contained
   upstream Hyperlane contribution.
-- Production signer custody, route funding/refund policy, account-registration
-  UX, upgrade/migration policy, monitoring, and Dusk release sign-off remain
-  explicit deployment decisions.
+- Production signer custody, route-funding responsibility and alert thresholds,
+  account-registration UX, upgrade/migration policy, monitoring, and Dusk
+  release sign-off remain explicit deployment decisions. The unused-credit
+  ownership and Moonlight withdrawal semantics are now defined.
 - The existing stress, fault-injection, and soak evidence remains historical
   evidence for its pinned commits. It should be repeated after later changes to
   the agent or runtime, even though both current live route matrices pass.

@@ -343,6 +343,12 @@ dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc2
 # Pre-fund value-backed Mailbox dispatch fees for a route
 dusk-tx fund-dispatch --mailbox <hex> --payer <route-hex> --amount <lux>
 
+# Withdraw a Moonlight account's own unused credit to the signing account
+dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux>
+
+# A warp-route owner can withdraw that route's credit to the signing account
+dusk-tx withdraw-dispatch --target <route-hex> --amount <lux>
+
 # Query contract state
 dusk-tx query --contract <hex> --method nonce --return-type u32
 
