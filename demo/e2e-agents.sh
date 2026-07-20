@@ -234,11 +234,12 @@ run_case() {
     # Load state.
     local state="$BRIDGE_STATE_FILE"
     local evm_token evm_native_token evm_collateral_token
-    local dusk_warp dusk_warp_native dusk_warp_collateral dusk_protocol_fee
+    local dusk_mailbox dusk_warp dusk_warp_native dusk_warp_collateral dusk_protocol_fee
     local account_h256 evm_domain dusk_domain
     evm_token="$(jq -r '.evm.token' "$state")"
     evm_native_token="$(jq -r '.evm.native_token' "$state")"
     evm_collateral_token="$(jq -r '.evm.collateral_token' "$state")"
+    dusk_mailbox="$(jq -r '.dusk.mailbox' "$state")"
     dusk_warp="$(jq -r '.dusk.warp_drc20' "$state")"
     dusk_warp_native="$(jq -r '.dusk.warp_native' "$state")"
     dusk_warp_collateral="$(jq -r '.dusk.warp_drc20_collateral' "$state")"
@@ -246,6 +247,29 @@ run_case() {
     account_h256="$(jq -r '.account_h256' "$state")"
     evm_domain="$(jq -r '.evm_domain' "$state")"
     dusk_domain="$(jq -r '.dusk_domain' "$state")"
+
+    # Exercise the stacked withdrawal ABI on live Rusk before using the same
+    # route for message delivery. The route owner withdraws one LUX from only
+    # that route's Mailbox credit, then the later outbound transfer proves the
+    # remaining credit is still usable.
+    info "Withdrawing one LUX of WarpDrc20 dispatch credit on live Rusk..."
+    local credit_before credit_after
+    credit_before="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+      --contract "$dusk_mailbox" --method fee_credit --return-type u64 \
+      --arg-bytes32 "$dusk_warp" | jq -r '.value')"
+    [[ "$credit_before" =~ ^[1-9][0-9]*$ ]] \
+      || fail "invalid pre-withdrawal dispatch credit: $credit_before"
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" withdraw-dispatch \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+      --target "$dusk_warp" --amount 1 >/dev/null
+    credit_after="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+      --contract "$dusk_mailbox" --method fee_credit --return-type u64 \
+      --arg-bytes32 "$dusk_warp" | jq -r '.value')"
+    [[ "$credit_after" =~ ^[0-9]+$ ]] \
+      || fail "invalid post-withdrawal dispatch credit: $credit_after"
+    [ "$credit_after" -eq $((credit_before - 1)) ] \
+      || fail "dispatch-credit withdrawal mismatch: before=$credit_before after=$credit_after"
+    info "Live dispatch-credit withdrawal confirmed"
 
     # ----------------------------
     # EVM -> Dusk (via relayer)
