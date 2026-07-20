@@ -327,7 +327,6 @@ fn append_bounded_chunk(
     body.extend_from_slice(chunk);
     Ok(())
 }
-
 fn transaction_status_query(tx_id: &str) -> String {
     format!(r#"query {{ tx(hash: "{tx_id}") {{ err }} }}"#)
 }
@@ -434,9 +433,11 @@ mod tests {
             TransactionStatus::Executed
         );
         assert_eq!(
-            parse_transaction_status_response(br#"{"data":{"tx":{"err":"contract rejected"}}}"#)
+            parse_transaction_status_response(
+                br#"{"data":{"tx":{"err":"Mailbox: insufficient fee credit"}}}"#,
+            )
                 .unwrap(),
-            TransactionStatus::Failed("contract rejected".into())
+            TransactionStatus::Failed("Mailbox: insufficient fee credit".into())
         );
         assert_eq!(
             parse_transaction_status_response(br#"{"data":{"tx":null}}"#).unwrap(),
@@ -454,6 +455,7 @@ mod tests {
         assert!(parse_transaction_status_response(br#"{"data":{}}"#).is_err());
         assert!(parse_transaction_status_response(br#"{"data":{"tx":{}}}"#).is_err());
         assert!(parse_transaction_status_response(br#"{"data":{"tx":{"err":7}}}"#).is_err());
+        assert!(parse_transaction_status_response(b"not json").is_err());
     }
 
     #[test]

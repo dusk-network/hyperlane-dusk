@@ -96,6 +96,10 @@ Semantics:
 - The payer selects an explicit Moonlight public key as recipient. State is
   debited before the transfer-contract call, and the transaction reverts both
   changes if that transfer fails.
+- `dusk-tx fund-dispatch` and `withdraw-dispatch` report success only after the
+  exact transaction hash is present in Rusk's ledger with no execution error.
+  Moonlight nonce advancement is intentionally not treated as success because
+  rejected contract calls are still spent transactions.
 - WarpDrc20, WarpNative, and WarpDrc20Collateral expose the same method only to
   their configured owner. The nested Mailbox call can withdraw only that
   route's credit.
@@ -103,9 +107,11 @@ Semantics:
 Evidence:
 
 - `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed`.
+- `test_dispatch_credit_withdrawals_preserve_multi_payer_solvency`.
 - `test_warp_drc20_owner_can_withdraw_route_dispatch_credit`.
 - `test_warp_native_owner_can_withdraw_route_dispatch_credit`.
 - `test_warp_collateral_owner_can_withdraw_route_dispatch_credit`.
+- `dusk-tx` transaction-status response and exact-hash query tests.
 
 ### Pending Escrow Without Admin Drain
 

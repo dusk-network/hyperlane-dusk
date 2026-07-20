@@ -525,7 +525,7 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 86 total VM tests, including shared authorization, fee custody/aggregation and withdrawal, native custody, and current-ABI DRC20 allowance/collateral coverage |
+| `tests/tests/integration.rs` | 87 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, native custody, and current-ABI DRC20 allowance/collateral coverage |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
 | `demo/start-env.sh` | Uses an explicit state archive and consensus-key path, refuses mismatched contract/node Rusk checkouts, and avoids explorer assets when the explorer is skipped |
 | `demo/stop-env.sh` | Stops only the Rusk process using the demo's exact state archive |
@@ -581,7 +581,7 @@ All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
 `29 passed; 0 failed; 0 ignored`; the integration package reported
-`86 passed; 0 failed; 0 ignored` on current Rusk.
+`87 passed; 0 failed; 0 ignored` on current Rusk.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use
@@ -605,7 +605,7 @@ the final sign-off in https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
 | Decision | Recommended release stance | Rationale and evidence | Reviewer action |
 |---|---|---|---|
-| Dispatch-credit funding and recovery | Payer-owned withdrawal design accepted 2026-07-20; operational funding levels remain open. | Anyone may fund, but only the effective payer can withdraw. Production warp routes expose owner-only withdrawal of their own route credit. No Mailbox owner can globally drain credits. Moonlight payouts are implemented; contract-recipient callbacks are deferred. | Select the route funder, target balance, low-credit alert, and Moonlight treasury. Revisit contract recipients only with a specified callback ABI. |
+| Dispatch-credit funding and recovery | Payer-owned withdrawal design accepted 2026-07-20; operational funding levels remain open. | Anyone may fund, but only the effective payer can withdraw. Production warp routes expose owner-only withdrawal of their own route credit. No Mailbox owner can globally drain credits. Moonlight payouts are implemented; contract-recipient callbacks are deferred. The CLI confirms the exact persisted transaction result and fails closed on contract rejection instead of inferring success from a spent nonce. | Select the route funder, target balance, low-credit alert, and Moonlight treasury. Revisit contract recipients only with a specified callback ABI. |
 | Mailbox `resolve_sender` when called from the transfer contract | Accept the current special case for Moonlight contract-call transactions. | In the current Rusk execution model, a Moonlight transaction that targets a contract reaches the target through `TRANSFER_CONTRACT`, while `abi::public_sender()` exposes the BLS key that signed the transaction. The Mailbox maps that direct-user path to `keccak256(public_sender)` and maps every other immediate caller to the caller `ContractId`. `test_dispatch_via_transaction` asserts the exact account hash; `test_dispatch_via_recipient_proxy` asserts an inter-contract dispatch uses the proxy contract ID. | Confirm with Rusk maintainers that `TRANSFER_CONTRACT` cannot call arbitrary user contracts for non-user-initiated reasons with an unrelated `public_sender`, or request a Rusk-level discriminator before release. |
 | `registered_accounts` has no deregistration | Accept immutable registration for v1. | The registered key is stored under `keccak256(pk.to_bytes())`, so replacing a compromised key at the same H256 is not meaningful: a new key produces a new H256/recipient. Deleting a registration would not recover funds already addressed to the old hash. Keeping registrations append-only avoids admin-controlled recipient remapping. | Confirm product/docs will tell users that Dusk recipients are bound to the BLS key hash used as the remote recipient. |
 | WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain | Accepted 2026-07-20 for v1. | Escrow is keyed by the recipient hash and can only be claimed by the matching BLS key. An admin drain would add a privileged path that can seize pending user funds and would require a governance/timelock/dispute process that is out of scope for this minimal bridge. If a user loses the private key after bridging to that hash, the funds remain locked. | Document the non-custodial failure mode for users. Treat any future governed recovery mechanism as a separate design and audit. |
@@ -622,7 +622,7 @@ make clippy-contracts
 # 29 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 82 integration tests pass
+# 87 integration tests pass
 cargo test -p hyperlane-dusk-integration-tests
 ```
 

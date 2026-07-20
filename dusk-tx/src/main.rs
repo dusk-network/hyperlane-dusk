@@ -33,7 +33,6 @@ mod keys;
 mod rues;
 
 use rues::{RuesClient, TransactionStatus};
-
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
 const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
@@ -1224,7 +1223,7 @@ async fn cmd_withdraw_dispatch(
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    wait_for_transaction(&client, &tx_id).await?;
     let output = json!({
         "success": true,
         "target": target_hex,
@@ -2143,6 +2142,29 @@ where
     Err(format!(
         "Transaction {tx_id} was not confirmed within {}s{detail}",
         timeout.as_secs()
+    ))
+}
+
+/// Wait for the exact transaction to be persisted and fail closed on a
+/// contract execution error. A Moonlight nonce also advances for failed
+/// executions, so nonce polling alone cannot establish success.
+async fn wait_for_transaction(client: &RuesClient, tx_id: &str) -> Result<(), String> {
+    for attempt in 1..=20 {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        match client.query_transaction_status(tx_id).await? {
+            TransactionStatus::Executed => return Ok(()),
+            TransactionStatus::Failed(error) => {
+                return Err(format!("Transaction {tx_id} failed: {error}"));
+            }
+            TransactionStatus::NotFound => {
+                if attempt % 5 == 0 {
+                    eprintln!("  [transaction pending, attempt {attempt}/20]");
+                }
+            }
+        }
+    }
+    Err(format!(
+        "Transaction {tx_id} was not persisted after 60s"
     ))
 }
 

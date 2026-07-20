@@ -48,8 +48,8 @@ and passed:
 - all 12 contract WASM builds;
 - the production contract/type WASM clippy surface;
 - 29 type tests;
-- 86 VM integration tests;
-- 3 `dusk-tx` tests; and
+- 87 VM integration tests;
+- 6 `dusk-tx` tests; and
 - tracked-source secret hygiene.
 
 The added VM cases prove that permissionless third-party funding does not grant
@@ -60,6 +60,15 @@ each WarpDrc20, WarpNative, or WarpDrc20Collateral route can withdraw that
 route's contract-keyed credit. A separate release WASM check for the data
 driver also passed with the funded, paid, and withdrawn dispatch-fee event
 decoders.
+
+The adversarial review found and corrected one tooling defect before handoff:
+`fund-dispatch` and `withdraw-dispatch` had treated signer nonce advancement as
+successful execution. Dusk spends the Moonlight nonce even when a contract
+call is rejected. Both commands now poll Rusk's GraphQL transaction record by
+the exact transaction hash and return an error when `SpentTransaction.err` is
+set. Focused tests cover exact-hash query construction, success/failure/not-
+found parsing, GraphQL error rejection, malformed responses, and the VM
+invariant that a rejected withdrawal still advances the Moonlight nonce.
 
 An initial compatibility probe against historical clean Rusk
 `c0c64db4659500d077bb253ad13acba0e347d3fc` built every contract and passed

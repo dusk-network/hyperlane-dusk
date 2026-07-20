@@ -127,6 +127,9 @@ static RELAYER_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
 static RELAYER_PK: LazyLock<AccountPublicKey> =
     LazyLock::new(|| AccountPublicKey::from(&*RELAYER_SK));
 
+static RELAYER_ID: LazyLock<H256> =
+    LazyLock::new(|| message::keccak256(&RELAYER_PK.to_bytes()));
+
 // =============================================================================
 // Test session wrapper
 // =============================================================================
@@ -1427,6 +1430,11 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
         funded
     );
 
+    let relayer_nonce_before = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .nonce;
     let result = s.session.call_public::<_, ()>(
         &RELAYER_SK,
         MAILBOX_ID,
@@ -1434,6 +1442,16 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
         &(*RELAYER_PK, partial),
     );
     assert_contract_panic(result, "Mailbox: insufficient fee credit");
+    let relayer_nonce_after = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .nonce;
+    assert_eq!(
+        relayer_nonce_after,
+        relayer_nonce_before + 1,
+        "a rejected contract call still spends its Moonlight nonce"
+    );
 
     let result = s.session.call_public::<_, ()>(
         &OWNER_SK,
@@ -1496,6 +1514,86 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
             .contract_balance(&MAILBOX_ID)
             .expect("Mailbox balance query should succeed"),
         0
+    );
+}
+
+#[test]
+fn test_dispatch_credit_withdrawals_preserve_multi_payer_solvency() {
+    let mut s = HyperlaneSession::new();
+    let owner_credit = 4_000_000u64;
+    let relayer_credit = 6_000_000u64;
+    let owner_withdrawal = 1_500_000u64;
+
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, owner_credit),
+            owner_credit,
+        )
+        .expect("owner dispatch funding should succeed");
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*RELAYER_ID, relayer_credit),
+            relayer_credit,
+        )
+        .expect("relayer dispatch funding should succeed");
+
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        owner_credit + relayer_credit
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*OWNER_PK, owner_withdrawal),
+        )
+        .expect("owner withdrawal should succeed");
+
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("owner fee_credit should succeed")
+            .data,
+        owner_credit - owner_withdrawal
+    );
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*RELAYER_ID,))
+            .expect("relayer fee_credit should succeed")
+            .data,
+        relayer_credit,
+        "withdrawing one payer must not change another payer's liability"
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        owner_credit + relayer_credit - owner_withdrawal
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*RELAYER_PK, relayer_credit),
+        )
+        .expect("relayer withdrawal should succeed");
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        owner_credit - owner_withdrawal
     );
 }
 
