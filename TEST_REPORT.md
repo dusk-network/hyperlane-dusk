@@ -7,6 +7,34 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
+## 2026-07-20 Post-Deep-Review Contract Validation
+
+The custody/runtime remediation commit
+`d4a429e1c491bc2e74dad9360eda8015b138792b` was validated in a detached clean
+layout against clean Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk 1.7.1). This avoids the stale
+Dusk 1.6 path dependencies in the developer checkout.
+
+Results:
+
+- All 12 contract WASMs built from source.
+- `make clippy-contracts` passed for the production contract/type surface.
+- `hyperlane-dusk-integration-tests`: 90 passed, 0 failed. The suite includes
+  live custody reservation for pending DRC20 collateral, rejection of an
+  immediate delivery that would consume that reserve, zero-mailbox route
+  rejection, and the 255-validator structural bound.
+- `hyperlane-dusk-types`: 29 passed, 0 failed.
+- `hyperlane-dusk-data-driver`: 5 passed, 0 failed, including both Mailbox and
+  hook `quote_dispatch` ABI shapes plus current accounting/provenance queries.
+- `dusk-tx`: 12 passed, 0 failed, including bounded secret-key stdin, bounded
+  RUES bodies, and exact-hash transaction observation.
+- `make secret-hygiene archive-hygiene archive-hygiene-test
+  fail-closed-self-test` passed in the primary checkout.
+
+This is local clean-layout evidence, not a replacement for the still-blocked
+private-runner status check or a fresh bidirectional agent E2E after both
+stacked PR heads are finalized.
+
 ## 2026-07-20 Remediation Validation (Current)
 
 This section supersedes “current” wording in the May evidence and the earlier
