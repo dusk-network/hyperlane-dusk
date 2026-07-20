@@ -38,7 +38,7 @@ stacked PR heads are finalized.
 ## 2026-07-20 Dispatch-Credit Withdrawal Validation
 
 The focused stacked branch `feat/dispatch-credit-withdrawal` was validated at
-`7c1449ad2681e0a863a9dc822fc01b0829051e9d` against a clean detached current
+`33274528fbd5d0add6138bd344ee07155a1147af` against a clean detached current
 Rusk `origin/master` at
 `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
 
