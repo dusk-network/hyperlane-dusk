@@ -1280,7 +1280,7 @@ fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
         )
     })?;
     let recipient = BlsPublicKey::from_bytes(&bytes)
-        .map_err(|error| format!("Invalid recipient public key: {error}"))?;
+        .map_err(|error| format!("Invalid recipient public key: {error:?}"))?;
     if !recipient.is_valid() {
         return Err("Invalid recipient public key: identity or invalid curve point".into());
     }
