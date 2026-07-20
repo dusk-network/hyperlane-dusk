@@ -584,7 +584,8 @@ All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
 `29 passed; 0 failed; 0 ignored`; the integration package reported
-`95 passed; 0 failed; 0 ignored` on current Rusk.
+`98 passed; 0 failed; 0 ignored` on current Rusk after the escrow/finality
+reassessment.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use

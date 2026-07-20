@@ -98,7 +98,7 @@ checkout guard.
 
 - All 12 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
-- `cargo test -p hyperlane-dusk-integration-tests`: 95 passed, 0 failed,
+- `cargo test -p hyperlane-dusk-integration-tests`: 98 passed, 0 failed,
   including payer-isolated Mailbox withdrawal and owner-gated withdrawal for
   all three production warp routes.
 - `cargo test -p hyperlane-dusk-data-driver`: 6 passed, including both

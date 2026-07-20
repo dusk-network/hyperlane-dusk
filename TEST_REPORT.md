@@ -106,8 +106,8 @@ the exact commits they name.
 
 Results:
 
-- `cargo test -p hyperlane-dusk-integration-tests`: 95 passed, 0 failed at the
-  focused withdrawal head; the repaired base branch has 90 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: 98 passed, 0 failed at the
+  reassessed withdrawal head; the reassessed base branch has 93 tests.
 - All 12 contract WASMs build and the production contract/type clippy surface
   passes.
 - The VM suite validates the shared Moonlight/contract owner model, rejects
@@ -2704,6 +2704,41 @@ success, canonical Dusk transaction IDs, block-height/hash binding, bounded
 single-handle signer-file reads, and finalized sequence/Merkle integration.
 Bidirectional live-agent evidence is recorded separately after the final
 cross-repository heads are pinned.
+
+## 2026-07-20 Stacked Withdrawal Reassessment Gate
+
+The 11-commit withdrawal series was rebased from base
+`b46fda9265e3381203962a65c15b697271fd5dff` to the reassessed base without
+semantic changes: `git range-diff` paired every commit exactly. Withdrawal code
+anchor `ad6de95dd5e1a4efab55213733125d5d4b4d13da` was then reproduced from a
+detached clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. The subsequent rebase onto the
+base evidence-only commit changes documentation but no contract, CLI, driver,
+type, test, lockfile, or repro-script path.
+
+Durable local log: `/tmp/hyperlane-dusk-pr10-repro-ad6de95.log`.
+
+Result:
+
+- all contract WASMs and the data-driver release WASM built;
+- the targeted contract/type wasm clippy surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 98 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 6 passed, 0 failed;
+- `dusk-tx`: 13 passed, 0 failed; and
+- secret-hygiene checks passed.
+
+The five withdrawal cases prove payer-only authority, exact partial/full
+custody reduction, multi-payer solvency, and owner-gated proxy withdrawal for
+synthetic, native, and collateral routes. Invalid/identity recipient keys and
+zero or over-credit amounts reject without changing credit or paying the
+recipient. The actual VM receipt is decoded through the production data driver.
+These cases run in the same 98-test VM set as the new native reserve,
+synthetic pending-claim, realistic collateral-custody, and Merkle history cases.
+
+The exact pre-rebase head remains recoverable at
+`backup/feat-dispatch-credit-withdrawal-pre-6832b15`; no history was discarded
+while updating the stacked PR.
 
 ## Remaining Work Before Production Readiness
 
