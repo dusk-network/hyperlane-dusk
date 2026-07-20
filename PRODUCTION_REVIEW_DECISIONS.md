@@ -100,6 +100,10 @@ Semantics:
   exact transaction hash is present in Rusk's ledger with no execution error.
   Moonlight nonce advancement is intentionally not treated as success because
   rejected contract calls are still spent transactions.
+- Transaction-result polling checks immediately, enforces a 60-second wall-
+  clock deadline, retries transient observation failures without losing the
+  transaction hash, and caps the GraphQL response at 256 KiB. The generic
+  `dusk-tx call` path uses the same execution-success boundary.
 - WarpDrc20, WarpNative, and WarpDrc20Collateral expose the same method only to
   their configured owner. The nested Mailbox call can withdraw only that
   route's credit.
@@ -112,6 +116,8 @@ Evidence:
 - `test_warp_native_owner_can_withdraw_route_dispatch_credit`.
 - `test_warp_collateral_owner_can_withdraw_route_dispatch_credit`.
 - `dusk-tx` transaction-status response and exact-hash query tests.
+- `dusk-tx` bounded-response, transient-retry, immediate-check, execution-
+  failure, and nonce-exhaustion tests.
 
 ### Pending Escrow Without Admin Drain
 

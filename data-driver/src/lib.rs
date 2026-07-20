@@ -241,6 +241,42 @@ impl ConvertibleContract for HyperlaneDataDriver {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_fee_withdrawn_event_round_trips_through_the_driver() {
+        let payer = [0x11u8; 32];
+        let recipient = [0x22u8; 32];
+        let json = format!(
+            r#"{{"payer":{:?},"recipient":{:?},"amount":42}}"#,
+            payer, recipient
+        );
+        let bytes = json_to_rkyv::<events::DispatchFeeWithdrawn>(&json)
+            .expect("event JSON should serialize");
+
+        let decoded = HyperlaneDataDriver
+            .decode_event(events::DispatchFeeWithdrawn::TOPIC, &bytes)
+            .expect("event bytes should decode");
+        assert_eq!(decoded["amount"].as_u64(), Some(42));
+        assert!(decoded["payer"]
+            .as_array()
+            .expect("payer should be an array")
+            .iter()
+            .all(|value| value.as_u64() == Some(0x11)));
+        assert!(decoded["recipient"]
+            .as_array()
+            .expect("recipient should be an array")
+            .iter()
+            .all(|value| value.as_u64() == Some(0x22)));
+
+        assert!(HyperlaneDataDriver
+            .decode_event(events::DispatchFeeWithdrawn::TOPIC, &[0xff])
+            .is_err());
+    }
+}
+
 #[cfg(all(target_family = "wasm", feature = "ffi"))]
 dusk_data_driver::generate_wasm_entrypoint!(HyperlaneDataDriver);
 

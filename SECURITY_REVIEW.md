@@ -525,7 +525,9 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 87 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, native custody, and current-ABI DRC20 allowance/collateral coverage |
+| `tests/tests/integration.rs` | 87 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage |
+| `data-driver/src/lib.rs` | Withdrawal-event decoding round trip and malformed-payload rejection; warm demo startup always delegates driver freshness to Cargo |
+| `dusk-tx/src/main.rs`, `dusk-tx/src/rues.rs` | Exact-hash execution confirmation with an immediate first query, absolute deadline, bounded responses, transient observation retry, and transaction-hash preservation in errors |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
 | `demo/start-env.sh` | Uses an explicit state archive and consensus-key path, refuses mismatched contract/node Rusk checkouts, and avoids explorer assets when the explorer is skipped |
 | `demo/stop-env.sh` | Stops only the Rusk process using the demo's exact state archive |

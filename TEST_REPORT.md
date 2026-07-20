@@ -49,7 +49,8 @@ and passed:
 - the production contract/type WASM clippy surface;
 - 29 type tests;
 - 87 VM integration tests;
-- 6 `dusk-tx` tests; and
+- 1 data-driver decoder test;
+- 10 `dusk-tx` tests; and
 - tracked-source secret hygiene.
 
 The added VM cases prove that permissionless third-party funding does not grant
@@ -66,8 +67,12 @@ The adversarial review found and corrected one tooling defect before handoff:
 successful execution. Dusk spends the Moonlight nonce even when a contract
 call is rejected. Both commands now poll Rusk's GraphQL transaction record by
 the exact transaction hash and return an error when `SpentTransaction.err` is
-set. Focused tests cover exact-hash query construction, success/failure/not-
-found parsing, GraphQL error rejection, malformed responses, and the VM
+set. The confirmation path checks immediately, uses an absolute 60-second
+deadline, retries transient observation errors while preserving the hash,
+and caps status responses at 256 KiB; generic raw contract calls use the same
+execution-success boundary. Focused tests cover exact-hash query construction,
+success/failure/not-found parsing, GraphQL error rejection, malformed and
+oversized responses, retry/error branches, nonce exhaustion, and the VM
 invariant that a rejected withdrawal still advances the Moonlight nonce.
 
 An initial compatibility probe against historical clean Rusk
@@ -91,7 +96,7 @@ the exact commits they name.
 
 Results:
 
-- `cargo test -p hyperlane-dusk-integration-tests`: 86 passed, 0 failed at the
+- `cargo test -p hyperlane-dusk-integration-tests`: 87 passed, 0 failed at the
   focused withdrawal head; the earlier remediation anchor had 82 tests.
 - All 12 contract WASMs build and the production contract/type clippy surface
   passes.

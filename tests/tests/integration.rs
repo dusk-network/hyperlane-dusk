@@ -1591,9 +1591,24 @@ fn test_dispatch_credit_withdrawals_preserve_multi_payer_solvency() {
         .expect("relayer withdrawal should succeed");
     assert_eq!(
         s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*RELAYER_ID,))
+            .expect("relayer fee_credit should succeed")
+            .data,
+        0
+    );
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("owner fee_credit should succeed")
+            .data,
+        owner_credit - owner_withdrawal
+    );
+    assert_eq!(
+        s.session
             .contract_balance(&MAILBOX_ID)
             .expect("Mailbox balance query should succeed"),
-        owner_credit - owner_withdrawal
+        owner_credit - owner_withdrawal,
+        "Mailbox custody must equal the sum of remaining payer liabilities"
     );
 }
 
@@ -2032,6 +2047,34 @@ fn assert_route_dispatch_credit_withdrawal(
             .contract_balance(&MAILBOX_ID)
             .expect("Mailbox balance query should succeed"),
         funded - withdrawn
+    );
+
+    let recipient_balance_before_rejection = session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        route,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, funded - withdrawn + 1),
+    );
+    assert_contract_panic_contains(result, "Mailbox: insufficient fee credit");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+            .expect("route fee_credit should succeed")
+            .data,
+        funded - withdrawn,
+        "downstream Mailbox rejection must preserve route credit"
+    );
+    assert_eq!(
+        session
+            .account(&RELAYER_PK)
+            .expect("recipient account query should succeed")
+            .balance,
+        recipient_balance_before_rejection,
+        "downstream Mailbox rejection must not pay the recipient"
     );
 }
 

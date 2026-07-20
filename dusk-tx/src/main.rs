@@ -1218,7 +1218,7 @@ async fn cmd_withdraw_dispatch(
         0,
         gas_limit,
         gas_price,
-        nonce + 1,
+        next_moonlight_nonce(nonce)?,
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
@@ -2142,29 +2142,6 @@ where
     Err(format!(
         "Transaction {tx_id} was not confirmed within {}s{detail}",
         timeout.as_secs()
-    ))
-}
-
-/// Wait for the exact transaction to be persisted and fail closed on a
-/// contract execution error. A Moonlight nonce also advances for failed
-/// executions, so nonce polling alone cannot establish success.
-async fn wait_for_transaction(client: &RuesClient, tx_id: &str) -> Result<(), String> {
-    for attempt in 1..=20 {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        match client.query_transaction_status(tx_id).await? {
-            TransactionStatus::Executed => return Ok(()),
-            TransactionStatus::Failed(error) => {
-                return Err(format!("Transaction {tx_id} failed: {error}"));
-            }
-            TransactionStatus::NotFound => {
-                if attempt % 5 == 0 {
-                    eprintln!("  [transaction pending, attempt {attempt}/20]");
-                }
-            }
-        }
-    }
-    Err(format!(
-        "Transaction {tx_id} was not persisted after 60s"
     ))
 }
 
