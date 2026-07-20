@@ -346,7 +346,12 @@ dusk-tx fund-dispatch --mailbox <hex> --payer <route-hex> --amount <lux>
 # Withdraw a Moonlight account's own unused credit to the signing account
 dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux>
 
-# A warp-route owner can withdraw that route's credit to the signing account
+# Select an explicit operational treasury instead of the signing account
+dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux> \
+    --recipient-public-key <96-byte-moonlight-public-key-hex>
+
+# A warp-route owner can withdraw that route's credit to the signer or an
+# explicit Moonlight treasury (the route still enforces owner authorization)
 dusk-tx withdraw-dispatch --target <route-hex> --amount <lux>
 
 # Query contract state

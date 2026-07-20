@@ -18,16 +18,18 @@ use dusk_core::abi::{ContractError, ContractId};
 use dusk_core::dusk;
 use dusk_core::signatures::bls::{PublicKey as AccountPublicKey, SecretKey as AccountSecretKey};
 use dusk_core::transfer::ReceiveFromContract;
+use dusk_data_driver::ConvertibleContract;
 use dusk_vm::{CallReceipt, Error as VMError};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+use hyperlane_dusk_data_driver::HyperlaneDataDriver;
 use hyperlane_dusk_types::drc20::{
     Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
     BalanceOf as Drc20BalanceOf,
 };
 use hyperlane_dusk_types::{
-    message, DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256, VERSION,
+    events, message, DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256, VERSION,
 };
 
 mod test_session;
@@ -127,8 +129,7 @@ static RELAYER_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
 static RELAYER_PK: LazyLock<AccountPublicKey> =
     LazyLock::new(|| AccountPublicKey::from(&*RELAYER_SK));
 
-static RELAYER_ID: LazyLock<H256> =
-    LazyLock::new(|| message::keccak256(&RELAYER_PK.to_bytes()));
+static RELAYER_ID: LazyLock<H256> = LazyLock::new(|| message::keccak256(&RELAYER_PK.to_bytes()));
 
 // =============================================================================
 // Test session wrapper
@@ -1461,12 +1462,41 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
     );
     assert_contract_panic(result, "Mailbox: withdrawal amount is zero");
 
+    let mut identity_bytes = [0u8; 96];
+    identity_bytes[0] = 0xc0;
+    let invalid_recipient = AccountPublicKey::from_bytes(&identity_bytes)
+        .expect("compressed identity should decode for semantic validation");
+    assert!(!invalid_recipient.is_valid());
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(invalid_recipient, partial),
+    );
+    assert_contract_panic(result, "Mailbox: invalid withdrawal recipient");
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded,
+        "invalid recipient must not debit dispatch credit"
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded,
+        "invalid recipient must not change Mailbox custody"
+    );
+
     let relayer_balance_before = s
         .session
         .account(&RELAYER_PK)
         .expect("relayer account query should succeed")
         .balance;
-    s.session
+    let receipt = s
+        .session
         .call_public::<_, ()>(
             &OWNER_SK,
             MAILBOX_ID,
@@ -1474,6 +1504,25 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
             &(*RELAYER_PK, partial),
         )
         .expect("payer should withdraw its own dispatch credit");
+    let event = receipt
+        .events
+        .iter()
+        .find(|event| {
+            event.source == MAILBOX_ID && event.topic == events::DispatchFeeWithdrawn::TOPIC
+        })
+        .expect("withdrawal receipt should contain the Mailbox event");
+    let decoded = HyperlaneDataDriver
+        .decode_event(&event.topic, &event.data)
+        .expect("the explorer driver should decode the real VM receipt event");
+    assert_eq!(
+        decoded["payer"],
+        dusk_data_driver::to_json(*OWNER_ID).unwrap()
+    );
+    assert_eq!(
+        decoded["recipient"],
+        dusk_data_driver::to_json(message::keccak256(&RELAYER_PK.to_bytes())).unwrap()
+    );
+    assert_eq!(decoded["amount"].as_u64(), Some(partial));
     let relayer_balance_after = s
         .session
         .account(&RELAYER_PK)
@@ -2034,7 +2083,10 @@ fn assert_route_dispatch_credit_withdrawal(
         .expect("recipient account query should succeed")
         .balance;
 
-    assert_eq!(recipient_balance_after, recipient_balance_before + withdrawn);
+    assert_eq!(
+        recipient_balance_after,
+        recipient_balance_before + withdrawn
+    );
     assert_eq!(
         session
             .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))

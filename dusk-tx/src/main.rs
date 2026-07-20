@@ -189,7 +189,7 @@ enum Command {
         #[arg(long, default_value = "2000")]
         gas_price: u64,
     },
-    /// Withdraw unused dispatch-fee credit to the signing Moonlight account.
+    /// Withdraw unused dispatch-fee credit to a Moonlight account.
     WithdrawDispatch {
         #[arg(long, default_value = "http://localhost:18090/")]
         rues_url: String,
@@ -208,6 +208,9 @@ enum Command {
         /// Native DUSK amount in LUX.
         #[arg(long)]
         amount: u64,
+        /// Explicit 96-byte Moonlight BLS public key (hex). Defaults to signer.
+        #[arg(long)]
+        recipient_public_key: Option<String>,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         #[arg(long, default_value = "2000")]
@@ -546,6 +549,7 @@ async fn main() {
             secret_key_stdin,
             target,
             amount,
+            recipient_public_key,
             gas_limit,
             gas_price,
         } => {
@@ -557,6 +561,7 @@ async fn main() {
                 secret_key_stdin,
                 &target,
                 amount,
+                recipient_public_key.as_deref(),
                 gas_limit,
                 gas_price,
             )
@@ -849,11 +854,12 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirmation_error_with_hash, next_moonlight_nonce, read_secret_key_hex,
-        resolve_keys_password, submission_error_with_hash, wait_for_transaction_with,
-        MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
+        confirmation_error_with_hash, next_moonlight_nonce, parse_account_public_key,
+        read_secret_key_hex, resolve_keys_password, submission_error_with_hash,
+        wait_for_transaction_with, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::TransactionStatus;
+    use dusk_bytes::Serializable;
     use std::collections::VecDeque;
     use std::future::ready;
     use std::sync::Mutex;
@@ -870,6 +876,26 @@ mod tests {
 
         let key = format!("0x{}\n", "11".repeat(32));
         assert_eq!(read_secret_key_hex(key.as_bytes()).unwrap(), key.trim());
+    }
+
+    #[test]
+    fn withdrawal_recipient_public_key_is_checked() {
+        let (_, public_key) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let encoded = hex::encode(public_key.to_bytes());
+        assert_eq!(parse_account_public_key(&encoded).unwrap(), public_key);
+        assert_eq!(
+            parse_account_public_key(&format!("0x{encoded}")).unwrap(),
+            public_key
+        );
+
+        let mut identity = [0u8; 96];
+        identity[0] = 0xc0;
+        assert!(parse_account_public_key(&hex::encode(identity))
+            .unwrap_err()
+            .contains("identity"));
+        assert!(parse_account_public_key("abcd")
+            .unwrap_err()
+            .contains("96 bytes"));
     }
 
     fn clear_password_env() {
@@ -1198,6 +1224,7 @@ async fn cmd_withdraw_dispatch(
     secret_key_stdin: bool,
     target_hex: &str,
     amount: u64,
+    recipient_public_key_hex: Option<&str>,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -1205,9 +1232,13 @@ async fn cmd_withdraw_dispatch(
         return Err("Withdrawal amount must be greater than zero".into());
     }
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let recipient = recipient_public_key_hex
+        .map(parse_account_public_key)
+        .transpose()?
+        .unwrap_or(pk);
     let client = RuesClient::new(rues_url)?;
     let target = ContractId::from_bytes(parse_bytes32(target_hex)?);
-    let args = rkyv_serialize(&(pk, amount));
+    let args = rkyv_serialize(&(recipient, amount));
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call_with_deposit(
@@ -1227,12 +1258,33 @@ async fn cmd_withdraw_dispatch(
     let output = json!({
         "success": true,
         "target": target_hex,
-        "recipient_public_key": hex::encode(pk.to_bytes()),
+        "recipient_public_key": hex::encode(recipient.to_bytes()),
         "amount": amount,
         "tx_id": tx_id,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
+    let value = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    let bytes =
+        hex::decode(value).map_err(|error| format!("Invalid recipient public key hex: {error}"))?;
+    let bytes: [u8; 96] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        format!(
+            "Recipient public key must be 96 bytes (192 hex), got {}",
+            bytes.len()
+        )
+    })?;
+    let recipient = BlsPublicKey::from_bytes(&bytes)
+        .map_err(|error| format!("Invalid recipient public key: {error}"))?;
+    if !recipient.is_valid() {
+        return Err("Invalid recipient public key: identity or invalid curve point".into());
+    }
+    Ok(recipient)
 }
 
 fn rkyv_serialize<T>(value: &T) -> Vec<u8>

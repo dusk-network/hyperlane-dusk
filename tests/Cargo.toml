@@ -10,6 +10,8 @@ publish = false
 [dev-dependencies]
 # Types crate (without abi feature — uses software keccak256 fallback)
 hyperlane-dusk-types = { workspace = true, features = ["drc20"] }
+hyperlane-dusk-data-driver = { path = "../data-driver" }
+dusk-data-driver = { workspace = true }
 
 # Dusk
 dusk-core = { workspace = true }

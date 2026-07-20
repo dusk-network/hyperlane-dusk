@@ -201,6 +201,10 @@ mod mailbox {
         /// funds to any explicit Moonlight account.
         pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
             assert!(amount > 0, "Mailbox: withdrawal amount is zero");
+            assert!(
+                recipient.is_valid(),
+                "Mailbox: invalid withdrawal recipient"
+            );
 
             let payer = Self::resolve_sender();
             let credit = self.fee_credits.get(&payer).copied().unwrap_or(0);
