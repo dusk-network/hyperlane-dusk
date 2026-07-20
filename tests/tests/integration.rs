@@ -17,10 +17,15 @@ use dusk_bytes::Serializable;
 use dusk_core::abi::{ContractError, ContractId};
 use dusk_core::dusk;
 use dusk_core::signatures::bls::{PublicKey as AccountPublicKey, SecretKey as AccountSecretKey};
+use dusk_core::transfer::ReceiveFromContract;
 use dusk_vm::{CallReceipt, Error as VMError};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+use hyperlane_dusk_types::drc20::{
+    Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
+    BalanceOf as Drc20BalanceOf,
+};
 use hyperlane_dusk_types::{message, DomainGasConfig, EthAddress, H256, MessageId, VERSION};
 
 mod test_session;
@@ -61,6 +66,9 @@ const MAILBOX_BYTECODE: &[u8] = include_bytes!(
 const MERKLE_TREE_HOOK_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_merkle_tree_hook.wasm"
 );
+const AGGREGATION_HOOK_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_aggregation_hook.wasm"
+);
 const TEST_MOCK_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_test_mock.wasm"
 );
@@ -88,6 +96,7 @@ const TEST_RECIPIENT_ID: ContractId = ContractId::from_bytes([13; 32]);
 const PROTOCOL_FEE_ID: ContractId = ContractId::from_bytes([14; 32]);
 const IGP_ID: ContractId = ContractId::from_bytes([15; 32]);
 const ISM_MULTISIG_ID: ContractId = ContractId::from_bytes([16; 32]);
+const AGGREGATION_HOOK_ID: ContractId = ContractId::from_bytes([19; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
@@ -109,6 +118,9 @@ static OWNER_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
 
 static OWNER_PK: LazyLock<AccountPublicKey> =
     LazyLock::new(|| AccountPublicKey::from(&*OWNER_SK));
+
+static OWNER_ID: LazyLock<H256> =
+    LazyLock::new(|| message::keccak256(&OWNER_PK.to_bytes()));
 
 static RELAYER_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
     let mut rng = StdRng::seed_from_u64(0xDE1A7E00); // "DELAYE"
@@ -176,7 +188,7 @@ impl HyperlaneSession {
                     .owner(DEPLOYER)
                     .init_arg(&(
                         LOCAL_DOMAIN,
-                        MAILBOX_ID,          // owner = mailbox itself
+                        *OWNER_ID,           // owner = deployer Moonlight account
                         TEST_MOCK_ID,        // default ISM
                         TEST_MOCK_ID,        // default hook (noop)
                         MERKLE_TREE_HOOK_ID, // required hook
@@ -447,11 +459,40 @@ fn test_mailbox_double_init_panics() {
     let result = s.session.direct_call::<_, ()>(
         MAILBOX_ID,
         "init",
-        &(LOCAL_DOMAIN, MAILBOX_ID, TEST_MOCK_ID, TEST_MOCK_ID, MERKLE_TREE_HOOK_ID),
+        &(
+            LOCAL_DOMAIN,
+            *OWNER_ID,
+            TEST_MOCK_ID,
+            TEST_MOCK_ID,
+            MERKLE_TREE_HOOK_ID,
+        ),
     );
 
     // The VM prevents calling init after deployment
     assert!(result.is_err(), "Calling init after deployment should fail");
+}
+
+#[test]
+fn test_mailbox_admin_accepts_owner_and_rejects_non_owner() {
+    let mut s = HyperlaneSession::new();
+
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "set_default_hook",
+            &(TEST_RECIPIENT_ID,),
+        )
+        .expect("Mailbox owner should update the default hook");
+    assert_eq!(s.mailbox_default_hook(), TEST_RECIPIENT_ID);
+
+    let result = s.session.call_public::<_, ()>(
+        &RELAYER_SK,
+        MAILBOX_ID,
+        "set_default_hook",
+        &(TEST_MOCK_ID,),
+    );
+    assert_contract_panic(result, "Mailbox: caller is not the owner");
 }
 
 // =============================================================================
@@ -858,7 +899,7 @@ fn test_multisig_ism_init_rejects_invalid_threshold() {
         ISM_MULTISIG_BYTECODE,
         dusk_vm::ContractData::builder()
             .owner(DEPLOYER)
-            .init_arg(&(MAILBOX_ID.to_bytes(), vec![EthAddress([1; 20])], 2u8))
+            .init_arg(&(*OWNER_ID, vec![EthAddress([1; 20])], 2u8))
             .contract_id(ISM_MULTISIG_ID),
     );
 
@@ -874,7 +915,7 @@ fn test_multisig_ism_init_rejects_unsorted_validators() {
         dusk_vm::ContractData::builder()
             .owner(DEPLOYER)
             .init_arg(&(
-                MAILBOX_ID.to_bytes(),
+                *OWNER_ID,
                 vec![EthAddress([2; 20]), EthAddress([1; 20])],
                 1u8,
             ))
@@ -892,7 +933,7 @@ fn test_multisig_ism_init_rejects_no_validators() {
         ISM_MULTISIG_BYTECODE,
         dusk_vm::ContractData::builder()
             .owner(DEPLOYER)
-            .init_arg(&(MAILBOX_ID.to_bytes(), Vec::<EthAddress>::new(), 1u8))
+            .init_arg(&(*OWNER_ID, Vec::<EthAddress>::new(), 1u8))
             .contract_id(ISM_MULTISIG_ID),
     );
 
@@ -902,7 +943,7 @@ fn test_multisig_ism_init_rejects_no_validators() {
 #[test]
 fn test_multisig_ism_verify_rejects_short_metadata() {
     let mut session = session_with_multisig_ism(
-        MAILBOX_ID.to_bytes(),
+        *OWNER_ID,
         vec![EthAddress([1; 20])],
         1,
     );
@@ -919,7 +960,7 @@ fn test_multisig_ism_verify_rejects_short_metadata() {
 #[test]
 fn test_multisig_ism_verify_rejects_partial_signature_bytes() {
     let mut session = session_with_multisig_ism(
-        MAILBOX_ID.to_bytes(),
+        *OWNER_ID,
         vec![EthAddress([1; 20])],
         1,
     );
@@ -936,7 +977,7 @@ fn test_multisig_ism_verify_rejects_partial_signature_bytes() {
 #[test]
 fn test_multisig_ism_verify_rejects_insufficient_signatures() {
     let mut session = session_with_multisig_ism(
-        MAILBOX_ID.to_bytes(),
+        *OWNER_ID,
         vec![EthAddress([1; 20])],
         1,
     );
@@ -953,7 +994,7 @@ fn test_multisig_ism_verify_rejects_insufficient_signatures() {
 #[test]
 fn test_multisig_ism_verify_rejects_corrupt_signature_bytes() {
     let mut session = session_with_multisig_ism(
-        MAILBOX_ID.to_bytes(),
+        *OWNER_ID,
         vec![EthAddress([1; 20])],
         1,
     );
@@ -973,7 +1014,7 @@ fn test_multisig_ism_verify_rejects_corrupt_signature_bytes() {
 #[test]
 fn test_multisig_ism_admin_rejects_unauthorized_caller() {
     let mut session = session_with_multisig_ism(
-        MAILBOX_ID.to_bytes(),
+        *OWNER_ID,
         vec![EthAddress([1; 20])],
         1,
     );
@@ -986,6 +1027,24 @@ fn test_multisig_ism_admin_rejects_unauthorized_caller() {
     );
 
     assert_contract_panic(result, "MultisigISM: caller is not owner");
+}
+
+#[test]
+fn test_multisig_ism_admin_accepts_owner_moonlight_sender() {
+    let mut session = session_with_multisig_ism(
+        *OWNER_ID,
+        vec![EthAddress([1; 20])],
+        1,
+    );
+
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            ISM_MULTISIG_ID,
+            "set_validators_and_threshold",
+            &(vec![EthAddress([2; 20])], 1u8),
+        )
+        .expect("MultisigISM owner should update the validator set");
 }
 
 // =============================================================================
@@ -1090,7 +1149,7 @@ fn session_with_hooks_fee_and_igp_config(
             MERKLE_TREE_HOOK_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(MAILBOX_ID,))
+                .init_arg(&(AGGREGATION_HOOK_ID,))
                 .contract_id(MERKLE_TREE_HOOK_ID),
         )
         .expect("Deploying MerkleTreeHook should succeed");
@@ -1101,10 +1160,30 @@ fn session_with_hooks_fee_and_igp_config(
             PROTOCOL_FEE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(protocol_fee, max_protocol_fee, MERKLE_TREE_HOOK_ID, MAILBOX_ID))
+                .init_arg(&(
+                    protocol_fee,
+                    max_protocol_fee,
+                    AGGREGATION_HOOK_ID,
+                    *OWNER_ID,
+                    *OWNER_ID,
+                ))
                 .contract_id(PROTOCOL_FEE_ID),
         )
         .expect("Deploying ProtocolFee should succeed");
+
+    // Deploy the required aggregation of MerkleTreeHook + ProtocolFee.
+    session
+        .deploy(
+            AGGREGATION_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    MAILBOX_ID,
+                    vec![MERKLE_TREE_HOOK_ID, PROTOCOL_FEE_ID],
+                ))
+                .contract_id(AGGREGATION_HOOK_ID),
+        )
+        .expect("Deploying AggregationHook should succeed");
 
     // Deploy IGP with provided gas configs
     session
@@ -1112,12 +1191,12 @@ fn session_with_hooks_fee_and_igp_config(
             IGP_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(MAILBOX_ID, MERKLE_TREE_HOOK_ID, igp_configs))
+                .init_arg(&(MAILBOX_ID, *OWNER_ID, *OWNER_ID, igp_configs))
                 .contract_id(IGP_ID),
         )
         .expect("Deploying IGP should succeed");
 
-    // Deploy Mailbox with ProtocolFee as required_hook, IGP as default_hook
+    // Deploy Mailbox with the aggregation as required_hook and IGP as default_hook.
     session
         .deploy(
             MAILBOX_BYTECODE,
@@ -1125,14 +1204,25 @@ fn session_with_hooks_fee_and_igp_config(
                 .owner(DEPLOYER)
                 .init_arg(&(
                     LOCAL_DOMAIN,
-                    MAILBOX_ID,      // owner
+                    *OWNER_ID,       // owner
                     TEST_MOCK_ID,    // default ISM
                     IGP_ID,          // default hook = IGP
-                    PROTOCOL_FEE_ID, // required hook = ProtocolFee
+                    AGGREGATION_HOOK_ID, // required = MerkleTreeHook + ProtocolFee
                 ))
                 .contract_id(MAILBOX_ID),
         )
         .expect("Deploying Mailbox should succeed");
+
+    const PREPAID_FEES: u64 = 100_000_000;
+    session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(TEST_RECIPIENT_ID.to_bytes(), PREPAID_FEES),
+            PREPAID_FEES,
+        )
+        .expect("funding the TestRecipient dispatch credit should succeed");
 
     session
 }
@@ -1147,7 +1237,7 @@ fn test_protocol_fee_init() {
             PROTOCOL_FEE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(500u64, 5000u64, MAILBOX_ID, TEST_MOCK_ID))
+                .init_arg(&(500u64, 5000u64, MAILBOX_ID, *OWNER_ID, *OWNER_ID))
                 .contract_id(PROTOCOL_FEE_ID),
         )
         .expect("Deploying ProtocolFee should succeed");
@@ -1186,6 +1276,12 @@ fn test_protocol_fee_charges_on_dispatch() {
         .expect("collected_fees should succeed")
         .data;
     assert_eq!(collected, 0);
+    assert_eq!(
+        session
+            .contract_balance(&PROTOCOL_FEE_ID)
+            .expect("ProtocolFee balance query should succeed"),
+        0
+    );
 
     // Dispatch a message via TestRecipient proxy
     session
@@ -1203,10 +1299,92 @@ fn test_protocol_fee_charges_on_dispatch() {
         .expect("collected_fees should succeed")
         .data;
     assert_eq!(collected, 1000);
+    let claimable = session
+        .direct_call::<_, u64>(PROTOCOL_FEE_ID, "claimable_fees", &())
+        .expect("claimable_fees should succeed")
+        .data;
+    assert_eq!(claimable, 1000);
+    assert_eq!(
+        session
+            .contract_balance(&PROTOCOL_FEE_ID)
+            .expect("ProtocolFee balance query should succeed"),
+        1000
+    );
+    let merkle_count: u32 = session
+        .direct_call::<_, u32>(MERKLE_TREE_HOOK_ID, "count", &())
+        .expect("aggregation should invoke the MerkleTreeHook")
+        .data;
+    assert_eq!(merkle_count, 1);
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, PROTOCOL_FEE_ID, "claim", &())
+        .expect("beneficiary should claim the collected native DUSK");
+    assert_eq!(
+        session
+            .contract_balance(&PROTOCOL_FEE_ID)
+            .expect("ProtocolFee balance query should succeed"),
+        0
+    );
+    let claimable = session
+        .direct_call::<_, u64>(PROTOCOL_FEE_ID, "claimable_fees", &())
+        .expect("claimable_fees should succeed")
+        .data;
+    assert_eq!(claimable, 0);
 }
 
 #[test]
-fn test_protocol_fee_rejects_collected_fee_overflow() {
+fn test_aggregation_hook_wiring_and_callback_authentication() {
+    let mut session = session_with_hooks();
+
+    let hook_type = session
+        .direct_call::<_, u8>(AGGREGATION_HOOK_ID, "hook_type", &())
+        .expect("hook_type should succeed")
+        .data;
+    assert_eq!(hook_type, 2);
+    let hooks = session
+        .direct_call::<_, Vec<ContractId>>(AGGREGATION_HOOK_ID, "hooks", &())
+        .expect("hooks should succeed")
+        .data;
+    assert_eq!(hooks, vec![MERKLE_TREE_HOOK_ID, PROTOCOL_FEE_ID]);
+
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        AGGREGATION_HOOK_ID,
+        "receive_payment",
+        &(ReceiveFromContract {
+            value: 1_000,
+            contract: MAILBOX_ID,
+            data: Vec::new(),
+        },),
+    );
+    assert_contract_panic(result, "AggregationHook: unauthenticated payment");
+}
+
+#[test]
+fn test_dispatch_rejects_sender_without_native_fee_credit() {
+    let mut session = session_with_hooks();
+
+    let result = session.call_public::<_, MessageId>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "dispatch_default",
+        &(
+            REMOTE_DOMAIN,
+            [0xBBu8; 32],
+            b"unfunded direct dispatch".to_vec(),
+        ),
+    );
+    assert_contract_panic(result, "Mailbox: insufficient fee credit");
+    assert_eq!(
+        session
+            .contract_balance(&PROTOCOL_FEE_ID)
+            .expect("ProtocolFee balance query should succeed"),
+        0
+    );
+}
+
+#[test]
+fn test_protocol_fee_rejects_unbacked_direct_post_dispatch() {
     let mut s = HyperlaneSession::new();
 
     s.session
@@ -1214,7 +1392,7 @@ fn test_protocol_fee_rejects_collected_fee_overflow() {
             PROTOCOL_FEE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(u64::MAX, u64::MAX, MAILBOX_ID, TEST_MOCK_ID))
+                .init_arg(&(500u64, 5000u64, MAILBOX_ID, *OWNER_ID, *OWNER_ID))
                 .contract_id(PROTOCOL_FEE_ID),
         )
         .expect("Deploying ProtocolFee should succeed");
@@ -1226,17 +1404,8 @@ fn test_protocol_fee_rejects_collected_fee_overflow() {
         [0xAAu8; 32],
         REMOTE_DOMAIN,
         [0xBBu8; 32],
-        b"protocol fee overflow",
+        b"unbacked protocol fee",
     );
-
-    s.session
-        .call_public::<_, ()>(
-            &OWNER_SK,
-            PROTOCOL_FEE_ID,
-            "post_dispatch",
-            &(Vec::<u8>::new(), encoded.clone()),
-        )
-        .expect("first post_dispatch should succeed");
 
     let result = s.session.call_public::<_, ()>(
         &OWNER_SK,
@@ -1245,7 +1414,25 @@ fn test_protocol_fee_rejects_collected_fee_overflow() {
         &(Vec::<u8>::new(), encoded),
     );
 
-    assert_contract_panic(result, "ProtocolFee: collected fee overflow");
+    assert_contract_panic(result, "ProtocolFee: caller is not mailbox");
+    let collected = s
+        .session
+        .direct_call::<_, u64>(PROTOCOL_FEE_ID, "collected_fees", &())
+        .expect("collected_fees should succeed")
+        .data;
+    assert_eq!(collected, 0);
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        PROTOCOL_FEE_ID,
+        "receive_payment",
+        &(ReceiveFromContract {
+            contract: MAILBOX_ID,
+            value: 500,
+            data: Vec::new(),
+        },),
+    );
+    assert_contract_panic(result, "ProtocolFee: unauthenticated payment");
 }
 
 #[test]
@@ -1257,7 +1444,13 @@ fn test_protocol_fee_init_rejects_fee_above_max() {
         PROTOCOL_FEE_BYTECODE,
         dusk_vm::ContractData::builder()
             .owner(DEPLOYER)
-            .init_arg(&(20000u64, 10000u64, MAILBOX_ID, TEST_MOCK_ID))
+            .init_arg(&(
+                20000u64,
+                10000u64,
+                MAILBOX_ID,
+                *OWNER_ID,
+                *OWNER_ID,
+            ))
             .contract_id(PROTOCOL_FEE_ID),
     );
     assert!(result.is_err(), "init with fee > max should fail");
@@ -1273,7 +1466,13 @@ fn test_protocol_fee_different_fee_values() {
             PROTOCOL_FEE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(2500u64, 5000u64, MAILBOX_ID, TEST_MOCK_ID))
+                .init_arg(&(
+                    2500u64,
+                    5000u64,
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    *OWNER_ID,
+                ))
                 .contract_id(PROTOCOL_FEE_ID),
         )
         .expect("Deploying ProtocolFee should succeed");
@@ -1314,6 +1513,43 @@ fn test_igp_init() {
         .expect("total_gas_payments should succeed")
         .data;
     assert_eq!(total, 0);
+}
+
+#[test]
+fn test_fee_contract_admin_paths_accept_owner_and_reject_non_owner() {
+    let mut session = session_with_hooks();
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, PROTOCOL_FEE_ID, "set_protocol_fee", &(750u64,))
+        .expect("ProtocolFee owner should update the fee");
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        PROTOCOL_FEE_ID,
+        "set_protocol_fee",
+        &(500u64,),
+    );
+    assert_contract_panic(result, "ProtocolFee: caller is not the owner");
+
+    let config = DomainGasConfig {
+        gas_overhead: 1,
+        token_exchange_rate: 10_000_000_000,
+        gas_price: 2,
+    };
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_domain_gas_config",
+            &(REMOTE_DOMAIN, config),
+        )
+        .expect("IGP owner should update a domain config");
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        IGP_ID,
+        "set_domain_gas_config",
+        &(REMOTE_DOMAIN, config),
+    );
+    assert_contract_panic(result, "IGP: caller is not the owner");
 }
 
 #[test]
@@ -1416,10 +1652,16 @@ fn test_igp_records_payment_on_dispatch() {
         .expect("total_gas_payments should succeed")
         .data;
     assert_eq!(total, 50_000);
+    assert_eq!(
+        session
+            .contract_balance(&IGP_ID)
+            .expect("IGP balance query should succeed"),
+        50_000
+    );
 }
 
 #[test]
-fn test_igp_rejects_total_gas_payment_overflow() {
+fn test_igp_rejects_unbacked_direct_post_dispatch() {
     let mut s = HyperlaneSession::new();
 
     s.session
@@ -1429,7 +1671,8 @@ fn test_igp_rejects_total_gas_payment_overflow() {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     MAILBOX_ID,
-                    MERKLE_TREE_HOOK_ID,
+                    *OWNER_ID,
+                    *OWNER_ID,
                     vec![(
                         REMOTE_DOMAIN,
                         DomainGasConfig {
@@ -1450,17 +1693,8 @@ fn test_igp_rejects_total_gas_payment_overflow() {
         [0xAAu8; 32],
         REMOTE_DOMAIN,
         [0xBBu8; 32],
-        b"igp overflow",
+        b"unbacked igp payment",
     );
-
-    s.session
-        .call_public::<_, ()>(
-            &OWNER_SK,
-            IGP_ID,
-            "post_dispatch",
-            &(u64::MAX.to_le_bytes().to_vec(), encoded.clone()),
-        )
-        .expect("first post_dispatch should succeed");
 
     let result = s.session.call_public::<_, ()>(
         &OWNER_SK,
@@ -1469,7 +1703,25 @@ fn test_igp_rejects_total_gas_payment_overflow() {
         &(1u64.to_le_bytes().to_vec(), encoded),
     );
 
-    assert_contract_panic(result, "IGP: total gas payment overflow");
+    assert_contract_panic(result, "IGP: caller is not mailbox");
+    let total = s
+        .session
+        .direct_call::<_, u64>(IGP_ID, "total_gas_payments", &())
+        .expect("total_gas_payments should succeed")
+        .data;
+    assert_eq!(total, 0);
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        IGP_ID,
+        "receive_payment",
+        &(ReceiveFromContract {
+            contract: MAILBOX_ID,
+            value: 1,
+            data: Vec::new(),
+        },),
+    );
+    assert_contract_panic(result, "IGP: unauthenticated payment");
 }
 
 // =============================================================================
@@ -1490,18 +1742,9 @@ const WARP_DRC20_ID: ContractId = ContractId::from_bytes([20; 32]);
 const WARP_DRC20_COLLATERAL_ID: ContractId = ContractId::from_bytes([21; 32]);
 const WARP_NATIVE_ID: ContractId = ContractId::from_bytes([22; 32]);
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[archive_attr(derive(rkyv::bytecheck::CheckBytes))]
-enum Drc20Account {
-    External(AccountPublicKey),
-    Contract(ContractId),
-}
-
 fn warp_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u64 {
     session
-        .direct_call::<_, u64>(WARP_DRC20_ID, "balance_of", &(account,))
+        .direct_call::<_, u64>(WARP_DRC20_ID, "balance_of", &Drc20BalanceOf { account })
         .expect("balance_of should succeed")
         .data
 }
@@ -1542,7 +1785,7 @@ fn session_with_warp_drc20() -> TestSession {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     MAILBOX_ID,
-                    message::keccak256(&OWNER_PK.to_bytes()), // owner = keccak256(deployer BLS key)
+                    *OWNER_ID,
                     alloc::string::String::from("Wrapped ETH"),
                     alloc::string::String::from("WETH"),
                     18u8,
@@ -1560,7 +1803,7 @@ fn session_with_warp_drc20() -> TestSession {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     LOCAL_DOMAIN,
-                    MAILBOX_ID,          // owner
+                    *OWNER_ID,           // owner
                     TEST_MOCK_ID,        // default ISM
                     TEST_MOCK_ID,        // default hook (noop)
                     MERKLE_TREE_HOOK_ID, // required hook
@@ -1687,7 +1930,7 @@ fn test_warp_native_init() {
             WARP_NATIVE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(MAILBOX_ID, MAILBOX_ID, Vec::<(u32, H256)>::new()))
+                .init_arg(&(MAILBOX_ID, *OWNER_ID, Vec::<(u32, H256)>::new()))
                 .contract_id(WARP_NATIVE_ID),
         )
         .expect("Deploying WarpNative should succeed");
@@ -1716,7 +1959,7 @@ fn test_warp_native_register_account() {
             WARP_NATIVE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(MAILBOX_ID, MAILBOX_ID, Vec::<(u32, H256)>::new()))
+                .init_arg(&(MAILBOX_ID, *OWNER_ID, Vec::<(u32, H256)>::new()))
                 .contract_id(WARP_NATIVE_ID),
         )
         .expect("Deploying WarpNative should succeed");
@@ -1776,7 +2019,12 @@ fn test_warp_collateral_init() {
             WARP_DRC20_COLLATERAL_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(TEST_MOCK_ID, MAILBOX_ID, MAILBOX_ID, Vec::<(u32, H256)>::new()))
+                .init_arg(&(
+                    TEST_MOCK_ID,
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    Vec::<(u32, H256)>::new(),
+                ))
                 .contract_id(WARP_DRC20_COLLATERAL_ID),
         )
         .expect("Deploying WarpDrc20Collateral should succeed");
@@ -1807,7 +2055,7 @@ fn test_warp_collateral_rejects_zero_token() {
             .init_arg(&(
                 ContractId::from_bytes([0u8; 32]),
                 MAILBOX_ID,
-                MAILBOX_ID,
+                *OWNER_ID,
                 Vec::<(u32, H256)>::new(),
             ))
             .contract_id(WARP_DRC20_COLLATERAL_ID),
@@ -1867,7 +2115,7 @@ fn session_with_warp_drc20_flow() -> (TestSession, H256) {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     MAILBOX_ID,
-                    message::keccak256(&OWNER_PK.to_bytes()), // owner = keccak256(deployer BLS key)
+                    *OWNER_ID,
                     alloc::string::String::from("Wrapped ETH"),
                     alloc::string::String::from("WETH"),
                     18u8,
@@ -1885,7 +2133,7 @@ fn session_with_warp_drc20_flow() -> (TestSession, H256) {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     LOCAL_DOMAIN,
-                    MAILBOX_ID,          // owner
+                    *OWNER_ID,           // owner
                     TEST_MOCK_ID,        // default ISM
                     TEST_MOCK_ID,        // default hook (noop)
                     MERKLE_TREE_HOOK_ID, // required hook
@@ -2198,7 +2446,7 @@ fn session_with_warp_native_flow() -> (TestSession, H256) {
             WARP_NATIVE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(MAILBOX_ID, MAILBOX_ID, vec![(REMOTE_DOMAIN, remote_router)]))
+                .init_arg(&(MAILBOX_ID, *OWNER_ID, vec![(REMOTE_DOMAIN, remote_router)]))
                 .contract_id(WARP_NATIVE_ID),
         )
         .expect("Deploying WarpNative should succeed");
@@ -2211,7 +2459,7 @@ fn session_with_warp_native_flow() -> (TestSession, H256) {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     LOCAL_DOMAIN,
-                    MAILBOX_ID,
+                    *OWNER_ID,
                     TEST_MOCK_ID,
                     TEST_MOCK_ID,
                     MERKLE_TREE_HOOK_ID,
@@ -2232,6 +2480,22 @@ fn test_warp_native_init_with_enrolled_routers() {
         .expect("enrolled_router should succeed")
         .data;
     assert_eq!(router, remote_router);
+}
+
+#[test]
+fn test_warp_native_admin_accepts_owner_and_rejects_non_owner() {
+    let (mut session, _) = session_with_warp_native_flow();
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "set_ism", &(TEST_MOCK_ID,))
+        .expect("WarpNative owner should update the ISM");
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_NATIVE_ID,
+        "set_ism",
+        &(MERKLE_TREE_HOOK_ID,),
+    );
+    assert_contract_panic(result, "WarpNative: caller is not the owner");
 }
 
 #[test]
@@ -2493,7 +2757,7 @@ fn session_with_warp_collateral_flow() -> (TestSession, H256) {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     MAILBOX_ID,
-                    MAILBOX_ID,
+                    *OWNER_ID,
                     alloc::string::String::from("Test Token"),
                     alloc::string::String::from("TEST"),
                     18u8,
@@ -2512,7 +2776,7 @@ fn session_with_warp_collateral_flow() -> (TestSession, H256) {
                 .init_arg(&(
                     WARP_DRC20_ID,  // wrapped token = WarpDrc20
                     MAILBOX_ID,
-                    MAILBOX_ID,     // owner
+                    *OWNER_ID,      // owner
                     vec![(REMOTE_DOMAIN, remote_router)],
                 ))
                 .contract_id(WARP_DRC20_COLLATERAL_ID),
@@ -2527,7 +2791,7 @@ fn session_with_warp_collateral_flow() -> (TestSession, H256) {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     LOCAL_DOMAIN,
-                    MAILBOX_ID,
+                    *OWNER_ID,
                     TEST_MOCK_ID,
                     TEST_MOCK_ID,
                     MERKLE_TREE_HOOK_ID,
@@ -2552,6 +2816,27 @@ fn test_warp_collateral_init_with_enrolled_routers() {
         .expect("enrolled_router should succeed")
         .data;
     assert_eq!(router, remote_router);
+}
+
+#[test]
+fn test_warp_collateral_admin_accepts_owner_and_rejects_non_owner() {
+    let (mut session, _) = session_with_warp_collateral_flow();
+
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "set_ism",
+            &(TEST_MOCK_ID,),
+        )
+        .expect("WarpCollateral owner should update the ISM");
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_DRC20_COLLATERAL_ID,
+        "set_ism",
+        &(MERKLE_TREE_HOOK_ID,),
+    );
+    assert_contract_panic(result, "WarpCollateral: caller is not the owner");
 }
 
 #[test]
@@ -2908,7 +3193,7 @@ fn session_with_warp_collateral_funded_flow() -> (TestSession, H256) {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     MAILBOX_ID,
-                    MAILBOX_ID.to_bytes(),
+                    *OWNER_ID,
                     alloc::string::String::from("Test Token"),
                     alloc::string::String::from("TEST"),
                     18u8,
@@ -2927,7 +3212,7 @@ fn session_with_warp_collateral_funded_flow() -> (TestSession, H256) {
                 .init_arg(&(
                     WARP_DRC20_ID,
                     MAILBOX_ID,
-                    MAILBOX_ID,
+                    *OWNER_ID,
                     vec![(REMOTE_DOMAIN, remote_router)],
                 ))
                 .contract_id(WARP_DRC20_COLLATERAL_ID),
@@ -2942,7 +3227,7 @@ fn session_with_warp_collateral_funded_flow() -> (TestSession, H256) {
                 .owner(DEPLOYER)
                 .init_arg(&(
                     LOCAL_DOMAIN,
-                    MAILBOX_ID,
+                    *OWNER_ID,
                     TEST_MOCK_ID,
                     TEST_MOCK_ID,
                     MERKLE_TREE_HOOK_ID,
@@ -2972,6 +3257,77 @@ fn session_with_warp_collateral_funded_flow() -> (TestSession, H256) {
         .expect("Pre-funding collateral should succeed");
 
     (session, remote_router)
+}
+
+#[test]
+fn test_warp_collateral_transfer_remote_uses_current_drc20_allowance_and_custody() {
+    let (mut session, remote_router) = session_with_warp_collateral_funded_flow();
+    let amount = 1_000_000u64;
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("underlying token account registration should succeed");
+    let owner = Drc20Account::External(*OWNER_PK);
+    let token_body = hyperlane_dusk_types::token_message::encode(*OWNER_ID, amount);
+    let encoded = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &token_body,
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("minting collateral to the owner should succeed");
+
+    let spender = Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID);
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender,
+                value: amount,
+            },
+        )
+        .expect("current DRC20 approve ABI should succeed");
+    let allowance = session
+        .direct_call::<_, u64>(
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance { owner, spender },
+        )
+        .expect("allowance query should succeed")
+        .data;
+    assert_eq!(allowance, amount);
+
+    let collateral_before = warp_drc20_balance_of(&mut session, spender);
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xAB; 32], amount),
+        )
+        .expect("collateral transfer should lock approved DRC20 tokens");
+
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 0);
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, spender),
+        collateral_before + amount
+    );
+    let allowance = session
+        .direct_call::<_, u64>(
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance { owner, spender },
+        )
+        .expect("allowance query should succeed")
+        .data;
+    assert_eq!(allowance, 0);
 }
 
 #[test]

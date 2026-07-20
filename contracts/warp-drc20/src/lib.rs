@@ -17,12 +17,14 @@
 #![deny(clippy::pedantic)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::large_types_passed_by_value)] // Contract ABI takes archived calls by value.
 #![allow(clippy::used_underscore_binding)]
 #![allow(clippy::cast_possible_truncation)]
 
 /// Hyperlane WarpDrc20 synthetic token contract.
 #[dusk_forge::contract(events = [
     events::AccountRegistered,
+    events::Drc20Approval,
     events::Drc20Transfer,
     events::HookSet,
     events::Initialized,
@@ -38,16 +40,15 @@ mod warp_drc20 {
     use alloc::collections::BTreeMap;
     use alloc::string::String;
     use alloc::vec::Vec;
-    use core::cmp::Ordering;
-
-    use bytecheck::CheckBytes;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
-    use dusk_core::transfer::TRANSFER_CONTRACT;
-    use rkyv::{Archive, Deserialize, Serialize};
 
     use dusk_bytes::Serializable;
 
+    use hyperlane_dusk_types::caller;
+    use hyperlane_dusk_types::drc20::{
+        self, Account, Allowance, ApproveCall, BalanceOf, TransferCall, TransferFromCall,
+    };
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::token_message;
@@ -56,58 +57,11 @@ mod warp_drc20 {
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
 
-    // =====================================================================
-    // Account type (DRC20-compatible)
-    // =====================================================================
-
-    /// A DRC20 account — either an external BLS key or a contract.
-    ///
-    /// This is layout-compatible with the DRC20 reference `Account` type
-    /// so that standard DRC20 callers work seamlessly.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
-    #[archive_attr(derive(CheckBytes))]
-    pub enum Account {
-        /// An externally owned account.
-        External(AccountPublicKey),
-        /// A contract account.
-        Contract(ContractId),
-    }
-
-    impl PartialOrd for Account {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    impl Ord for Account {
-        fn cmp(&self, other: &Self) -> Ordering {
-            match (self, other) {
-                (Account::External(a), Account::External(b)) => {
-                    a.to_raw_bytes().cmp(&b.to_raw_bytes())
-                }
-                (Account::Contract(a), Account::Contract(b)) => a.cmp(b),
-                (Account::External(_), Account::Contract(_)) => Ordering::Less,
-                (Account::Contract(_), Account::External(_)) => Ordering::Greater,
-            }
-        }
-    }
-
     /// Convert a DRC20 account into an indexable H256.
     fn account_id(account: Account) -> H256 {
         match account {
             Account::External(pk) => message::keccak256(&pk.to_bytes()),
             Account::Contract(id) => id.to_bytes(),
-        }
-    }
-
-    /// Resolve the caller as an Account.
-    fn sender_account() -> Account {
-        if abi::callstack().len() == 1 {
-            Account::External(
-                abi::public_sender().expect("WarpDrc20: shielded transactions not supported"),
-            )
-        } else {
-            Account::Contract(abi::caller().expect("WarpDrc20: missing caller"))
         }
     }
 
@@ -120,6 +74,8 @@ mod warp_drc20 {
         // -- DRC20 token state --
         /// Token balances per account.
         balances: BTreeMap<Account, u64>,
+        /// Allowances keyed by token owner and approved spender.
+        allowances: BTreeMap<Account, BTreeMap<Account, u64>>,
         /// Total token supply.
         supply: u64,
         /// Token name.
@@ -136,7 +92,7 @@ mod warp_drc20 {
         hook: ContractId,
         /// ISM override (zero = use Mailbox default).
         ism: ContractId,
-        /// Contract owner: keccak256(bls_public_key.to_bytes()).
+        /// Owner identity (Moonlight account hash or contract ID).
         owner: Option<H256>,
         /// Enrolled remote routers per domain.
         enrolled_routers: BTreeMap<u32, H256>,
@@ -154,6 +110,7 @@ mod warp_drc20 {
         pub const fn new() -> Self {
             Self {
                 balances: BTreeMap::new(),
+                allowances: BTreeMap::new(),
                 supply: 0,
                 name: String::new(),
                 symbol: String::new(),
@@ -256,14 +213,57 @@ mod warp_drc20 {
         }
 
         /// Returns the balance of an account.
-        pub fn balance_of(&self, account: Account) -> u64 {
-            self.balances.get(&account).copied().unwrap_or(0)
+        pub fn balance_of(&self, args: BalanceOf) -> u64 {
+            self.balances.get(&args.account).copied().unwrap_or(0)
+        }
+
+        /// Returns the allowance granted by an owner to a spender.
+        pub fn allowance(&self, args: Allowance) -> u64 {
+            self.allowances
+                .get(&args.owner)
+                .and_then(|allowances| allowances.get(&args.spender).copied())
+                .unwrap_or(0)
         }
 
         /// Transfer tokens from the caller to a recipient.
-        pub fn transfer(&mut self, to: Account, value: u64) {
-            let from = sender_account();
-            self.do_transfer(from, to, value);
+        pub fn transfer(&mut self, args: TransferCall) {
+            self.do_transfer(drc20::sender_account(), args.to, args.value);
+        }
+
+        /// Approve a spender to transfer tokens on behalf of the caller.
+        pub fn approve(&mut self, args: ApproveCall) {
+            assert!(
+                account_id(args.spender) != [0u8; 32],
+                "WarpDrc20: spender cannot be zero"
+            );
+            let owner = drc20::sender_account();
+            self.allowances
+                .entry(owner)
+                .or_default()
+                .insert(args.spender, args.value);
+            abi::emit(
+                events::Drc20Approval::TOPIC,
+                events::Drc20Approval {
+                    owner: account_id(owner),
+                    spender: account_id(args.spender),
+                    amount: args.value,
+                },
+            );
+        }
+
+        /// Transfer tokens from an owner using the caller's allowance.
+        pub fn transfer_from(&mut self, args: TransferFromCall) {
+            let spender = drc20::sender_account();
+            let current = self.allowance(Allowance {
+                owner: args.owner,
+                spender,
+            });
+            assert!(current >= args.value, "WarpDrc20: allowance too low");
+            self.allowances
+                .entry(args.owner)
+                .or_default()
+                .insert(spender, current - args.value);
+            self.do_transfer(args.owner, args.to, args.value);
         }
 
         // =================================================================
@@ -281,7 +281,7 @@ mod warp_drc20 {
             amount: u64,
         ) -> MessageId {
             assert!(amount > 0, "WarpDrc20: amount must be > 0");
-            let sender = sender_account();
+            let sender = drc20::sender_account();
 
             // Burn tokens from sender
             self.burn(sender, amount);
@@ -512,14 +512,10 @@ mod warp_drc20 {
         /// Panics if the resolved admin sender is not the owner.
         fn only_owner(&self) {
             let owner = self.owner.expect("WarpDrc20: no owner set");
-            let caller = abi::caller().expect("WarpDrc20: cannot determine caller");
-            let sender_h = if caller == TRANSFER_CONTRACT {
-                let sender = abi::public_sender().expect("WarpDrc20: no Moonlight sender");
-                message::keccak256(&sender.to_bytes())
-            } else {
-                caller.to_bytes()
-            };
-            assert!(sender_h == owner, "WarpDrc20: caller is not the owner");
+            assert!(
+                caller::effective_caller() == owner,
+                "WarpDrc20: caller is not the owner"
+            );
         }
     }
 }

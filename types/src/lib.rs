@@ -19,6 +19,9 @@ use bytecheck::CheckBytes;
 use rkyv::{Archive, Deserialize, Serialize};
 
 pub mod checkpoint;
+pub mod caller;
+#[cfg(feature = "drc20")]
+pub mod drc20;
 pub mod events;
 pub mod merkle;
 pub mod message;

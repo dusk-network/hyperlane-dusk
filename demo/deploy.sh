@@ -51,6 +51,7 @@ RESET=false
 DUSK_DEFAULT_ISM="${DUSK_DEFAULT_ISM:-testMock}"
 MULTISIG_VALIDATORS="${MULTISIG_VALIDATORS:-$ANVIL_DEPLOYER}"
 MULTISIG_THRESHOLD="${MULTISIG_THRESHOLD:-1}"
+DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -156,6 +157,8 @@ if [ "$SKIP_DEPLOY" = true ] && [ -f "$EVM_DEPLOY_FILE" ]; then
     EVM_MAILBOX=$(jq -r '.mailbox' "$EVM_DEPLOY_FILE")
     EVM_RECIPIENT=$(jq -r '.recipient' "$EVM_DEPLOY_FILE")
     EVM_TOKEN=$(jq -r '.token' "$EVM_DEPLOY_FILE")
+    EVM_NATIVE_TOKEN=$(jq -r '.native_token' "$EVM_DEPLOY_FILE")
+    EVM_COLLATERAL_TOKEN=$(jq -r '.collateral_token' "$EVM_DEPLOY_FILE")
 else
     cd "$SOLIDITY_DIR"
 
@@ -260,6 +263,31 @@ else
         &>/dev/null || fail "Failed to initialize HypERC20"
     ok "HypERC20 initialized (10 $TOKEN_SYMBOL minted)"
 
+    step "Deploying synthetic native-DUSK token..."
+    EVM_NATIVE_TOKEN=$(forge_deploy contracts/token/HypERC20.sol:HypERC20 \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        --constructor-args 9 1 1 "$EVM_MAILBOX") || fail "Failed to deploy native route token"
+    cast send "$EVM_NATIVE_TOKEN" \
+        "initialize(uint256,string,string,address,address,address)" \
+        0 "Dusk" "DUSK" "$EVM_HOOK" "$EVM_ISM" "$ANVIL_DEPLOYER" \
+        --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to initialize native route token"
+    ok "Native route token: $EVM_NATIVE_TOKEN"
+
+    step "Deploying synthetic DRC20-collateral token..."
+    EVM_COLLATERAL_TOKEN=$(forge_deploy contracts/token/HypERC20.sol:HypERC20 \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY" \
+        --constructor-args "$TOKEN_DECIMALS" 1 1 "$EVM_MAILBOX") || fail "Failed to deploy collateral route token"
+    cast send "$EVM_COLLATERAL_TOKEN" \
+        "initialize(uint256,string,string,address,address,address)" \
+        0 "Collateral $TOKEN_NAME" "c$TOKEN_SYMBOL" \
+        "$EVM_HOOK" "$EVM_ISM" "$ANVIL_DEPLOYER" \
+        --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to initialize collateral route token"
+    ok "Collateral route token: $EVM_COLLATERAL_TOKEN"
+
     cat > "$EVM_DEPLOY_FILE" <<EVMJSON
 {
     "ism": "$EVM_ISM",
@@ -269,7 +297,9 @@ else
     "igp": "$EVM_IGP",
     "mailbox": "$EVM_MAILBOX",
     "recipient": "$EVM_RECIPIENT",
-    "token": "$EVM_TOKEN"
+    "token": "$EVM_TOKEN",
+    "native_token": "$EVM_NATIVE_TOKEN",
+    "collateral_token": "$EVM_COLLATERAL_TOKEN"
 }
 EVMJSON
 fi
@@ -291,6 +321,8 @@ else
         --domain "$DUSK_DOMAIN"
         --wasm-dir "$WASM_DIR"
         --deploy-warp-drc20
+        --deploy-warp-native
+        --warp-collateral-token warp-drc20
         --warp-name "$TOKEN_NAME"
         --warp-symbol "$TOKEN_SYMBOL"
         --warp-decimals "$TOKEN_DECIMALS"
@@ -317,7 +349,11 @@ DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_FILE")
 DUSK_ISM_MULTISIG=$(jq -r '.contracts.ism_multisig // empty' "$DUSK_DEPLOY_FILE")
 DUSK_VALIDATOR_ANNOUNCE=$(jq -r '.contracts.validator_announce' "$DUSK_DEPLOY_FILE")
 DUSK_IGP=$(jq -r '.contracts.igp' "$DUSK_DEPLOY_FILE")
+DUSK_PROTOCOL_FEE=$(jq -r '.contracts.protocol_fee' "$DUSK_DEPLOY_FILE")
+DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_FILE")
 DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_FILE")
+DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native' "$DUSK_DEPLOY_FILE")
+DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral' "$DUSK_DEPLOY_FILE")
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
 
 info "  Mailbox:        $DUSK_MAILBOX"
@@ -327,8 +363,37 @@ if [ -n "${DUSK_ISM_MULTISIG:-}" ] && [ "$DUSK_ISM_MULTISIG" != "null" ]; then
 fi
 info "  ValidatorAnnounce: $DUSK_VALIDATOR_ANNOUNCE"
 info "  IGP:            $DUSK_IGP"
+info "  ProtocolFee:    $DUSK_PROTOCOL_FEE"
+info "  AggregationHook: $DUSK_AGGREGATION_HOOK"
 info "  WarpDrc20:      $DUSK_WARP"
+info "  WarpNative:     $DUSK_WARP_NATIVE"
+info "  WarpCollateral: $DUSK_WARP_COLLATERAL"
 info "  TestRecipient:  $DUSK_TEST_RECIPIENT"
+
+# ── Fund Dispatch Fees ───────────────────────────────────────────────────────
+
+header "Fund Dusk Dispatch Fees"
+
+step "Funding WarpDrc20 Mailbox fee credit ($DUSK_DISPATCH_FEE_CREDIT LUX)..."
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
+    --rues-url "$DUSK_RUES_URL" \
+    --keys "$CONSENSUS_KEYS" \
+    --mailbox "$DUSK_MAILBOX" \
+    --payer "$DUSK_WARP" \
+    --amount "$DUSK_DISPATCH_FEE_CREDIT" \
+    >/dev/null || fail "Failed to fund WarpDrc20 dispatch fees"
+ok "WarpDrc20 dispatch fees funded"
+for route in "$DUSK_WARP_NATIVE" "$DUSK_WARP_COLLATERAL"; do
+    step "Funding route dispatch fees (${route:0:16}...)..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
+        --rues-url "$DUSK_RUES_URL" \
+        --keys "$CONSENSUS_KEYS" \
+        --mailbox "$DUSK_MAILBOX" \
+        --payer "$route" \
+        --amount "$DUSK_DISPATCH_FEE_CREDIT" \
+        >/dev/null || fail "Failed to fund route dispatch fees"
+done
+ok "Native and collateral dispatch fees funded"
 
 # ── Enroll Remote Routers ────────────────────────────────────────────────────
 
@@ -358,6 +423,38 @@ ENROLL_OUT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-rou
     }
 ok "Dusk router enrolled"
 
+step "EVM: Enrolling Dusk WarpNative..."
+cast send "$EVM_NATIVE_TOKEN" \
+    "enrollRemoteRouter(uint32,bytes32)" \
+    "$DUSK_DOMAIN" "0x${DUSK_WARP_NATIVE}" \
+    --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+    &>/dev/null || fail "Failed to enroll WarpNative on EVM"
+ok "EVM native router enrolled"
+
+step "Dusk: Enrolling EVM native token..."
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
+    --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+    --warp-contract "$DUSK_WARP_NATIVE" --domain "$EVM_DOMAIN" \
+    --router "$(pad_evm_address "$EVM_NATIVE_TOKEN")" \
+    >/dev/null || fail "Failed to enroll EVM native token on Dusk"
+ok "Dusk native router enrolled"
+
+step "EVM: Enrolling Dusk WarpCollateral..."
+cast send "$EVM_COLLATERAL_TOKEN" \
+    "enrollRemoteRouter(uint32,bytes32)" \
+    "$DUSK_DOMAIN" "0x${DUSK_WARP_COLLATERAL}" \
+    --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+    &>/dev/null || fail "Failed to enroll WarpCollateral on EVM"
+ok "EVM collateral router enrolled"
+
+step "Dusk: Enrolling EVM collateral token..."
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
+    --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+    --warp-contract "$DUSK_WARP_COLLATERAL" --domain "$EVM_DOMAIN" \
+    --router "$(pad_evm_address "$EVM_COLLATERAL_TOKEN")" \
+    >/dev/null || fail "Failed to enroll EVM collateral token on Dusk"
+ok "Dusk collateral router enrolled"
+
 # Wait for enroll-router TX to be included before sending another TX (nonce ordering)
 # Dusk block time is ~10s; wait 2 blocks to be safe
 info "Waiting for block inclusion (20s)..."
@@ -371,7 +468,7 @@ step "Registering deployer's BLS key on WarpDrc20..."
 REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --warp-contract "$DUSK_WARP" 2>&1) || {
+    --warp-contract "$DUSK_WARP") || {
         echo "$REGISTER_RESULT" >&2
         fail "Failed to register account on WarpDrc20"
     }
@@ -379,7 +476,6 @@ DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
 ok "WarpDrc20 account registered: ${DUSK_ACCOUNT_H256:0:16}..."
 
 # Register on WarpDrc20Collateral if deployed
-DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null)
 if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
     sleep 20 # Wait for block inclusion before next TX (nonce ordering)
     step "Registering deployer's BLS key on WarpDrc20Collateral..."
@@ -393,7 +489,6 @@ if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
 fi
 
 # Register on WarpNative if deployed
-DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null)
 if [ -n "$DUSK_WARP_NATIVE" ] && [ "$DUSK_WARP_NATIVE" != "null" ]; then
     sleep 20 # Wait for block inclusion before next TX (nonce ordering)
     step "Registering deployer's BLS key on WarpNative..."
@@ -418,6 +513,8 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
     "evm": {
         "mailbox": "$EVM_MAILBOX",
         "token": "$EVM_TOKEN",
+        "native_token": "$EVM_NATIVE_TOKEN",
+        "collateral_token": "$EVM_COLLATERAL_TOKEN",
         "ism": "$EVM_ISM",
         "hook": "$EVM_HOOK",
         "merkle_tree_hook": "${EVM_MERKLE_TREE_HOOK:-}",
@@ -429,9 +526,13 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         "mailbox": "$DUSK_MAILBOX",
         "ism_multisig": "${DUSK_ISM_MULTISIG:-}",
         "warp_drc20": "$DUSK_WARP",
+        "warp_native": "$DUSK_WARP_NATIVE",
+        "warp_drc20_collateral": "$DUSK_WARP_COLLATERAL",
         "merkle_tree_hook": "$DUSK_MERKLE",
         "validator_announce": "$DUSK_VALIDATOR_ANNOUNCE",
         "igp": "$DUSK_IGP",
+        "protocol_fee": "$DUSK_PROTOCOL_FEE",
+        "aggregation_hook": "$DUSK_AGGREGATION_HOOK",
         "test_recipient": "$DUSK_TEST_RECIPIENT"
     },
     "account_h256": "$DUSK_ACCOUNT_H256",

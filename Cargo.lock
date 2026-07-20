@@ -1974,6 +1974,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperlane-dusk-aggregation-hook"
+version = "0.1.0"
+dependencies = [
+ "dusk-core",
+ "dusk-forge",
+ "hyperlane-dusk-types",
+]
+
+[[package]]
 name = "hyperlane-dusk-data-driver"
 version = "0.1.0"
 dependencies = [
@@ -2094,6 +2103,7 @@ name = "hyperlane-dusk-types"
 version = "0.1.0"
 dependencies = [
  "bytecheck",
+ "dusk-bytes",
  "dusk-core",
  "dusk-forge",
  "rkyv",

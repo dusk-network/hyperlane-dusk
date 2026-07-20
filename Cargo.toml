@@ -4,6 +4,7 @@ members = [
     "types",
     "contracts/mailbox",
     "contracts/merkle-tree-hook",
+    "contracts/aggregation-hook",
     "contracts/ism-multisig",
     "contracts/validator-announce",
     "contracts/test-recipient",

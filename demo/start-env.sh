@@ -113,18 +113,18 @@ if [ ! -e "$RUSK_STATE" ]; then
 fi
 ok "Rusk genesis state: $RUSK_STATE"
 
-# dusk-tx binary
-if [ ! -f "$DUSK_TX" ]; then
-    info "dusk-tx not found, building..."
-    (cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
-fi
+# dusk-tx binary. Always let Cargo check freshness: a merely present release
+# binary can predate the CLI or shared ABI sources and silently deploy an old
+# contract topology.
+info "Ensuring dusk-tx is current..."
+(cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
 ok "dusk-tx binary: $DUSK_TX"
 
-# Contract WASMs
-if [ ! -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ]; then
-    info "Contract WASMs not found, building..."
-    (cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
-fi
+# Contract WASMs. `make all` delegates freshness to Cargo for every contract;
+# checking only for Mailbox previously allowed stale or incomplete route WASMs
+# to survive between E2E runs.
+info "Ensuring contract WASMs are current..."
+(cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
 ok "Contract WASMs: $WASM_DIR"
 
 # Data-driver WASM (for explorer integration)

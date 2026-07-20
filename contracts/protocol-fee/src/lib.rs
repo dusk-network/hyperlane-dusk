@@ -5,8 +5,9 @@
 //! Post-dispatch hook that charges a fixed protocol fee per message.
 //!
 //! This is the Dusk equivalent of `ProtocolFee.sol`. Each dispatched message
-//! incurs a configurable fee (capped by `max_protocol_fee`). Fees are tracked
-//! via an accounting model; actual DUSK collection is handled externally.
+//! incurs a configurable fee (capped by `max_protocol_fee`). The Mailbox sends
+//! the exact quoted native DUSK value through the transfer contract before a
+//! payment is recorded.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -32,9 +33,12 @@ mod protocol_fee {
     use alloc::vec::Vec;
 
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
+    use dusk_core::transfer::{ContractToAccount, ReceiveFromContract, TRANSFER_CONTRACT};
 
+    use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
+    use hyperlane_dusk_types::H256;
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -45,12 +49,19 @@ mod protocol_fee {
         protocol_fee: u64,
         /// Maximum allowed fee (immutable after init).
         max_protocol_fee: u64,
-        /// Beneficiary that receives collected fees.
-        beneficiary: ContractId,
-        /// Contract owner (can update fee and beneficiary).
-        owner: Option<ContractId>,
-        /// Running total of fees owed (accounting-based).
+        /// Mailbox authorized to prepare and send hook payments.
+        mailbox: ContractId,
+        /// Moonlight account hash that may claim collected fees.
+        beneficiary: H256,
+        /// Owner identity (Moonlight account hash or contract ID).
+        owner: Option<H256>,
+        /// Lifetime total of native DUSK fees collected.
         collected_fees: u64,
+        /// Native DUSK collected and not yet claimed by the beneficiary.
+        claimable_fees: u64,
+        /// Payment prepared by an authenticated Mailbox call and awaiting the
+        /// matching transfer-contract callback.
+        pending_payment: Option<(H256, u64)>,
     }
 
     impl ProtocolFee {
@@ -59,9 +70,12 @@ mod protocol_fee {
             Self {
                 protocol_fee: 0,
                 max_protocol_fee: 0,
-                beneficiary: ZERO_CONTRACT,
+                mailbox: ZERO_CONTRACT,
+                beneficiary: [0u8; 32],
                 owner: None,
                 collected_fees: 0,
+                claimable_fees: 0,
+                pending_payment: None,
             }
         }
 
@@ -77,8 +91,9 @@ mod protocol_fee {
             &mut self,
             protocol_fee: u64,
             max_protocol_fee: u64,
-            beneficiary: ContractId,
-            owner: ContractId,
+            mailbox: ContractId,
+            beneficiary: H256,
+            owner: H256,
         ) {
             assert!(self.owner.is_none(), "ProtocolFee: already initialized");
             assert!(
@@ -86,19 +101,24 @@ mod protocol_fee {
                 "ProtocolFee: fee exceeds maximum"
             );
             assert!(
-                beneficiary != ZERO_CONTRACT,
+                mailbox != ZERO_CONTRACT,
+                "ProtocolFee: mailbox cannot be zero"
+            );
+            assert!(
+                beneficiary != [0u8; 32],
                 "ProtocolFee: beneficiary cannot be zero"
             );
             self.protocol_fee = protocol_fee;
             self.max_protocol_fee = max_protocol_fee;
+            self.mailbox = mailbox;
             self.beneficiary = beneficiary;
             self.owner = Some(owner);
             abi::emit(
                 events::Initialized::TOPIC,
                 events::Initialized {
                     contract_type: events::CONTRACT_PROTOCOL_FEE,
-                    owner: owner.to_bytes(),
-                    mailbox: ZERO_CONTRACT.to_bytes(),
+                    owner,
+                    mailbox: mailbox.to_bytes(),
                     local_domain: 0,
                 },
             );
@@ -108,9 +128,7 @@ mod protocol_fee {
             );
             abi::emit(
                 events::BeneficiarySet::TOPIC,
-                events::BeneficiarySet {
-                    beneficiary: beneficiary.to_bytes(),
-                },
+                events::BeneficiarySet { beneficiary },
             );
         }
 
@@ -120,19 +138,52 @@ mod protocol_fee {
 
         /// Called by the Mailbox after a message is dispatched.
         ///
-        /// Records the protocol fee and emits a `ProtocolFeePaid` event.
+        /// Prepares the exact payment expected from the Mailbox.
         pub fn post_dispatch(&mut self, _metadata: Vec<u8>, encoded_message: Vec<u8>) {
+            assert!(
+                abi::caller() == Some(self.mailbox),
+                "ProtocolFee: caller is not mailbox"
+            );
+            assert!(
+                self.pending_payment.is_none(),
+                "ProtocolFee: payment already pending"
+            );
+            if self.protocol_fee == 0 {
+                return;
+            }
             let sender = message::sender(&encoded_message);
+            self.pending_payment = Some((sender, self.protocol_fee));
+        }
+
+        /// Authenticate and record the native DUSK sent by the Mailbox.
+        pub fn receive_payment(&mut self, transfer: ReceiveFromContract) {
+            assert!(
+                caller::authentic_transfer_callback(transfer.contract, self.mailbox),
+                "ProtocolFee: unauthenticated payment"
+            );
+            assert!(transfer.data.is_empty(), "ProtocolFee: unexpected payment data");
+            let (sender, expected_fee) = self
+                .pending_payment
+                .take()
+                .expect("ProtocolFee: no payment pending");
+            assert!(
+                transfer.value == expected_fee,
+                "ProtocolFee: incorrect payment"
+            );
             self.collected_fees = self
                 .collected_fees
-                .checked_add(self.protocol_fee)
+                .checked_add(transfer.value)
                 .expect("ProtocolFee: collected fee overflow");
+            self.claimable_fees = self
+                .claimable_fees
+                .checked_add(transfer.value)
+                .expect("ProtocolFee: claimable fee overflow");
 
             abi::emit(
                 events::ProtocolFeePaid::TOPIC,
                 events::ProtocolFeePaid {
                     sender,
-                    fee: self.protocol_fee,
+                    fee: transfer.value,
                 },
             );
         }
@@ -163,19 +214,44 @@ mod protocol_fee {
             self.max_protocol_fee
         }
 
-        /// Returns the beneficiary contract ID.
-        pub fn beneficiary(&self) -> ContractId {
+        /// Returns the Mailbox authorized to send payments.
+        pub fn mailbox(&self) -> ContractId {
+            self.mailbox
+        }
+
+        /// Returns the beneficiary Moonlight account hash.
+        pub fn beneficiary(&self) -> H256 {
             self.beneficiary
         }
 
-        /// Returns the owner contract ID.
-        pub fn owner(&self) -> Option<ContractId> {
+        /// Returns the owner identity.
+        pub fn owner(&self) -> Option<H256> {
             self.owner
         }
 
         /// Returns the total collected fees (accounting).
         pub fn collected_fees(&self) -> u64 {
             self.collected_fees
+        }
+
+        /// Returns collected native DUSK not yet claimed by the beneficiary.
+        pub fn claimable_fees(&self) -> u64 {
+            self.claimable_fees
+        }
+
+        /// Transfer all claimable native DUSK to the beneficiary account.
+        pub fn claim(&mut self) {
+            assert!(
+                caller::effective_caller() == self.beneficiary,
+                "ProtocolFee: caller is not beneficiary"
+            );
+            let account = abi::public_sender().expect("ProtocolFee: beneficiary must be Moonlight");
+            let amount = self.claimable_fees;
+            assert!(amount > 0, "ProtocolFee: no fees to claim");
+            self.claimable_fees = 0;
+            let transfer = ContractToAccount { account, value: amount };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
+                .expect("ProtocolFee: claim transfer failed");
         }
 
         // =================================================================
@@ -199,31 +275,29 @@ mod protocol_fee {
         }
 
         /// Set the beneficiary. Owner only.
-        pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
+        pub fn set_beneficiary(&mut self, beneficiary: H256) {
             self.only_owner();
             assert!(
-                beneficiary != ZERO_CONTRACT,
+                beneficiary != [0u8; 32],
                 "ProtocolFee: beneficiary cannot be zero"
             );
             self.beneficiary = beneficiary;
             abi::emit(
                 events::BeneficiarySet::TOPIC,
-                events::BeneficiarySet {
-                    beneficiary: beneficiary.to_bytes(),
-                },
+                events::BeneficiarySet { beneficiary },
             );
         }
 
         /// Transfer ownership. Owner only.
-        pub fn transfer_ownership(&mut self, new_owner: ContractId) {
+        pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
             let previous_owner = self.owner.expect("ProtocolFee: no owner set");
             self.owner = Some(new_owner);
             abi::emit(
                 events::OwnershipTransferred::TOPIC,
                 events::OwnershipTransferred {
-                    previous_owner: previous_owner.to_bytes(),
-                    new_owner: new_owner.to_bytes(),
+                    previous_owner,
+                    new_owner,
                 },
             );
         }
@@ -234,9 +308,11 @@ mod protocol_fee {
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller = abi::caller().expect("ProtocolFee: cannot determine caller");
             let owner = self.owner.expect("ProtocolFee: no owner set");
-            assert!(caller == owner, "ProtocolFee: caller is not the owner");
+            assert!(
+                caller::effective_caller() == owner,
+                "ProtocolFee: caller is not the owner"
+            );
         }
     }
 }

@@ -39,6 +39,7 @@
 /// Hyperlane MessageIdMultisigISM contract.
 #[dusk_forge::contract(events = [
     events::Initialized,
+    events::OwnershipTransferred,
     events::ValidatorsAndThresholdSet,
 ])]
 mod ism_multisig {
@@ -48,9 +49,10 @@ mod ism_multisig {
 
     use dusk_core::abi;
 
+    use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message::{self, keccak256};
-    use hyperlane_dusk_types::EthAddress;
+    use hyperlane_dusk_types::{EthAddress, H256};
 
     // Metadata offsets matching MessageIdMultisigIsmMetadata.sol
     const MERKLE_TREE_HOOK_OFFSET: usize = 0;
@@ -69,7 +71,7 @@ mod ism_multisig {
         /// Number of required signatures.
         threshold: u8,
         /// Contract owner.
-        owner: Option<[u8; 32]>,
+        owner: Option<H256>,
     }
 
     impl MultisigIsm {
@@ -86,7 +88,7 @@ mod ism_multisig {
         ///
         /// Validators must be sorted by address (ascending). The threshold
         /// must be > 0 and <= number of validators.
-        pub fn init(&mut self, owner: [u8; 32], validators: Vec<EthAddress>, threshold: u8) {
+        pub fn init(&mut self, owner: H256, validators: Vec<EthAddress>, threshold: u8) {
             assert!(self.owner.is_none(), "MultisigISM: already initialized");
             assert!(!validators.is_empty(), "MultisigISM: no validators");
             assert!(
@@ -216,6 +218,11 @@ mod ism_multisig {
             self.threshold
         }
 
+        /// Returns the owner identity.
+        pub fn owner(&self) -> Option<H256> {
+            self.owner
+        }
+
         // =================================================================
         // Admin
         // =================================================================
@@ -248,12 +255,25 @@ mod ism_multisig {
             );
         }
 
+        /// Transfer ownership. Owner only.
+        pub fn transfer_ownership(&mut self, new_owner: H256) {
+            self.only_owner();
+            let previous_owner = self.owner.expect("MultisigISM: no owner");
+            self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner,
+                    new_owner,
+                },
+            );
+        }
+
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller = abi::caller().expect("MultisigISM: no caller");
             let owner = self.owner.expect("MultisigISM: no owner");
             assert!(
-                caller.to_bytes() == owner,
+                caller::effective_caller() == owner,
                 "MultisigISM: caller is not owner"
             );
         }

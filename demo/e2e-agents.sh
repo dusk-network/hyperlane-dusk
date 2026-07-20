@@ -196,9 +196,16 @@ run_case() {
 
     # Load state.
     local state="$BRIDGE_STATE_FILE"
-    local evm_token dusk_warp account_h256 evm_domain dusk_domain
+    local evm_token evm_native_token evm_collateral_token
+    local dusk_warp dusk_warp_native dusk_warp_collateral dusk_protocol_fee
+    local account_h256 evm_domain dusk_domain
     evm_token="$(jq -r '.evm.token' "$state")"
+    evm_native_token="$(jq -r '.evm.native_token' "$state")"
+    evm_collateral_token="$(jq -r '.evm.collateral_token' "$state")"
     dusk_warp="$(jq -r '.dusk.warp_drc20' "$state")"
+    dusk_warp_native="$(jq -r '.dusk.warp_native' "$state")"
+    dusk_warp_collateral="$(jq -r '.dusk.warp_drc20_collateral' "$state")"
+    dusk_protocol_fee="$(jq -r '.dusk.protocol_fee' "$state")"
     account_h256="$(jq -r '.account_h256' "$state")"
     evm_domain="$(jq -r '.evm_domain' "$state")"
     dusk_domain="$(jq -r '.dusk_domain' "$state")"
@@ -256,6 +263,9 @@ PY
     amount_to_evm_wei="$(to_wei "$AMOUNT_TO_EVM")"
     local evm_balance_mid
     evm_balance_mid="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    local protocol_collected_before protocol_fee_per_dispatch
+    protocol_collected_before="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
+    protocol_fee_per_dispatch="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method protocol_fee --return-type u64 2>/dev/null | jq -r '.value')"
 
     info "Dispatching Dusk -> EVM ($AMOUNT_TO_EVM wDUSK)..."
     local evm_recipient_pad32
@@ -297,6 +307,120 @@ PY
         sleep 2
     done
     info "Dusk->EVM delivered."
+
+    local protocol_collected_after expected_protocol_collected
+    protocol_collected_after="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
+    expected_protocol_collected="$((protocol_collected_before + protocol_fee_per_dispatch))"
+    if [ "$protocol_collected_after" != "$expected_protocol_collected" ]; then
+        fail "protocol fee custody mismatch: expected $expected_protocol_collected, got $protocol_collected_after"
+    fi
+    info "ProtocolFee collected the live Dusk dispatch fee ($protocol_fee_per_dispatch LUX)."
+
+    # ----------------------------
+    # Native DUSK route round trip
+    # ----------------------------
+    local native_send=100000000 native_return=40000000
+    local evm_native_before evm_native_target
+    evm_native_before="$(cast call "$evm_native_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    evm_native_target="$((evm_native_before + native_send))"
+    info "Dispatching native DUSK -> EVM ($native_send LUX)..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+      --warp-contract "$dusk_warp_native" --destination "$evm_domain" \
+      --recipient "$evm_recipient_pad32" --amount "$native_send" --native >/dev/null
+
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for native Dusk->EVM delivery"
+        local native_evm_balance
+        native_evm_balance="$(cast call "$evm_native_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+        [ "$native_evm_balance" = "$evm_native_target" ] && break
+        sleep 2
+    done
+    local native_locked
+    native_locked="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+      --contract 0100000000000000000000000000000000000000000000000000000000000000 \
+      --method contract_balance --return-type u64 --arg-bytes32 "$dusk_warp_native" 2>/dev/null | jq -r '.value')"
+    [ "$native_locked" = "$native_send" ] || fail "native custody mismatch after lock: $native_locked"
+
+    info "Returning native DUSK EVM -> Dusk ($native_return LUX)..."
+    cast send "$evm_native_token" "transferRemote(uint32,bytes32,uint256)" \
+      "$dusk_domain" "0x${account_h256}" "$native_return" \
+      --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+    local native_locked_target="$((native_send - native_return))"
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for native EVM->Dusk delivery"
+        native_locked="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+          --contract 0100000000000000000000000000000000000000000000000000000000000000 \
+          --method contract_balance --return-type u64 --arg-bytes32 "$dusk_warp_native" 2>/dev/null | jq -r '.value')"
+        [ "$native_locked" = "$native_locked_target" ] && break
+        sleep 2
+    done
+    info "Native route round trip delivered with exact DUSK custody."
+
+    # ----------------------------
+    # DRC20 collateral round trip
+    # ----------------------------
+    local collateral_send=500000000000000000 collateral_return=200000000000000000
+    local owner_token_before collateral_locked_before
+    owner_token_before="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+    collateral_locked_before="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
+      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-approve \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" \
+      --spender "$dusk_warp_collateral" --amount "$collateral_send" >/dev/null
+
+    local evm_collateral_before evm_collateral_target
+    evm_collateral_before="$(cast call "$evm_collateral_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    evm_collateral_target="$((evm_collateral_before + collateral_send))"
+    info "Dispatching DRC20 collateral Dusk -> EVM..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+      --warp-contract "$dusk_warp_collateral" --destination "$evm_domain" \
+      --recipient "$evm_recipient_pad32" --amount "$collateral_send" >/dev/null
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for collateral Dusk->EVM delivery"
+        local collateral_evm_balance
+        collateral_evm_balance="$(cast call "$evm_collateral_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+        [ "$collateral_evm_balance" = "$evm_collateral_target" ] && break
+        sleep 2
+    done
+    local owner_token_after collateral_locked_after
+    owner_token_after="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+    collateral_locked_after="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
+      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+    [ "$owner_token_after" = "$((owner_token_before - collateral_send))" ] || fail "owner collateral debit mismatch"
+    [ "$collateral_locked_after" = "$((collateral_locked_before + collateral_send))" ] || fail "DRC20 custody mismatch after lock"
+
+    info "Returning DRC20 collateral EVM -> Dusk..."
+    cast send "$evm_collateral_token" "transferRemote(uint32,bytes32,uint256)" \
+      "$dusk_domain" "0x${account_h256}" "$collateral_return" \
+      --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+    local owner_return_target="$((owner_token_after + collateral_return))"
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for collateral EVM->Dusk delivery"
+        owner_token_after="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
+          --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+        [ "$owner_token_after" = "$owner_return_target" ] && break
+        sleep 2
+    done
+    collateral_locked_after="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
+      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+    [ "$collateral_locked_after" = "$((collateral_locked_before + collateral_send - collateral_return))" ] || fail "DRC20 custody mismatch after unlock"
+    info "Collateral route round trip delivered with exact allowance and custody changes."
+
+    protocol_collected_after="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
+    expected_protocol_collected="$((protocol_collected_before + 3 * protocol_fee_per_dispatch))"
+    [ "$protocol_collected_after" = "$expected_protocol_collected" ] || fail "three-route protocol fee mismatch"
 
     # Cleanup agents + env.
     info "Stopping agents..."

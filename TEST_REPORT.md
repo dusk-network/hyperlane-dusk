@@ -7,38 +7,45 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
-## 2026-07-20 Current-Stack Refresh
+## 2026-07-20 Remediation Validation (Current)
 
-This section supersedes “current” wording in the May evidence below. Historical
-runs remain useful only for the exact commits they name.
+This section supersedes “current” wording in the May evidence and the earlier
+same-day synthetic-only refresh. Historical runs below remain useful only for
+the exact commits they name.
 
 | Component | Validated reference |
 |---|---|
-| Dusk contracts/tooling | `feat/dusk-hardening-v2` at `68fe3a80499e3a097c7a32c320c920c068b8c7da`, plus the local native-custody tests and E2E harness hardening recorded in `SECURITY_REVIEW.md` |
-| Hyperlane agent integration | `feat/dusk-support-v2` at `eaa43c3c4decdf007085b19ec6b7d586f150457e`, rebased on upstream `58c5e11e1e5a6e0502c14a822f77e5fd378e3af9` |
-| Rusk | Clean `bc281d2cd1e789db92e99bc59849c92363524e37`, including a freshly generated state archive and that checkout's consensus keys |
+| Dusk contracts/tooling | `feat/dusk-hardening-v2`, including the caller, fee-custody, aggregation-hook, current-DRC20, deployment, and route-matrix changes described in `REASSESSMENT_2026-07-20.md` |
+| Hyperlane agent integration | `feat/dusk-support-v2` at `a931f75b3db75e2e86bc866b16ad6f71c488f1ba`, rebased on upstream `197b1e0d1a7b7ee5539e9ad38a02a23a7eb0a0b3` |
+| Rusk | Clean `bc281d2cd1e789db92e99bc59849c92363524e37`, with a fresh state archive and that checkout's consensus keys |
 | Forge | `d1e39a16ad5e2cd0675c7aafa6e2c459310bcb1a` (Forge 0.3.0) |
 
 Results:
 
-- `cargo test -p hyperlane-dusk-integration-tests`: 74 passed, 0 failed.
-- The WarpNative VM route accepts an exact Moonlight DUSK deposit, records the
-  transfer contract's real custody, and releases the same amount to a
-  registered account. A mismatched deposit reverts with zero residual custody.
-- TestMock live E2E run `1784509481`: EVM -> Dusk delivered 3 wDUSK and
-  Dusk -> EVM delivered 1 wDUSK.
-- MessageIdMultisig live E2E run `1784510116`: the same bidirectional route
-  passed with the real validator/checkpoint metadata path.
-- Both live cases used WarpDrc20. Live cross-chain WarpNative,
-  WarpDrc20Collateral, and value-backed ProtocolFee/IGP remain outside this
-  evidence.
+- `cargo test -p hyperlane-dusk-integration-tests`: 82 passed, 0 failed.
+- All 12 contract WASMs build and the production contract/type clippy surface
+  passes.
+- The VM suite validates the shared Moonlight/contract owner model, rejects
+  unauthorized admin calls and spoofed value callbacks, and proves exact
+  ProtocolFee/IGP native custody and aggregate-hook forwarding.
+- The DRC20 collateral route uses the current typed Dusk ABI and allowance
+  model. VM coverage proves approval consumption and exact contract custody.
+- Fresh TestMock and MessageIdMultisig live agent cases each delivered
+  WarpDrc20, WarpNative, and WarpDrc20Collateral in both directions.
+- The live native route asserted exact DUSK transfer-contract custody after
+  lock and partial return. The live collateral route asserted exact account
+  debit/credit and route custody after lock and partial return.
+- Each case observed exactly three ProtocolFee collections for the three
+  outbound Dusk dispatches. The multisig case used the real validator and
+  checkpoint-signature metadata path.
 
-The first attempted refresh exposed a split-brain dependency hazard: contract
-WASMs could build from the adjacent stale Rusk checkout while the node binary
-came from current Rusk. That run was aborted before bridge execution. The demo
-harness now compares the resolved Rusk paths and fails before starting services
-when they differ; the successful runs compiled `dusk-core` from the same clean
-Rusk checkout used by the node.
+The harness rejects split-Rusk execution before services start. The validated
+runs compiled the contracts from the same clean Rusk checkout used by the node.
+It now also rebuilds or freshness-checks the release CLI and every contract WASM
+instead of accepting an existing, potentially stale artifact. The live cases
+executed agent head `eaa43c3c4decdf007085b19ec6b7d586f150457e`; the Dusk-agent covered paths
+are byte-identical at the final rebased head, whose six affected Rust packages
+also pass `cargo check`.
 
 ## Repository State
 

@@ -120,6 +120,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
             }
             events::ProtocolFeePaid::TOPIC => rkyv_to_json::<events::ProtocolFeePaid>(rkyv),
             events::GasPayment::TOPIC => rkyv_to_json::<events::GasPayment>(rkyv),
+            events::Drc20Approval::TOPIC => rkyv_to_json::<events::Drc20Approval>(rkyv),
+            events::Drc20Transfer::TOPIC => rkyv_to_json::<events::Drc20Transfer>(rkyv),
             events::SentTransferRemote::TOPIC => {
                 rkyv_to_json::<events::SentTransferRemote>(rkyv)
             }

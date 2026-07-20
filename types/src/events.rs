@@ -49,6 +49,8 @@ pub const CONTRACT_WARP_DRC20: u8 = 7;
 pub const CONTRACT_WARP_DRC20_COLLATERAL: u8 = 8;
 /// `WarpNative` contract type identifier.
 pub const CONTRACT_WARP_NATIVE: u8 = 9;
+/// `AggregationHook` contract type identifier.
+pub const CONTRACT_AGGREGATION_HOOK: u8 = 10;
 
 // =========================================================================
 // Operational/admin events
@@ -280,6 +282,40 @@ impl DispatchId {
     pub const TOPIC: &'static str = "dispatch_id";
 }
 
+/// Emitted when native DUSK is deposited into a Mailbox dispatch-fee credit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DispatchFeeFunded {
+    /// Message sender identity whose credit was funded.
+    pub payer: H256,
+    /// Amount deposited in LUX.
+    pub amount: u64,
+}
+
+impl DispatchFeeFunded {
+    /// Event topic.
+    pub const TOPIC: &'static str = "dispatch_fee_funded";
+}
+
+/// Emitted when a dispatch consumes native DUSK fee credit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DispatchFeePaid {
+    /// Message sender identity whose credit was consumed.
+    pub payer: H256,
+    /// Dispatched message ID.
+    pub message_id: MessageId,
+    /// Total amount paid to hooks in LUX.
+    pub amount: u64,
+}
+
+impl DispatchFeePaid {
+    /// Event topic.
+    pub const TOPIC: &'static str = "dispatch_fee_paid";
+}
+
 /// Emitted when a message is processed (delivered) by the Mailbox.
 ///
 /// Matches the `Process` event in `Mailbox.sol`.
@@ -466,6 +502,24 @@ impl Drc20Transfer {
     pub const TOPIC: &'static str = "drc20_transfer";
 }
 
+/// Emitted when a `WarpDrc20` allowance changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Drc20Approval {
+    /// Token owner account hash or contract ID.
+    pub owner: H256,
+    /// Approved spender account hash or contract ID.
+    pub spender: H256,
+    /// New allowance amount.
+    pub amount: u64,
+}
+
+impl Drc20Approval {
+    /// Event topic.
+    pub const TOPIC: &'static str = "drc20_approval";
+}
+
 /// Emitted when a warp route transfer is sent to a remote chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
@@ -518,6 +572,8 @@ impl_contract_events!(
     PendingTransferClaimed,
     Dispatch,
     DispatchId,
+    DispatchFeeFunded,
+    DispatchFeePaid,
     Process,
     ProcessId,
     DefaultIsmSet,
@@ -527,6 +583,7 @@ impl_contract_events!(
     ValidatorAnnouncement,
     ProtocolFeePaid,
     GasPayment,
+    Drc20Approval,
     Drc20Transfer,
     SentTransferRemote,
     ReceivedTransferRemote,

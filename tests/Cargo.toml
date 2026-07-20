@@ -9,7 +9,7 @@ publish = false
 
 [dev-dependencies]
 # Types crate (without abi feature — uses software keccak256 fallback)
-hyperlane-dusk-types = { workspace = true }
+hyperlane-dusk-types = { workspace = true, features = ["drc20"] }
 
 # Dusk
 dusk-core = { workspace = true }

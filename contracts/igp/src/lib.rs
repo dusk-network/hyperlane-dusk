@@ -34,12 +34,15 @@ mod igp {
     use alloc::vec::Vec;
 
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
+    use dusk_core::transfer::{ContractToAccount, ReceiveFromContract, TRANSFER_CONTRACT};
 
+    use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::metadata;
     use hyperlane_dusk_types::DomainGasConfig;
     use hyperlane_dusk_types::GasPaymentRecord;
+    use hyperlane_dusk_types::H256;
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -49,16 +52,23 @@ mod igp {
 
     /// InterchainGasPaymaster contract state.
     pub struct InterchainGasPaymaster {
-        /// Contract owner.
-        owner: Option<ContractId>,
-        /// Beneficiary that receives gas payments.
-        beneficiary: ContractId,
+        /// Owner identity (Moonlight account hash or contract ID).
+        owner: Option<H256>,
+        /// Mailbox authorized to prepare and send hook payments.
+        mailbox: ContractId,
+        /// Moonlight account hash that may claim gas payments.
+        beneficiary: H256,
         /// Per-domain gas configuration (oracle data + overhead).
         domain_gas_configs: BTreeMap<u32, DomainGasConfig>,
         /// Total gas payments recorded (accounting).
         total_gas_payments: u64,
         /// Stored gas payment records (for off-chain indexing).
         gas_payments: Vec<GasPaymentRecord>,
+        /// Native DUSK collected and not yet claimed by the beneficiary.
+        claimable_fees: u64,
+        /// Payment prepared by Mailbox and awaiting its authenticated native
+        /// DUSK transfer callback.
+        pending_payment: Option<GasPaymentRecord>,
     }
 
     impl InterchainGasPaymaster {
@@ -66,10 +76,13 @@ mod igp {
         pub const fn new() -> Self {
             Self {
                 owner: None,
-                beneficiary: ZERO_CONTRACT,
+                mailbox: ZERO_CONTRACT,
+                beneficiary: [0u8; 32],
                 domain_gas_configs: BTreeMap::new(),
                 total_gas_payments: 0,
                 gas_payments: Vec::new(),
+                claimable_fees: 0,
+                pending_payment: None,
             }
         }
 
@@ -83,15 +96,18 @@ mod igp {
         /// gas configurations for known domains.
         pub fn init(
             &mut self,
-            owner: ContractId,
-            beneficiary: ContractId,
+            mailbox: ContractId,
+            owner: H256,
+            beneficiary: H256,
             initial_configs: Vec<(u32, DomainGasConfig)>,
         ) {
             assert!(self.owner.is_none(), "IGP: already initialized");
+            assert!(mailbox != ZERO_CONTRACT, "IGP: mailbox cannot be zero");
             assert!(
-                beneficiary != ZERO_CONTRACT,
+                beneficiary != [0u8; 32],
                 "IGP: beneficiary cannot be zero"
             );
+            self.mailbox = mailbox;
             self.owner = Some(owner);
             self.beneficiary = beneficiary;
             for (domain, config) in initial_configs {
@@ -105,16 +121,14 @@ mod igp {
                 events::Initialized::TOPIC,
                 events::Initialized {
                     contract_type: events::CONTRACT_IGP,
-                    owner: owner.to_bytes(),
-                    mailbox: ZERO_CONTRACT.to_bytes(),
+                    owner,
+                    mailbox: mailbox.to_bytes(),
                     local_domain: 0,
                 },
             );
             abi::emit(
                 events::BeneficiarySet::TOPIC,
-                events::BeneficiarySet {
-                    beneficiary: beneficiary.to_bytes(),
-                },
+                events::BeneficiarySet { beneficiary },
             );
         }
 
@@ -124,32 +138,65 @@ mod igp {
 
         /// Called by the Mailbox after a message is dispatched.
         ///
-        /// Calculates the gas payment for the message's destination,
-        /// records the payment, and emits a `GasPayment` event.
+        /// Calculates and prepares the exact payment expected from Mailbox.
         pub fn post_dispatch(&mut self, hook_metadata: Vec<u8>, encoded_message: Vec<u8>) {
+            assert!(
+                abi::caller() == Some(self.mailbox),
+                "IGP: caller is not mailbox"
+            );
+            assert!(
+                self.pending_payment.is_none(),
+                "IGP: payment already pending"
+            );
             let destination = message::destination(&encoded_message);
             let gas_limit = metadata::gas_limit(&hook_metadata);
             let payment = self.quote_gas_payment(destination, gas_limit);
+            if payment == 0 {
+                return;
+            }
             let message_id = message::id(&encoded_message);
-
-            self.total_gas_payments = self
-                .total_gas_payments
-                .checked_add(payment)
-                .expect("IGP: total gas payment overflow");
-            self.gas_payments.push(GasPaymentRecord {
+            self.pending_payment = Some(GasPaymentRecord {
                 message_id,
                 destination,
                 gas_limit,
                 payment,
-                block_height: abi::block_height(),
+                block_height: 0,
             });
+        }
+
+        /// Authenticate and record the native DUSK sent by Mailbox.
+        pub fn receive_payment(&mut self, transfer: ReceiveFromContract) {
+            assert!(
+                caller::authentic_transfer_callback(transfer.contract, self.mailbox),
+                "IGP: unauthenticated payment"
+            );
+            assert!(transfer.data.is_empty(), "IGP: unexpected payment data");
+            let mut record = self
+                .pending_payment
+                .take()
+                .expect("IGP: no payment pending");
+            assert!(
+                transfer.value == record.payment,
+                "IGP: incorrect payment"
+            );
+
+            self.total_gas_payments = self
+                .total_gas_payments
+                .checked_add(transfer.value)
+                .expect("IGP: total gas payment overflow");
+            self.claimable_fees = self
+                .claimable_fees
+                .checked_add(transfer.value)
+                .expect("IGP: claimable fee overflow");
+            record.block_height = abi::block_height();
+            self.gas_payments.push(record);
 
             abi::emit(
                 events::GasPayment::TOPIC,
                 events::GasPayment {
-                    message_id,
-                    gas_limit,
-                    payment,
+                    message_id: record.message_id,
+                    gas_limit: record.gas_limit,
+                    payment: record.payment,
                 },
             );
         }
@@ -205,13 +252,18 @@ mod igp {
                 .unwrap_or_default()
         }
 
-        /// Returns the beneficiary contract ID.
-        pub fn beneficiary(&self) -> ContractId {
+        /// Returns the Mailbox authorized to send payments.
+        pub fn mailbox(&self) -> ContractId {
+            self.mailbox
+        }
+
+        /// Returns the beneficiary Moonlight account hash.
+        pub fn beneficiary(&self) -> H256 {
             self.beneficiary
         }
 
-        /// Returns the owner contract ID.
-        pub fn owner(&self) -> Option<ContractId> {
+        /// Returns the owner identity.
+        pub fn owner(&self) -> Option<H256> {
             self.owner
         }
 
@@ -230,6 +282,26 @@ mod igp {
         /// Panics if the index is out of range.
         pub fn gas_payment_at(&self, index: u32) -> GasPaymentRecord {
             self.gas_payments[index as usize]
+        }
+
+        /// Returns collected native DUSK not yet claimed by the beneficiary.
+        pub fn claimable_fees(&self) -> u64 {
+            self.claimable_fees
+        }
+
+        /// Transfer all claimable native DUSK to the beneficiary account.
+        pub fn claim(&mut self) {
+            assert!(
+                caller::effective_caller() == self.beneficiary,
+                "IGP: caller is not beneficiary"
+            );
+            let account = abi::public_sender().expect("IGP: beneficiary must be Moonlight");
+            let amount = self.claimable_fees;
+            assert!(amount > 0, "IGP: no fees to claim");
+            self.claimable_fees = 0;
+            let transfer = ContractToAccount { account, value: amount };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
+                .expect("IGP: claim transfer failed");
         }
 
         // =================================================================
@@ -259,31 +331,29 @@ mod igp {
         }
 
         /// Set the beneficiary. Owner only.
-        pub fn set_beneficiary(&mut self, beneficiary: ContractId) {
+        pub fn set_beneficiary(&mut self, beneficiary: H256) {
             self.only_owner();
             assert!(
-                beneficiary != ZERO_CONTRACT,
+                beneficiary != [0u8; 32],
                 "IGP: beneficiary cannot be zero"
             );
             self.beneficiary = beneficiary;
             abi::emit(
                 events::BeneficiarySet::TOPIC,
-                events::BeneficiarySet {
-                    beneficiary: beneficiary.to_bytes(),
-                },
+                events::BeneficiarySet { beneficiary },
             );
         }
 
         /// Transfer ownership. Owner only.
-        pub fn transfer_ownership(&mut self, new_owner: ContractId) {
+        pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
             let previous_owner = self.owner.expect("IGP: no owner set");
             self.owner = Some(new_owner);
             abi::emit(
                 events::OwnershipTransferred::TOPIC,
                 events::OwnershipTransferred {
-                    previous_owner: previous_owner.to_bytes(),
-                    new_owner: new_owner.to_bytes(),
+                    previous_owner,
+                    new_owner,
                 },
             );
         }
@@ -294,9 +364,11 @@ mod igp {
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller = abi::caller().expect("IGP: cannot determine caller");
             let owner = self.owner.expect("IGP: no owner set");
-            assert!(caller == owner, "IGP: caller is not the owner");
+            assert!(
+                caller::effective_caller() == owner,
+                "IGP: caller is not the owner"
+            );
         }
     }
 }

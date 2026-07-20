@@ -44,6 +44,7 @@ mod warp_native {
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
     use dusk_core::transfer::{ContractToAccount, TRANSFER_CONTRACT};
 
+    use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::token_message;
@@ -64,8 +65,8 @@ mod warp_native {
         hook: ContractId,
         /// ISM override (zero = use Mailbox default).
         ism: ContractId,
-        /// Contract owner.
-        owner: Option<ContractId>,
+        /// Owner identity (Moonlight account hash or contract ID).
+        owner: Option<H256>,
         /// Enrolled remote routers per domain.
         enrolled_routers: BTreeMap<u32, H256>,
         /// Registry of external accounts: keccak256(pk) → pk.
@@ -102,7 +103,7 @@ mod warp_native {
         pub fn init(
             &mut self,
             mailbox: ContractId,
-            owner: ContractId,
+            owner: H256,
             enrolled_routers: Vec<(u32, H256)>,
         ) {
             assert!(self.owner.is_none(), "WarpNative: already initialized");
@@ -119,7 +120,7 @@ mod warp_native {
                 events::Initialized::TOPIC,
                 events::Initialized {
                     contract_type: events::CONTRACT_WARP_NATIVE,
-                    owner: owner.to_bytes(),
+                    owner,
                     mailbox: mailbox.to_bytes(),
                     local_domain: 0,
                 },
@@ -308,8 +309,8 @@ mod warp_native {
             self.hook
         }
 
-        /// Returns the owner.
-        pub fn owner(&self) -> Option<ContractId> {
+        /// Returns the owner identity.
+        pub fn owner(&self) -> Option<H256> {
             self.owner
         }
 
@@ -360,15 +361,15 @@ mod warp_native {
         }
 
         /// Transfer ownership. Owner only.
-        pub fn transfer_ownership(&mut self, new_owner: ContractId) {
+        pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
             let previous_owner = self.owner.expect("WarpNative: no owner set");
             self.owner = Some(new_owner);
             abi::emit(
                 events::OwnershipTransferred::TOPIC,
                 events::OwnershipTransferred {
-                    previous_owner: previous_owner.to_bytes(),
-                    new_owner: new_owner.to_bytes(),
+                    previous_owner,
+                    new_owner,
                 },
             );
         }
@@ -379,9 +380,11 @@ mod warp_native {
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller = abi::caller().expect("WarpNative: cannot determine caller");
             let owner = self.owner.expect("WarpNative: no owner set");
-            assert!(caller == owner, "WarpNative: caller is not the owner");
+            assert!(
+                caller::effective_caller() == owner,
+                "WarpNative: caller is not the owner"
+            );
         }
     }
 }

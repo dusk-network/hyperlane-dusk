@@ -38,15 +38,13 @@ mod warp_drc20_collateral {
 
     use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
-    use core::cmp::Ordering;
-
-    use bytecheck::CheckBytes;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
-    use rkyv::{Archive, Deserialize, Serialize};
 
     use dusk_bytes::Serializable;
 
+    use hyperlane_dusk_types::caller;
+    use hyperlane_dusk_types::drc20::{self, Account, TransferCall, TransferFromCall};
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::token_message;
@@ -54,51 +52,6 @@ mod warp_drc20_collateral {
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
-
-    // =====================================================================
-    // Account type (DRC20-compatible)
-    // =====================================================================
-
-    /// A DRC20 account — must be rkyv-layout-compatible with the DRC20
-    /// reference implementation's `Account` type.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
-    #[archive_attr(derive(CheckBytes))]
-    pub enum Account {
-        /// An externally owned account.
-        External(AccountPublicKey),
-        /// A contract account.
-        Contract(ContractId),
-    }
-
-    impl PartialOrd for Account {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    impl Ord for Account {
-        fn cmp(&self, other: &Self) -> Ordering {
-            match (self, other) {
-                (Account::External(a), Account::External(b)) => {
-                    a.to_raw_bytes().cmp(&b.to_raw_bytes())
-                }
-                (Account::Contract(a), Account::Contract(b)) => a.cmp(b),
-                (Account::External(_), Account::Contract(_)) => Ordering::Less,
-                (Account::Contract(_), Account::External(_)) => Ordering::Greater,
-            }
-        }
-    }
-
-    /// Resolve the caller as an Account.
-    fn sender_account() -> Account {
-        if abi::callstack().len() == 1 {
-            Account::External(
-                abi::public_sender().expect("WarpCollateral: shielded transactions not supported"),
-            )
-        } else {
-            Account::Contract(abi::caller().expect("WarpCollateral: missing caller"))
-        }
-    }
 
     // =====================================================================
     // State
@@ -114,8 +67,8 @@ mod warp_drc20_collateral {
         hook: ContractId,
         /// ISM override (zero = use Mailbox default).
         ism: ContractId,
-        /// Contract owner.
-        owner: Option<ContractId>,
+        /// Owner identity (Moonlight account hash or contract ID).
+        owner: Option<H256>,
         /// Enrolled remote routers per domain.
         enrolled_routers: BTreeMap<u32, H256>,
         /// Registry of external accounts: keccak256(pk.to_bytes()) → pk.
@@ -155,7 +108,7 @@ mod warp_drc20_collateral {
             &mut self,
             wrapped_token: ContractId,
             mailbox: ContractId,
-            owner: ContractId,
+            owner: H256,
             enrolled_routers: Vec<(u32, H256)>,
         ) {
             assert!(self.owner.is_none(), "WarpCollateral: already initialized");
@@ -177,7 +130,7 @@ mod warp_drc20_collateral {
                 events::Initialized::TOPIC,
                 events::Initialized {
                     contract_type: events::CONTRACT_WARP_DRC20_COLLATERAL,
-                    owner: owner.to_bytes(),
+                    owner,
                     mailbox: mailbox.to_bytes(),
                     local_domain: 0,
                 },
@@ -224,7 +177,10 @@ mod warp_drc20_collateral {
             let _: () = abi::call(
                 self.wrapped_token,
                 "transfer",
-                &(Account::External(pk), amount),
+                &TransferCall {
+                    to: Account::External(pk),
+                    value: amount,
+                },
             )
             .expect("WarpCollateral: transfer failed");
             abi::emit(
@@ -255,14 +211,18 @@ mod warp_drc20_collateral {
             recipient: H256,
             amount: u64,
         ) -> MessageId {
-            let sender = sender_account();
+            let sender = drc20::sender_account();
             let self_account = Account::Contract(abi::self_id());
 
             // Lock tokens: transfer_from(sender → this contract)
             let _: () = abi::call(
                 self.wrapped_token,
                 "transfer_from",
-                &(sender, self_account, amount),
+                &TransferFromCall {
+                    owner: sender,
+                    to: self_account,
+                    value: amount,
+                },
             )
             .expect("WarpCollateral: transfer_from failed");
 
@@ -328,7 +288,10 @@ mod warp_drc20_collateral {
                 let _: () = abi::call(
                     self.wrapped_token,
                     "transfer",
-                    &(Account::External(*pk), msg.amount),
+                    &TransferCall {
+                        to: Account::External(*pk),
+                        value: msg.amount,
+                    },
                 )
                 .expect("WarpCollateral: transfer failed");
             } else {
@@ -372,8 +335,8 @@ mod warp_drc20_collateral {
             self.hook
         }
 
-        /// Returns the owner.
-        pub fn owner(&self) -> Option<ContractId> {
+        /// Returns the owner identity.
+        pub fn owner(&self) -> Option<H256> {
             self.owner
         }
 
@@ -424,15 +387,15 @@ mod warp_drc20_collateral {
         }
 
         /// Transfer ownership. Owner only.
-        pub fn transfer_ownership(&mut self, new_owner: ContractId) {
+        pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
             let previous_owner = self.owner.expect("WarpCollateral: no owner set");
             self.owner = Some(new_owner);
             abi::emit(
                 events::OwnershipTransferred::TOPIC,
                 events::OwnershipTransferred {
-                    previous_owner: previous_owner.to_bytes(),
-                    new_owner: new_owner.to_bytes(),
+                    previous_owner,
+                    new_owner,
                 },
             );
         }
@@ -443,9 +406,11 @@ mod warp_drc20_collateral {
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller = abi::caller().expect("WarpCollateral: cannot determine caller");
             let owner = self.owner.expect("WarpCollateral: no owner set");
-            assert!(caller == owner, "WarpCollateral: caller is not the owner");
+            assert!(
+                caller::effective_caller() == owner,
+                "WarpCollateral: caller is not the owner"
+            );
         }
     }
 }

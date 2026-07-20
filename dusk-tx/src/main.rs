@@ -21,6 +21,9 @@ use dusk_core::signatures::bls::{
 use dusk_core::transfer::data::{ContractBytecode, ContractCall, ContractDeploy};
 use dusk_core::transfer::moonlight::Transaction as MoonlightTransaction;
 use dusk_core::transfer::Transaction;
+use hyperlane_dusk_types::drc20::{
+    Account as Drc20Account, ApproveCall as Drc20ApproveCall, BalanceOf as Drc20BalanceOf,
+};
 use hyperlane_dusk_types::{DomainGasConfig, EthAddress};
 use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
@@ -106,6 +109,13 @@ enum Command {
         /// Also deploy WarpDrc20 synthetic token.
         #[arg(long)]
         deploy_warp_drc20: bool,
+        /// Also deploy the native DUSK collateral warp route.
+        #[arg(long)]
+        deploy_warp_native: bool,
+        /// Deploy a collateral route wrapping a DRC20 ID, or `warp-drc20`
+        /// to wrap the synthetic route deployed by this command.
+        #[arg(long)]
+        warp_collateral_token: Option<String>,
         /// Token name for WarpDrc20.
         #[arg(long, default_value = "Wrapped Ether")]
         warp_name: String,
@@ -145,6 +155,33 @@ enum Command {
         /// Optional bytes32 argument (64 hex chars).
         #[arg(long, name = "arg-bytes32")]
         arg_bytes32: Option<String>,
+    },
+    /// Deposit native DUSK into a Mailbox dispatch-fee credit.
+    FundDispatch {
+        #[arg(long, default_value = "http://localhost:18090/")]
+        rues_url: String,
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        #[arg(long, default_value = "password")]
+        password: String,
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin.
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// Mailbox contract ID (64 hex chars).
+        #[arg(long)]
+        mailbox: String,
+        /// Encoded sender identity whose fee credit is funded.
+        #[arg(long)]
+        payer: String,
+        /// Native DUSK amount in LUX.
+        #[arg(long)]
+        amount: u64,
+        #[arg(long, default_value = "30000000")]
+        gas_limit: u64,
+        #[arg(long, default_value = "2000")]
+        gas_price: u64,
     },
     /// Dispatch a message via TestRecipient proxy.
     Dispatch {
@@ -275,6 +312,47 @@ enum Command {
         #[arg(long, default_value = "2000")]
         gas_price: u64,
     },
+    /// Approve a DRC20 contract spender using the current Dusk ABI.
+    Drc20Approve {
+        #[arg(long, default_value = "http://localhost:18090/")]
+        rues_url: String,
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        #[arg(long, default_value = "password")]
+        password: String,
+        #[arg(long)]
+        secret_key: Option<String>,
+        #[arg(long)]
+        secret_key_stdin: bool,
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        spender: String,
+        #[arg(long)]
+        amount: u64,
+        #[arg(long, default_value = "30000000")]
+        gas_limit: u64,
+        #[arg(long, default_value = "2000")]
+        gas_price: u64,
+    },
+    /// Query a DRC20 balance for a Moonlight or contract account.
+    Drc20Balance {
+        #[arg(long, default_value = "http://localhost:18090/")]
+        rues_url: String,
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        #[arg(long, default_value = "password")]
+        password: String,
+        #[arg(long)]
+        secret_key: Option<String>,
+        #[arg(long)]
+        secret_key_stdin: bool,
+        #[arg(long)]
+        token: String,
+        /// Query this contract account instead of the configured Moonlight account.
+        #[arg(long)]
+        account_contract: Option<String>,
+    },
     /// Call transfer_remote on a WarpDrc20 contract.
     TransferRemote {
         #[arg(long, default_value = "http://localhost:18090/")]
@@ -300,6 +378,9 @@ enum Command {
         /// Amount (decimal).
         #[arg(long)]
         amount: u64,
+        /// Attach `amount` as a native DUSK deposit for WarpNative.
+        #[arg(long)]
+        native: bool,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         #[arg(long, default_value = "2000")]
@@ -342,6 +423,8 @@ async fn main() {
             gas_price,
             wasm_dir,
             deploy_warp_drc20,
+            deploy_warp_native,
+            warp_collateral_token,
             warp_name,
             warp_symbol,
             warp_decimals,
@@ -351,7 +434,8 @@ async fn main() {
         } => {
             cmd_deploy_hyperlane(
                 &rues_url, keys, &password, secret_key, secret_key_stdin, domain, gas_limit,
-                gas_price, wasm_dir, deploy_warp_drc20, &warp_name,
+                gas_price, wasm_dir, deploy_warp_drc20, deploy_warp_native,
+                warp_collateral_token.as_deref(), &warp_name,
                 &warp_symbol, warp_decimals, &default_ism, &multisig_validators, multisig_threshold,
             )
             .await
@@ -360,6 +444,32 @@ async fn main() {
             rues_url, contract, method, return_type, arg_u32, arg_bytes32,
         } => {
             cmd_query(&rues_url, &contract, &method, &return_type, arg_u32, arg_bytes32).await
+        }
+        Command::FundDispatch {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            mailbox,
+            payer,
+            amount,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_fund_dispatch(
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &mailbox,
+                &payer,
+                amount,
+                gas_limit,
+                gas_price,
+            )
+            .await
         }
         Command::Dispatch {
             rues_url, keys, password, secret_key, mailbox, test_recipient,
@@ -406,14 +516,32 @@ async fn main() {
                 gas_limit, gas_price,
             ).await
         }
+        Command::Drc20Approve {
+            rues_url, keys, password, secret_key, secret_key_stdin,
+            token, spender, amount, gas_limit, gas_price,
+        } => {
+            cmd_drc20_approve(
+                &rues_url, keys, &password, secret_key, secret_key_stdin,
+                &token, &spender, amount, gas_limit, gas_price,
+            ).await
+        }
+        Command::Drc20Balance {
+            rues_url, keys, password, secret_key, secret_key_stdin,
+            token, account_contract,
+        } => {
+            cmd_drc20_balance(
+                &rues_url, keys, &password, secret_key, secret_key_stdin,
+                &token, account_contract.as_deref(),
+            ).await
+        }
         Command::TransferRemote {
             rues_url, keys, password, secret_key, warp_contract,
             secret_key_stdin,
-            destination, recipient, amount, gas_limit, gas_price,
+            destination, recipient, amount, native, gas_limit, gas_price,
         } => {
             cmd_transfer_remote(
                 &rues_url, keys, &password, secret_key, secret_key_stdin, &warp_contract,
-                destination, &recipient, amount, gas_limit, gas_price,
+                destination, &recipient, amount, native, gas_limit, gas_price,
             ).await
         }
     };
@@ -609,6 +737,30 @@ fn moonlight_call(
     moonlight_nonce: u64,
     chain_id: u8,
 ) -> Result<Transaction, String> {
+    moonlight_call_with_deposit(
+        sender_sk,
+        contract,
+        fn_name,
+        fn_args,
+        0,
+        gas_limit,
+        gas_price,
+        moonlight_nonce,
+        chain_id,
+    )
+}
+
+fn moonlight_call_with_deposit(
+    sender_sk: &BlsSecretKey,
+    contract: ContractId,
+    fn_name: &str,
+    fn_args: Vec<u8>,
+    deposit: u64,
+    gas_limit: u64,
+    gas_price: u64,
+    moonlight_nonce: u64,
+    chain_id: u8,
+) -> Result<Transaction, String> {
     let call = ContractCall {
         contract,
         fn_name: String::from(fn_name),
@@ -618,7 +770,7 @@ fn moonlight_call(
         sender_sk,
         None,
         0,
-        0,
+        deposit,
         gas_limit,
         gas_price,
         moonlight_nonce,
@@ -627,6 +779,55 @@ fn moonlight_call(
     )
     .map_err(|e| format!("MoonlightTransaction::new failed: {e:?}"))?;
     Ok(tx.into())
+}
+
+// ── cmd_fund_dispatch ─────────────────────────────────────────────────────
+
+async fn cmd_fund_dispatch(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    mailbox_hex: &str,
+    payer_hex: &str,
+    amount: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    if amount == 0 {
+        return Err("Funding amount must be greater than zero".into());
+    }
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let client = RuesClient::new(rues_url)?;
+    let mailbox = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
+    let payer = parse_bytes32(payer_hex)?;
+    let args = rkyv_serialize(&(payer, amount));
+    let chain_id = client.query_chain_id().await?;
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call_with_deposit(
+        &sk,
+        mailbox,
+        "fund_dispatch",
+        args,
+        amount,
+        gas_limit,
+        gas_price,
+        nonce + 1,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    let output = json!({
+        "success": true,
+        "mailbox": mailbox_hex,
+        "payer": payer_hex,
+        "amount": amount,
+        "tx_id": tx_id,
+    });
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
 }
 
 fn rkyv_serialize<T>(value: &T) -> Vec<u8>
@@ -720,6 +921,8 @@ async fn cmd_deploy_hyperlane(
     gas_price: u64,
     wasm_dir: Option<PathBuf>,
     deploy_warp_drc20: bool,
+    deploy_warp_native: bool,
+    warp_collateral_token: Option<&str>,
     warp_name: &str,
     warp_symbol: &str,
     warp_decimals: u8,
@@ -789,6 +992,7 @@ async fn cmd_deploy_hyperlane(
     let test_mock_bytes = load_wasm("test_mock")?;
     let test_recipient_bytes = load_wasm("test_recipient")?;
     let merkle_tree_hook_bytes = load_wasm("merkle_tree_hook")?;
+    let aggregation_hook_bytes = load_wasm("aggregation_hook")?;
     let ism_multisig_bytes = if default_ism == DefaultIsm::MessageIdMultisig {
         Some(load_wasm("ism_multisig")?)
     } else {
@@ -798,18 +1002,35 @@ async fn cmd_deploy_hyperlane(
     let va_bytes = load_wasm("validator_announce")?;
     let protocol_fee_bytes = load_wasm("protocol_fee")?;
     let igp_bytes = load_wasm("igp")?;
+    let warp_drc20_bytes = deploy_warp_drc20
+        .then(|| load_wasm("warp_drc20"))
+        .transpose()?;
+    let warp_native_bytes = deploy_warp_native
+        .then(|| load_wasm("warp_native"))
+        .transpose()?;
+    let wraps_deployed_warp = warp_collateral_token == Some("warp-drc20");
+    if wraps_deployed_warp && !deploy_warp_drc20 {
+        return Err("--warp-collateral-token warp-drc20 requires --deploy-warp-drc20".into());
+    }
+    let explicit_collateral_token = warp_collateral_token
+        .filter(|token| *token != "warp-drc20")
+        .map(parse_bytes32)
+        .transpose()?
+        .map(ContractId::from_bytes);
+    let warp_collateral_bytes = warp_collateral_token
+        .is_some()
+        .then(|| load_wasm("warp_drc20_collateral"))
+        .transpose()?;
 
     let pk_bytes = pk.to_bytes();
+    let owner_h256 = hyperlane_dusk_types::message::keccak256(&pk_bytes);
 
     // Pre-compute contract IDs (deterministic from bytecode + deploy_nonce + owner)
     //
     // Deploy order:
-    // - default_ism=testMock:
-    //   TestMock(0), TestRecipient(1), MerkleTreeHook(2), Mailbox(3),
-    //   ValidatorAnnounce(4), ProtocolFee(5), IGP(6), [WarpDrc20(7)]
-    // - default_ism=messageIdMultisig:
-    //   TestMock(0), TestRecipient(1), MerkleTreeHook(2), IsmMultisig(3), Mailbox(4),
-    //   ValidatorAnnounce(5), ProtocolFee(6), IGP(7), [WarpDrc20(8)]
+    // TestMock, TestRecipient, MerkleTreeHook, optional IsmMultisig,
+    // ProtocolFee, AggregationHook, Mailbox, ValidatorAnnounce, IGP,
+    // then the optional synthetic, native, and DRC20-collateral routes.
     let mut nonce_counter = 0u64;
     let test_mock_id = gen_contract_id(&test_mock_bytes, nonce_counter, &pk_bytes);
     nonce_counter += 1;
@@ -824,22 +1045,36 @@ async fn cmd_deploy_hyperlane(
         id
     });
 
+    let protocol_fee_id = gen_contract_id(&protocol_fee_bytes, nonce_counter, &pk_bytes);
+    nonce_counter += 1;
+    let aggregation_hook_id = gen_contract_id(&aggregation_hook_bytes, nonce_counter, &pk_bytes);
+    nonce_counter += 1;
     let mailbox_id = gen_contract_id(&mailbox_bytes, nonce_counter, &pk_bytes);
     nonce_counter += 1;
     let va_id = gen_contract_id(&va_bytes, nonce_counter, &pk_bytes);
     nonce_counter += 1;
-    let protocol_fee_id = gen_contract_id(&protocol_fee_bytes, nonce_counter, &pk_bytes);
-    nonce_counter += 1;
     let igp_id = gen_contract_id(&igp_bytes, nonce_counter, &pk_bytes);
     nonce_counter += 1;
 
-    let warp_drc20_id = if deploy_warp_drc20 {
-        let warp_bytes = load_wasm("warp_drc20")?;
+    let warp_drc20_id = warp_drc20_bytes.map(|warp_bytes| {
         let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
-        Some((id, warp_bytes))
+        nonce_counter += 1;
+        (id, warp_bytes)
+    });
+    let collateral_token = if wraps_deployed_warp {
+        warp_drc20_id.as_ref().map(|(id, _)| *id)
     } else {
-        None
+        explicit_collateral_token
     };
+    let warp_native_id = warp_native_bytes.map(|warp_bytes| {
+        let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
+        nonce_counter += 1;
+        (id, warp_bytes)
+    });
+    let warp_collateral_id = warp_collateral_bytes.map(|warp_bytes| {
+        let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
+        (id, warp_bytes)
+    });
 
     eprintln!("\n  Contract IDs (pre-computed):");
     eprintln!("    TestMock:        {}", hex::encode(test_mock_id.to_bytes()));
@@ -848,12 +1083,19 @@ async fn cmd_deploy_hyperlane(
     if let Some(ism_id) = &ism_multisig_id {
         eprintln!("    IsmMultisig:     {}", hex::encode(ism_id.to_bytes()));
     }
+    eprintln!("    ProtocolFee:     {}", hex::encode(protocol_fee_id.to_bytes()));
+    eprintln!("    AggregationHook: {}", hex::encode(aggregation_hook_id.to_bytes()));
     eprintln!("    Mailbox:         {}", hex::encode(mailbox_id.to_bytes()));
     eprintln!("    ValidatorAnnounce: {}", hex::encode(va_id.to_bytes()));
-    eprintln!("    ProtocolFee:     {}", hex::encode(protocol_fee_id.to_bytes()));
     eprintln!("    IGP:             {}", hex::encode(igp_id.to_bytes()));
     if let Some((ref id, _)) = warp_drc20_id {
         eprintln!("    WarpDrc20:       {}", hex::encode(id.to_bytes()));
+    }
+    if let Some((ref id, _)) = warp_native_id {
+        eprintln!("    WarpNative:      {}", hex::encode(id.to_bytes()));
+    }
+    if let Some((ref id, _)) = warp_collateral_id {
+        eprintln!("    WarpCollateral:  {}", hex::encode(id.to_bytes()));
     }
 
     // Refuse to deploy if any of the deterministic contract IDs already exist.
@@ -890,6 +1132,10 @@ async fn cmd_deploy_hyperlane(
     if client.contract_exists(&protocol_fee_hex).await? {
         existing.push(("ProtocolFee".into(), protocol_fee_hex));
     }
+    let aggregation_hook_hex = hex::encode(aggregation_hook_id.to_bytes());
+    if client.contract_exists(&aggregation_hook_hex).await? {
+        existing.push(("AggregationHook".into(), aggregation_hook_hex));
+    }
     let igp_hex = hex::encode(igp_id.to_bytes());
     if client.contract_exists(&igp_hex).await? {
         existing.push(("IGP".into(), igp_hex));
@@ -898,6 +1144,18 @@ async fn cmd_deploy_hyperlane(
         let warp_hex = hex::encode(warp_id.to_bytes());
         if client.contract_exists(&warp_hex).await? {
             existing.push(("WarpDrc20".into(), warp_hex));
+        }
+    }
+    if let Some((ref warp_id, _)) = warp_native_id {
+        let warp_hex = hex::encode(warp_id.to_bytes());
+        if client.contract_exists(&warp_hex).await? {
+            existing.push(("WarpNative".into(), warp_hex));
+        }
+    }
+    if let Some((ref warp_id, _)) = warp_collateral_id {
+        let warp_hex = hex::encode(warp_id.to_bytes());
+        if client.contract_exists(&warp_hex).await? {
+            existing.push(("WarpCollateral".into(), warp_hex));
         }
     }
 
@@ -928,8 +1186,8 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     deploy_one(&client, &sk, &pk, test_recipient_bytes, vec![], &mut mn, &mut dn, gas_limit, gas_price, chain_id, "TestRecipient").await?;
     wait_for_nonce(&client, &pk, mn).await?;
 
-    // 3. MerkleTreeHook: init(mailbox)
-    let mth_init = rkyv_serialize(&(mailbox_id,));
+    // 3. MerkleTreeHook: child of the aggregation hook.
+    let mth_init = rkyv_serialize(&(aggregation_hook_id,));
     deploy_one(&client, &sk, &pk, merkle_tree_hook_bytes, mth_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "MerkleTreeHook").await?;
     wait_for_nonce(&client, &pk, mn).await?;
 
@@ -938,8 +1196,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         let _ism_multisig_id = ism_multisig_id.expect("ISM ID missing");
         let mut validators = multisig_validators;
         validators.sort();
-        let owner = mailbox_id.to_bytes();
-        let init = rkyv_serialize(&(owner, validators, multisig_threshold));
+        let init = rkyv_serialize(&(owner_h256, validators, multisig_threshold));
         deploy_one(
             &client,
             &sk,
@@ -957,10 +1214,34 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         wait_for_nonce(&client, &pk, mn).await?;
     }
 
-    // 5. Mailbox: init(local_domain, owner, default_ism, default_hook, required_hook)
+    // 5. ProtocolFee: funded through the aggregation hook.
+    let pf_init = rkyv_serialize(&(
+        1_000_000u64,
+        100_000_000u64,
+        aggregation_hook_id,
+        owner_h256,
+        owner_h256,
+    ));
+    deploy_one(&client, &sk, &pk, protocol_fee_bytes, pf_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "ProtocolFee").await?;
+    wait_for_nonce(&client, &pk, mn).await?;
+
+    // 6. AggregationHook: required Merkle insertion plus protocol fee custody.
+    let aggregation_init = rkyv_serialize(&(
+        mailbox_id,
+        vec![merkle_tree_hook_id, protocol_fee_id],
+    ));
+    deploy_one(&client, &sk, &pk, aggregation_hook_bytes, aggregation_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "AggregationHook").await?;
+    wait_for_nonce(&client, &pk, mn).await?;
+
+    // 7. Mailbox: init(local_domain, owner, default_ism, default_hook, required_hook)
     let default_ism_id = ism_multisig_id.unwrap_or(test_mock_id);
-    let mailbox_init =
-        rkyv_serialize(&(domain, mailbox_id, default_ism_id, test_mock_id, merkle_tree_hook_id));
+    let mailbox_init = rkyv_serialize(&(
+        domain,
+        owner_h256,
+        default_ism_id,
+        igp_id,
+        aggregation_hook_id,
+    ));
     deploy_one(
         &client,
         &sk,
@@ -977,56 +1258,61 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     .await?;
     wait_for_nonce(&client, &pk, mn).await?;
 
-    // 6. ValidatorAnnounce: init(local_domain, mailbox)
+    // 8. ValidatorAnnounce: init(local_domain, mailbox)
     let va_init = rkyv_serialize(&(domain, mailbox_id));
     deploy_one(&client, &sk, &pk, va_bytes, va_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "ValidatorAnnounce").await?;
     wait_for_nonce(&client, &pk, mn).await?;
 
-    // 7. ProtocolFee: init(protocol_fee, max_protocol_fee, beneficiary, owner)
-    let pf_init = rkyv_serialize(&(1_000_000u64, 100_000_000u64, mailbox_id, mailbox_id));
-    deploy_one(&client, &sk, &pk, protocol_fee_bytes, pf_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "ProtocolFee").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
-
-    // 8. IGP: init(owner, beneficiary, initial_configs)
-    let igp_init = rkyv_serialize(&(mailbox_id, mailbox_id, Vec::<(u32, DomainGasConfig)>::new()));
+    // 9. IGP: init(mailbox, owner, beneficiary, initial_configs)
+    let igp_init = rkyv_serialize(&(
+        mailbox_id,
+        owner_h256,
+        owner_h256,
+        Vec::<(u32, DomainGasConfig)>::new(),
+    ));
     deploy_one(&client, &sk, &pk, igp_bytes, igp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "IGP").await?;
     wait_for_nonce(&client, &pk, mn).await?;
 
-    // 9. Optional: WarpDrc20
-    if let Some((warp_id, warp_bytes)) = warp_drc20_id {
-        let owner_h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
+    // 10. Optional: synthetic DRC20 route.
+    let deployed_warp_drc20 = if let Some((warp_id, warp_bytes)) = warp_drc20_id {
         let warp_init = rkyv_serialize(&(mailbox_id, owner_h256, String::from(warp_name), String::from(warp_symbol), warp_decimals, Vec::<(u32, [u8; 32])>::new()));
         deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpDrc20").await?;
         wait_for_nonce(&client, &pk, mn).await?;
+        Some(warp_id)
+    } else {
+        None
+    };
 
-        eprintln!("  All contracts confirmed on-chain");
+    // 11. Optional: native DUSK collateral route.
+    let deployed_warp_native = if let Some((warp_id, warp_bytes)) = warp_native_id {
+        let warp_init = rkyv_serialize(&(
+            mailbox_id,
+            owner_h256,
+            Vec::<(u32, [u8; 32])>::new(),
+        ));
+        deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpNative").await?;
+        wait_for_nonce(&client, &pk, mn).await?;
+        Some(warp_id)
+    } else {
+        None
+    };
 
-        // Output includes warp route
-        let mut contracts = json!({
-            "test_mock": hex::encode(test_mock_id.to_bytes()),
-            "test_recipient": hex::encode(test_recipient_id.to_bytes()),
-            "merkle_tree_hook": hex::encode(merkle_tree_hook_id.to_bytes()),
-            "mailbox": hex::encode(mailbox_id.to_bytes()),
-            "validator_announce": hex::encode(va_id.to_bytes()),
-            "protocol_fee": hex::encode(protocol_fee_id.to_bytes()),
-            "igp": hex::encode(igp_id.to_bytes()),
-            "warp_drc20": hex::encode(warp_id.to_bytes()),
-        });
-        if let Some(ism_id) = ism_multisig_id {
-            contracts["ism_multisig"] = json!(hex::encode(ism_id.to_bytes()));
-        }
+    // 12. Optional: existing DRC20 collateral route.
+    let deployed_warp_collateral = if let Some((warp_id, warp_bytes)) = warp_collateral_id {
+        let wrapped_token = collateral_token.expect("collateral token missing");
+        let warp_init = rkyv_serialize(&(
+            wrapped_token,
+            mailbox_id,
+            owner_h256,
+            Vec::<(u32, [u8; 32])>::new(),
+        ));
+        deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpCollateral").await?;
+        wait_for_nonce(&client, &pk, mn).await?;
+        Some(warp_id)
+    } else {
+        None
+    };
 
-        let output = json!({
-            "success": true,
-            "domain": domain,
-            "chain_id": chain_id,
-            "contracts": contracts,
-        });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        return Ok(());
-    }
-
-    // IGP was the last deploy — wait_for_nonce already confirmed it above
     eprintln!("  All contracts confirmed on-chain");
 
     let mut contracts = json!({
@@ -1036,10 +1322,20 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         "mailbox": hex::encode(mailbox_id.to_bytes()),
         "validator_announce": hex::encode(va_id.to_bytes()),
         "protocol_fee": hex::encode(protocol_fee_id.to_bytes()),
+        "aggregation_hook": hex::encode(aggregation_hook_id.to_bytes()),
         "igp": hex::encode(igp_id.to_bytes()),
     });
     if let Some(ism_id) = ism_multisig_id {
         contracts["ism_multisig"] = json!(hex::encode(ism_id.to_bytes()));
+    }
+    if let Some(warp_id) = deployed_warp_drc20 {
+        contracts["warp_drc20"] = json!(hex::encode(warp_id.to_bytes()));
+    }
+    if let Some(warp_id) = deployed_warp_native {
+        contracts["warp_native"] = json!(hex::encode(warp_id.to_bytes()));
+    }
+    if let Some(warp_id) = deployed_warp_collateral {
+        contracts["warp_drc20_collateral"] = json!(hex::encode(warp_id.to_bytes()));
     }
 
     let output = json!({
@@ -1446,6 +1742,7 @@ async fn cmd_enroll_router(
     )?;
 
     client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_nonce(&client, &pk, nonce + 1).await?;
 
     let output = json!({
         "success": true,
@@ -1487,6 +1784,7 @@ async fn cmd_register_account(
     )?;
 
     client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_nonce(&client, &pk, nonce + 1).await?;
 
     // Compute the H256 = keccak256(pk.to_bytes()) for display
     let pk_bytes = pk.to_bytes();
@@ -1502,6 +1800,87 @@ async fn cmd_register_account(
     Ok(())
 }
 
+// ── DRC20 helpers ────────────────────────────────────────────────────────
+
+async fn cmd_drc20_approve(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    token_hex: &str,
+    spender_hex: &str,
+    amount: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let client = RuesClient::new(rues_url)?;
+    let token = ContractId::from_bytes(parse_bytes32(token_hex)?);
+    let spender = ContractId::from_bytes(parse_bytes32(spender_hex)?);
+    let args = rkyv_serialize(&Drc20ApproveCall {
+        spender: Drc20Account::Contract(spender),
+        value: amount,
+    });
+    let chain_id = client.query_chain_id().await?;
+    let (nonce, _) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        token,
+        "approve",
+        args,
+        gas_limit,
+        gas_price,
+        nonce + 1,
+        chain_id,
+    )?;
+    client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": true,
+            "token": token_hex,
+            "spender": spender_hex,
+            "amount": amount,
+        }))
+        .unwrap()
+    );
+    Ok(())
+}
+
+async fn cmd_drc20_balance(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    token_hex: &str,
+    account_contract_hex: Option<&str>,
+) -> Result<(), String> {
+    let account = if let Some(contract_hex) = account_contract_hex {
+        Drc20Account::Contract(ContractId::from_bytes(parse_bytes32(contract_hex)?))
+    } else {
+        let (_, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+        Drc20Account::External(pk)
+    };
+    let client = RuesClient::new(rues_url)?;
+    let token = parse_bytes32(token_hex)?;
+    let balance: u64 = client
+        .contract_query(&token, "balance_of", &Drc20BalanceOf { account })
+        .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": true,
+            "token": token_hex,
+            "balance": balance,
+        }))
+        .unwrap()
+    );
+    Ok(())
+}
+
 // ── cmd_transfer_remote ───────────────────────────────────────────────────
 
 async fn cmd_transfer_remote(
@@ -1514,6 +1893,7 @@ async fn cmd_transfer_remote(
     destination: u32,
     recipient_hex: &str,
     amount: u64,
+    native: bool,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -1529,9 +1909,17 @@ async fn cmd_transfer_remote(
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
-    let tx = moonlight_call(
-        &sk, warp_id, "transfer_remote", transfer_args,
-        gas_limit, gas_price, nonce + 1, chain_id,
+    let deposit = if native { amount } else { 0 };
+    let tx = moonlight_call_with_deposit(
+        &sk,
+        warp_id,
+        "transfer_remote",
+        transfer_args,
+        deposit,
+        gas_limit,
+        gas_price,
+        nonce + 1,
+        chain_id,
     )?;
 
     client.propagate_tx(&tx.to_var_bytes()).await?;
@@ -1543,6 +1931,7 @@ async fn cmd_transfer_remote(
         "destination": destination,
         "recipient": recipient_hex,
         "amount": amount,
+        "native": native,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())

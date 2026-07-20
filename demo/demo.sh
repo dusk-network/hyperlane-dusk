@@ -58,6 +58,7 @@ TOKEN_DECIMALS=18
 INITIAL_SUPPLY="10000000000000000000"       # 10 tokens (10e18)
 BRIDGE_EVM_TO_DUSK="3000000000000000000"    # 3 tokens (3e18)
 BRIDGE_DUSK_TO_EVM="1000000000000000000"    # 1 token (1e18)
+DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
 
 # Temp files
 DUSK_DEPLOY_OUTPUT="/tmp/hyperlane-demo-dusk-deploy.json"
@@ -306,6 +307,8 @@ DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_OUTPUT")
 DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_OUTPUT")
 DUSK_ISM=$(jq -r '.contracts.ism_multisig // .contracts.test_mock // empty' "$DUSK_DEPLOY_OUTPUT")
 DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_OUTPUT")
+DUSK_PROTOCOL_FEE=$(jq -r '.contracts.protocol_fee' "$DUSK_DEPLOY_OUTPUT")
+DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_OUTPUT")
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_OUTPUT")
 
 echo ""
@@ -313,11 +316,23 @@ ok "Dusk contracts deployed:"
 info "  Mailbox:         $DUSK_MAILBOX"
 info "  MerkleTreeHook:  $DUSK_MERKLE"
 info "  WarpDrc20:       $DUSK_WARP"
+info "  ProtocolFee:     $DUSK_PROTOCOL_FEE"
+info "  AggregationHook: $DUSK_AGGREGATION_HOOK"
 info "  TestRecipient:   $DUSK_TEST_RECIPIENT"
 
 # ── Step 4: Enroll Remote Routers & Register Account ─────────────────────────
 
 header "Step 4: Enrolling Remote Routers & Registering Account"
+
+step "Dusk: Funding WarpDrc20 dispatch fees..."
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
+    --rues-url "$DUSK_RUES_URL" \
+    --keys "$CONSENSUS_KEYS" \
+    --mailbox "$DUSK_MAILBOX" \
+    --payer "$DUSK_WARP" \
+    --amount "$DUSK_DISPATCH_FEE_CREDIT" \
+    >/dev/null || fail "Failed to fund WarpDrc20 dispatch fees"
+ok "Dusk: WarpDrc20 dispatch fees funded"
 
 # EVM side: enroll Dusk WarpDrc20 as remote router for the Dusk domain
 EVM_TOKEN_PAD32="0x$(pad_evm_address "$EVM_TOKEN")"

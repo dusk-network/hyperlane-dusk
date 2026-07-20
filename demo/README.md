@@ -25,7 +25,7 @@ cargo build --release -p dusk-rusk
 
 # 2. Build Hyperlane contracts + CLI
 cd ~/projects/hyperlane/dusk
-make all                # 11 contract WASMs
+make all                # 12 contract WASMs
 make dusk-tx            # CLI tool
 
 # 3. Install Dusk Explorer deps
@@ -69,6 +69,10 @@ Notes:
 
 - Dusk contract deployments are deterministic. Switching ISM modes requires a
   fresh rusk state (the script handles this via `stop-env/start-env`).
+- Each ISM case runs synthetic DRC20, native DUSK, and DRC20-collateral routes
+  in both directions. It checks exact native and token custody, DRC20 allowance
+  consumption, and one value-backed ProtocolFee collection per outbound Dusk
+  dispatch.
 - The script generates temporary agent configs in `/tmp` with restrictive file
   permissions, uses them only while agents run, and deletes them on exit.
 - Dusk consensus key passwords are passed to `dusk-tx` through environment
@@ -313,31 +317,31 @@ bash demo/demo.sh --skip-deploy
 ```
    EVM (Anvil, domain=31338)              Dusk (domain=4242)
   +-------------------------+           +-------------------------+
-  |  Mailbox                |           |  Mailbox                |
-  |  +- TestIsm             |           |  +- NullISM (TestMock)  |
-  |  +- TestPostDispatchHook|           |  +- MerkleTreeHook      |
-  |  +- nonce: tracks msgs  |           |  +- nonce: tracks msgs  |
-  |                         |           |                         |
-  |  HypERC20 (wDUSK)      |<--------->|  WarpDrc20 (wDUSK)     |
-  |  +- ERC20 mint/burn    |  enrolled  |  +- DRC20 mint/burn    |
-  |  +- TokenRouter        |  routers   |  +- TokenRouter        |
-  |                         |           |                         |
-  |  TestRecipient          |           |  TestRecipient          |
-  |  +- handle() stores msg|           |  +- dispatch_message()  |
+  |  Mailbox + ISM/hooks    |           |  Mailbox + selected ISM |
+  |                         |           |  +- AggregationHook     |
+  |  HypERC20 routes       |<--------->|  |  +- MerkleTreeHook   |
+  |  +- synthetic DRC20    |  enrolled  |  |  +- ProtocolFee     |
+  |  +- native DUSK token  |  routers   |  +- IGP                |
+  |  +- collateral token   |            |                         |
+  |                         |           |  Warp routes            |
+  |  TestRecipient          |           |  +- WarpDrc20          |
+  |                         |           |  +- WarpNative         |
+  |                         |           |  +- Drc20Collateral    |
   +-------------------------+           +-------------------------+
 
-  Token Bridge (EVM->Dusk):
-  HypERC20.transferRemote() -> Mailbox.dispatch() -> [relay] -> Mailbox.process() -> WarpDrc20.handle()
-
-  Token Bridge (Dusk->EVM):
-  WarpDrc20.transfer_remote() -> Mailbox.dispatch() -> [relay] -> Mailbox.process() -> HypERC20.handle()
+  EVM -> Dusk: HypERC20.transferRemote -> relay -> Dusk route handle
+  Dusk -> EVM: Dusk route transfer_remote -> value-backed hooks -> relay -> HypERC20.handle
 ```
 
 ## Key dusk-tx Commands
 
 ```bash
-# Deploy all Hyperlane contracts on Dusk
-dusk-tx deploy-hyperlane --domain 4242 --deploy-warp-drc20
+# Deploy the full local route matrix on Dusk
+dusk-tx deploy-hyperlane --domain 4242 --deploy-warp-drc20 \
+    --deploy-warp-native --warp-collateral-token warp-drc20
+
+# Pre-fund value-backed Mailbox dispatch fees for a route
+dusk-tx fund-dispatch --mailbox <hex> --payer <route-hex> --amount <lux>
 
 # Query contract state
 dusk-tx query --contract <hex> --method nonce --return-type u32
@@ -348,9 +352,18 @@ dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex>
 # Register BLS key for receiving bridged tokens
 dusk-tx register-account --warp-contract <hex>
 
+# Approve collateral custody and inspect DRC20 balances
+dusk-tx drc20-approve --token <hex> --spender <collateral-route-hex> --amount <amount>
+dusk-tx drc20-balance --token <hex>
+dusk-tx drc20-balance --token <hex> --account-contract <hex>
+
 # Send tokens to a remote chain
 dusk-tx transfer-remote --warp-contract <hex> --destination 31338 \
     --recipient <hex> --amount 1000000000000000000
+
+# Native DUSK sends attach an exact Moonlight deposit
+dusk-tx transfer-remote --warp-contract <native-route-hex> --destination 31338 \
+    --recipient <hex> --amount 100000000 --native
 
 # Encode a Hyperlane message (no TX)
 dusk-tx encode-message --nonce 0 --origin 31338 --sender <hex> \
