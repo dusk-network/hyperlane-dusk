@@ -36,7 +36,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff --check HEAD~1..HEAD -- \
+          base_ref="${GITHUB_BASE_REF:-main}"
+          if git rev-parse --verify "origin/$base_ref" >/dev/null 2>&1; then
+            diff_range="origin/$base_ref...HEAD"
+          else
+            diff_range="HEAD~1..HEAD"
+          fi
+          git diff --check "$diff_range" -- \
             .github/workflows/manual-repro-check.yml \
             .github/workflows/manual-repro-dispatcher-gate.yml \
             .github/workflows/dusk-review-policy-gate.yml \

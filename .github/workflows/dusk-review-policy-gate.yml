@@ -22,6 +22,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.12
+
       - name: Check worktree and diff hygiene
         shell: bash
         run: |
