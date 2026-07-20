@@ -95,7 +95,12 @@ Semantics:
   payer.
 - The payer selects an explicit Moonlight public key as recipient. State is
   debited before the transfer-contract call, and the transaction reverts both
-  changes if that transfer fails.
+  changes if that transfer fails. The key must also pass Dusk's semantic BLS
+  validity check before any credit is debited; an identity or invalid point is
+  rejected.
+- `dusk-tx withdraw-dispatch` defaults to the signer but accepts
+  `--recipient-public-key` so production routes can use a distinct operational
+  treasury without changing route ownership or signer custody.
 - `dusk-tx fund-dispatch` and `withdraw-dispatch` report success only after the
   exact transaction hash is present in Rusk's ledger with no execution error.
   Moonlight nonce advancement is intentionally not treated as success because
@@ -111,6 +116,8 @@ Semantics:
 Evidence:
 
 - `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed`.
+  This test also proves invalid-recipient rollback and decodes the actual VM
+  receipt event through the explorer data driver.
 - `test_dispatch_credit_withdrawals_preserve_multi_payer_solvency`.
 - `test_warp_drc20_owner_can_withdraw_route_dispatch_credit`.
 - `test_warp_native_owner_can_withdraw_route_dispatch_credit`.
@@ -119,8 +126,8 @@ Evidence:
 - `dusk-tx` bounded-response, transient-retry, immediate-check, execution-
   failure, and nonce-exhaustion tests.
 - Clean-current-Rusk reproduction at implementation anchor
-  `55c1936d3bf061758df85fc4f83a05c50879e0ad`: 12 WASMs, production contract
-  clippy, 29 type tests, 92 VM tests, 4 data-driver tests, 11 `dusk-tx` tests,
+  `8064476efa30126186971316f72b2646f0c3b7d2`: 12 WASMs, production contract
+  clippy, 29 type tests, 95 VM tests, 6 data-driver tests, 13 `dusk-tx` tests,
   release data-driver WASM, and tracked-source secret hygiene all pass.
 
 ### Pending Escrow Without Admin Drain

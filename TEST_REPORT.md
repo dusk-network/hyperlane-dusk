@@ -38,27 +38,24 @@ stacked PR heads are finalized.
 ## 2026-07-20 Dispatch-Credit Withdrawal Validation
 
 The focused stacked branch `feat/dispatch-credit-withdrawal` was validated at
-implementation anchor `55c1936d3bf061758df85fc4f83a05c50879e0ad` after rebasing
-onto hardened base `63bd80803e36bdca883d815eacea74c7575199de`, against clean
-detached current
-Rusk `origin/master` at
+implementation anchor `8064476efa30126186971316f72b2646f0c3b7d2` after rebasing
+onto hardened base `b46fda9265e3381203962a65c15b697271fd5dff`, against clean
+detached current Rusk `origin/master` at
 `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
 
-`scripts/local-repro-check.sh` ran in an isolated compatible checkout layout
-and passed:
+An isolated compatible checkout layout passed:
 
 - all 12 contract WASM builds;
 - the production contract/type WASM clippy surface;
 - 29 type tests;
-- 92 VM integration tests;
-- 4 data-driver decoder tests;
-- 11 `dusk-tx` tests; and
-- tracked-source secret hygiene.
+- 95 VM integration tests;
+- 6 data-driver decoder tests; and
+- 13 `dusk-tx` tests.
 
 The rebase preserved the base branch's stricter 256-KiB status-response bound,
 exact-hash transaction confirmation, immediate first observation, and absolute
 deadline while layering the withdrawal surface on top. A pre-rebase backup is
-kept at `backup/dispatch-credit-pre-63bd808`. The first clean repro caught two
+kept at `backup/dispatch-credit-pre-b46fda9`. The earlier clean repro caught two
 overlapping `mod tests` blocks in the data driver; they were consolidated and
 the full contract/type/VM portion plus every remaining driver, CLI, release-
 WASM, and hygiene layer passed at the implementation anchor above.
@@ -68,9 +65,12 @@ withdrawal authority, another Moonlight payer cannot withdraw the named
 payer's credit, zero withdrawals fail, partial and full withdrawals reduce
 both accounting and native custody exactly, and only the configured owner of
 each WarpDrc20, WarpNative, or WarpDrc20Collateral route can withdraw that
-route's contract-keyed credit. A separate release WASM check for the data
-driver also passed with the funded, paid, and withdrawn dispatch-fee event
-decoders.
+route's contract-keyed credit. Identity/invalid BLS recipients fail before
+credit or custody changes. The successful withdrawal's actual VM receipt event
+is decoded through `HyperlaneDataDriver`, joining the contract emission and
+explorer decoder in one test. The CLI separately proves valid, prefixed,
+wrong-length, and identity recipient-key handling, and exposes an explicit
+treasury option while retaining the signer as its default.
 
 The adversarial review found and corrected one tooling defect before handoff:
 `fund-dispatch` and `withdraw-dispatch` had treated signer nonce advancement as
@@ -106,8 +106,8 @@ the exact commits they name.
 
 Results:
 
-- `cargo test -p hyperlane-dusk-integration-tests`: 92 passed, 0 failed at the
-  focused withdrawal head; the repaired base branch has 87 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: 95 passed, 0 failed at the
+  focused withdrawal head; the repaired base branch has 90 tests.
 - All 12 contract WASMs build and the production contract/type clippy surface
   passes.
 - The VM suite validates the shared Moonlight/contract owner model, rejects

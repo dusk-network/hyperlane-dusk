@@ -57,7 +57,7 @@ required aggregation and gas-payment path.
 The demo pre-funds each deployed warp route's Mailbox credit. Credits are an
 explicit prepayment model. Permissionless funding does not confer withdrawal
 rights: the effective payer owns the credit. Moonlight payers may withdraw to
-an explicit Moonlight key, and each production warp route exposes an
+an explicit, semantically valid Moonlight key, and each production warp route exposes an
 owner-only proxy for its own contract-keyed credit. There is no Mailbox-owner
 global drain. Contract-recipient payouts remain deferred until a callback ABI
 is specified.
@@ -98,13 +98,13 @@ checkout guard.
 
 - All 12 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
-- `cargo test -p hyperlane-dusk-integration-tests`: 92 passed, 0 failed,
+- `cargo test -p hyperlane-dusk-integration-tests`: 95 passed, 0 failed,
   including payer-isolated Mailbox withdrawal and owner-gated withdrawal for
   all three production warp routes.
-- `cargo test -p hyperlane-dusk-data-driver`: 4 passed, including the emitted
-  withdrawal-event type through the driver decoder and malformed bytes.
-- `cargo test -p dusk-tx`: 11 passed, including bounded and retrying exact-
-  transaction confirmation.
+- `cargo test -p hyperlane-dusk-data-driver`: 6 passed, including both
+  `quote_dispatch` ABI shapes and the withdrawal-event decoder.
+- `cargo test -p dusk-tx`: 13 passed, including bounded and retrying exact-
+  transaction confirmation plus explicit treasury-key validation.
 - The VM suite covers reachable and rejected admin calls, authenticated and
   spoofed fee callbacks, fee custody/claims, aggregate hook payments, native
   custody, and current-ABI DRC20 allowance/collateral custody.

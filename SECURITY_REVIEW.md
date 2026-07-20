@@ -446,7 +446,8 @@ increase for their outbound dispatches.
 The chosen fee-credit model is explicit prepayment, not per-dispatch
 `msg.value`. Funding is permissionless, but the named effective payer owns the
 resulting credit. A payer can withdraw unused credit to an explicit Moonlight
-key; callers cannot provide a different payer identity. Production warp routes
+key; the key is semantically validated before accounting changes, and callers
+cannot provide a different payer identity. Production warp routes
 provide an owner-only proxy that withdraws only the calling route's credit.
 There is no Mailbox-owner global drain. Operations still need to choose the
 route funder, target balance, and low-credit alert threshold.
@@ -525,7 +526,7 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 92 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage |
+| `tests/tests/integration.rs` | 95 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, invalid-recipient rollback, real-receipt data-driver decoding, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage |
 | `data-driver/src/lib.rs` | Withdrawal-event decoding round trip and malformed-payload rejection; warm demo startup always delegates driver freshness to Cargo |
 | `dusk-tx/src/main.rs`, `dusk-tx/src/rues.rs` | Exact-hash execution confirmation with an immediate first query, absolute deadline, bounded responses, transient observation retry, and transaction-hash preservation in errors |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
@@ -563,7 +564,7 @@ documented deviations:
 | `test_multisig_ism_verify_rejects_corrupt_signature_bytes` | Verify fails when fixed-width signature metadata is corrupt and cannot be recovered |
 | `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
 | `test_mailbox_quote_dispatch_rejects_fee_overflow` | Mailbox rejects a combined required-hook plus default-hook quote that would overflow `u64` |
-| `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed` | Third-party funding creates payer-owned credit; another caller cannot withdraw it; zero withdrawal fails; partial/full withdrawals exactly reduce credit and Mailbox custody |
+| `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed` | Third-party funding creates payer-owned credit; another caller cannot withdraw it; zero and invalid-recipient withdrawals fail without debiting custody; partial/full withdrawals exactly reduce credit and Mailbox custody; the actual VM event decodes through the data driver |
 | `test_warp_drc20_owner_can_withdraw_route_dispatch_credit` | Only the synthetic route owner can proxy withdrawal of that route's credit |
 | `test_warp_native_owner_can_withdraw_route_dispatch_credit` | Only the native route owner can proxy withdrawal of that route's credit |
 | `test_warp_collateral_owner_can_withdraw_route_dispatch_credit` | Only the collateral route owner can proxy withdrawal of that route's credit |
@@ -583,7 +584,7 @@ All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
 `29 passed; 0 failed; 0 ignored`; the integration package reported
-`92 passed; 0 failed; 0 ignored` on current Rusk.
+`95 passed; 0 failed; 0 ignored` on current Rusk.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use
