@@ -162,9 +162,26 @@ validate_dusk_query() {
         || fail "Saved $label is not queryable on the running Dusk chain: $contract"
 }
 
+validate_dusk_state_version() {
+    local contract="$1"
+    local label="$2"
+    local response version
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method state_version \
+        --return-type u32 2>/dev/null) \
+        || fail "Saved $label predates state version 1; redeploy"
+    version=$(jq -er '.value | tonumber' <<<"$response") \
+        || fail "Saved $label returned a malformed state version; redeploy"
+    [ "$version" = 1 ] \
+        || fail "Saved $label has unsupported state version $version; expected 1"
+}
+
 validate_saved_deployment() {
     local saved_evm_chain_id saved_dusk_chain_id
-    local evm_mailbox evm_token dusk_mailbox dusk_warp
+    local evm_mailbox evm_token dusk_mailbox dusk_merkle dusk_warp dusk_warp_native
 
     jq -e 'type == "object" and (.evm | type == "object") and (.dusk | type == "object")' \
         "$BRIDGE_STATE_FILE" >/dev/null \
@@ -182,12 +199,16 @@ validate_saved_deployment() {
     evm_mailbox="$(jq -er '.evm.mailbox' "$BRIDGE_STATE_FILE")"
     evm_token="$(jq -er '.evm.token' "$BRIDGE_STATE_FILE")"
     dusk_mailbox="$(jq -er '.dusk.mailbox' "$BRIDGE_STATE_FILE")"
+    dusk_merkle="$(jq -er '.dusk.merkle_tree_hook' "$BRIDGE_STATE_FILE")"
     dusk_warp="$(jq -er '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")"
+    dusk_warp_native="$(jq -er '.dusk.warp_native' "$BRIDGE_STATE_FILE")"
 
     validate_evm_contract "$evm_mailbox" "EVM Mailbox"
     validate_evm_contract "$evm_token" "EVM warp token"
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
-    validate_dusk_query "$dusk_warp" total_supply u64 "Dusk warp token"
+    validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"
+    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route"
+    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"
 }
 
 # ── Check for existing deployment ────────────────────────────────────────────
@@ -418,6 +439,12 @@ DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral' "$DUSK_DEPLOY_FILE")
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
+
+if [ "$SKIP_DEPLOY" = true ]; then
+    validate_dusk_state_version "$DUSK_MERKLE" "Dusk MerkleTreeHook"
+    validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route"
+    validate_dusk_state_version "$DUSK_WARP_NATIVE" "Dusk native warp route"
+fi
 
 info "  Mailbox:        $DUSK_MAILBOX"
 info "  MerkleTreeHook: $DUSK_MERKLE"

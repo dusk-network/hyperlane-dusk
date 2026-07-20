@@ -82,7 +82,11 @@ Decision:
 Current implementation:
 
 - WarpNative and WarpDrc20Collateral escrow unregistered recipients by
-  recipient hash.
+  recipient hash. Both reserve aggregate pending liabilities against live
+  route custody before accepting another inbound delivery.
+- Synthetic WarpDrc20 leaves an unregistered recipient amount unminted until
+  the matching Moonlight key or immediate contract caller proves the recipient
+  type and claims it. It never guesses that an arbitrary H256 is a contract.
 - WarpDrc20Collateral tracks aggregate pending liability and reserves that
   amount against live route custody. A direct delivery cannot consume token
   backing already promised to pending recipients.
@@ -96,6 +100,9 @@ Evidence:
 - `SECURITY_REVIEW.md`, "Unregistered recipients".
 - `test_warp_native_handle_escrows_unregistered_recipient`.
 - `test_warp_native_escrow_accumulates`.
+- `test_warp_native_pending_reserve_has_priority_over_direct_delivery`.
+- `test_warp_synthetic_handle_escrows_unregistered_contract_recipient`.
+- `test_warp_synthetic_contract_pending_accumulates_and_claims`.
 - `test_warp_collateral_handle_escrows_unregistered_recipient`.
 - `test_warp_collateral_claim_pending_transfers_after_registration`.
 - Latest clean-layout repro evidence at
@@ -168,6 +175,28 @@ is not acceptable, require external signer work before production. The current
 branch reduces local-file risk by rejecting non-regular files and, on Unix,
 group/world-readable `keyFile` paths before reading key material; that hardening
 does not replace a custody decision.
+
+### Contract State Migration
+
+Decision:
+
+- [ ] Accept fresh deployment for the v1 Merkle/escrow state model.
+- [ ] Design and review an explicit in-place migration before production.
+
+Current implementation:
+
+- MerkleTreeHook, WarpDrc20, and WarpNative add persisted history or pending
+  liability state and expose `state_version() == 1`.
+- Existing serialized instances are not treated as compatible. The demo
+  `--skip-deploy` path probes the version and fails closed when it is absent.
+- The compatible contract set and Rust agent must be deployed from the pinned
+  cross-repository heads recorded in the review documents.
+
+Recommended stance:
+
+Use a fresh deterministic deployment for this reassessment and do not claim an
+in-place upgrade. A migration would need separate state-layout, rollback, and
+live-data validation work.
 
 ### CI/Repro Runner Strategy
 

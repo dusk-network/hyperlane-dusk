@@ -142,5 +142,11 @@ mod test_recipient {
             let _: () = abi::call(route, "claim_pending_contract", &())
                 .expect("TestRecipient: collateral claim failed");
         }
+
+        /// Claim synthetic-route tokens pending for this contract ID.
+        pub fn claim_synthetic_pending(&self, route: ContractId) {
+            let _: () = abi::call(route, "claim_pending_contract", &())
+                .expect("TestRecipient: synthetic claim failed");
+        }
     }
 }

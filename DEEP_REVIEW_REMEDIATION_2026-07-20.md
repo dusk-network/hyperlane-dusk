@@ -1,9 +1,10 @@
 # Deep review remediation decisions — 2026-07-20
 
-This record documents the decisions made after the deep review of Dusk PR #1 at
-`193811ee6ae5b62cdd4a29890357e00e3e911a8d`. It records intended behavior, not
-just the mechanics of the patch, so future upstream and Rusk syncs can preserve
-the security boundaries deliberately.
+This record documents the decisions made after the deep reviews of Dusk PR #1,
+beginning at `193811ee6ae5b62cdd4a29890357e00e3e911a8d` and refreshed after the
+2026-07-20 upstream/Rusk reassessment. It records intended behavior, not just
+the mechanics of the patch, so future upstream and Rusk syncs can preserve the
+security boundaries deliberately.
 
 ## Decisions
 
@@ -35,6 +36,12 @@ the security boundaries deliberately.
 | C25: implicit demo security policy | `deploy.sh` requires an explicit Dusk ISM on new deployments. `testMock` remains an explicit local-demo selection, while the one-command demo passes that choice visibly. |
 | C26: recipient ISM fallback | Preserve Hyperlane recipient semantics: if a recipient ISM query is unavailable or returns zero, Mailbox falls back to its default ISM. The fallback is interoperability behavior, not acceptance of a failed nonzero ISM verification. |
 | C27: escrow recovery and expiry | Keep pending recipient claims without an admin drain, expiry, or reassignment path. This avoids privileged seizure, but permanently malformed or lost recipient identities can strand their reserved funds; changing that requires a separately reviewed governance design. |
+| C28: native escrow was only bookkeeping | Treat native pending balances as liabilities against live route custody. `pending_total` is reserved before either a new escrow entry or a direct registered-recipient payment, so an inbound message cannot create an unbacked claim or spend DUSK promised to an earlier claimant. |
+| C29: unregistered synthetic recipient ambiguity | Do not cast an arbitrary unregistered H256 to `Account::Contract`. Keep the synthetic amount unminted until either the matching Moonlight public key or the immediate contract caller authenticates that recipient and claims it. Total supply increases only at the authenticated claim boundary. |
+| C30: fabricated/unfinalized Merkle provenance | Persist hook-owned message IDs, insertion heights, and post-insertion roots. Agents index the hook's exact archive event and expose only consensus-finalized insertions/checkpoints; Mailbox dispatches are not treated as proof that a configured Merkle hook ran. |
+| C31: ambiguous agent success and identifiers | Require explicit `err: null` for transaction success, require a height query to return the requested height, reject non-canonical H512 padding for Dusk transaction IDs, and bound/open signer key files once before reading. Malformed observations fail closed. |
+| C32: cross-repository ABI drift | Pin the agent gate to an exact companion Dusk commit and record the compatible contract/agent heads. Branch-name checkouts remain available only as an explicit manual override. |
+| C33: changed contract storage layout | Require fresh deployment of MerkleTreeHook, WarpDrc20, and WarpNative. Each exposes `state_version() == 1`, and `--skip-deploy` probes that ABI so older serialized state is rejected rather than reused. No in-place migration is claimed. |
 
 ## Escrow scope
 
@@ -57,6 +64,16 @@ No administrator can expire, reassign, or drain pending native or DRC20 claims.
 That is an explicit non-custodial choice for this version, with the accepted
 tradeoff that an invalid recipient hash can reserve funds indefinitely.
 
+Native DUSK uses the same live-custody invariant: `pending_total` is subtracted
+from the route's transfer-contract balance before accepting a new delivery.
+Claims decrement the reserve in the same transaction that pays the recipient.
+
+Synthetic DRC20 has no backing asset to reserve. Its pending entries therefore
+represent authorization-delayed minting, not minted balances or custodial
+liabilities. An unregistered 32-byte recipient is deliberately left untyped;
+minting occurs only when a Moonlight public key or immediate contract caller
+proves which Dusk account owns it.
+
 ## Dispatch-credit scope
 
 Dispatch credit is pre-funded native DUSK custody held by Mailbox for a payer
@@ -67,9 +84,24 @@ the storage entry. Withdrawal belongs in the stacked dispatch-credit PR so its
 authorization and receipt semantics can be reviewed without expanding this
 base patch.
 
+That split is intentional rather than deferred functionality: PR #1 establishes
+the custody and consumption invariant; the stacked PR adds the only permitted
+exit, authorized by the beneficiary whose identity owns the credit. Keeping the
+withdrawal delta separate makes its authorization and callback boundary visible
+while E2E testing still validates the combined stack.
+
 Configured hooks with an empty price still run. The small call overhead is
 accepted because it keeps hooks configuration-ready and avoids a second set of
 dispatch semantics that depends on the current quote.
+
+## Deployment compatibility
+
+The added pending-liability and Merkle-history fields change serialized contract
+state. MerkleTreeHook, WarpDrc20, and WarpNative must be freshly deployed as one
+compatible set; an existing deployment cannot be upgraded in place by swapping
+WASM. `state_version() == 1` is an operational compatibility probe, not a
+migration mechanism. The demo's reuse path fails closed when that probe is
+absent.
 
 ## Transaction boundary
 

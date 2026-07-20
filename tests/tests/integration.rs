@@ -736,6 +736,13 @@ fn test_dispatch_via_transaction() {
 
     assert_eq!(s.mailbox_nonce(), 0);
     assert_eq!(s.merkle_count(), 0);
+    assert_eq!(
+        s.session
+            .direct_call::<_, u32>(MERKLE_TREE_HOOK_ID, "state_version", &())
+            .expect("state_version should succeed")
+            .data,
+        1
+    );
 
     let destination = REMOTE_DOMAIN;
     let recipient = [0xBBu8; 32];
@@ -752,6 +759,30 @@ fn test_dispatch_via_transaction() {
     // Nonce and merkle count should increment
     assert_eq!(s.mailbox_nonce(), 1);
     assert_eq!(s.merkle_count(), 1);
+    assert_eq!(
+        s.session
+            .direct_call::<_, H256>(MERKLE_TREE_HOOK_ID, "message_id_at", &(0u32,))
+            .expect("message_id_at should succeed")
+            .data,
+        message_id
+    );
+    let insertion_height = s
+        .session
+        .direct_call::<_, u64>(MERKLE_TREE_HOOK_ID, "inserted_block_height", &(0u32,))
+        .expect("inserted_block_height should succeed")
+        .data;
+    assert_eq!(insertion_height, s.session.block_height());
+    let root_at: H256 = s
+        .session
+        .direct_call::<_, H256>(MERKLE_TREE_HOOK_ID, "root_at", &(0u32,))
+        .expect("root_at should succeed")
+        .data;
+    let root: H256 = s
+        .session
+        .direct_call::<_, H256>(MERKLE_TREE_HOOK_ID, "root", &())
+        .expect("root should succeed")
+        .data;
+    assert_eq!(root_at, root);
 
     // Verify dispatched_message is stored and decodable
     let encoded = s.mailbox_dispatched_message(0);
@@ -1807,6 +1838,13 @@ fn test_warp_drc20_init() {
         .expect("mailbox should succeed")
         .data;
     assert_eq!(mailbox, MAILBOX_ID);
+    assert_eq!(
+        session
+            .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
+            .expect("state_version should succeed")
+            .data,
+        1
+    );
 }
 
 #[test]
@@ -1899,6 +1937,13 @@ fn test_warp_native_init() {
         .expect("hook should succeed")
         .data;
     assert_eq!(hook, ContractId::from_bytes([0u8; 32]));
+    assert_eq!(
+        session
+            .direct_call::<_, u32>(WARP_NATIVE_ID, "state_version", &())
+            .expect("state_version should succeed")
+            .data,
+        1
+    );
 }
 
 #[test]
@@ -2306,12 +2351,43 @@ fn test_warp_drc20_handle_mints_tokens() {
         .data;
     assert!(delivered);
 
-    // Verify tokens were minted
+    // An unregistered H256 is ambiguous (contract ID vs account hash), so
+    // the route must hold it pending until the contract proves ownership.
     let supply: u64 = session
         .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
         .expect("total_supply should succeed")
         .data;
-    assert_eq!(supply, mint_amount);
+    assert_eq!(supply, 0);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(
+                WARP_DRC20_ID,
+                "pending_balance",
+                &(TEST_RECIPIENT_ID.to_bytes(),),
+            )
+            .expect("pending_balance should succeed")
+            .data,
+        mint_amount
+    );
+
+    session
+        .direct_call::<_, ()>(
+            TEST_RECIPIENT_ID,
+            "claim_synthetic_pending",
+            &(WARP_DRC20_ID,),
+        )
+        .expect("recipient contract should claim its pending synthetic tokens");
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::Contract(TEST_RECIPIENT_ID)),
+        mint_amount
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        mint_amount
+    );
 }
 
 #[test]
@@ -2339,12 +2415,39 @@ fn test_warp_drc20_handle_multiple_mints() {
             .expect("process should succeed");
     }
 
-    // Total minted: 500_000 + 1_000_000 + 1_500_000 = 3_000_000
+    // Total pending: 500_000 + 1_000_000 + 1_500_000 = 3_000_000.
+    // Supply stays unchanged until the recipient proves its account type.
     let supply: u64 = session
         .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
         .expect("total_supply should succeed")
         .data;
-    assert_eq!(supply, 3_000_000);
+    assert_eq!(supply, 0);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(
+                WARP_DRC20_ID,
+                "pending_balance",
+                &(TEST_RECIPIENT_ID.to_bytes(),),
+            )
+            .expect("pending_balance should succeed")
+            .data,
+        3_000_000
+    );
+
+    session
+        .direct_call::<_, ()>(
+            TEST_RECIPIENT_ID,
+            "claim_synthetic_pending",
+            &(WARP_DRC20_ID,),
+        )
+        .expect("recipient contract should claim its accumulated pending balance");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        3_000_000
+    );
 }
 
 #[test]
@@ -2484,6 +2587,56 @@ fn test_warp_drc20_handle_mints_to_registered_external_account() {
         .expect("total_supply should succeed")
         .data;
     assert_eq!(supply, mint_amount);
+}
+
+#[test]
+fn test_warp_drc20_unregistered_external_claims_pending() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    let recipient_h256 = message::keccak256(&OWNER_PK.to_bytes());
+    let mint_amount = 750_000u64;
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient_h256, mint_amount);
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &token_body,
+    );
+
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("unregistered external transfer should become pending");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_balance", &(recipient_h256,))
+            .expect("pending_balance should succeed")
+            .data,
+        mint_amount
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        0
+    );
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "claim_pending", &())
+        .expect("authenticated external account should claim its pending tokens");
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::External(*OWNER_PK)),
+        mint_amount
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "pending_balance", &(recipient_h256,))
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
 }
 
 // =============================================================================
@@ -3127,6 +3280,51 @@ fn test_warp_routes_reject_zero_amount_inbound_without_state_changes() {
 
 // --- WarpNative: escrow for unregistered recipients ---
 
+fn fund_warp_native(session: &mut TestSession, amount: u64) {
+    session
+        .call_public_with_deposit::<_, MessageId>(
+            &OWNER_SK,
+            WARP_NATIVE_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xDD; 32], amount),
+            amount,
+        )
+        .expect("outbound native transfer should establish real DUSK custody");
+}
+
+#[test]
+fn test_warp_native_rejects_unbacked_inbound_escrow() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let unregistered: H256 = [0xEE; 32];
+    let amount = 1_000_000u64;
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(unregistered, amount),
+    );
+    let message_id = message::id(&encoded);
+
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
+    assert_contract_panic_contains(result, "WarpNative: insufficient unreserved DUSK");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_balance", &(unregistered,))
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
+    assert!(
+        !session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message_id,))
+            .expect("delivered should succeed")
+            .data
+    );
+}
+
 #[test]
 fn test_warp_native_handle_escrows_unregistered_recipient() {
     let (mut session, remote_router) = session_with_warp_native_flow();
@@ -3134,6 +3332,7 @@ fn test_warp_native_handle_escrows_unregistered_recipient() {
     // Inbound message with a recipient H256 that is NOT registered
     let unregistered: H256 = [0xEE; 32];
     let amount = 1_000_000u64;
+    fund_warp_native(&mut session, amount);
     let token_body = hyperlane_dusk_types::token_message::encode(unregistered, amount);
 
     let encoded = message::encode(
@@ -3164,6 +3363,7 @@ fn test_warp_native_escrow_accumulates() {
     let (mut session, remote_router) = session_with_warp_native_flow();
 
     let unregistered: H256 = [0xEE; 32];
+    fund_warp_native(&mut session, 1_500_000);
 
     // Process two inbound messages to the same unregistered recipient
     for nonce in 0u32..2 {
@@ -3191,6 +3391,88 @@ fn test_warp_native_escrow_accumulates() {
         .expect("pending_balance should succeed")
         .data;
     assert_eq!(pending, 1_500_000);
+}
+
+#[test]
+fn test_warp_native_pending_liability_has_priority_over_direct_delivery() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let unregistered: H256 = [0xEE; 32];
+    let registered = message::keccak256(&OWNER_PK.to_bytes());
+    fund_warp_native(&mut session, 2_000_000);
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
+        .expect("recipient registration should succeed");
+
+    let escrow = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(unregistered, 1_500_000),
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), escrow))
+        .expect("backed pending transfer should succeed");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        1_500_000
+    );
+
+    let balance_before = session
+        .account(&OWNER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+    let oversized = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(registered, 1_000_000),
+    );
+    let result =
+        session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), oversized));
+    assert_contract_panic_contains(result, "WarpNative: insufficient unreserved DUSK");
+    assert_eq!(
+        session
+            .account(&OWNER_PK)
+            .expect("recipient account query should succeed")
+            .balance,
+        balance_before
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        1_500_000
+    );
+
+    let available = message::encode(
+        VERSION,
+        2,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(registered, 500_000),
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), available))
+        .expect("delivery within unreserved custody should succeed");
+    assert_eq!(
+        session
+            .account(&OWNER_PK)
+            .expect("recipient account query should succeed")
+            .balance,
+        balance_before + 500_000
+    );
 }
 
 #[test]
@@ -3361,13 +3643,16 @@ fn session_with_warp_collateral_funded_flow() -> (TestSession, H256) {
         )
         .expect("Deploying Mailbox should succeed");
 
-    // Pre-fund: mint DRC20 tokens to Account::Contract(WARP_DRC20_COLLATERAL_ID)
-    // by processing an inbound message to WarpDrc20
+    // Pre-fund through the real collateral path: mint to an authenticated
+    // external owner, approve the route, then lock the tokens with
+    // transfer_remote. An unregistered H256 is intentionally pending in the
+    // synthetic route and therefore cannot be used to fabricate contract
+    // custody for this fixture.
     let fund_amount = 10_000_000u64;
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        WARP_DRC20_COLLATERAL_ID.to_bytes(),
-        fund_amount,
-    );
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("underlying token owner registration should succeed");
+    let token_body = hyperlane_dusk_types::token_message::encode(*OWNER_ID, fund_amount);
     let encoded = message::encode(
         VERSION,
         0,
@@ -3379,7 +3664,26 @@ fn session_with_warp_collateral_funded_flow() -> (TestSession, H256) {
     );
     session
         .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
-        .expect("Pre-funding collateral should succeed");
+        .expect("minting the fixture's collateral should succeed");
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender: Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+                value: fund_amount,
+            },
+        )
+        .expect("collateral route approval should succeed");
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xAB; 32], fund_amount),
+        )
+        .expect("collateral pre-funding should lock real DRC20 custody");
 
     (session, remote_router)
 }

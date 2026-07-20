@@ -79,6 +79,8 @@ mod warp_native {
         /// The recipient can call `claim_pending` after registering to
         /// receive their DUSK.
         pending_transfers: BTreeMap<H256, u64>,
+        /// Aggregate DUSK liability reserved for pending recipients.
+        pending_total: u64,
     }
 
     impl WarpNative {
@@ -92,6 +94,7 @@ mod warp_native {
                 enrolled_routers: BTreeMap::new(),
                 registered_accounts: BTreeMap::new(),
                 pending_transfers: BTreeMap::new(),
+                pending_total: 0,
             }
         }
 
@@ -167,6 +170,10 @@ mod warp_native {
 
             let amount = self.pending_transfers.remove(&h).unwrap_or(0);
             assert!(amount > 0, "WarpNative: no pending transfers");
+            self.pending_total = self
+                .pending_total
+                .checked_sub(amount)
+                .expect("WarpNative: pending liability underflow");
 
             let transfer = ContractToAccount {
                 account: pk,
@@ -186,6 +193,17 @@ mod warp_native {
         /// Returns the pending (escrowed) balance for an H256 recipient.
         pub fn pending_balance(&self, h: H256) -> u64 {
             self.pending_transfers.get(&h).copied().unwrap_or(0)
+        }
+
+        /// Returns the aggregate native-DUSK liability held in escrow.
+        pub fn pending_total(&self) -> u64 {
+            self.pending_total
+        }
+
+        /// Storage/escrow ABI version for deployment compatibility checks.
+        #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
+        pub fn state_version(&self) -> u32 {
+            1
         }
 
         // =================================================================
@@ -268,6 +286,11 @@ mod warp_native {
             let msg = token_message::decode(&body).expect("WarpNative: invalid token message");
             assert!(msg.amount > 0, "WarpNative: amount must be > 0");
 
+            // Pending claims reserve custody. A registered delivery must not
+            // consume DUSK already promised to an unregistered recipient, and
+            // a new escrow may not finalize an unbacked claim.
+            self.assert_unreserved_dusk(msg.amount);
+
             // Try to send DUSK to the recipient. If they're registered,
             // transfer directly. Otherwise, hold in escrow.
             if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
@@ -284,6 +307,10 @@ mod warp_native {
                 *pending = pending
                     .checked_add(msg.amount)
                     .expect("WarpNative: pending overflow");
+                self.pending_total = self
+                    .pending_total
+                    .checked_add(msg.amount)
+                    .expect("WarpNative: total pending overflow");
             }
 
             abi::emit(
@@ -394,6 +421,19 @@ mod warp_native {
             assert!(
                 caller::effective_caller() == owner,
                 "WarpNative: caller is not the owner"
+            );
+        }
+
+        /// Ensure `amount` can be paid without consuming existing escrow.
+        fn assert_unreserved_dusk(&self, amount: u64) {
+            let balance: u64 = abi::call(TRANSFER_CONTRACT, "contract_balance", &abi::self_id())
+                .expect("WarpNative: balance query failed");
+            let available = balance
+                .checked_sub(self.pending_total)
+                .expect("WarpNative: pending liability exceeds custody");
+            assert!(
+                available >= amount,
+                "WarpNative: insufficient unreserved DUSK"
             );
         }
     }

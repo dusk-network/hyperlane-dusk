@@ -303,6 +303,21 @@ DUSK_PROTOCOL_FEE=$(jq -r '.contracts.protocol_fee' "$DUSK_DEPLOY_OUTPUT")
 DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_OUTPUT")
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_OUTPUT")
 
+if [ "${1:-}" = "--skip-deploy" ]; then
+    DUSK_MERKLE_VERSION=$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+        --contract "$DUSK_MERKLE" --method state_version --return-type u32 \
+        2>/dev/null | jq -er '.value | tonumber') \
+        || fail "Saved MerkleTreeHook predates state version 1; redeploy"
+    [ "$DUSK_MERKLE_VERSION" = 1 ] \
+        || fail "Saved MerkleTreeHook has unsupported state version $DUSK_MERKLE_VERSION"
+    DUSK_WARP_VERSION=$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+        --contract "$DUSK_WARP" --method state_version --return-type u32 \
+        2>/dev/null | jq -er '.value | tonumber') \
+        || fail "Saved WarpDrc20 predates state version 1; redeploy"
+    [ "$DUSK_WARP_VERSION" = 1 ] \
+        || fail "Saved WarpDrc20 has unsupported state version $DUSK_WARP_VERSION"
+fi
+
 echo ""
 ok "Dusk contracts deployed:"
 info "  Mailbox:         $DUSK_MAILBOX"

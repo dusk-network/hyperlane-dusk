@@ -30,6 +30,7 @@
     events::Initialized,
     events::IsmSet,
     events::OwnershipTransferred,
+    events::PendingTransferClaimed,
     events::ReceivedTransferRemote,
     events::RemoteRouterEnrolled,
     events::SentTransferRemote,
@@ -103,6 +104,12 @@ mod warp_drc20 {
         /// so that inbound transfers can look up the full key and mint
         /// to their External account.
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
+        /// Inbound synthetic balances waiting for an authenticated recipient.
+        ///
+        /// An unregistered H256 is ambiguous on Dusk: it can be either a
+        /// hashed Moonlight public key or a contract ID. Keep the amount
+        /// unminted until one of those recipient types proves ownership.
+        pending_transfers: BTreeMap<H256, u64>,
     }
 
     impl WarpDrc20 {
@@ -121,6 +128,7 @@ mod warp_drc20 {
                 owner: None,
                 enrolled_routers: BTreeMap::new(),
                 registered_accounts: BTreeMap::new(),
+                pending_transfers: BTreeMap::new(),
             }
         }
 
@@ -191,6 +199,41 @@ mod warp_drc20 {
         /// Check whether an H256 has a registered account.
         pub fn is_registered(&self, h: H256) -> bool {
             self.registered_accounts.contains_key(&h)
+        }
+
+        /// Claim pending synthetic tokens for the calling Moonlight account.
+        ///
+        /// The H256 recipient is derived from the authenticated public sender,
+        /// so an arbitrary account cannot claim another recipient's balance.
+        pub fn claim_pending(&mut self) {
+            let pk = abi::public_sender().expect("WarpDrc20: claim_pending requires Moonlight TX");
+            let h = message::keccak256(&pk.to_bytes());
+            self.claim_pending_to(h, Account::External(pk));
+        }
+
+        /// Claim pending synthetic tokens for the calling contract.
+        ///
+        /// The pending-recipient key is the immediate caller's `ContractId`
+        /// bytes. The Moonlight transfer contract is rejected as a root
+        /// caller so it cannot be confused with the intended recipient.
+        pub fn claim_pending_contract(&mut self) {
+            let contract = abi::caller().expect("WarpDrc20: contract caller unavailable");
+            assert!(
+                contract != dusk_core::transfer::TRANSFER_CONTRACT,
+                "WarpDrc20: claim_pending_contract requires contract caller"
+            );
+            self.claim_pending_to(contract.to_bytes(), Account::Contract(contract));
+        }
+
+        /// Returns the pending, not-yet-minted balance for an H256 recipient.
+        pub fn pending_balance(&self, h: H256) -> u64 {
+            self.pending_transfers.get(&h).copied().unwrap_or(0)
+        }
+
+        /// Storage/escrow ABI version for deployment compatibility checks.
+        #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
+        pub fn state_version(&self) -> u32 {
+            1
         }
 
         // =================================================================
@@ -343,14 +386,18 @@ mod warp_drc20 {
             let msg = token_message::decode(&body).expect("WarpDrc20: invalid token message");
             assert!(msg.amount > 0, "WarpDrc20: amount must be > 0");
 
-            // Resolve the recipient: if a BLS key is registered for this H256,
-            // mint to the External account; otherwise mint to Contract account.
-            let recipient_account = if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
-                Account::External(*pk)
+            // A registered BLS hash is unambiguously an external account.
+            // An unregistered H256 could also be a contract ID, so do not
+            // fabricate an account type. Keep the value unminted until the
+            // external account or contract proves that it owns the key.
+            if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
+                self.mint(Account::External(*pk), msg.amount);
             } else {
-                Account::Contract(ContractId::from_bytes(msg.recipient))
-            };
-            self.mint(recipient_account, msg.amount);
+                let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
+                *pending = pending
+                    .checked_add(msg.amount)
+                    .expect("WarpDrc20: pending overflow");
+            }
 
             abi::emit(
                 events::ReceivedTransferRemote::TOPIC,
@@ -456,6 +503,17 @@ mod warp_drc20 {
         // =================================================================
         // Internal helpers
         // =================================================================
+
+        /// Mint and clear a pending balance to an authenticated account.
+        fn claim_pending_to(&mut self, recipient: H256, account: Account) {
+            let amount = self.pending_transfers.remove(&recipient).unwrap_or(0);
+            assert!(amount > 0, "WarpDrc20: no pending transfers");
+            self.mint(account, amount);
+            abi::emit(
+                events::PendingTransferClaimed::TOPIC,
+                events::PendingTransferClaimed { recipient, amount },
+            );
+        }
 
         /// Transfer tokens between accounts.
         fn do_transfer(&mut self, from: Account, to: Account, value: u64) {
