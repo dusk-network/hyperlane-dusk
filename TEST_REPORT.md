@@ -2603,6 +2603,51 @@ Result:
   `make review-hygiene` passed after those GitHub-only edits with export
   `/tmp/hyperlane-review-export-1778752305`.
 
+## 2026-07-20 Escrow and Finality Reassessment Gate
+
+The backed-escrow and hook-provenance code was frozen at
+`d8616646e11e01f1932a424dacabded352da5a65` and reproduced from a detached,
+clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. The exact command was:
+
+```bash
+RUSK_DIR=/tmp/hyperlane-rusk-5c6a0b-20260720 \
+  bash scripts/local-repro-check.sh
+```
+
+Durable local log: `/tmp/hyperlane-dusk-base-repro-d861664.log`.
+
+Result:
+
+- all contract WASMs built and the targeted wasm clippy surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 93 passed, 0 failed;
+- `dusk-tx`: 12 passed, 0 failed; and
+- secret-hygiene checks passed.
+
+The VM set includes live `state_version() == 1` queries, native custody reserve
+priority, rejection of unbacked native delivery, authorization-delayed
+synthetic minting for ambiguous recipients, external and contract pending
+claims, realistic collateral custody, and hook-owned message ID, insertion
+height, and historical-root queries. The storage additions require fresh
+deployment; the demo reuse paths reject a missing, malformed, or non-1 state
+version.
+
+The companion agent regression at this stage also passed:
+
+- `cargo test -p hyperlane-dusk`: 15 passed;
+- `cargo test -p hyperlane-base dusk_`: 7 passed;
+- Dusk clippy with warnings denied;
+- package-scoped formatting; and
+- the expanded `hyperlane-dusk`, `hyperlane-base`, `validator`, `relayer`,
+  `scraper`, and `lander` cargo check.
+
+The agent results cover consensus-finality parsing, explicit transaction
+success, canonical Dusk transaction IDs, block-height/hash binding, bounded
+single-handle signer-file reads, and finalized sequence/Merkle integration.
+Bidirectional live-agent evidence is recorded separately after the final
+cross-repository heads are pinned.
+
 ## Remaining Work Before Production Readiness
 
 - Continue expanding negative/security coverage; current coverage includes
