@@ -1281,12 +1281,6 @@ async fn cmd_withdraw_dispatch(
     Ok(())
 }
 
-fn submission_error_with_hash(tx_id: &str, error: &str) -> String {
-    format!(
-        "Transaction {tx_id} submission failed: {error}; retain tx_id={tx_id} and reconcile this exact hash before retrying if the propagation outcome is unknown"
-    )
-}
-
 fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
     let value = value
         .strip_prefix("0x")
