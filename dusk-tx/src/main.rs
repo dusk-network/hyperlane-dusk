@@ -1008,20 +1008,17 @@ mod tests {
         wait_for_transaction_with(
             "aabbcc",
             || ready(statuses.pop_front().expect("status response should exist")),
-            2,
             Duration::ZERO,
             Duration::from_secs(1),
         )
         .await
         .expect("a later exact-hash success should reconcile the transaction");
 
-        let mut statuses = VecDeque::from([Err("archive unavailable".to_string())]);
         let error = wait_for_transaction_with(
             "ddeeff",
-            || ready(statuses.pop_front().expect("status response should exist")),
-            1,
-            Duration::ZERO,
-            Duration::from_secs(1),
+            || ready(Err("archive unavailable".to_string())),
+            Duration::from_millis(1),
+            Duration::from_millis(5),
         )
         .await
         .unwrap_err();
@@ -1036,7 +1033,6 @@ mod tests {
             wait_for_transaction_with(
                 "1122",
                 || ready(Ok(TransactionStatus::Executed)),
-                1,
                 Duration::from_secs(60),
                 Duration::from_secs(1),
             ),
@@ -1048,7 +1044,6 @@ mod tests {
         let error = wait_for_transaction_with(
             "3344",
             || ready(Ok(TransactionStatus::Failed("contract rejected".into()))),
-            1,
             Duration::ZERO,
             Duration::from_secs(1),
         )
@@ -1056,6 +1051,25 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("3344"));
         assert!(error.contains("contract rejected"));
+    }
+
+    #[tokio::test]
+    async fn transaction_wait_does_not_stop_at_the_old_attempt_cap() {
+        let mut statuses = VecDeque::from(
+            (0..20)
+                .map(|_| Ok(TransactionStatus::NotFound))
+                .chain([Ok(TransactionStatus::Executed)])
+                .collect::<Vec<_>>(),
+        );
+
+        wait_for_transaction_with(
+            "5566",
+            || ready(statuses.pop_front().expect("status response should exist")),
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("the absolute deadline must remain authoritative after twenty observations");
     }
 }
 
@@ -1231,13 +1245,15 @@ async fn cmd_withdraw_dispatch(
     if amount == 0 {
         return Err("Withdrawal amount must be greater than zero".into());
     }
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let recipient = recipient_public_key_hex
-        .map(parse_account_public_key)
-        .transpose()?
-        .unwrap_or(pk);
-    let client = RuesClient::new(rues_url)?;
+    // Reject malformed public inputs before reading or decrypting one-shot
+    // signer material.
     let target = ContractId::from_bytes(parse_bytes32(target_hex)?);
+    let explicit_recipient = recipient_public_key_hex
+        .map(parse_account_public_key)
+        .transpose()?;
+    let client = RuesClient::new(rues_url)?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let recipient = explicit_recipient.unwrap_or(pk);
     let args = rkyv_serialize(&(recipient, amount));
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
@@ -1253,8 +1269,7 @@ async fn cmd_withdraw_dispatch(
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
-    client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_transaction(&client, &tx_id).await?;
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
     let output = json!({
         "success": true,
         "target": target_hex,
@@ -1264,6 +1279,12 @@ async fn cmd_withdraw_dispatch(
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+fn submission_error_with_hash(tx_id: &str, error: &str) -> String {
+    format!(
+        "Transaction {tx_id} submission failed: {error}; retain tx_id={tx_id} and reconcile this exact hash before retrying if the propagation outcome is unknown"
+    )
 }
 
 fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
@@ -2121,7 +2142,6 @@ async fn wait_for_transaction(client: &RuesClient, tx_id: &str) -> Result<(), St
     wait_for_transaction_with(
         tx_id,
         || client.query_transaction_status(tx_id),
-        20,
         std::time::Duration::from_secs(3),
         std::time::Duration::from_secs(60),
     )
@@ -2147,7 +2167,6 @@ async fn propagate_and_wait(
 async fn wait_for_transaction_with<F, Fut>(
     tx_id: &str,
     mut query_status: F,
-    max_attempts: usize,
     poll_interval: std::time::Duration,
     timeout: std::time::Duration,
 ) -> Result<(), String>
@@ -2157,12 +2176,14 @@ where
 {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut last_query_error = None;
+    let mut attempt = 0usize;
 
-    for attempt in 1..=max_attempts {
+    loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;
         }
+        attempt = attempt.saturating_add(1);
 
         match tokio::time::timeout(remaining, query_status()).await {
             Ok(Ok(TransactionStatus::Executed)) => return Ok(()),
@@ -2175,10 +2196,7 @@ where
         }
 
         if attempt % 5 == 0 {
-            eprintln!("  [transaction pending, attempt {attempt}/{max_attempts}]");
-        }
-        if attempt == max_attempts {
-            break;
+            eprintln!("  [transaction pending, attempt {attempt}; waiting until deadline]");
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

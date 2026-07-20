@@ -105,8 +105,14 @@ Semantics:
   exact transaction hash is present in Rusk's ledger with no execution error.
   Moonlight nonce advancement is intentionally not treated as success because
   rejected contract calls are still spent transactions.
+- Once the withdrawal transaction has been constructed, every submission error
+  retains its exact hash. Preverification failures are labeled as occurring
+  before propagation; propagation transport/read failures are labeled
+  outcome-unknown and instruct the operator to reconcile that hash before any
+  retry of the non-idempotent withdrawal.
 - Transaction-result polling checks immediately, enforces a 60-second wall-
-  clock deadline, retries transient observation failures without losing the
+  clock deadline as the authoritative bound rather than stopping at a smaller
+  attempt count, retries transient observation failures without losing the
   transaction hash, and caps the GraphQL response at 256 KiB. The generic
   `dusk-tx call` path uses the same execution-success boundary.
 - WarpDrc20, WarpNative, and WarpDrc20Collateral expose the same method only to
@@ -118,13 +124,19 @@ Evidence:
 - `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed`.
   This test also proves invalid-recipient rollback and decodes the actual VM
   receipt event through the explorer data driver.
+- `test_dispatch_credit_withdrawal_rolls_back_after_transfer_failure` forces
+  the transfer contract to fail after the Mailbox credit debit and proves
+  credit, custody, recipient balance, and later caller resolution are restored.
 - `test_dispatch_credit_withdrawals_preserve_multi_payer_solvency`.
 - `test_warp_drc20_owner_can_withdraw_route_dispatch_credit`.
 - `test_warp_native_owner_can_withdraw_route_dispatch_credit`.
 - `test_warp_collateral_owner_can_withdraw_route_dispatch_credit`.
 - `dusk-tx` transaction-status response and exact-hash query tests.
 - `dusk-tx` bounded-response, transient-retry, immediate-check, execution-
-  failure, and nonce-exhaustion tests.
+  failure, no-attempt-cap, submission-hash preservation, and nonce-exhaustion
+  tests.
+- Direct and all three owner-proxied VM withdrawal receipts are asserted below
+  the documented 30,000,000-gas CLI default on the pinned current Rusk runtime.
 - Clean-current-Rusk reproduction at implementation anchor
   `8064476efa30126186971316f72b2646f0c3b7d2`: 12 WASMs, production contract
   clippy, 29 type tests, 95 VM tests, 6 data-driver tests, 13 `dusk-tx` tests,
@@ -253,6 +265,9 @@ Current implementation:
 
 - MerkleTreeHook and WarpNative expose `state_version() == 1`; WarpDrc20
   exposes version 2 after adding aggregate pending synthetic supply capacity.
+- The stacked withdrawal PR also gives Mailbox a public ABI
+  compatibility probe (`state_version() == 1`) so saved deployments lacking
+  `withdraw_dispatch_credit` are rejected instead of reused.
 - Existing serialized instances are not treated as compatible. The demo
   `--skip-deploy` path probes the version and fails closed when it is absent.
 - The compatible contract set and Rust agent must be deployed from the pinned

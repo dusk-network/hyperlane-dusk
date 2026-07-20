@@ -255,6 +255,7 @@ validate_saved_deployment() {
     validate_evm_contract "$evm_igp" "EVM IGP"
     validate_evm_contract "$evm_recipient" "EVM test recipient"
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
+    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox"
     validate_dusk_query "$dusk_test_mock" verify_count u32 "Dusk TestMock"
     if [ "$saved_dusk_ism" = "messageIdMultisig" ]; then
         [ -n "$dusk_ism_multisig" ] \
@@ -513,6 +514,7 @@ DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral' "$DUSK_DEPLOY_FI
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
 
 if [ "$SKIP_DEPLOY" = true ]; then
+    validate_dusk_state_version "$DUSK_MAILBOX" "Dusk Mailbox"
     validate_dusk_state_version "$DUSK_MERKLE" "Dusk MerkleTreeHook"
     validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route" 2
     validate_dusk_state_version "$DUSK_WARP_NATIVE" "Dusk native warp route"

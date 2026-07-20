@@ -1986,8 +1986,14 @@ dependencies = [
 name = "hyperlane-dusk-data-driver"
 version = "0.1.0"
 dependencies = [
+ "dusk-bytes",
+ "dusk-core",
  "dusk-data-driver",
  "hyperlane-dusk-types",
+ "rand 0.8.6",
+ "rkyv",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -526,9 +526,9 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 95 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, invalid-recipient rollback, real-receipt data-driver decoding, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage |
+| `tests/tests/integration.rs` | Current VM suite, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, post-debit transfer rollback, real-receipt data-driver decoding, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage; the authoritative total is recorded with the exact tested head in `TEST_REPORT.md` |
 | `data-driver/src/lib.rs` | Withdrawal-event decoding round trip and malformed-payload rejection; warm demo startup always delegates driver freshness to Cargo |
-| `dusk-tx/src/main.rs`, `dusk-tx/src/rues.rs` | Exact-hash execution confirmation with an immediate first query, absolute deadline, bounded responses, transient observation retry, and transaction-hash preservation in errors |
+| `dusk-tx/src/main.rs`, `dusk-tx/src/rues.rs` | Exact-hash execution confirmation with an immediate first query, authoritative absolute deadline, bounded responses, transient observation retry, and transaction-hash preservation across submission and confirmation errors |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
 | `demo/start-env.sh` | Uses an explicit state archive and consensus-key path, refuses mismatched contract/node Rusk checkouts, and avoids explorer assets when the explorer is skipped |
 | `demo/stop-env.sh` | Stops only the Rusk process using the demo's exact state archive |
@@ -565,9 +565,11 @@ documented deviations:
 | `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
 | `test_mailbox_quote_dispatch_rejects_fee_overflow` | Mailbox rejects a combined required-hook plus default-hook quote that would overflow `u64` |
 | `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed` | Third-party funding creates payer-owned credit; another caller cannot withdraw it; zero and invalid-recipient withdrawals fail without debiting custody; partial/full withdrawals exactly reduce credit and Mailbox custody; the actual VM event decodes through the data driver |
+| `test_dispatch_credit_withdrawal_rolls_back_after_transfer_failure` | A transfer-contract failure after the tentative credit debit rolls back credit, native custody, recipient balance, and caller context |
 | `test_warp_drc20_owner_can_withdraw_route_dispatch_credit` | Only the synthetic route owner can proxy withdrawal of that route's credit |
 | `test_warp_native_owner_can_withdraw_route_dispatch_credit` | Only the native route owner can proxy withdrawal of that route's credit |
 | `test_warp_collateral_owner_can_withdraw_route_dispatch_credit` | Only the collateral route owner can proxy withdrawal of that route's credit |
+| Withdrawal receipt gas assertions | Direct Mailbox and all three route-proxied withdrawals remain below the CLI's 30,000,000-gas default on the pinned Rusk runtime |
 | `test_protocol_fee_rejects_collected_fee_overflow` | ProtocolFee rejects lifetime collected-fee accounting overflow instead of saturating silently |
 | `test_igp_rejects_total_gas_payment_overflow` | IGP rejects lifetime gas-payment accounting overflow instead of saturating silently |
 
@@ -583,9 +585,10 @@ cargo test -p hyperlane-dusk-integration-tests
 All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
-`29 passed; 0 failed; 0 ignored`; the integration package reported
-`98 passed; 0 failed; 0 ignored` on current Rusk after the escrow/finality
-reassessment.
+`29 passed; 0 failed; 0 ignored`. Current integration, data-driver, and CLI
+totals are stated only in `TEST_REPORT.md` alongside the exact tested Dusk and
+Rusk heads; older totals in this document are historical rather than moving
+current-head claims.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use
@@ -626,7 +629,7 @@ make clippy-contracts
 # 29 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 92 integration tests pass
+# Run the complete integration suite; record the resulting total with its head.
 cargo test -p hyperlane-dusk-integration-tests
 ```
 

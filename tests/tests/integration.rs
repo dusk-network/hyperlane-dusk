@@ -101,6 +101,7 @@ const AGGREGATION_HOOK_ID: ContractId = ContractId::from_bytes([19; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
+const WITHDRAW_DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 
 /// Local domain for the Dusk chain in tests.
 const LOCAL_DOMAIN: u32 = 4242;
@@ -741,6 +742,13 @@ fn test_dispatch_via_transaction() {
     let mut s = HyperlaneSession::new();
 
     assert_eq!(s.mailbox_nonce(), 0);
+    assert_eq!(
+        s.session
+            .direct_call::<_, u32>(MAILBOX_ID, "state_version", &())
+            .expect("Mailbox state_version should succeed")
+            .data,
+        1
+    );
     assert_eq!(s.merkle_count(), 0);
     assert_eq!(
         s.session
@@ -1504,6 +1512,12 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
             &(*RELAYER_PK, partial),
         )
         .expect("payer should withdraw its own dispatch credit");
+    assert!(
+        receipt.gas_spent < WITHDRAW_DEFAULT_GAS_LIMIT,
+        "direct withdrawal spent {} gas, exceeding the CLI default {}",
+        receipt.gas_spent,
+        WITHDRAW_DEFAULT_GAS_LIMIT
+    );
     let event = receipt
         .events
         .iter()
@@ -1563,6 +1577,89 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
             .contract_balance(&MAILBOX_ID)
             .expect("Mailbox balance query should succeed"),
         0
+    );
+}
+
+#[test]
+fn test_dispatch_credit_withdrawal_rolls_back_after_transfer_failure() {
+    let mut s = HyperlaneSession::new();
+    let funded = 2_000_000u64;
+
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, funded),
+            funded,
+        )
+        .expect("third-party dispatch funding should succeed");
+
+    // Saturate the recipient balance so transfer-contract account crediting
+    // fails after Mailbox has tentatively debited the payer's fee credit.
+    s.session
+        .direct_call::<_, ()>(
+            dusk_core::transfer::TRANSFER_CONTRACT,
+            "add_account_balance",
+            &(*RELAYER_PK, u64::MAX),
+        )
+        .expect("test setup should saturate recipient balance");
+    let recipient_balance = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+    assert_eq!(recipient_balance, u64::MAX);
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, funded),
+    );
+    assert_contract_panic_contains(result, "attempt to add with overflow");
+
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded,
+        "failed transfer must roll back the tentative credit debit"
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded,
+        "failed transfer must preserve Mailbox custody"
+    );
+    assert_eq!(
+        s.session
+            .account(&RELAYER_PK)
+            .expect("recipient account query should succeed")
+            .balance,
+        u64::MAX,
+        "failed transfer must preserve recipient balance"
+    );
+
+    // A later caller-sensitive operation must still resolve the Moonlight
+    // caller correctly after the nested transfer panic rolled back.
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, 1u64),
+            1,
+        )
+        .expect("caller context should be restored after rollback");
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded + 1
     );
 }
 
@@ -2070,7 +2167,7 @@ fn assert_route_dispatch_credit_withdrawal(
         .account(&RELAYER_PK)
         .expect("recipient account query should succeed")
         .balance;
-    session
+    let receipt = session
         .call_public::<_, ()>(
             &OWNER_SK,
             route,
@@ -2078,6 +2175,12 @@ fn assert_route_dispatch_credit_withdrawal(
             &(*RELAYER_PK, withdrawn),
         )
         .expect("route owner should withdraw the route's dispatch credit");
+    assert!(
+        receipt.gas_spent < WITHDRAW_DEFAULT_GAS_LIMIT,
+        "proxied withdrawal spent {} gas, exceeding the CLI default {}",
+        receipt.gas_spent,
+        WITHDRAW_DEFAULT_GAS_LIMIT
+    );
     let recipient_balance_after = session
         .account(&RELAYER_PK)
         .expect("recipient account query should succeed")

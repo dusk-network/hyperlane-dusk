@@ -62,6 +62,19 @@ owner-only proxy for its own contract-keyed credit. There is no Mailbox-owner
 global drain. Contract-recipient payouts remain deferred until a callback ABI
 is specified.
 
+The withdrawal submission boundary is non-idempotent. Public target and
+recipient arguments are validated before signer material is read. After a
+transaction is constructed, every submission failure retains the exact hash;
+propagation transport/read failures are explicitly outcome-unknown and require
+hash reconciliation before retry. Confirmation observes until the advertised
+absolute deadline instead of stopping at a secondary attempt cap.
+
+Saved deployment reuse now requires the Mailbox ABI version introduced with
+withdrawal. The explorer data driver owns both the withdrawal input codec and
+the emitted event codec. VM coverage forces a post-debit transfer failure to
+prove atomic rollback, and direct plus all three proxied paths measure below
+the CLI's 30,000,000-gas default on the pinned runtime.
+
 ### Current DRC20 compatibility
 
 The current Dusk DRC20 ABI uses typed call structs and an external/contract
