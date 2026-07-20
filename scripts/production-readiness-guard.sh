@@ -160,6 +160,21 @@ count_non_completed_checks() {
     '
 }
 
+count_relevant_checks() {
+    local current_run_id="${GITHUB_RUN_ID:-}"
+
+    jq --arg run_id "$current_run_id" '
+        [
+            .[]
+            | select(
+                ($run_id == "")
+                or (((.detailsUrl // "") | contains("/actions/runs/" + $run_id + "/")) | not)
+            )
+        ]
+        | length
+    '
+}
+
 count_failed_checks() {
     local current_run_id="${GITHUB_RUN_ID:-}"
 
@@ -192,7 +207,7 @@ wait_for_status_checks() {
 
     while true; do
         rollup="$(status_rollup "$repo" "$number")"
-        status_count="$(printf '%s\n' "$rollup" | jq 'length')"
+        status_count="$(printf '%s\n' "$rollup" | count_relevant_checks)"
         non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
 
         if { [ "$status_count" -ge "$MIN_STATUS_CHECKS" ] && [ "$non_completed_count" -eq 0 ]; } ||
@@ -224,7 +239,7 @@ check_pr() {
     state="$(pr_state "$repo" "$number")"
     review_decision="$(pr_review_decision "$repo" "$number")"
     rollup="$(wait_for_status_checks "$label" "$repo" "$number")"
-    status_count="$(printf '%s\n' "$rollup" | jq 'length')"
+    status_count="$(printf '%s\n' "$rollup" | count_relevant_checks)"
     non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
     failed_count="$(printf '%s\n' "$rollup" | count_failed_checks)"
 

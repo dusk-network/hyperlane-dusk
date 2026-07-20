@@ -14,6 +14,6 @@ rkyv = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [features]
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:dusk-bytes"]
 drc20 = ["dep:dusk-core"]
 abi = ["drc20", "dep:dusk-bytes", "dep:dusk-forge", "dusk-core/abi-dlmalloc"]

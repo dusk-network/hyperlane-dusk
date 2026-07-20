@@ -2063,6 +2063,98 @@ fn test_warp_collateral_rejects_zero_token() {
     assert!(result.is_err(), "init with zero wrapped_token should fail");
 }
 
+#[test]
+fn test_owned_contracts_reject_zero_owner_at_initialization() {
+    let zero_owner = [0u8; 32];
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+
+    let mailbox = session.deploy(
+        MAILBOX_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                LOCAL_DOMAIN,
+                zero_owner,
+                TEST_MOCK_ID,
+                TEST_MOCK_ID,
+                MERKLE_TREE_HOOK_ID,
+            ))
+            .contract_id(MAILBOX_ID),
+    );
+    assert!(mailbox.is_err(), "Mailbox must reject a zero owner");
+
+    let igp = session.deploy(
+        IGP_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                MAILBOX_ID,
+                zero_owner,
+                *OWNER_ID,
+                Vec::<(u32, DomainGasConfig)>::new(),
+            ))
+            .contract_id(IGP_ID),
+    );
+    assert!(igp.is_err(), "IGP must reject a zero owner");
+
+    let protocol_fee = session.deploy(
+        PROTOCOL_FEE_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(1u64, 2u64, MAILBOX_ID, *OWNER_ID, zero_owner))
+            .contract_id(PROTOCOL_FEE_ID),
+    );
+    assert!(protocol_fee.is_err(), "ProtocolFee must reject a zero owner");
+
+    let multisig = session.deploy(
+        ISM_MULTISIG_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(zero_owner, vec![EthAddress([1u8; 20])], 1u8))
+            .contract_id(ISM_MULTISIG_ID),
+    );
+    assert!(multisig.is_err(), "MultisigISM must reject a zero owner");
+
+    let synthetic = session.deploy(
+        WARP_DRC20_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                MAILBOX_ID,
+                zero_owner,
+                alloc::string::String::from("Token"),
+                alloc::string::String::from("TOK"),
+                18u8,
+                Vec::<(u32, H256)>::new(),
+            ))
+            .contract_id(WARP_DRC20_ID),
+    );
+    assert!(synthetic.is_err(), "WarpDrc20 must reject a zero owner");
+
+    let native = session.deploy(
+        WARP_NATIVE_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(MAILBOX_ID, zero_owner, Vec::<(u32, H256)>::new()))
+            .contract_id(WARP_NATIVE_ID),
+    );
+    assert!(native.is_err(), "WarpNative must reject a zero owner");
+
+    let collateral = session.deploy(
+        WARP_DRC20_COLLATERAL_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                TEST_MOCK_ID,
+                MAILBOX_ID,
+                zero_owner,
+                Vec::<(u32, H256)>::new(),
+            ))
+            .contract_id(WARP_DRC20_COLLATERAL_ID),
+    );
+    assert!(collateral.is_err(), "WarpCollateral must reject a zero owner");
+}
+
 // =============================================================================
 // Tests: Warp route flow tests (handle / transfer_remote via Mailbox)
 // =============================================================================
@@ -2981,6 +3073,103 @@ fn test_warp_native_transfer_remote_rejects_zero_amount() {
     assert_contract_panic(result, "WarpNative: amount must be > 0");
 }
 
+#[test]
+fn test_warp_collateral_transfer_remote_rejects_zero_amount() {
+    let (mut session, _remote_router) = session_with_warp_collateral_flow();
+
+    let result = session.direct_call::<_, MessageId>(
+        WARP_DRC20_COLLATERAL_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0xFFu8; 32], 0u64),
+    );
+    assert_contract_panic(result, "WarpCollateral: amount must be > 0");
+}
+
+#[test]
+fn test_warp_routes_reject_zero_amount_inbound_without_state_changes() {
+    let recipient = [0xEE; 32];
+
+    let (mut drc20_session, drc20_router) = session_with_warp_drc20_flow();
+    let drc20_body = hyperlane_dusk_types::token_message::encode(recipient, 0);
+    let drc20_message = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        drc20_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &drc20_body,
+    );
+    let result = drc20_session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), drc20_message),
+    );
+    assert_contract_panic_contains(result, "WarpDrc20: amount must be > 0");
+    assert_eq!(
+        drc20_session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        0
+    );
+
+    let (mut native_session, native_router) = session_with_warp_native_flow();
+    let native_body = hyperlane_dusk_types::token_message::encode(recipient, 0);
+    let native_message = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        native_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &native_body,
+    );
+    let result = native_session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), native_message),
+    );
+    assert_contract_panic_contains(result, "WarpNative: amount must be > 0");
+    assert_eq!(
+        native_session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_balance", &(recipient,))
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
+
+    let (mut collateral_session, collateral_router) =
+        session_with_warp_collateral_funded_flow();
+    let collateral_body = hyperlane_dusk_types::token_message::encode(recipient, 0);
+    let collateral_message = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        collateral_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &collateral_body,
+    );
+    let result = collateral_session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), collateral_message),
+    );
+    assert_contract_panic_contains(result, "WarpCollateral: amount must be > 0");
+    assert_eq!(
+        collateral_session
+            .direct_call::<_, u64>(
+                WARP_DRC20_COLLATERAL_ID,
+                "pending_balance",
+                &(recipient,),
+            )
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
+}
+
 // --- WarpNative: escrow for unregistered recipients ---
 
 #[test]
@@ -3467,5 +3656,76 @@ fn test_warp_collateral_claim_pending_transfers_after_registration() {
     assert_eq!(
         contract_balance_after,
         contract_balance_before - unlock_amount
+    );
+}
+
+#[test]
+fn test_warp_collateral_contract_recipient_claims_authenticated_escrow() {
+    let (mut session, remote_router) = session_with_warp_collateral_funded_flow();
+    let recipient = TEST_RECIPIENT_ID.to_bytes();
+    let unlock_amount = 500_000u64;
+
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient, unlock_amount);
+    let encoded = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &token_body,
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("contract-recipient collateral should enter escrow");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(
+                WARP_DRC20_COLLATERAL_ID,
+                "pending_balance",
+                &(recipient,),
+            )
+            .expect("pending_balance should succeed")
+            .data,
+        unlock_amount
+    );
+
+    session
+        .direct_call::<_, ()>(
+            TEST_RECIPIENT_ID,
+            "claim_collateral_pending",
+            &(WARP_DRC20_COLLATERAL_ID,),
+        )
+        .expect("the recipient contract should claim its own collateral escrow");
+
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(
+                WARP_DRC20_COLLATERAL_ID,
+                "pending_balance",
+                &(recipient,),
+            )
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::Contract(TEST_RECIPIENT_ID)),
+        unlock_amount
+    );
+}
+
+#[test]
+fn test_warp_collateral_contract_claim_rejects_root_moonlight_caller() {
+    let (mut session, _remote_router) = session_with_warp_collateral_funded_flow();
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        WARP_DRC20_COLLATERAL_ID,
+        "claim_pending_contract",
+        &(),
+    );
+    assert_contract_panic(
+        result,
+        "WarpCollateral: claim_pending_contract requires contract caller",
     );
 }

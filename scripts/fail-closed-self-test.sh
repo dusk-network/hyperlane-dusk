@@ -19,8 +19,15 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
 
 workdir="$(mktemp -d -t hyperlane-fail-closed-test.XXXXXX)"
-untracked_probe="$ROOT/.completion-audit-untracked-probe"
-trap 'chmod -R u+rwX "$workdir" 2>/dev/null || true; rm -rf "$workdir"; rm -f "$untracked_probe"' EXIT
+untracked_probe=""
+cleanup() {
+    chmod -R u+rwX "$workdir" 2>/dev/null || true
+    rm -rf "$workdir"
+    if [ -n "$untracked_probe" ]; then
+        rm -f -- "$untracked_probe"
+    fi
+}
+trap cleanup EXIT
 
 expect_fail() {
     local label="$1"
@@ -246,6 +253,22 @@ expect_fail \
     bash scripts/github-review-hygiene.sh --dispatcher-comment-scan-only "$stale_dispatcher_comments"
 
 expect_fail \
+    review-hygiene-invalid-dispatcher-pattern \
+    'stale dispatcher comments scan failed' \
+    env STALE_DISPATCHER_REPRO_PATTERN='[invalid' \
+    bash scripts/github-review-hygiene.sh --dispatcher-comment-scan-only "$stale_dispatcher_comments"
+
+existing_export="$workdir/existing-review-export"
+mkdir "$existing_export"
+printf 'preserve me\n' >"$existing_export/sentinel.txt"
+expect_fail \
+    review-hygiene-existing-export-directory \
+    'must name a path that does not already exist' \
+    bash scripts/github-review-hygiene.sh --export-dir "$existing_export" --no-keep
+[ "$(cat "$existing_export/sentinel.txt")" = 'preserve me' ] \
+    || fail "review-hygiene-existing-export-directory: caller data was modified"
+
+expect_fail \
     report-hygiene-invalid-pattern \
     'report hygiene scan failed' \
     env STALE_REPORT_PATTERNS='[invalid' \
@@ -406,11 +429,13 @@ expect_fail \
     'runtime artifact secret text scan failed' \
     bash scripts/secret-hygiene-check.sh "$workdir/secret-artifacts"
 
+untracked_probe="$(mktemp "$ROOT/.completion-audit-untracked-probe.XXXXXX")"
 printf 'temporary completion audit probe\n' >"$untracked_probe"
 expect_fail \
     completion-audit-untracked-source \
     'dusk has untracked source paths' \
     bash scripts/completion-audit-status.sh
-rm -f "$untracked_probe"
+rm -f -- "$untracked_probe"
+untracked_probe=""
 
 info "Fail-closed self-test passed"

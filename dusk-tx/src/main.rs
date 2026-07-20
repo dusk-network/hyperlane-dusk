@@ -9,8 +9,9 @@
 //!   encode-message     Encode a Hyperlane message (no TX, pure encoding)
 //!   enroll-router      Enroll a remote router on a warp route
 
-use std::{env, fs, io::Read};
+use std::future::Future;
 use std::path::PathBuf;
+use std::{env, fs, io::Read};
 
 use clap::{Parser, Subcommand};
 use dusk_bytes::Serializable;
@@ -33,7 +34,9 @@ use serde_json::json;
 mod keys;
 mod rues;
 
-use rues::RuesClient;
+use rues::{RuesClient, TransactionStatus};
+
+const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 
 // ── CLI definition ──────────────────────────────────────────────────────────
 
@@ -125,8 +128,8 @@ enum Command {
         /// Token decimals for WarpDrc20.
         #[arg(long, default_value = "18")]
         warp_decimals: u8,
-        /// Mailbox default ISM. Options: `testMock` (default), `messageIdMultisig`.
-        #[arg(long, default_value = "testMock")]
+        /// Mailbox default ISM. Must be selected explicitly; `testMock` is test-only.
+        #[arg(long)]
         default_ism: String,
         /// Comma-separated list of Ethereum validator addresses for `messageIdMultisig`.
         /// Example: `0xabc...,0xdef...`
@@ -595,8 +598,17 @@ fn load_keys(
 
 fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
     if let Ok(path) = env::var("DUSK_CONSENSUS_PASSWORD_FILE") {
-        let password = fs::read_to_string(&path)
+        let file = fs::File::open(&path)
+            .map_err(|e| format!("Failed to open DUSK_CONSENSUS_PASSWORD_FILE {path}: {e}"))?;
+        let mut password = String::new();
+        file.take((MAX_PASSWORD_FILE_BYTES + 1) as u64)
+            .read_to_string(&mut password)
             .map_err(|e| format!("Failed to read DUSK_CONSENSUS_PASSWORD_FILE {path}: {e}"))?;
+        if password.len() > MAX_PASSWORD_FILE_BYTES {
+            return Err(format!(
+                "DUSK_CONSENSUS_PASSWORD_FILE exceeds {MAX_PASSWORD_FILE_BYTES} bytes"
+            ));
+        }
         let password = password.trim_end_matches(&['\r', '\n'][..]).to_string();
         if password.is_empty() {
             return Err("DUSK_CONSENSUS_PASSWORD_FILE is empty".into());
@@ -618,8 +630,15 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_keys_password;
+    use super::{
+        next_moonlight_nonce, resolve_keys_password, wait_for_transaction_with,
+        MAX_PASSWORD_FILE_BYTES,
+    };
+    use crate::rues::TransactionStatus;
+    use std::collections::VecDeque;
+    use std::future::ready;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -663,6 +682,25 @@ mod tests {
     }
 
     #[test]
+    fn oversized_password_file_is_rejected() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_password_env();
+
+        let path = std::env::temp_dir().join(format!(
+            "dusk-consensus-password-oversized-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, vec![b'x'; MAX_PASSWORD_FILE_BYTES + 1]).unwrap();
+        std::env::set_var("DUSK_CONSENSUS_PASSWORD_FILE", &path);
+
+        let error = resolve_keys_password("from-cli").unwrap_err();
+
+        clear_password_env();
+        let _ = std::fs::remove_file(path);
+        assert!(error.contains("exceeds"));
+    }
+
+    #[test]
     fn falls_back_to_cli_password() {
         let _guard = ENV_LOCK.lock().unwrap();
         clear_password_env();
@@ -671,6 +709,74 @@ mod tests {
 
         clear_password_env();
         assert_eq!(password, "from-cli");
+    }
+
+    #[test]
+    fn moonlight_nonce_exhaustion_is_an_error() {
+        assert_eq!(next_moonlight_nonce(41).unwrap(), 42);
+        assert!(next_moonlight_nonce(u64::MAX)
+            .unwrap_err()
+            .contains("exhausted"));
+    }
+
+    #[tokio::test]
+    async fn transaction_wait_retries_observation_errors_and_keeps_the_hash() {
+        let mut statuses = VecDeque::from([
+            Err("temporary GraphQL outage".to_string()),
+            Ok(TransactionStatus::Executed),
+        ]);
+
+        wait_for_transaction_with(
+            "aabbcc",
+            || ready(statuses.pop_front().expect("status response should exist")),
+            2,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("a later exact-hash success should reconcile the transaction");
+
+        let mut statuses = VecDeque::from([Err("archive unavailable".to_string())]);
+        let error = wait_for_transaction_with(
+            "ddeeff",
+            || ready(statuses.pop_front().expect("status response should exist")),
+            1,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("ddeeff"));
+        assert!(error.contains("archive unavailable"));
+    }
+
+    #[tokio::test]
+    async fn transaction_wait_checks_immediately_and_rejects_execution_failure() {
+        let immediate = tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_transaction_with(
+                "1122",
+                || ready(Ok(TransactionStatus::Executed)),
+                1,
+                Duration::from_secs(60),
+                Duration::from_secs(1),
+            ),
+        )
+        .await;
+        assert!(immediate.is_ok(), "the first query must not sleep");
+        assert!(immediate.unwrap().is_ok());
+
+        let error = wait_for_transaction_with(
+            "3344",
+            || ready(Ok(TransactionStatus::Failed("contract rejected".into()))),
+            1,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("3344"));
+        assert!(error.contains("contract rejected"));
     }
 }
 
@@ -813,12 +919,12 @@ async fn cmd_fund_dispatch(
         amount,
         gas_limit,
         gas_price,
-        nonce + 1,
+        next_moonlight_nonce(nonce)?,
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    wait_for_transaction(&client, &tx_id).await?;
     let output = json!({
         "success": true,
         "mailbox": mailbox_hex,
@@ -890,13 +996,14 @@ async fn cmd_call(
         fn_args,
         gas_limit,
         gas_price,
-        nonce + 1,
+        next_moonlight_nonce(nonce)?,
         chain_id,
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
     client.propagate_tx(&tx_bytes).await?;
+    wait_for_transaction(&client, &tx_id).await?;
 
     let output = json!({
         "success": true,
@@ -1180,16 +1287,13 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
 
     // 1. TestMock (no init)
     deploy_one(&client, &sk, &pk, test_mock_bytes, vec![], &mut mn, &mut dn, gas_limit, gas_price, chain_id, "TestMock").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 2. TestRecipient (no init)
     deploy_one(&client, &sk, &pk, test_recipient_bytes, vec![], &mut mn, &mut dn, gas_limit, gas_price, chain_id, "TestRecipient").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 3. MerkleTreeHook: child of the aggregation hook.
     let mth_init = rkyv_serialize(&(aggregation_hook_id,));
     deploy_one(&client, &sk, &pk, merkle_tree_hook_bytes, mth_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "MerkleTreeHook").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 4. Optional: MessageIdMultisigISM
     if let Some(ism_multisig_bytes) = ism_multisig_bytes {
@@ -1211,7 +1315,6 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             "IsmMultisig",
         )
         .await?;
-        wait_for_nonce(&client, &pk, mn).await?;
     }
 
     // 5. ProtocolFee: funded through the aggregation hook.
@@ -1223,7 +1326,6 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         owner_h256,
     ));
     deploy_one(&client, &sk, &pk, protocol_fee_bytes, pf_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "ProtocolFee").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 6. AggregationHook: required Merkle insertion plus protocol fee custody.
     let aggregation_init = rkyv_serialize(&(
@@ -1231,7 +1333,6 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         vec![merkle_tree_hook_id, protocol_fee_id],
     ));
     deploy_one(&client, &sk, &pk, aggregation_hook_bytes, aggregation_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "AggregationHook").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 7. Mailbox: init(local_domain, owner, default_ism, default_hook, required_hook)
     let default_ism_id = ism_multisig_id.unwrap_or(test_mock_id);
@@ -1256,12 +1357,10 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         "Mailbox",
     )
     .await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 8. ValidatorAnnounce: init(local_domain, mailbox)
     let va_init = rkyv_serialize(&(domain, mailbox_id));
     deploy_one(&client, &sk, &pk, va_bytes, va_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "ValidatorAnnounce").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 9. IGP: init(mailbox, owner, beneficiary, initial_configs)
     let igp_init = rkyv_serialize(&(
@@ -1271,13 +1370,11 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         Vec::<(u32, DomainGasConfig)>::new(),
     ));
     deploy_one(&client, &sk, &pk, igp_bytes, igp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "IGP").await?;
-    wait_for_nonce(&client, &pk, mn).await?;
 
     // 10. Optional: synthetic DRC20 route.
     let deployed_warp_drc20 = if let Some((warp_id, warp_bytes)) = warp_drc20_id {
         let warp_init = rkyv_serialize(&(mailbox_id, owner_h256, String::from(warp_name), String::from(warp_symbol), warp_decimals, Vec::<(u32, [u8; 32])>::new()));
         deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpDrc20").await?;
-        wait_for_nonce(&client, &pk, mn).await?;
         Some(warp_id)
     } else {
         None
@@ -1291,7 +1388,6 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             Vec::<(u32, [u8; 32])>::new(),
         ));
         deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpNative").await?;
-        wait_for_nonce(&client, &pk, mn).await?;
         Some(warp_id)
     } else {
         None
@@ -1307,7 +1403,6 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             Vec::<(u32, [u8; 32])>::new(),
         ));
         deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpCollateral").await?;
-        wait_for_nonce(&client, &pk, mn).await?;
         Some(warp_id)
     } else {
         None
@@ -1431,18 +1526,24 @@ async fn deploy_one(
     name: &str,
 ) -> Result<(), String> {
     eprintln!("  Deploying {name} ({} bytes)...", bytecode.len());
-    *moonlight_nonce += 1;
+    *moonlight_nonce = next_moonlight_nonce(*moonlight_nonce)?;
     let mn = *moonlight_nonce;
     let dn = *deploy_nonce;
-    *deploy_nonce += 1;
+    *deploy_nonce = deploy_nonce
+        .checked_add(1)
+        .ok_or_else(|| "Contract deployment nonce is exhausted".to_string())?;
 
     let tx = moonlight_deployment(sk, bytecode, pk, init_args, gas_limit, gas_price, mn, dn, chain_id)?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
     client
         .propagate_tx(&tx_bytes)
         .await
         .map_err(|e| format!("Failed to deploy {name}: {e}"))?;
-    eprintln!("  {name} TX propagated");
+    wait_for_transaction(client, &tx_id)
+        .await
+        .map_err(|e| format!("Failed to deploy {name}: {e}"))?;
+    eprintln!("  {name} TX {tx_id} executed");
     Ok(())
 }
 
@@ -1459,25 +1560,76 @@ fn parse_bytes32(hex_str: &str) -> Result<[u8; 32], String> {
     Ok(arr)
 }
 
-/// Wait for the account's moonlight nonce to reach `expected_nonce`.
-/// This ensures a TX is included in a block before sending the next one.
-async fn wait_for_nonce(
-    client: &RuesClient,
-    pk: &BlsPublicKey,
-    expected_nonce: u64,
-) -> Result<(), String> {
-    for attempt in 1..=20 {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        let (current_nonce, _) = client.query_account(pk).await?;
-        if current_nonce >= expected_nonce {
-            return Ok(());
+fn next_moonlight_nonce(current: u64) -> Result<u64, String> {
+    current
+        .checked_add(1)
+        .ok_or_else(|| "Moonlight account nonce is exhausted".to_string())
+}
+
+/// Wait for the exact transaction to be persisted and fail closed on a
+/// contract execution error. A Moonlight nonce also advances for failed
+/// executions, so nonce polling alone cannot establish success.
+async fn wait_for_transaction(client: &RuesClient, tx_id: &str) -> Result<(), String> {
+    wait_for_transaction_with(
+        tx_id,
+        || client.query_transaction_status(tx_id),
+        20,
+        std::time::Duration::from_secs(3),
+        std::time::Duration::from_secs(60),
+    )
+    .await
+}
+
+async fn wait_for_transaction_with<F, Fut>(
+    tx_id: &str,
+    mut query_status: F,
+    max_attempts: usize,
+    poll_interval: std::time::Duration,
+    timeout: std::time::Duration,
+) -> Result<(), String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<TransactionStatus, String>>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_query_error = None;
+
+    for attempt in 1..=max_attempts {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
         }
+
+        match tokio::time::timeout(remaining, query_status()).await {
+            Ok(Ok(TransactionStatus::Executed)) => return Ok(()),
+            Ok(Ok(TransactionStatus::Failed(error))) => {
+                return Err(format!("Transaction {tx_id} failed: {error}"));
+            }
+            Ok(Ok(TransactionStatus::NotFound)) => {}
+            Ok(Err(error)) => last_query_error = Some(error),
+            Err(_) => break,
+        }
+
         if attempt % 5 == 0 {
-            eprintln!("  [nonce {current_nonce}/{expected_nonce}, attempt {attempt}/20]");
+            eprintln!("  [transaction pending, attempt {attempt}/{max_attempts}]");
         }
+        if attempt == max_attempts {
+            break;
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::time::sleep(poll_interval.min(remaining)).await;
     }
+
+    let detail = last_query_error
+        .map(|error| format!("; last status query error: {error}"))
+        .unwrap_or_default();
     Err(format!(
-        "Account nonce did not reach {expected_nonce} after 60s"
+        "Transaction {tx_id} was not confirmed within {}s{detail}",
+        timeout.as_secs()
     ))
 }
 
@@ -1609,10 +1761,12 @@ async fn cmd_dispatch(
 
     let tx = moonlight_call(
         &sk, test_recipient_id, "dispatch_message", dispatch_args,
-        gas_limit, gas_price, nonce + 1, chain_id,
+        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
     )?;
 
+    let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_transaction(&client, &tx_id).await?;
 
     let output = json!({
         "success": true,
@@ -1620,6 +1774,7 @@ async fn cmd_dispatch(
         "test_recipient": test_recipient_hex,
         "destination": destination,
         "recipient": recipient_hex,
+        "tx_id": tx_id,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
@@ -1659,16 +1814,19 @@ async fn cmd_process(
 
     let tx = moonlight_call(
         &sk, mailbox_id, "process", process_args,
-        gas_limit, gas_price, nonce + 1, chain_id,
+        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
     )?;
 
+    let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_transaction(&client, &tx_id).await?;
 
     let output = json!({
         "success": true,
         "fn_name": "process",
         "mailbox": mailbox_hex,
         "message_id": hex::encode(message_id),
+        "tx_id": tx_id,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
@@ -1738,11 +1896,12 @@ async fn cmd_enroll_router(
 
     let tx = moonlight_call(
         &sk, warp_id, "enroll_remote_router", enroll_args,
-        gas_limit, gas_price, nonce + 1, chain_id,
+        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
     )?;
 
+    let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    wait_for_transaction(&client, &tx_id).await?;
 
     let output = json!({
         "success": true,
@@ -1750,6 +1909,7 @@ async fn cmd_enroll_router(
         "warp_contract": warp_contract_hex,
         "domain": domain,
         "router": router_hex,
+        "tx_id": tx_id,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
@@ -1780,11 +1940,12 @@ async fn cmd_register_account(
 
     let tx = moonlight_call(
         &sk, warp_id, "register_account", register_args,
-        gas_limit, gas_price, nonce + 1, chain_id,
+        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
     )?;
 
+    let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    wait_for_transaction(&client, &tx_id).await?;
 
     // Compute the H256 = keccak256(pk.to_bytes()) for display
     let pk_bytes = pk.to_bytes();
@@ -1795,6 +1956,7 @@ async fn cmd_register_account(
         "fn_name": "register_account",
         "warp_contract": warp_contract_hex,
         "account_h256": hex::encode(h256),
+        "tx_id": tx_id,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
@@ -1831,11 +1993,12 @@ async fn cmd_drc20_approve(
         args,
         gas_limit,
         gas_price,
-        nonce + 1,
+        next_moonlight_nonce(nonce)?,
         chain_id,
     )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
-    wait_for_nonce(&client, &pk, nonce + 1).await?;
+    wait_for_transaction(&client, &tx_id).await?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
@@ -1843,6 +2006,7 @@ async fn cmd_drc20_approve(
             "token": token_hex,
             "spender": spender_hex,
             "amount": amount,
+            "tx_id": tx_id,
         }))
         .unwrap()
     );
@@ -1918,11 +2082,13 @@ async fn cmd_transfer_remote(
         deposit,
         gas_limit,
         gas_price,
-        nonce + 1,
+        next_moonlight_nonce(nonce)?,
         chain_id,
     )?;
 
+    let tx_id = hex::encode(tx.hash().to_bytes());
     client.propagate_tx(&tx.to_var_bytes()).await?;
+    wait_for_transaction(&client, &tx_id).await?;
 
     let output = json!({
         "success": true,
@@ -1932,6 +2098,7 @@ async fn cmd_transfer_remote(
         "recipient": recipient_hex,
         "amount": amount,
         "native": native,
+        "tx_id": tx_id,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())

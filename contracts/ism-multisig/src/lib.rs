@@ -90,6 +90,7 @@ mod ism_multisig {
         /// must be > 0 and <= number of validators.
         pub fn init(&mut self, owner: H256, validators: Vec<EthAddress>, threshold: u8) {
             assert!(self.owner.is_none(), "MultisigISM: already initialized");
+            assert!(owner != [0u8; 32], "MultisigISM: owner cannot be zero");
             assert!(!validators.is_empty(), "MultisigISM: no validators");
             assert!(
                 threshold > 0 && threshold as usize <= validators.len(),
@@ -258,6 +259,10 @@ mod ism_multisig {
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(
+                new_owner != [0u8; 32],
+                "MultisigISM: new owner cannot be zero"
+            );
             let previous_owner = self.owner.expect("MultisigISM: no owner");
             self.owner = Some(new_owner);
             abi::emit(

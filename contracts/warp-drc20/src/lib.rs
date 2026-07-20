@@ -139,6 +139,7 @@ mod warp_drc20 {
             enrolled_routers: Vec<(u32, H256)>,
         ) {
             assert!(self.owner.is_none(), "WarpDrc20: already initialized");
+            assert!(owner != [0u8; 32], "WarpDrc20: owner cannot be zero");
             self.mailbox = mailbox;
             self.owner = Some(owner);
             self.name = name;
@@ -237,10 +238,7 @@ mod warp_drc20 {
                 "WarpDrc20: spender cannot be zero"
             );
             let owner = drc20::sender_account();
-            self.allowances
-                .entry(owner)
-                .or_default()
-                .insert(args.spender, args.value);
+            self.set_allowance(owner, args.spender, args.value);
             abi::emit(
                 events::Drc20Approval::TOPIC,
                 events::Drc20Approval {
@@ -259,10 +257,9 @@ mod warp_drc20 {
                 spender,
             });
             assert!(current >= args.value, "WarpDrc20: allowance too low");
-            self.allowances
-                .entry(args.owner)
-                .or_default()
-                .insert(spender, current - args.value);
+            if args.value > 0 {
+                self.set_allowance(args.owner, spender, current - args.value);
+            }
             self.do_transfer(args.owner, args.to, args.value);
         }
 
@@ -340,6 +337,7 @@ mod warp_drc20 {
 
             // Decode token message
             let msg = token_message::decode(&body).expect("WarpDrc20: invalid token message");
+            assert!(msg.amount > 0, "WarpDrc20: amount must be > 0");
 
             // Resolve the recipient: if a BLS key is registered for this H256,
             // mint to the External account; otherwise mint to Contract account.
@@ -436,6 +434,10 @@ mod warp_drc20 {
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(
+                new_owner != [0u8; 32],
+                "WarpDrc20: new owner cannot be zero"
+            );
             let previous_owner = self.owner.expect("WarpDrc20: no owner set");
             self.owner = Some(new_owner);
             abi::emit(
@@ -455,11 +457,21 @@ mod warp_drc20 {
         fn do_transfer(&mut self, from: Account, to: Account, value: u64) {
             let from_balance = self.balances.get(&from).copied().unwrap_or(0);
             assert!(from_balance >= value, "WarpDrc20: insufficient balance");
-            *self.balances.entry(from).or_insert(0) -= value;
-            let to_balance = self.balances.entry(to).or_insert(0);
-            *to_balance = to_balance
-                .checked_add(value)
-                .expect("WarpDrc20: balance overflow");
+            if value > 0 && from != to {
+                let remaining = from_balance - value;
+                if remaining == 0 {
+                    self.balances.remove(&from);
+                } else {
+                    self.balances.insert(from, remaining);
+                }
+                let to_balance = self.balances.get(&to).copied().unwrap_or(0);
+                self.balances.insert(
+                    to,
+                    to_balance
+                        .checked_add(value)
+                        .expect("WarpDrc20: balance overflow"),
+                );
+            }
             abi::emit(
                 events::Drc20Transfer::TOPIC,
                 events::Drc20Transfer {
@@ -472,10 +484,15 @@ mod warp_drc20 {
 
         /// Mint tokens to an account.
         fn mint(&mut self, account: Account, amount: u64) {
-            let balance = self.balances.entry(account).or_insert(0);
-            *balance = balance
-                .checked_add(amount)
-                .expect("WarpDrc20: balance overflow");
+            if amount > 0 {
+                let balance = self.balances.get(&account).copied().unwrap_or(0);
+                self.balances.insert(
+                    account,
+                    balance
+                        .checked_add(amount)
+                        .expect("WarpDrc20: balance overflow"),
+                );
+            }
             self.supply = self
                 .supply
                 .checked_add(amount)
@@ -494,7 +511,14 @@ mod warp_drc20 {
         fn burn(&mut self, account: Account, amount: u64) {
             let balance = self.balances.get(&account).copied().unwrap_or(0);
             assert!(balance >= amount, "WarpDrc20: insufficient balance to burn");
-            *self.balances.entry(account).or_insert(0) -= amount;
+            if amount > 0 {
+                let remaining = balance - amount;
+                if remaining == 0 {
+                    self.balances.remove(&account);
+                } else {
+                    self.balances.insert(account, remaining);
+                }
+            }
             self.supply = self
                 .supply
                 .checked_sub(amount)
@@ -516,6 +540,26 @@ mod warp_drc20 {
                 caller::effective_caller() == owner,
                 "WarpDrc20: caller is not the owner"
             );
+        }
+
+        /// Set or clear a sparse allowance entry.
+        fn set_allowance(&mut self, owner: Account, spender: Account, value: u64) {
+            if value == 0 {
+                let remove_owner = if let Some(spenders) = self.allowances.get_mut(&owner) {
+                    spenders.remove(&spender);
+                    spenders.is_empty()
+                } else {
+                    false
+                };
+                if remove_owner {
+                    self.allowances.remove(&owner);
+                }
+            } else {
+                self.allowances
+                    .entry(owner)
+                    .or_default()
+                    .insert(spender, value);
+            }
         }
     }
 }

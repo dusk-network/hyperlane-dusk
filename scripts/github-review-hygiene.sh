@@ -25,7 +25,8 @@ LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-9e08ce22389f4a209d3d
 AGENT_PLACEHOLDER_PATTERN="${AGENT_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!|expect\(}"
 AGENT_PLACEHOLDER_SCAN_ONLY=0
 DISPATCHER_COMMENT_SCAN_ONLY_FILE=""
-STALE_DISPATCHER_REPRO_PATTERN='https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895|https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744'
+STALE_DISPATCHER_REPRO_PATTERN="${STALE_DISPATCHER_REPRO_PATTERN:-https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4440412895|https://github\.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744}"
+EXPORT_DIR_CREATED=0
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -37,8 +38,9 @@ info() {
 }
 
 rg_to_file() {
-    out_file="$1"
-    label="$2"
+    local out_file="$1"
+    local label="$2"
+    local rg_status
     shift 2
 
     set +e
@@ -52,7 +54,7 @@ rg_to_file() {
     if [ "$rg_status" -eq 1 ]; then
         return 1
     fi
-    cat "$out_file" >&2
+    cat "$out_file" >&2 2>/dev/null || true
     fail "$label scan failed"
 }
 
@@ -192,7 +194,8 @@ check_stale_dispatcher_comments() {
     local hits_file="$2"
 
     [ -f "$comments_file" ] || fail "missing dispatcher comments file: $comments_file"
-    if rg -n -e "$STALE_DISPATCHER_REPRO_PATTERN" "$comments_file" >"$hits_file"; then
+    if rg_to_file "$hits_file" "stale dispatcher comments" \
+        -n -e "$STALE_DISPATCHER_REPRO_PATTERN" "$comments_file"; then
         cat "$hits_file" >&2
         fail "$comments_file contains stale dispatcher clean-layout repro evidence"
     fi
@@ -207,15 +210,20 @@ command -v gh >/dev/null 2>&1 || fail "gh is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 if [ -z "$EXPORT_DIR" ]; then
-    EXPORT_DIR="/tmp/hyperlane-review-export-$(date +%s)"
+    EXPORT_DIR="$(mktemp -d -t hyperlane-review-export.XXXXXX)"
+    EXPORT_DIR_CREATED=1
+else
+    if [ -e "$EXPORT_DIR" ]; then
+        fail "--export-dir must name a path that does not already exist: $EXPORT_DIR"
+    fi
+    mkdir -- "$EXPORT_DIR" || fail "cannot create export directory: $EXPORT_DIR"
+    EXPORT_DIR_CREATED=1
 fi
 
-rm -rf "$EXPORT_DIR"
-mkdir -p "$EXPORT_DIR"
-
 cleanup() {
-    if [ "$KEEP_EXPORT" -eq 0 ]; then
-        rm -rf "$EXPORT_DIR"
+    if [ "$KEEP_EXPORT" -eq 0 ] && [ "$EXPORT_DIR_CREATED" -eq 1 ]; then
+        rm -rf -- "$EXPORT_DIR"
+        EXPORT_DIR_CREATED=0
     fi
 }
 trap cleanup EXIT
@@ -469,11 +477,13 @@ for file in \
         || fail "$file is missing latest clean-layout Dusk source ref"
     rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$file" \
         || fail "$file is missing latest clean-layout clean-Rusk ref"
-    if rg -n -F 'Latest checkout-v6 clean-layout' "$file" >"$EXPORT_DIR/stale-repro-body.txt"; then
+    if rg_to_file "$EXPORT_DIR/stale-repro-body.txt" "stale checkout-v6 wording" \
+        -n -F 'Latest checkout-v6 clean-layout' "$file"; then
         cat "$EXPORT_DIR/stale-repro-body.txt" >&2
         fail "$file contains stale latest checkout-v6 wording"
     fi
-    if rg -n -e '1778607202|4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253|1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3|1778683232|9050143c1ef12f76d117ee97effa79da8df3e334' "$file" >"$EXPORT_DIR/stale-repro-body.txt"; then
+    if rg_to_file "$EXPORT_DIR/stale-repro-body.txt" "stale clean-layout repro body evidence" \
+        -n -e '1778607202|4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253|1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3|1778683232|9050143c1ef12f76d117ee97effa79da8df3e334' "$file"; then
         cat "$EXPORT_DIR/stale-repro-body.txt" >&2
         fail "$file contains stale clean-layout repro body evidence"
     fi
@@ -558,13 +568,15 @@ if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout clean-Rusk ref"
     rg -q -F 'required status-check policy enabled' "$EXPORT_DIR/dusk-issue-8-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing required status-check policy text"
-    if rg -n -e '4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253' \
-        "$EXPORT_DIR/dusk-issue-8-body.txt" >"$EXPORT_DIR/stale-issue-8-body.txt"; then
+    if rg_to_file "$EXPORT_DIR/stale-issue-8-body.txt" "stale issue 8 repro body evidence" \
+        -n -e '4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253' \
+        "$EXPORT_DIR/dusk-issue-8-body.txt"; then
         cat "$EXPORT_DIR/stale-issue-8-body.txt" >&2
         fail "$EXPORT_DIR/dusk-issue-8-body.txt contains stale clean-layout repro body evidence"
     fi
-    if rg -n -F 'That run tested Dusk source ref `ef8ee43cd99569299b9744b498ac1bbac69950bc`' \
-        "$EXPORT_DIR/dusk-issue-8-body.txt" >"$EXPORT_DIR/stale-issue-8-body.txt"; then
+    if rg_to_file "$EXPORT_DIR/stale-issue-8-body.txt" "stale issue 8 tested-ref text" \
+        -n -F 'That run tested Dusk source ref `ef8ee43cd99569299b9744b498ac1bbac69950bc`' \
+        "$EXPORT_DIR/dusk-issue-8-body.txt"; then
         cat "$EXPORT_DIR/stale-issue-8-body.txt" >&2
         fail "$EXPORT_DIR/dusk-issue-8-body.txt contains stale latest-repro tested-ref text"
     fi
@@ -578,8 +590,9 @@ if [ -f "$EXPORT_DIR/dusk-issue-7-body.txt" ]; then
         || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing dependency-remediated E2E evidence link"
     rg -q -F 'PRODUCTION_SIGNER_POLICY.md' "$EXPORT_DIR/dusk-issue-7-body.txt" \
         || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing production signer policy link text"
-    if rg -n -e '4430201984|4430343619' \
-        "$EXPORT_DIR/dusk-issue-7-body.txt" >"$EXPORT_DIR/stale-issue-7-body.txt"; then
+    if rg_to_file "$EXPORT_DIR/stale-issue-7-body.txt" "stale issue 7 custody evidence" \
+        -n -e '4430201984|4430343619' \
+        "$EXPORT_DIR/dusk-issue-7-body.txt"; then
         cat "$EXPORT_DIR/stale-issue-7-body.txt" >&2
         fail "$EXPORT_DIR/dusk-issue-7-body.txt contains stale signer custody evidence links"
     fi
@@ -626,10 +639,11 @@ if [ -f "$EXPORT_DIR/dusk-issue-9-body.txt" ]; then
         || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak archive evidence link"
 fi
 
-if rg -n \
+if rg_to_file "$EXPORT_DIR/pre-rebase-only-e2e-wording.txt" "pre-rebase-only E2E wording" \
+    -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
     -e 'E2E was not rerun for the docs-only post-rebase head' \
-    "$active_review_text" >"$EXPORT_DIR/pre-rebase-only-e2e-wording.txt"; then
+    "$active_review_text"; then
     cat "$EXPORT_DIR/pre-rebase-only-e2e-wording.txt" >&2
     fail "active reviewer-facing text still implies E2E is pre-rebase only"
 fi

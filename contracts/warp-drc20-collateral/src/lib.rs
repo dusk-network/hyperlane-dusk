@@ -40,6 +40,7 @@ mod warp_drc20_collateral {
     use alloc::vec::Vec;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
+    use dusk_core::transfer::TRANSFER_CONTRACT;
 
     use dusk_bytes::Serializable;
 
@@ -112,6 +113,7 @@ mod warp_drc20_collateral {
             enrolled_routers: Vec<(u32, H256)>,
         ) {
             assert!(self.owner.is_none(), "WarpCollateral: already initialized");
+            assert!(owner != [0u8; 32], "WarpCollateral: owner cannot be zero");
             assert!(
                 wrapped_token != ZERO_CONTRACT,
                 "WarpCollateral: wrapped token cannot be zero"
@@ -170,26 +172,21 @@ mod warp_drc20_collateral {
             let pk =
                 abi::public_sender().expect("WarpCollateral: claim_pending requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
+            self.claim_pending_to(h, Account::External(pk));
+        }
 
-            let amount = self.pending_transfers.remove(&h).unwrap_or(0);
-            assert!(amount > 0, "WarpCollateral: no pending transfers");
-
-            let _: () = abi::call(
-                self.wrapped_token,
-                "transfer",
-                &TransferCall {
-                    to: Account::External(pk),
-                    value: amount,
-                },
-            )
-            .expect("WarpCollateral: transfer failed");
-            abi::emit(
-                events::PendingTransferClaimed::TOPIC,
-                events::PendingTransferClaimed {
-                    recipient: h,
-                    amount,
-                },
+        /// Claim pending wrapped DRC20 tokens for the calling contract.
+        ///
+        /// The pending-recipient key is the immediate caller's `ContractId`
+        /// bytes. The Moonlight transfer contract is rejected as a root
+        /// caller so it cannot be confused with the intended recipient.
+        pub fn claim_pending_contract(&mut self) {
+            let contract = abi::caller().expect("WarpCollateral: contract caller unavailable");
+            assert!(
+                contract != TRANSFER_CONTRACT,
+                "WarpCollateral: claim_pending_contract requires contract caller"
             );
+            self.claim_pending_to(contract.to_bytes(), Account::Contract(contract));
         }
 
         /// Returns the pending (escrowed) balance for an H256 recipient.
@@ -211,6 +208,7 @@ mod warp_drc20_collateral {
             recipient: H256,
             amount: u64,
         ) -> MessageId {
+            assert!(amount > 0, "WarpCollateral: amount must be > 0");
             let sender = drc20::sender_account();
             let self_account = Account::Contract(abi::self_id());
 
@@ -280,6 +278,7 @@ mod warp_drc20_collateral {
 
             // Decode token message
             let msg = token_message::decode(&body).expect("WarpCollateral: invalid token message");
+            assert!(msg.amount > 0, "WarpCollateral: amount must be > 0");
 
             // If the recipient is registered, transfer immediately.
             // Otherwise, hold the wrapped tokens in this contract's DRC20
@@ -389,6 +388,10 @@ mod warp_drc20_collateral {
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(
+                new_owner != [0u8; 32],
+                "WarpCollateral: new owner cannot be zero"
+            );
             let previous_owner = self.owner.expect("WarpCollateral: no owner set");
             self.owner = Some(new_owner);
             abi::emit(
@@ -410,6 +413,26 @@ mod warp_drc20_collateral {
             assert!(
                 caller::effective_caller() == owner,
                 "WarpCollateral: caller is not the owner"
+            );
+        }
+
+        /// Transfer and clear a pending balance to an authenticated account.
+        fn claim_pending_to(&mut self, recipient: H256, account: Account) {
+            let amount = self.pending_transfers.remove(&recipient).unwrap_or(0);
+            assert!(amount > 0, "WarpCollateral: no pending transfers");
+
+            let _: () = abi::call(
+                self.wrapped_token,
+                "transfer",
+                &TransferCall {
+                    to: account,
+                    value: amount,
+                },
+            )
+            .expect("WarpCollateral: transfer failed");
+            abi::emit(
+                events::PendingTransferClaimed::TOPIC,
+                events::PendingTransferClaimed { recipient, amount },
             );
         }
     }

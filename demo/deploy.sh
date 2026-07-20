@@ -120,6 +120,7 @@ ok "Solidity deps installed"
 
 # Check connectivity
 cast block-number --rpc-url "$ANVIL_RPC" >/dev/null 2>&1 || fail "Cannot connect to Anvil at $ANVIL_RPC"
+EVM_CHAIN_ID="$(cast chain-id --rpc-url "$ANVIL_RPC")" || fail "Cannot query Anvil chain ID"
 ok "Anvil reachable"
 
 DUSK_CHAIN_ID=$(curl -s -X POST \
@@ -129,10 +130,68 @@ DUSK_CHAIN_ID=$(curl -s -X POST \
 [ -n "$DUSK_CHAIN_ID" ] || fail "Cannot connect to Dusk RUES at $DUSK_RUES_URL"
 ok "Dusk RUES reachable"
 
+validate_evm_contract() {
+    local address="$1"
+    local label="$2"
+    local code
+
+    [ -n "$address" ] && [ "$address" != "null" ] || fail "Saved $label address is missing"
+    code="$(cast code "$address" --rpc-url "$ANVIL_RPC" 2>/dev/null)" \
+        || fail "Cannot query saved $label at $address"
+    [ "$code" != "0x" ] && [ -n "$code" ] \
+        || fail "Saved $label is not deployed on the running EVM chain: $address"
+}
+
+validate_dusk_query() {
+    local contract="$1"
+    local method="$2"
+    local return_type="$3"
+    local label="$4"
+
+    [ -n "$contract" ] && [ "$contract" != "null" ] || fail "Saved $label contract ID is missing"
+    "$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type "$return_type" \
+        >/dev/null 2>&1 \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+}
+
+validate_saved_deployment() {
+    local saved_evm_chain_id saved_dusk_chain_id
+    local evm_mailbox evm_token dusk_mailbox dusk_warp
+
+    jq -e 'type == "object" and (.evm | type == "object") and (.dusk | type == "object")' \
+        "$BRIDGE_STATE_FILE" >/dev/null \
+        || fail "Saved deployment state is malformed: $BRIDGE_STATE_FILE"
+
+    saved_evm_chain_id="$(jq -er '.evm_chain_id | tostring' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks evm_chain_id; redeploy instead of using --skip-deploy"
+    saved_dusk_chain_id="$(jq -er '.dusk_chain_id | strings | select(length > 0)' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks dusk_chain_id; redeploy instead of using --skip-deploy"
+    [ "$saved_evm_chain_id" = "$EVM_CHAIN_ID" ] \
+        || fail "Saved EVM chain ID $saved_evm_chain_id does not match running chain $EVM_CHAIN_ID"
+    [ "$saved_dusk_chain_id" = "$DUSK_CHAIN_ID" ] \
+        || fail "Saved Dusk chain ID does not match the running chain"
+
+    evm_mailbox="$(jq -er '.evm.mailbox' "$BRIDGE_STATE_FILE")"
+    evm_token="$(jq -er '.evm.token' "$BRIDGE_STATE_FILE")"
+    dusk_mailbox="$(jq -er '.dusk.mailbox' "$BRIDGE_STATE_FILE")"
+    dusk_warp="$(jq -er '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")"
+
+    validate_evm_contract "$evm_mailbox" "EVM Mailbox"
+    validate_evm_contract "$evm_token" "EVM warp token"
+    validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
+    validate_dusk_query "$dusk_warp" total_supply u64 "Dusk warp token"
+}
+
 # ── Check for existing deployment ────────────────────────────────────────────
 
 if [ "$SKIP_DEPLOY" = true ] && [ -f "$BRIDGE_STATE_FILE" ]; then
-    info "Using existing deployment (--skip-deploy)"
+    info "Validating existing deployment (--skip-deploy)"
+    validate_saved_deployment
+    ok "Saved deployment matches the running chains and contracts"
     echo ""
     info "State file: $BRIDGE_STATE_FILE"
     jq '.' "$BRIDGE_STATE_FILE"
@@ -455,11 +514,6 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     >/dev/null || fail "Failed to enroll EVM collateral token on Dusk"
 ok "Dusk collateral router enrolled"
 
-# Wait for enroll-router TX to be included before sending another TX (nonce ordering)
-# Dusk block time is ~10s; wait 2 blocks to be safe
-info "Waiting for block inclusion (20s)..."
-sleep 20
-
 # ── Register BLS Account ────────────────────────────────────────────────────
 
 header "Register BLS Account on Warp Routes"
@@ -477,32 +531,25 @@ ok "WarpDrc20 account registered: ${DUSK_ACCOUNT_H256:0:16}..."
 
 # Register on WarpDrc20Collateral if deployed
 if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
-    sleep 20 # Wait for block inclusion before next TX (nonce ordering)
     step "Registering deployer's BLS key on WarpDrc20Collateral..."
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --warp-contract "$DUSK_WARP_COLLATERAL" 2>&1 >/dev/null || {
-            warn "Failed to register on WarpDrc20Collateral (non-fatal)"
-        }
+        --warp-contract "$DUSK_WARP_COLLATERAL" \
+        >/dev/null || fail "Failed to register on WarpDrc20Collateral"
     ok "WarpDrc20Collateral account registered"
 fi
 
 # Register on WarpNative if deployed
 if [ -n "$DUSK_WARP_NATIVE" ] && [ "$DUSK_WARP_NATIVE" != "null" ]; then
-    sleep 20 # Wait for block inclusion before next TX (nonce ordering)
     step "Registering deployer's BLS key on WarpNative..."
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --warp-contract "$DUSK_WARP_NATIVE" 2>&1 >/dev/null || {
-            warn "Failed to register on WarpNative (non-fatal)"
-        }
+        --warp-contract "$DUSK_WARP_NATIVE" \
+        >/dev/null || fail "Failed to register on WarpNative"
     ok "WarpNative account registered"
 fi
-
-# Wait for block inclusion
-sleep 3
 
 # ── Write Combined State File ────────────────────────────────────────────────
 
@@ -538,6 +585,8 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
     "account_h256": "$DUSK_ACCOUNT_H256",
     "evm_domain": $EVM_DOMAIN,
     "dusk_domain": $DUSK_DOMAIN,
+    "evm_chain_id": "$EVM_CHAIN_ID",
+    "dusk_chain_id": "$DUSK_CHAIN_ID",
     "token_symbol": "$TOKEN_SYMBOL",
     "initial_supply": "$INITIAL_SUPPLY",
     "deployed_at": "$(date -Iseconds)"

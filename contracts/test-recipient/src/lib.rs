@@ -136,5 +136,11 @@ mod test_recipient {
                     .expect("TestRecipient: dispatch_message failed");
             id
         }
+
+        /// Claim collateral-route tokens escrowed for this contract ID.
+        pub fn claim_collateral_pending(&self, route: ContractId) {
+            let _: () = abi::call(route, "claim_pending_contract", &())
+                .expect("TestRecipient: collateral claim failed");
+        }
     }
 }

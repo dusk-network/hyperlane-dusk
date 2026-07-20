@@ -102,6 +102,7 @@ mod igp {
             initial_configs: Vec<(u32, DomainGasConfig)>,
         ) {
             assert!(self.owner.is_none(), "IGP: already initialized");
+            assert!(owner != [0u8; 32], "IGP: owner cannot be zero");
             assert!(mailbox != ZERO_CONTRACT, "IGP: mailbox cannot be zero");
             assert!(
                 beneficiary != [0u8; 32],
@@ -347,6 +348,7 @@ mod igp {
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(new_owner != [0u8; 32], "IGP: new owner cannot be zero");
             let previous_owner = self.owner.expect("IGP: no owner set");
             self.owner = Some(new_owner);
             abi::emit(

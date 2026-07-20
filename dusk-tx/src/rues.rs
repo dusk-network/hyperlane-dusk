@@ -6,12 +6,21 @@ use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
 use rkyv::validation::validators::DefaultValidator;
 use rkyv::{check_archived_root, Archive, Deserialize, Infallible, Serialize};
+use serde_json::Value;
 
 const TRANSFER_CONTRACT: &str = "0100000000000000000000000000000000000000000000000000000000000000";
+const MAX_TRANSACTION_STATUS_RESPONSE_BYTES: usize = 256 * 1024;
 
 pub struct RuesClient {
     client: reqwest::Client,
     base_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionStatus {
+    NotFound,
+    Executed,
+    Failed(String),
 }
 
 impl RuesClient {
@@ -107,6 +116,35 @@ impl RuesClient {
         Ok(())
     }
 
+    /// Query the persisted execution result for an exact transaction hash.
+    pub async fn query_transaction_status(&self, tx_id: &str) -> Result<TransactionStatus, String> {
+        let url = format!("{}/graphql", self.base_url);
+        let query = transaction_status_query(tx_id);
+        let response = self
+            .client
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({ "query": query }))
+                    .expect("GraphQL request serialization should not fail"),
+            )
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?;
+
+        let status = response.status();
+        let body = read_transaction_status_body(response).await?;
+        if !status.is_success() {
+            return Err(format!(
+                "Transaction status query failed ({status}): {}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+
+        parse_transaction_status_response(&body)
+    }
+
     /// Returns whether a contract exists on-chain, using VM metadata.
     ///
     /// This does **not** invoke contract code.
@@ -173,6 +211,83 @@ impl RuesClient {
     }
 }
 
+async fn read_transaction_status_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_TRANSACTION_STATUS_RESPONSE_BYTES as u64)
+    {
+        return Err(format!(
+            "Transaction status response exceeds {} bytes",
+            MAX_TRANSACTION_STATUS_RESPONSE_BYTES
+        ));
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(MAX_TRANSACTION_STATUS_RESPONSE_BYTES as u64) as usize,
+    );
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("Failed to read transaction status response: {e}"))?
+    {
+        append_transaction_status_chunk(&mut body, &chunk)?;
+    }
+    Ok(body)
+}
+
+fn append_transaction_status_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
+    if chunk.len() > MAX_TRANSACTION_STATUS_RESPONSE_BYTES.saturating_sub(body.len()) {
+        return Err(format!(
+            "Transaction status response exceeds {} bytes",
+            MAX_TRANSACTION_STATUS_RESPONSE_BYTES
+        ));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn transaction_status_query(tx_id: &str) -> String {
+    format!(r#"query {{ tx(hash: "{tx_id}") {{ err }} }}"#)
+}
+
+fn parse_transaction_status_response(body: &[u8]) -> Result<TransactionStatus, String> {
+    let payload: Value = serde_json::from_slice(body)
+        .map_err(|e| format!("Invalid transaction status response: {e}"))?;
+
+    if let Some(errors) = payload.get("errors") {
+        let contains_errors = match errors {
+            Value::Null => false,
+            Value::Array(items) => !items.is_empty(),
+            _ => true,
+        };
+        if contains_errors {
+            return Err(format!(
+                "Transaction status query returned errors: {errors}"
+            ));
+        }
+    }
+
+    let transaction = payload
+        .get("data")
+        .and_then(|data| data.get("tx"))
+        .ok_or_else(|| "Transaction status response is missing data.tx".to_string())?;
+    if transaction.is_null() {
+        return Ok(TransactionStatus::NotFound);
+    }
+
+    match transaction.get("err") {
+        Some(Value::Null) => Ok(TransactionStatus::Executed),
+        Some(Value::String(error)) => Ok(TransactionStatus::Failed(error.clone())),
+        Some(other) => Err(format!(
+            "Transaction status response has invalid data.tx.err: {other}"
+        )),
+        None => Err("Transaction status response is missing data.tx.err".into()),
+    }
+}
+
 pub fn rkyv_serialize<T>(value: &T) -> Vec<u8>
 where
     T: Serialize<AllocSerializer<256>>,
@@ -194,4 +309,60 @@ where
     archived
         .deserialize(&mut Infallible)
         .map_err(|e| format!("rkyv deserialize error: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        append_transaction_status_chunk, parse_transaction_status_response,
+        transaction_status_query, TransactionStatus, MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+    };
+
+    #[test]
+    fn transaction_status_query_targets_the_exact_hash() {
+        assert_eq!(
+            transaction_status_query("aabbcc"),
+            r#"query { tx(hash: "aabbcc") { err } }"#
+        );
+    }
+
+    #[test]
+    fn transaction_status_distinguishes_success_failure_and_pending() {
+        assert_eq!(
+            parse_transaction_status_response(br#"{"data":{"tx":{"err":null}}}"#).unwrap(),
+            TransactionStatus::Executed
+        );
+        assert_eq!(
+            parse_transaction_status_response(br#"{"data":{"tx":{"err":"contract rejected"}}}"#)
+                .unwrap(),
+            TransactionStatus::Failed("contract rejected".into())
+        );
+        assert_eq!(
+            parse_transaction_status_response(br#"{"data":{"tx":null}}"#).unwrap(),
+            TransactionStatus::NotFound
+        );
+    }
+
+    #[test]
+    fn transaction_status_rejects_graphql_and_malformed_responses() {
+        assert!(parse_transaction_status_response(
+            br#"{"errors":[{"message":"archive unavailable"}],"data":{"tx":null}}"#
+        )
+        .unwrap_err()
+        .contains("errors"));
+        assert!(parse_transaction_status_response(br#"{"data":{}}"#).is_err());
+        assert!(parse_transaction_status_response(br#"{"data":{"tx":{}}}"#).is_err());
+        assert!(parse_transaction_status_response(br#"{"data":{"tx":{"err":7}}}"#).is_err());
+    }
+
+    #[test]
+    fn transaction_status_body_is_bounded_without_content_length() {
+        let mut body = Vec::new();
+        append_transaction_status_chunk(
+            &mut body,
+            &vec![b'x'; MAX_TRANSACTION_STATUS_RESPONSE_BYTES],
+        )
+        .unwrap();
+        assert!(append_transaction_status_chunk(&mut body, b"x").is_err());
+    }
 }

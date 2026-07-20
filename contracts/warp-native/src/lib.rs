@@ -107,6 +107,7 @@ mod warp_native {
             enrolled_routers: Vec<(u32, H256)>,
         ) {
             assert!(self.owner.is_none(), "WarpNative: already initialized");
+            assert!(owner != [0u8; 32], "WarpNative: owner cannot be zero");
             self.mailbox = mailbox;
             self.owner = Some(owner);
             for (domain, router) in enrolled_routers {
@@ -261,6 +262,7 @@ mod warp_native {
 
             // Decode token message
             let msg = token_message::decode(&body).expect("WarpNative: invalid token message");
+            assert!(msg.amount > 0, "WarpNative: amount must be > 0");
 
             // Try to send DUSK to the recipient. If they're registered,
             // transfer directly. Otherwise, hold in escrow.
@@ -363,6 +365,10 @@ mod warp_native {
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(
+                new_owner != [0u8; 32],
+                "WarpNative: new owner cannot be zero"
+            );
             let previous_owner = self.owner.expect("WarpNative: no owner set");
             self.owner = Some(new_owner);
             abi::emit(

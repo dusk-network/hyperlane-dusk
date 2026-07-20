@@ -96,6 +96,7 @@ mod protocol_fee {
             owner: H256,
         ) {
             assert!(self.owner.is_none(), "ProtocolFee: already initialized");
+            assert!(owner != [0u8; 32], "ProtocolFee: owner cannot be zero");
             assert!(
                 protocol_fee <= max_protocol_fee,
                 "ProtocolFee: fee exceeds maximum"
@@ -291,6 +292,10 @@ mod protocol_fee {
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(
+                new_owner != [0u8; 32],
+                "ProtocolFee: new owner cannot be zero"
+            );
             let previous_owner = self.owner.expect("ProtocolFee: no owner set");
             self.owner = Some(new_owner);
             abi::emit(

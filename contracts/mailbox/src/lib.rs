@@ -132,6 +132,7 @@ mod mailbox {
             required_hook: ContractId,
         ) {
             assert!(self.owner.is_none(), "Mailbox: already initialized");
+            assert!(owner != [0u8; 32], "Mailbox: owner cannot be zero");
             self.local_domain = local_domain;
             self.owner = Some(owner);
             self.default_ism = default_ism;
@@ -559,6 +560,7 @@ mod mailbox {
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(new_owner != [0u8; 32], "Mailbox: new owner cannot be zero");
             let previous_owner = self.owner.expect("Mailbox: no owner set");
             self.owner = Some(new_owner);
             abi::emit(

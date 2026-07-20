@@ -46,9 +46,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f scripts/github-review-hygiene.sh ] || [ ! -f scripts/fail-closed-self-test.sh ]; then
-            echo "Review guard scripts not present in this workflow-only branch; skipping script checks."
-            exit 0
+          base_ref="origin/${GITHUB_BASE_REF:-main}"
+          git rev-parse --verify "$base_ref" >/dev/null 2>&1 || {
+            echo "::error::cannot resolve trusted base ref $base_ref"
+            exit 1
+          }
+
+          missing_from_head=0
+          missing_from_base=0
+          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
+            if [ ! -f "$script" ]; then
+              missing_from_head=$((missing_from_head + 1))
+              if git cat-file -e "$base_ref:$script" 2>/dev/null; then
+                echo "::error::$script exists on $base_ref but is missing from the proposed tree"
+                exit 1
+              fi
+              missing_from_base=$((missing_from_base + 1))
+            fi
+          done
+
+          if [ "$missing_from_head" -ne 0 ]; then
+            if [ "$missing_from_head" -eq 2 ] && [ "$missing_from_base" -eq 2 ]; then
+              echo "Review guards are absent from both the trusted base and proposed workflow-only tree; no guard removal occurred."
+              exit 0
+            fi
+            echo "::error::review guard set is incomplete"
+            exit 1
           fi
 
           if ! command -v rg >/dev/null 2>&1; then

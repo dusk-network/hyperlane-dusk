@@ -4,7 +4,11 @@
 
 use core::cmp::Ordering;
 
+#[cfg(feature = "serde")]
+use alloc::vec::Vec;
 use bytecheck::CheckBytes;
+#[cfg(feature = "serde")]
+use dusk_bytes::Serializable;
 use dusk_core::abi::ContractId;
 use dusk_core::signatures::bls::PublicKey;
 use rkyv::{Archive, Deserialize, Serialize};
@@ -17,6 +21,54 @@ pub enum Account {
     External(PublicKey),
     /// A contract account.
     Contract(ContractId),
+}
+
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+enum SerdeAccount {
+    External(Vec<u8>),
+    Contract([u8; 32]),
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for Account {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::External(public_key) => serde::Serialize::serialize(
+                &SerdeAccount::External(public_key.to_bytes().to_vec()),
+                serializer,
+            ),
+            Self::Contract(contract) => serde::Serialize::serialize(
+                &SerdeAccount::Contract(contract.to_bytes()),
+                serializer,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Account {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match serde::Deserialize::deserialize(deserializer)? {
+            SerdeAccount::External(bytes) => {
+                let bytes: [u8; 96] = bytes.try_into().map_err(|_| {
+                    serde::de::Error::custom("external DRC20 account must be a 96-byte public key")
+                })?;
+                let public_key = PublicKey::from_bytes(&bytes)
+                    .map_err(|_| serde::de::Error::custom("invalid external DRC20 public key"))?;
+                Ok(Self::External(public_key))
+            }
+            SerdeAccount::Contract(contract) => {
+                Ok(Self::Contract(ContractId::from_bytes(contract)))
+            }
+        }
+    }
 }
 
 impl PartialOrd for Account {
@@ -41,6 +93,7 @@ impl Ord for Account {
 /// Input for `balance_of`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BalanceOf {
     /// Account to query.
     pub account: Account,
@@ -49,6 +102,7 @@ pub struct BalanceOf {
 /// Input for `allowance`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Allowance {
     /// Token owner.
     pub owner: Account,
@@ -59,6 +113,7 @@ pub struct Allowance {
 /// Input for `transfer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransferCall {
     /// Recipient.
     pub to: Account,
@@ -69,6 +124,7 @@ pub struct TransferCall {
 /// Input for `approve`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ApproveCall {
     /// Approved spender.
     pub spender: Account,
@@ -79,6 +135,7 @@ pub struct ApproveCall {
 /// Input for `transfer_from`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransferFromCall {
     /// Account whose allowance is consumed.
     pub owner: Account,

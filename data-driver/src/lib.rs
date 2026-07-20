@@ -18,8 +18,9 @@ use dusk_data_driver::{
     json_to_rkyv, rkyv_to_json, rkyv_to_json_u64, ConvertibleContract, Error, JsonValue,
 };
 
+use hyperlane_dusk_types::drc20::{Allowance, BalanceOf};
 use hyperlane_dusk_types::events;
-use hyperlane_dusk_types::{DomainGasConfig, H256, MessageId};
+use hyperlane_dusk_types::{DomainGasConfig, MessageId, H256};
 
 /// Data driver for Hyperlane Dusk contracts (Mailbox, hooks, warp routes).
 ///
@@ -32,10 +33,14 @@ impl ConvertibleContract for HyperlaneDataDriver {
     fn encode_input_fn(&self, fn_name: &str, json: &str) -> Result<Vec<u8>, Error> {
         match fn_name {
             // Mailbox queries (no args)
-            "local_domain" | "nonce" | "latest_dispatched_id" | "default_ism"
-            | "default_hook" | "required_hook" | "owner" | "processed_count" => {
-                json_to_rkyv::<()>(json)
-            }
+            "local_domain"
+            | "nonce"
+            | "latest_dispatched_id"
+            | "default_ism"
+            | "default_hook"
+            | "required_hook"
+            | "owner"
+            | "processed_count" => json_to_rkyv::<()>(json),
             // Mailbox queries with args
             "delivered" | "delivered_at" => json_to_rkyv::<(MessageId,)>(json),
             "dispatched_message" | "processed_at_index" => json_to_rkyv::<(u32,)>(json),
@@ -47,29 +52,55 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "quote_gas_payment" => json_to_rkyv::<(u32, u64)>(json),
             "domain_gas_config" => json_to_rkyv::<(u32,)>(json),
             // Warp route queries
-            "mailbox" | "hook" | "interchain_security_module" | "total_supply"
-            | "name" | "symbol" | "decimals" | "wrapped_token" => json_to_rkyv::<()>(json),
+            "mailbox"
+            | "hook"
+            | "interchain_security_module"
+            | "total_supply"
+            | "name"
+            | "symbol"
+            | "decimals"
+            | "wrapped_token" => json_to_rkyv::<()>(json),
             "enrolled_router" => json_to_rkyv::<(u32,)>(json),
-            "is_registered" => json_to_rkyv::<(H256,)>(json),
+            "is_registered" | "pending_balance" => json_to_rkyv::<(H256,)>(json),
+            "balance_of" => json_to_rkyv::<BalanceOf>(json),
+            "allowance" => json_to_rkyv::<Allowance>(json),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
         }
     }
 
     fn decode_input_fn(&self, fn_name: &str, rkyv: &[u8]) -> Result<JsonValue, Error> {
         match fn_name {
-            "local_domain" | "nonce" | "latest_dispatched_id" | "default_ism"
-            | "default_hook" | "required_hook" | "owner" | "processed_count"
-            | "hook_type" | "total_gas_payments" | "collected_fees" | "protocol_fee"
-            | "max_protocol_fee" | "beneficiary" | "mailbox" | "hook"
-            | "interchain_security_module" | "total_supply" | "name" | "symbol"
-            | "decimals" | "wrapped_token" => rkyv_to_json::<()>(rkyv),
+            "local_domain"
+            | "nonce"
+            | "latest_dispatched_id"
+            | "default_ism"
+            | "default_hook"
+            | "required_hook"
+            | "owner"
+            | "processed_count"
+            | "hook_type"
+            | "total_gas_payments"
+            | "collected_fees"
+            | "protocol_fee"
+            | "max_protocol_fee"
+            | "beneficiary"
+            | "mailbox"
+            | "hook"
+            | "interchain_security_module"
+            | "total_supply"
+            | "name"
+            | "symbol"
+            | "decimals"
+            | "wrapped_token" => rkyv_to_json::<()>(rkyv),
             "delivered" | "delivered_at" => rkyv_to_json::<(MessageId,)>(rkyv),
             "dispatched_message" | "processed_at_index" => rkyv_to_json::<(u32,)>(rkyv),
             "recipient_ism" => rkyv_to_json::<(H256,)>(rkyv),
             "quote_dispatch" => rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv),
             "quote_gas_payment" => rkyv_to_json::<(u32, u64)>(rkyv),
             "domain_gas_config" | "enrolled_router" => rkyv_to_json::<(u32,)>(rkyv),
-            "is_registered" => rkyv_to_json::<(H256,)>(rkyv),
+            "is_registered" | "pending_balance" => rkyv_to_json::<(H256,)>(rkyv),
+            "balance_of" => rkyv_to_json::<BalanceOf>(rkyv),
+            "allowance" => rkyv_to_json::<Allowance>(rkyv),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
         }
     }
@@ -80,7 +111,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "local_domain" | "nonce" | "processed_count" => rkyv_to_json::<u32>(rkyv),
             // u64 outputs
             "delivered_at" | "protocol_fee" | "max_protocol_fee" | "collected_fees"
-            | "total_gas_payments" | "total_supply" => rkyv_to_json_u64(rkyv),
+            | "total_gas_payments" | "total_supply" | "pending_balance" | "balance_of"
+            | "allowance" => rkyv_to_json_u64(rkyv),
             // u8 outputs
             "hook_type" | "decimals" => rkyv_to_json::<u8>(rkyv),
             // bool outputs
@@ -88,11 +120,17 @@ impl ConvertibleContract for HyperlaneDataDriver {
             // H256 outputs
             "latest_dispatched_id" | "processed_at_index" => rkyv_to_json::<MessageId>(rkyv),
             // ContractId (= H256) outputs
-            "default_ism" | "default_hook" | "required_hook" | "owner"
-            | "beneficiary" | "mailbox" | "hook" | "interchain_security_module"
-            | "recipient_ism" | "wrapped_token" | "enrolled_router" => {
-                rkyv_to_json::<H256>(rkyv)
-            }
+            "default_ism"
+            | "default_hook"
+            | "required_hook"
+            | "beneficiary"
+            | "mailbox"
+            | "hook"
+            | "interchain_security_module"
+            | "recipient_ism"
+            | "wrapped_token"
+            | "enrolled_router" => rkyv_to_json::<H256>(rkyv),
+            "owner" => rkyv_to_json::<Option<H256>>(rkyv),
             // Vec<u8> outputs
             "dispatched_message" => rkyv_to_json::<Vec<u8>>(rkyv),
             // String outputs
@@ -107,8 +145,30 @@ impl ConvertibleContract for HyperlaneDataDriver {
 
     fn decode_event(&self, event_name: &str, rkyv: &[u8]) -> Result<JsonValue, Error> {
         match event_name {
+            events::Initialized::TOPIC => rkyv_to_json::<events::Initialized>(rkyv),
+            events::OwnershipTransferred::TOPIC => {
+                rkyv_to_json::<events::OwnershipTransferred>(rkyv)
+            }
+            events::OwnershipRenounced::TOPIC => rkyv_to_json::<events::OwnershipRenounced>(rkyv),
+            events::AccountRegistered::TOPIC => rkyv_to_json::<events::AccountRegistered>(rkyv),
+            events::RemoteRouterEnrolled::TOPIC => {
+                rkyv_to_json::<events::RemoteRouterEnrolled>(rkyv)
+            }
+            events::HookSet::TOPIC => rkyv_to_json::<events::HookSet>(rkyv),
+            events::IsmSet::TOPIC => rkyv_to_json::<events::IsmSet>(rkyv),
+            events::BeneficiarySet::TOPIC => rkyv_to_json::<events::BeneficiarySet>(rkyv),
+            events::ProtocolFeeSet::TOPIC => rkyv_to_json::<events::ProtocolFeeSet>(rkyv),
+            events::DomainGasConfigSet::TOPIC => rkyv_to_json::<events::DomainGasConfigSet>(rkyv),
+            events::ValidatorsAndThresholdSet::TOPIC => {
+                rkyv_to_json::<events::ValidatorsAndThresholdSet>(rkyv)
+            }
+            events::PendingTransferClaimed::TOPIC => {
+                rkyv_to_json::<events::PendingTransferClaimed>(rkyv)
+            }
             events::Dispatch::TOPIC => rkyv_to_json::<events::Dispatch>(rkyv),
             events::DispatchId::TOPIC => rkyv_to_json::<events::DispatchId>(rkyv),
+            events::DispatchFeeFunded::TOPIC => rkyv_to_json::<events::DispatchFeeFunded>(rkyv),
+            events::DispatchFeePaid::TOPIC => rkyv_to_json::<events::DispatchFeePaid>(rkyv),
             events::Process::TOPIC => rkyv_to_json::<events::Process>(rkyv),
             events::ProcessId::TOPIC => rkyv_to_json::<events::ProcessId>(rkyv),
             events::DefaultIsmSet::TOPIC => rkyv_to_json::<events::DefaultIsmSet>(rkyv),
@@ -122,9 +182,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             events::GasPayment::TOPIC => rkyv_to_json::<events::GasPayment>(rkyv),
             events::Drc20Approval::TOPIC => rkyv_to_json::<events::Drc20Approval>(rkyv),
             events::Drc20Transfer::TOPIC => rkyv_to_json::<events::Drc20Transfer>(rkyv),
-            events::SentTransferRemote::TOPIC => {
-                rkyv_to_json::<events::SentTransferRemote>(rkyv)
-            }
+            events::SentTransferRemote::TOPIC => rkyv_to_json::<events::SentTransferRemote>(rkyv),
             events::ReceivedTransferRemote::TOPIC => {
                 rkyv_to_json::<events::ReceivedTransferRemote>(rkyv)
             }
@@ -139,3 +197,52 @@ impl ConvertibleContract for HyperlaneDataDriver {
 
 #[cfg(all(target_family = "wasm", feature = "ffi"))]
 dusk_data_driver::generate_wasm_entrypoint!(HyperlaneDataDriver);
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+
+    use super::{ConvertibleContract, HyperlaneDataDriver};
+    use dusk_data_driver::{json_to_rkyv, to_json};
+    use hyperlane_dusk_types::events;
+
+    #[test]
+    fn owner_output_decodes_optional_owner_state() {
+        let value = Some([7u8; 32]);
+        let json = to_json(value).unwrap().to_string();
+        let encoded = json_to_rkyv::<Option<[u8; 32]>>(&json).unwrap();
+        HyperlaneDataDriver
+            .decode_output_fn("owner", &encoded)
+            .expect("optional owner output should decode");
+
+        let json = to_json(Option::<[u8; 32]>::None).unwrap().to_string();
+        let encoded = json_to_rkyv::<Option<[u8; 32]>>(&json).unwrap();
+        HyperlaneDataDriver
+            .decode_output_fn("owner", &encoded)
+            .expect("renounced owner output should decode");
+    }
+
+    #[test]
+    fn operational_event_added_by_the_contracts_decodes() {
+        let event = events::PendingTransferClaimed {
+            recipient: [9u8; 32],
+            amount: 42,
+        };
+        let json = to_json(event).unwrap().to_string();
+        let encoded = json_to_rkyv::<events::PendingTransferClaimed>(&json).unwrap();
+        HyperlaneDataDriver
+            .decode_event(events::PendingTransferClaimed::TOPIC, &encoded)
+            .expect("pending collateral claim event should decode");
+    }
+
+    #[test]
+    fn drc20_contract_account_query_round_trips() {
+        let json = r#"{"account":{"Contract":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]}}"#;
+        let encoded = HyperlaneDataDriver
+            .encode_input_fn("balance_of", json)
+            .expect("contract-account balance query should encode");
+        HyperlaneDataDriver
+            .decode_input_fn("balance_of", &encoded)
+            .expect("contract-account balance query should decode");
+    }
+}
