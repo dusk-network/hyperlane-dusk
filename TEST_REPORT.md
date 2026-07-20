@@ -38,7 +38,9 @@ stacked PR heads are finalized.
 ## 2026-07-20 Dispatch-Credit Withdrawal Validation
 
 The focused stacked branch `feat/dispatch-credit-withdrawal` was validated at
-`33274528fbd5d0add6138bd344ee07155a1147af` against a clean detached current
+implementation anchor `55c1936d3bf061758df85fc4f83a05c50879e0ad` after rebasing
+onto hardened base `63bd80803e36bdca883d815eacea74c7575199de`, against clean
+detached current
 Rusk `origin/master` at
 `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
 
@@ -48,10 +50,18 @@ and passed:
 - all 12 contract WASM builds;
 - the production contract/type WASM clippy surface;
 - 29 type tests;
-- 87 VM integration tests;
-- 1 data-driver decoder test;
-- 10 `dusk-tx` tests; and
+- 92 VM integration tests;
+- 4 data-driver decoder tests;
+- 11 `dusk-tx` tests; and
 - tracked-source secret hygiene.
+
+The rebase preserved the base branch's stricter 256-KiB status-response bound,
+exact-hash transaction confirmation, immediate first observation, and absolute
+deadline while layering the withdrawal surface on top. A pre-rebase backup is
+kept at `backup/dispatch-credit-pre-63bd808`. The first clean repro caught two
+overlapping `mod tests` blocks in the data driver; they were consolidated and
+the full contract/type/VM portion plus every remaining driver, CLI, release-
+WASM, and hygiene layer passed at the implementation anchor above.
 
 The added VM cases prove that permissionless third-party funding does not grant
 withdrawal authority, another Moonlight payer cannot withdraw the named
@@ -96,8 +106,8 @@ the exact commits they name.
 
 Results:
 
-- `cargo test -p hyperlane-dusk-integration-tests`: 87 passed, 0 failed at the
-  focused withdrawal head; the earlier remediation anchor had 82 tests.
+- `cargo test -p hyperlane-dusk-integration-tests`: 92 passed, 0 failed at the
+  focused withdrawal head; the repaired base branch has 87 tests.
 - All 12 contract WASMs build and the production contract/type clippy surface
   passes.
 - The VM suite validates the shared Moonlight/contract owner model, rejects

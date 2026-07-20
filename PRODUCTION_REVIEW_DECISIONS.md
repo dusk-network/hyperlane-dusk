@@ -118,6 +118,10 @@ Evidence:
 - `dusk-tx` transaction-status response and exact-hash query tests.
 - `dusk-tx` bounded-response, transient-retry, immediate-check, execution-
   failure, and nonce-exhaustion tests.
+- Clean-current-Rusk reproduction at implementation anchor
+  `55c1936d3bf061758df85fc4f83a05c50879e0ad`: 12 WASMs, production contract
+  clippy, 29 type tests, 92 VM tests, 4 data-driver tests, 11 `dusk-tx` tests,
+  release data-driver WASM, and tracked-source secret hygiene all pass.
 
 ### Pending Escrow Without Admin Drain
 

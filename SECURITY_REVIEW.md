@@ -525,7 +525,7 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 87 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage |
+| `tests/tests/integration.rs` | 92 total VM tests, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage |
 | `data-driver/src/lib.rs` | Withdrawal-event decoding round trip and malformed-payload rejection; warm demo startup always delegates driver freshness to Cargo |
 | `dusk-tx/src/main.rs`, `dusk-tx/src/rues.rs` | Exact-hash execution confirmation with an immediate first query, absolute deadline, bounded responses, transient observation retry, and transaction-hash preservation in errors |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
@@ -583,7 +583,7 @@ All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
 `29 passed; 0 failed; 0 ignored`; the integration package reported
-`87 passed; 0 failed; 0 ignored` on current Rusk.
+`92 passed; 0 failed; 0 ignored` on current Rusk.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use
@@ -624,7 +624,7 @@ make clippy-contracts
 # 29 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 87 integration tests pass
+# 92 integration tests pass
 cargo test -p hyperlane-dusk-integration-tests
 ```
 

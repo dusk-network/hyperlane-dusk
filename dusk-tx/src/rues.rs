@@ -436,7 +436,7 @@ mod tests {
             parse_transaction_status_response(
                 br#"{"data":{"tx":{"err":"Mailbox: insufficient fee credit"}}}"#,
             )
-                .unwrap(),
+            .unwrap(),
             TransactionStatus::Failed("Mailbox: insufficient fee credit".into())
         );
         assert_eq!(

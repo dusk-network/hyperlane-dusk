@@ -98,12 +98,12 @@ checkout guard.
 
 - All 12 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
-- `cargo test -p hyperlane-dusk-integration-tests`: 87 passed, 0 failed,
+- `cargo test -p hyperlane-dusk-integration-tests`: 92 passed, 0 failed,
   including payer-isolated Mailbox withdrawal and owner-gated withdrawal for
   all three production warp routes.
-- `cargo test -p hyperlane-dusk-data-driver`: 1 passed, covering the emitted
+- `cargo test -p hyperlane-dusk-data-driver`: 4 passed, including the emitted
   withdrawal-event type through the driver decoder and malformed bytes.
-- `cargo test -p dusk-tx`: 10 passed, including bounded and retrying exact-
+- `cargo test -p dusk-tx`: 11 passed, including bounded and retrying exact-
   transaction confirmation.
 - The VM suite covers reachable and rejected admin calls, authenticated and
   spoofed fee callbacks, fee custody/claims, aggregate hook payments, native
