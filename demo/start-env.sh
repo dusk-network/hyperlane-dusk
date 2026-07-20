@@ -15,6 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
+RUSK_STATE="${RUSK_STATE:-/tmp/example.state}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -84,8 +85,25 @@ if [ ! -f "$RUSK_BIN" ]; then
 fi
 ok "Rusk binary: $RUSK_BIN"
 
-# Rusk genesis state (gzip file created by 'make prepare-dev')
-RUSK_STATE="/tmp/example.state"
+# Contract dependencies are relative paths (`../../rusk-private`). Refuse a
+# split-brain run where WASMs build from one Rusk checkout and the node runs
+# from another.
+CARGO_RUSK_DIR="$DUSK_DIR/../../rusk-private"
+if [ ! -d "$CARGO_RUSK_DIR/core" ]; then
+    fail "Contract Rusk dependency not found at $CARGO_RUSK_DIR"
+fi
+if [ "$(realpath "$CARGO_RUSK_DIR")" != "$(realpath "$RUSK_DIR")" ]; then
+    fail "Rusk checkout mismatch
+
+  Contract WASMs resolve Rusk from: $(realpath "$CARGO_RUSK_DIR")
+  The node would run Rusk from:      $(realpath "$RUSK_DIR")
+
+  Run the E2E from a compatible layout containing hyperlane/dusk and
+  rusk-private at the same root."
+fi
+ok "Rusk contract dependencies match the node checkout"
+
+# Rusk genesis state archive (created by `rusk recovery state --output ...`)
 if [ ! -e "$RUSK_STATE" ]; then
     fail "Rusk genesis state not found at $RUSK_STATE
 
@@ -111,16 +129,20 @@ ok "Contract WASMs: $WASM_DIR"
 
 # Data-driver WASM (for explorer integration)
 DATA_DRIVER_WASM="$DUSK_DIR/target/data-driver/wasm32-unknown-unknown/release/hyperlane_dusk_data_driver.wasm"
-if [ ! -f "$DATA_DRIVER_WASM" ]; then
-    info "Data-driver WASM not found, building..."
-    (cd "$DUSK_DIR" && make data-driver) || fail "Failed to build data-driver"
-fi
-# Copy to explorer assets if explorer exists
-if [ -d "$EXPLORER_DIR/src/lib/assets" ]; then
-    cp "$DATA_DRIVER_WASM" "$EXPLORER_DIR/src/lib/assets/"
-    ok "Data-driver WASM copied to explorer"
+if [ "${SKIP_DUSK_EXPLORER:-false}" = "true" ]; then
+    warn "Skipping data-driver build (SKIP_DUSK_EXPLORER=true)"
 else
-    ok "Data-driver WASM: $DATA_DRIVER_WASM"
+    if [ ! -f "$DATA_DRIVER_WASM" ]; then
+        info "Data-driver WASM not found, building..."
+        (cd "$DUSK_DIR" && make data-driver) || fail "Failed to build data-driver"
+    fi
+    # Copy to explorer assets if explorer exists
+    if [ -d "$EXPLORER_DIR/src/lib/assets" ]; then
+        cp "$DATA_DRIVER_WASM" "$EXPLORER_DIR/src/lib/assets/"
+        ok "Data-driver WASM copied to explorer"
+    else
+        ok "Data-driver WASM: $DATA_DRIVER_WASM"
+    fi
 fi
 
 # Docker
@@ -174,6 +196,7 @@ else
         cd "$RUSK_DIR"
         DUSK_CONSENSUS_KEYS_PASS="$CONSENSUS_PASSWORD" \
             "$RUSK_BIN" -s "$RUSK_STATE" \
+            --consensus-keys-path "$CONSENSUS_KEYS" \
             --http-listen-addr "0.0.0.0:${RUSK_HTTP_PORT}" \
             > "$RUSK_LOG" 2>&1
     ) &

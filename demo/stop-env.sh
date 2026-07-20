@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
+RUSK_STATE="${RUSK_STATE:-/tmp/example.state}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,15 +33,40 @@ fi
 
 ensure_rusk_stopped() {
     # Rusk may fork, so killing the recorded PID isn't always sufficient.
-    # Only match the demo instance started with the example state file.
-    pkill -f "rusk.*-s.*/tmp/example.state" 2>/dev/null || true
+    # Only stop rusk processes using this demo's exact state archive.
+    local pid arg matches_state
+    while read -r pid; do
+        [ -r "/proc/$pid/cmdline" ] || continue
+        matches_state=false
+        while IFS= read -r -d '' arg; do
+            if [ "$arg" = "$RUSK_STATE" ]; then
+                matches_state=true
+                break
+            fi
+        done < "/proc/$pid/cmdline"
+        if [ "$matches_state" = true ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done < <(pgrep -x rusk 2>/dev/null || true)
     # Give the listener a moment to release the port.
     for _ in 1 2 3 4 5; do
         lsof -ti ":${RUSK_HTTP_PORT}" -sTCP:LISTEN >/dev/null 2>&1 || return 0
         sleep 1
     done
-    # Force kill any stragglers.
-    pkill -9 -f "rusk.*-s.*/tmp/example.state" 2>/dev/null || true
+    # Force kill any matching stragglers.
+    while read -r pid; do
+        [ -r "/proc/$pid/cmdline" ] || continue
+        matches_state=false
+        while IFS= read -r -d '' arg; do
+            if [ "$arg" = "$RUSK_STATE" ]; then
+                matches_state=true
+                break
+            fi
+        done < "/proc/$pid/cmdline"
+        if [ "$matches_state" = true ]; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    done < <(pgrep -x rusk 2>/dev/null || true)
 }
 
 # ── Stop Services ────────────────────────────────────────────────────────────

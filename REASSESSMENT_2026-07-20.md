@@ -45,17 +45,57 @@ The pre-rebase feature head is preserved in
 - All 11 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
 - 29 type unit tests pass.
-- 72 current-Rusk VM integration tests pass.
+- 74 current-Rusk VM integration tests pass.
+- The VM harness now submits real Moonlight deposits and queries the transfer
+  contract's DUSK custody. An exact WarpNative deposit locks DUSK, an inbound
+  message releases it to the registered account, and a mismatched deposit
+  reverts without leaving contract custody.
 - `dusk-tx` builds successfully.
 - `hyperlane-dusk` tests pass.
 - The affected Hyperlane agent set (`hyperlane-base`, validator, relayer,
   scraper, and lander) passes `cargo check` with the Dusk chain crate enabled.
+- Fresh live TestMock and MessageIdMultisig agent E2Es pass against current
+  Rusk and the synchronized Hyperlane monorepo. Both cases delivered a
+  WarpDrc20 transfer EVM -> Dusk and Dusk -> EVM; the multisig case used a real
+  validator and checkpoint-signature metadata.
+
+The live runs used a fresh state archive, current Rusk consensus keys, contract
+WASMs built against the same Rusk checkout as the running node, and a clean
+shutdown. The harness now fails closed when the contracts' relative Rusk path
+dependency resolves to a different checkout than the node binary. This caught
+an otherwise plausible but invalid mixed-Rusk E2E attempt during this pass.
+
+## Lessons from DuskEVM
+
+- DuskEVM treats native value as custody, not an integer supplied by the
+  caller. Its tests submit a transaction deposit and assert the transfer
+  contract's balance. The WarpNative VM tests now follow that pattern.
+- Multi-contract value routing in DuskEVM uses explicit per-transaction
+  escrow/preload, exact consumption, clearing, and refund. ProtocolFee and IGP
+  need equivalent value-backed semantics before their counters or events can
+  represent payment.
+- DuskEVM authenticates transfer-contract callbacks with both the immediate
+  caller and call-stack context. A future hook-payment callback must not assume
+  that seeing the transfer contract as caller alone proves a contract-to-
+  contract payment.
+- DuskEVM represents privileged principals as either a public account or a
+  contract. Hyperlane's current mix of `ContractId`-only and `H256` ownership
+  models should be replaced by one explicit principal model before deployment
+  administration is considered usable.
 
 ## Remaining production blockers
 
 - ProtocolFee and IGP are accounting models, not DUSK payment enforcement.
-  They do not collect/forward native value and their `post_dispatch` methods
-  are directly callable. See `SECURITY_REVIEW.md`.
+  They do not collect/forward native value, and a direct `post_dispatch` call
+  can create an unbacked payment record. Public hook entrypoints are compatible
+  with Hyperlane, but records must be tied to authenticated, actually escrowed
+  value. The demo deployment also leaves these fee hooks unwired.
+- Most privileged Dusk contracts accept only a calling `ContractId` as owner,
+  while deployment assigns Mailbox/self ownership and Mailbox exposes no admin
+  forwarding surface. Mailbox, ProtocolFee, IGP, MessageIdMultisigISM,
+  WarpNative, and WarpDrc20Collateral therefore have unreachable or frozen
+  administration in the deployed topology. WarpDrc20's `H256` owner handling
+  is the exception, not a shared solution.
 - Dusk indexers still synthesize zero block/transaction hashes from query-only
   contract history and do not provide event-backed provenance.
 - `latest_checkpoint_at_block` returns current checkpoint state because the
@@ -65,6 +105,9 @@ The pre-rebase feature head is preserved in
 - The agent crate depends on an adjacent Dusk types checkout, which is suitable
   for the paired internal repositories but not yet a self-contained upstream
   Hyperlane contribution.
+- The live agent E2E currently exercises the synthetic WarpDrc20 route. Native
+  custody is validated in the current-Rusk VM, but live cross-chain WarpNative
+  and WarpDrc20Collateral route tests are still missing.
 - The existing signer custody, account registration, escrow recovery, runner,
   review, and production sign-off decisions remain open.
 

@@ -2235,6 +2235,94 @@ fn test_warp_native_init_with_enrolled_routers() {
 }
 
 #[test]
+fn test_warp_native_roundtrip_moves_real_dusk() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let amount = 1_000_000u64;
+    let recipient = message::keccak256(&OWNER_PK.to_bytes());
+
+    assert_eq!(
+        session
+            .contract_balance(&WARP_NATIVE_ID)
+            .expect("WarpNative balance query should succeed"),
+        0
+    );
+
+    session
+        .call_public_with_deposit::<_, MessageId>(
+            &OWNER_SK,
+            WARP_NATIVE_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xDD; 32], amount),
+            amount,
+        )
+        .expect("outbound native transfer should lock its exact DUSK deposit");
+
+    assert_eq!(
+        session
+            .contract_balance(&WARP_NATIVE_ID)
+            .expect("WarpNative balance query should succeed"),
+        amount
+    );
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
+        .expect("recipient registration should succeed");
+    let account_balance_before = session
+        .account(&OWNER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+
+    let body = hyperlane_dusk_types::token_message::encode(recipient, amount);
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &body,
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("inbound native transfer should unlock DUSK to the registered account");
+
+    assert_eq!(
+        session
+            .contract_balance(&WARP_NATIVE_ID)
+            .expect("WarpNative balance query should succeed"),
+        0
+    );
+    assert_eq!(
+        session
+            .account(&OWNER_PK)
+            .expect("recipient account query should succeed")
+            .balance,
+        account_balance_before + amount
+    );
+}
+
+#[test]
+fn test_warp_native_rejects_mismatched_deposit_without_custody() {
+    let (mut session, _remote_router) = session_with_warp_native_flow();
+    let amount = 1_000_000u64;
+
+    let result = session.call_public_with_deposit::<_, MessageId>(
+        &OWNER_SK,
+        WARP_NATIVE_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0xDD; 32], amount),
+        amount + 1,
+    );
+    assert_contract_panic_contains(result, "WarpNative: deposit failed");
+    assert_eq!(
+        session
+            .contract_balance(&WARP_NATIVE_ID)
+            .expect("WarpNative balance query should succeed"),
+        0
+    );
+}
+
+#[test]
 fn test_warp_native_handle_rejects_unenrolled_sender() {
     let (mut session, _remote_router) = session_with_warp_native_flow();
 

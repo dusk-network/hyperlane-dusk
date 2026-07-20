@@ -86,6 +86,13 @@ impl TestSession {
             .map(|r| r.data)
     }
 
+    /// Query the transfer contract for a contract's transparent DUSK balance.
+    pub fn contract_balance(&mut self, contract: &ContractId) -> Result<u64, VMError> {
+        self.0
+            .call(TRANSFER_CONTRACT, "contract_balance", contract, GAS_LIMIT)
+            .map(|r| r.data)
+    }
+
     /// Direct call (bypasses transfer contract, no gas, no auth).
     pub fn direct_call<A, R>(
         &mut self,
@@ -122,6 +129,24 @@ impl TestSession {
         R: Archive,
         R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
     {
+        self.call_public_with_deposit(sender_sk, contract, fn_name, fn_arg, 0)
+    }
+
+    /// Call through the transfer contract with an attached DUSK deposit.
+    pub fn call_public_with_deposit<A, R>(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_arg: &A,
+        deposit: u64,
+    ) -> Result<CallReceipt<R>, ContractError>
+    where
+        A: for<'b> Serialize<StandardBufSerializer<'b>>,
+        A::Archived: for<'b> CheckBytes<DefaultValidator<'b>>,
+        R: Archive,
+        R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
+    {
         let contract_call = ContractCall {
             contract,
             fn_name: String::from(fn_name),
@@ -138,7 +163,7 @@ impl TestSession {
             sender_sk,
             None,
             0,
-            0,
+            deposit,
             GAS_LIMIT,
             LUX,
             nonce + 1,

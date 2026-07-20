@@ -61,7 +61,13 @@ If any check fails, the transfer contract panics, which propagates up and revert
 
 **Trade-off**: The transfer contract's `deposit()` requires exact match (`deposit_value == requested_amount`). This means a user cannot "over-deposit" (e.g., deposit 100 DUSK but only bridge 50). This is intentional — it prevents confusion about where excess funds go. The Solidity `HypNative` has the same pattern via `msg.value`.
 
-**Trade-off**: This fix cannot be integration-tested with `direct_call` because there's no Moonlight TX context in `direct_call` mode (the transfer contract's transitory deposit state is only populated during `execute()` of a real Moonlight TX). Full coverage requires e2e testing against a live rusk node. The deposit path is well-tested in Dusk's own test suite (the Charlie contract pattern) so we trust the transfer contract's behavior.
+**Validation**: The current-Rusk VM harness can execute a public Moonlight call
+with a transaction deposit. `test_warp_native_roundtrip_moves_real_dusk`
+asserts that an exact deposit moves DUSK into WarpNative custody and that a
+registered inbound transfer moves it back out. A second test proves an
+amount/deposit mismatch reverts with zero residual contract balance. A live
+cross-chain WarpNative agent E2E is still desirable, but the transfer-contract
+custody invariant is no longer inferred only from Dusk's own tests.
 
 ### HIGH-2: WarpNative `handle` panicked for unregistered recipients
 
@@ -421,14 +427,39 @@ per-method `emits` and `no_event` attributes belong to the pre-0.3 Forge API.
 `ProtocolFee` and `InterchainGasPaymaster` currently quote fees, increment
 counters, and emit payment events, but neither contract collects or transfers
 native DUSK. `Mailbox.dispatch` likewise does not claim a transaction deposit
-or forward funds to the configured hooks. In addition, each hook's
-`post_dispatch` method can be called directly, so an arbitrary caller can
-create accounting records without going through the Mailbox.
+or forward funds to the configured hooks. Each hook's `post_dispatch` method
+can also be called directly, so an arbitrary caller can create an unbacked
+accounting record.
 
 This means the current fee surface is useful only as a functional model. It is
 not production fee enforcement. A production design must define Dusk-native
-deposit/forwarding semantics and restrict payment recording to the configured
-Mailbox before the fee counters or IGP payment events are trusted.
+deposit/forwarding semantics and bind each payment record to authenticated,
+actually escrowed value before the fee counters or IGP events are trusted.
+Hyperlane's Solidity `postDispatch` hook surface is also public, so simply
+restricting the Dusk method to Mailbox would not by itself reproduce the value
+semantics. DuskEVM's explicit router escrow/preload, exact consumption, and
+post-call clear/refund pattern is a useful model. Any transfer-contract callback
+must authenticate the callback context as well as the immediate caller.
+
+The demo deployment does not currently exercise this fee model: Mailbox uses
+MerkleTreeHook as its required hook and TestMock as its default hook. ProtocolFee
+and IGP are deployed but not wired into dispatch.
+
+### Deployed owner roles are not reachable
+
+Mailbox, ProtocolFee, IGP, WarpNative, and WarpDrc20Collateral store their
+owner as a `ContractId`, and MessageIdMultisigISM applies the same immediate-
+contract-caller model to its 32-byte owner. Deployment initializes Mailbox with
+itself as owner and the other contracts with Mailbox as owner, but Mailbox has
+no admin-forwarding entrypoint. A Moonlight account therefore cannot call these
+admin methods, and Mailbox cannot currently issue the required calls either.
+
+WarpDrc20 is different: it stores an `H256` owner and resolves either the
+Moonlight public sender or an inter-contract caller. DuskEVM's discriminated
+external-account/contract address model provides a better template for a
+consistent Hyperlane owner principal. This needs a deliberate ABI/state and
+deployment migration; changing only the initialization arguments would either
+leave roles frozen or weaken caller authentication.
 
 ### Placeholder panic scan
 
@@ -458,15 +489,15 @@ documented deviations:
 
 | Area | Dusk assumption/deviation | Security implication |
 |---|---|---|
-| Account model | Dusk uses BLS Moonlight senders and `ContractId`; there is no direct `msg.sender` equivalent. Contracts resolve direct Moonlight calls through the transfer contract to `keccak256(public_sender)` and resolve inter-contract calls to the immediate caller `ContractId`. | Owner checks must be reviewed per contract because account owners and contract owners are different primitives. WarpDrc20 stores owner as `H256`, so it can represent either a Moonlight account hash or a contract ID. |
-| Native value transfer | WarpNative uses the Dusk transfer contract's exact `deposit` check instead of Solidity `msg.value`. | Remote mint/burn accounting depends on Rusk transfer-contract semantics. The direct VM integration tests cannot simulate this transitory deposit state; live-Rusk E2E remains the relevant verification path. |
+| Account model | Dusk uses BLS Moonlight senders and `ContractId`; there is no direct `msg.sender` equivalent. Contracts resolve direct Moonlight calls through the transfer contract to `keccak256(public_sender)` and resolve inter-contract calls to the immediate caller `ContractId`. | WarpDrc20 can represent either form through `H256`. The `ContractId`-only owner contracts cannot be administered by the deployed Moonlight account, and their Mailbox/self owners have no forwarding path. A shared explicit principal model is a release blocker. |
+| Native value transfer | WarpNative uses the Dusk transfer contract's exact `deposit` check instead of Solidity `msg.value`. | Current-Rusk VM tests now execute Moonlight deposits and assert real transfer-contract custody, exact-match rollback, and registered-account release. Live cross-chain WarpNative remains outside the agent E2E route matrix. |
 | Reverts | Dusk contract errors are explicit `assert!`/`expect(...)` panics that revert the full transaction. | This matches Dusk VM behavior but differs from Solidity custom errors. Error strings are part of test evidence and should stay stable enough for diagnostics. |
 | Upgradeability | No proxy or in-place upgrade pattern is implemented for the Dusk contracts. Deterministic contract IDs are treated as immutable deployment identities. | Production upgrades require new deployments and routing/config migration. Dirty redeploy refusal is intentional and tested. |
 | Events/indexing | Contracts declare protocol and operational events through Forge 0.3 module-level metadata. | Off-chain agents should rely on the exposed query surfaces and declared events documented here. |
 | Address mapping | External Dusk recipients are represented by `keccak256(bls_public_key_bytes)` and must register their BLS public key on Dusk for account delivery. | The mapping is deterministic and non-updatable. Lost or compromised keys are a user/account-management issue, not recoverable by current contracts. |
 | Unregistered recipients | WarpNative and WarpDrc20Collateral escrow unregistered recipients. | Inbound funds are not stranded at a synthetic contract account. Recipients must register the matching BLS key and call `claim_pending()`. |
 | Multisig metadata | MessageIdMultisigISM requires sorted validator sets, a valid threshold, initialized state, and exact fixed-width signature metadata. | This is stricter than accepting trailing metadata bytes and is intended to prevent malformed metadata acceptance. |
-| Fee accounting | ProtocolFee and IGP arithmetic fails closed on overflow, but the hooks do not collect DUSK and `post_dispatch` is not restricted to the Mailbox. | Fee enforcement and payment indexing are not production-ready; native value movement and caller authorization remain an architectural blocker. |
+| Fee accounting | ProtocolFee and IGP arithmetic fails closed on overflow, but the hooks do not collect DUSK and public `post_dispatch` calls can record payment without value. | Fee enforcement and payment indexing are not production-ready. Public hooks can be valid, but records need authenticated escrow/consumption semantics; the demo does not wire these hooks into Mailbox dispatch. |
 | Secret handling | Demo/E2E configs use local dev keys and `/tmp` artifacts. `dusk-tx` supports `DUSK_CONSENSUS_PASSWORD_FILE`, password environment variables, and `--secret-key-stdin`; demo scripts no longer pass Dusk consensus passwords through CLI argv. `SECRET_HANDLING.md` and `make secret-hygiene` add source/artifact guardrails. Production use must still avoid logs, committed config, and CI artifact leakage for Dusk secrets. | This is a release gate outside the WASM contracts. Current scripts are acceptable only for local deterministic dev/test environments, and production signer storage/config generation needs operational sign-off. |
 
 ## Files Modified
@@ -488,7 +519,10 @@ documented deviations:
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | 25 new security tests (72 total, up from 47) |
+| `tests/tests/integration.rs` | 27 new security tests (74 total, up from 47), including real-DUSK WarpNative custody and mismatch rollback |
+| `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
+| `demo/start-env.sh` | Uses an explicit state archive and consensus-key path, refuses mismatched contract/node Rusk checkouts, and avoids explorer assets when the explorer is skipped |
+| `demo/stop-env.sh` | Stops only the Rusk process using the demo's exact state archive |
 | `demo/deploy.sh` | Conditional `register_account` on collateral/native warp routes |
 
 ## Test Coverage for Security Fixes
@@ -500,6 +534,8 @@ documented deviations:
 | `test_warp_drc20_admin_accepts_owner_moonlight_sender` | WarpDrc20 direct Moonlight owner admin path still succeeds after caller-aware sender resolution |
 | `test_warp_drc20_handle_rejects_invalid_token_message` | Synthetic warp route rejects a malformed inbound TokenMessage, leaves the message undelivered, and does not mint tokens |
 | `test_warp_native_transfer_remote_rejects_zero_amount` | Native warp send rejects zero amounts before deposit handling |
+| `test_warp_native_roundtrip_moves_real_dusk` | Exact Moonlight deposit enters WarpNative transfer-contract custody and an inbound message releases the same amount to a registered account |
+| `test_warp_native_rejects_mismatched_deposit_without_custody` | Amount/deposit mismatch reverts and leaves the WarpNative contract balance at zero |
 | `test_warp_native_handle_rejects_invalid_token_message` | Native warp route rejects a malformed inbound TokenMessage, leaves the message undelivered, and does not escrow funds |
 | `test_warp_native_handle_escrows_unregistered_recipient` | Unregistered recipient goes to escrow instead of panicking; `pending_balance` returns correct amount |
 | `test_warp_native_escrow_accumulates` | Multiple inbound messages to same unregistered recipient accumulate correctly |
@@ -534,8 +570,8 @@ cargo test -p hyperlane-dusk-integration-tests
 All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
-`28 passed; 0 failed; 0 ignored`; the integration package reported
-`70 passed; 0 failed; 0 ignored`.
+`29 passed; 0 failed; 0 ignored`; the integration package reported
+`74 passed; 0 failed; 0 ignored` on current Rusk.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use
@@ -547,8 +583,8 @@ running the rest of the pedantic lint set for the wasm contract surface.
 | Gap | Why |
 |---|---|
 | Mailbox nonce overflow panic path | The nonce is private Mailbox state with no production setter; reaching `u32::MAX` requires billions of successful dispatches. The code now uses `checked_add`, and the security property is reviewed statically rather than driven through the VM harness with a test-only state mutation hook. |
-| WarpNative `transfer_remote` deposit verification | Cannot test with `direct_call` — requires real Moonlight TX with `deposit` field. The transfer contract's deposit validation logic is tested in Dusk's own test suite. Needs e2e test against live rusk. |
-| WarpNative `claim_pending` happy path (actual DUSK transfer) | Requires the contract to hold DUSK balance, which requires a prior successful `transfer_remote` with real deposit. Same limitation as above. |
+| Live cross-chain WarpNative and WarpDrc20Collateral routes | The current live agent E2E deploys and transfers WarpDrc20. WarpNative custody/registered release and collateral custody are covered in the VM, but not through a full EVM-agent-Dusk route. |
+| ProtocolFee and IGP value enforcement | The hooks record counters/events without collecting DUSK, and the demo does not wire them into Mailbox dispatch. This requires an explicit payment architecture, not just another assertion test. |
 | IGP `u64::try_from` panic path | Would need gas oracle config that produces a fee > `u64::MAX`. The `checked_mul` calls before it would panic first in practice. |
 | WarpDrc20 checked arithmetic panic paths | Would need to mint or burn an amount that desyncs total supply beyond `u64` bounds, which requires either > `u64::MAX` inbound messages or a pre-existing impossible supply/balance invariant violation. Not practically testable. |
 
@@ -560,6 +596,7 @@ the final sign-off in https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
 | Decision | Recommended release stance | Rationale and evidence | Reviewer action |
 |---|---|---|---|
+| Owner principal and admin forwarding | Block release until one principal model and a reachable administration path are selected. | Deployed Mailbox/self `ContractId` owners cannot be invoked by a Moonlight account, and Mailbox has no generic admin forwarder. WarpDrc20's caller-aware `H256` model and DuskEVM's discriminated external/contract address model demonstrate viable directions, but the contracts should not keep inconsistent ownership semantics. | Choose account, contract, or discriminated ownership; define transfer/renunciation semantics; migrate all privileged contracts and deployment arguments; add positive and negative Moonlight/inter-contract admin tests. |
 | Mailbox `resolve_sender` when called from the transfer contract | Accept the current special case for Moonlight contract-call transactions. | In the current Rusk execution model, a Moonlight transaction that targets a contract reaches the target through `TRANSFER_CONTRACT`, while `abi::public_sender()` exposes the BLS key that signed the transaction. The Mailbox maps that direct-user path to `keccak256(public_sender)` and maps every other immediate caller to the caller `ContractId`. `test_dispatch_via_transaction` asserts the exact account hash; `test_dispatch_via_recipient_proxy` asserts an inter-contract dispatch uses the proxy contract ID. | Confirm with Rusk maintainers that `TRANSFER_CONTRACT` cannot call arbitrary user contracts for non-user-initiated reasons with an unrelated `public_sender`, or request a Rusk-level discriminator before release. |
 | `registered_accounts` has no deregistration | Accept immutable registration for v1. | The registered key is stored under `keccak256(pk.to_bytes())`, so replacing a compromised key at the same H256 is not meaningful: a new key produces a new H256/recipient. Deleting a registration would not recover funds already addressed to the old hash. Keeping registrations append-only avoids admin-controlled recipient remapping. | Confirm product/docs will tell users that Dusk recipients are bound to the BLS key hash used as the remote recipient. |
 | WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain | Accept no admin drain for v1. | Escrow is keyed by the recipient hash and can only be claimed by the matching BLS key. An admin drain would add a privileged path that can seize pending user funds and would require a governance/timelock/dispute process that is out of scope for this minimal bridge. If a user loses the private key after bridging to that hash, the funds remain locked. | Confirm Dusk wants this non-custodial failure mode, or design a separate governed recovery mechanism before production. |
@@ -573,12 +610,26 @@ make all    # in dusk/ directory
 # Static lint pass for the production wasm contract/type surface
 make clippy-contracts
 
-# 28 unit tests pass
+# 29 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 70 integration tests pass (47 pre-existing + 23 new)
+# 74 integration tests pass (47 pre-existing + 27 new)
 cargo test -p hyperlane-dusk-integration-tests
 ```
+
+On 2026-07-20, fresh live agent E2Es also passed against clean current Rusk
+`bc281d2cd1e789db92e99bc59849c92363524e37`, synchronized Hyperlane monorepo
+`eaa43c3c4decdf007085b19ec6b7d586f150457e`, and Dusk source
+`68fe3a80499e3a097c7a32c320c920c068b8c7da` plus the local harness-only changes
+documented above:
+
+- TestMock run `1784509481`: EVM -> Dusk delivered 3 wDUSK and Dusk -> EVM
+  delivered 1 wDUSK.
+- MessageIdMultisig run `1784510116`: the same bidirectional delivery passed
+  with a live validator and checkpoint-signature metadata.
+
+These live runs validate the synthetic WarpDrc20 agent route. They do not prove
+live WarpNative/Collateral routing or fee enforcement.
 
 Agent-based local E2E evidence is tracked in `TEST_REPORT.md`, including exact
 commands, commit SHAs, and `/tmp` log/artifact paths for:

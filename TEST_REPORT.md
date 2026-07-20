@@ -1,11 +1,44 @@
 # Dusk Hyperlane Test Report
 
 Date: 2026-05-11
-Last updated: 2026-05-14
+Last updated: 2026-07-20
 
 This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
+
+## 2026-07-20 Current-Stack Refresh
+
+This section supersedes “current” wording in the May evidence below. Historical
+runs remain useful only for the exact commits they name.
+
+| Component | Validated reference |
+|---|---|
+| Dusk contracts/tooling | `feat/dusk-hardening-v2` at `68fe3a80499e3a097c7a32c320c920c068b8c7da`, plus the local native-custody tests and E2E harness hardening recorded in `SECURITY_REVIEW.md` |
+| Hyperlane agent integration | `feat/dusk-support-v2` at `eaa43c3c4decdf007085b19ec6b7d586f150457e`, rebased on upstream `58c5e11e1e5a6e0502c14a822f77e5fd378e3af9` |
+| Rusk | Clean `bc281d2cd1e789db92e99bc59849c92363524e37`, including a freshly generated state archive and that checkout's consensus keys |
+| Forge | `d1e39a16ad5e2cd0675c7aafa6e2c459310bcb1a` (Forge 0.3.0) |
+
+Results:
+
+- `cargo test -p hyperlane-dusk-integration-tests`: 74 passed, 0 failed.
+- The WarpNative VM route accepts an exact Moonlight DUSK deposit, records the
+  transfer contract's real custody, and releases the same amount to a
+  registered account. A mismatched deposit reverts with zero residual custody.
+- TestMock live E2E run `1784509481`: EVM -> Dusk delivered 3 wDUSK and
+  Dusk -> EVM delivered 1 wDUSK.
+- MessageIdMultisig live E2E run `1784510116`: the same bidirectional route
+  passed with the real validator/checkpoint metadata path.
+- Both live cases used WarpDrc20. Live cross-chain WarpNative,
+  WarpDrc20Collateral, and value-backed ProtocolFee/IGP remain outside this
+  evidence.
+
+The first attempted refresh exposed a split-brain dependency hazard: contract
+WASMs could build from the adjacent stale Rusk checkout while the node binary
+came from current Rusk. That run was aborted before bridge execution. The demo
+harness now compares the resolved Rusk paths and fails before starting services
+when they differ; the successful runs compiled `dusk-core` from the same clean
+Rusk checkout used by the node.
 
 ## Repository State
 
