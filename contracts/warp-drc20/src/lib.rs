@@ -140,6 +140,10 @@ mod warp_drc20 {
         ) {
             assert!(self.owner.is_none(), "WarpDrc20: already initialized");
             assert!(owner != [0u8; 32], "WarpDrc20: owner cannot be zero");
+            assert!(
+                mailbox != ZERO_CONTRACT,
+                "WarpDrc20: mailbox cannot be zero"
+            );
             self.mailbox = mailbox;
             self.owner = Some(owner);
             self.name = name;

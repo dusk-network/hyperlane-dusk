@@ -54,6 +54,9 @@ mod ism_multisig {
     use hyperlane_dusk_types::message::{self, keccak256};
     use hyperlane_dusk_types::{EthAddress, H256};
 
+    /// Structural upper bound implied by the u8 threshold ABI.
+    const MAX_VALIDATORS: usize = u8::MAX as usize;
+
     // Metadata offsets matching MessageIdMultisigIsmMetadata.sol
     const MERKLE_TREE_HOOK_OFFSET: usize = 0;
     const ROOT_OFFSET: usize = 32;
@@ -92,6 +95,10 @@ mod ism_multisig {
             assert!(self.owner.is_none(), "MultisigISM: already initialized");
             assert!(owner != [0u8; 32], "MultisigISM: owner cannot be zero");
             assert!(!validators.is_empty(), "MultisigISM: no validators");
+            assert!(
+                validators.len() <= MAX_VALIDATORS,
+                "MultisigISM: too many validators"
+            );
             assert!(
                 threshold > 0 && threshold as usize <= validators.len(),
                 "MultisigISM: invalid threshold"
@@ -233,6 +240,10 @@ mod ism_multisig {
             self.only_owner();
 
             assert!(!validators.is_empty(), "MultisigISM: no validators");
+            assert!(
+                validators.len() <= MAX_VALIDATORS,
+                "MultisigISM: too many validators"
+            );
             assert!(
                 threshold > 0 && threshold as usize <= validators.len(),
                 "MultisigISM: invalid threshold"

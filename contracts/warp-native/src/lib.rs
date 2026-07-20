@@ -108,6 +108,10 @@ mod warp_native {
         ) {
             assert!(self.owner.is_none(), "WarpNative: already initialized");
             assert!(owner != [0u8; 32], "WarpNative: owner cannot be zero");
+            assert!(
+                mailbox != ZERO_CONTRACT,
+                "WarpNative: mailbox cannot be zero"
+            );
             self.mailbox = mailbox;
             self.owner = Some(owner);
             for (domain, router) in enrolled_routers {

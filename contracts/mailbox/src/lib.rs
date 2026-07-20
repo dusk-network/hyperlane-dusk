@@ -244,9 +244,14 @@ mod mailbox {
                 .checked_add(hook_fee)
                 .expect("Mailbox: fee overflow");
             if total_fee > 0 {
-                let credit = self.fee_credits.entry(sender).or_insert(0);
-                assert!(*credit >= total_fee, "Mailbox: insufficient fee credit");
-                *credit -= total_fee;
+                let credit = self.fee_credits.get(&sender).copied().unwrap_or(0);
+                assert!(credit >= total_fee, "Mailbox: insufficient fee credit");
+                let remaining = credit - total_fee;
+                if remaining == 0 {
+                    self.fee_credits.remove(&sender);
+                } else {
+                    self.fee_credits.insert(sender, remaining);
+                }
             }
 
             // Effects
@@ -579,9 +584,7 @@ mod mailbox {
             self.owner = None;
             abi::emit(
                 events::OwnershipRenounced::TOPIC,
-                events::OwnershipRenounced {
-                    previous_owner,
-                },
+                events::OwnershipRenounced { previous_owner },
             );
         }
 

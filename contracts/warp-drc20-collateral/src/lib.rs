@@ -45,7 +45,7 @@ mod warp_drc20_collateral {
     use dusk_bytes::Serializable;
 
     use hyperlane_dusk_types::caller;
-    use hyperlane_dusk_types::drc20::{self, Account, TransferCall, TransferFromCall};
+    use hyperlane_dusk_types::drc20::{self, Account, BalanceOf, TransferCall, TransferFromCall};
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::token_message;
@@ -83,6 +83,8 @@ mod warp_drc20_collateral {
         /// The recipient can call `claim_pending` after registering to
         /// receive their wrapped DRC20 tokens.
         pending_transfers: BTreeMap<H256, u64>,
+        /// Aggregate pending liability reserved against wrapped-token custody.
+        pending_total: u64,
     }
 
     impl WarpDrc20Collateral {
@@ -97,6 +99,7 @@ mod warp_drc20_collateral {
                 enrolled_routers: BTreeMap::new(),
                 registered_accounts: BTreeMap::new(),
                 pending_transfers: BTreeMap::new(),
+                pending_total: 0,
             }
         }
 
@@ -114,6 +117,10 @@ mod warp_drc20_collateral {
         ) {
             assert!(self.owner.is_none(), "WarpCollateral: already initialized");
             assert!(owner != [0u8; 32], "WarpCollateral: owner cannot be zero");
+            assert!(
+                mailbox != ZERO_CONTRACT,
+                "WarpCollateral: mailbox cannot be zero"
+            );
             assert!(
                 wrapped_token != ZERO_CONTRACT,
                 "WarpCollateral: wrapped token cannot be zero"
@@ -192,6 +199,11 @@ mod warp_drc20_collateral {
         /// Returns the pending (escrowed) balance for an H256 recipient.
         pub fn pending_balance(&self, h: H256) -> u64 {
             self.pending_transfers.get(&h).copied().unwrap_or(0)
+        }
+
+        /// Returns the aggregate wrapped-token liability held in escrow.
+        pub fn pending_total(&self) -> u64 {
+            self.pending_total
         }
 
         // =================================================================
@@ -280,6 +292,11 @@ mod warp_drc20_collateral {
             let msg = token_message::decode(&body).expect("WarpCollateral: invalid token message");
             assert!(msg.amount > 0, "WarpCollateral: amount must be > 0");
 
+            // Pending claims reserve custody. A registered delivery must not
+            // consume collateral already promised to an unregistered
+            // recipient, and a new escrow may not finalize an unbacked claim.
+            self.assert_unreserved_collateral(msg.amount);
+
             // If the recipient is registered, transfer immediately.
             // Otherwise, hold the wrapped tokens in this contract's DRC20
             // balance until the recipient registers and claims them.
@@ -298,6 +315,10 @@ mod warp_drc20_collateral {
                 *pending = pending
                     .checked_add(msg.amount)
                     .expect("WarpCollateral: pending overflow");
+                self.pending_total = self
+                    .pending_total
+                    .checked_add(msg.amount)
+                    .expect("WarpCollateral: total pending overflow");
             }
 
             abi::emit(
@@ -420,6 +441,10 @@ mod warp_drc20_collateral {
         fn claim_pending_to(&mut self, recipient: H256, account: Account) {
             let amount = self.pending_transfers.remove(&recipient).unwrap_or(0);
             assert!(amount > 0, "WarpCollateral: no pending transfers");
+            self.pending_total = self
+                .pending_total
+                .checked_sub(amount)
+                .expect("WarpCollateral: pending liability underflow");
 
             let _: () = abi::call(
                 self.wrapped_token,
@@ -433,6 +458,25 @@ mod warp_drc20_collateral {
             abi::emit(
                 events::PendingTransferClaimed::TOPIC,
                 events::PendingTransferClaimed { recipient, amount },
+            );
+        }
+
+        /// Ensure `amount` can be paid without consuming existing escrow.
+        fn assert_unreserved_collateral(&self, amount: u64) {
+            let balance: u64 = abi::call(
+                self.wrapped_token,
+                "balance_of",
+                &BalanceOf {
+                    account: Account::Contract(abi::self_id()),
+                },
+            )
+            .expect("WarpCollateral: balance query failed");
+            let available = balance
+                .checked_sub(self.pending_total)
+                .expect("WarpCollateral: pending liability exceeds custody");
+            assert!(
+                available >= amount,
+                "WarpCollateral: insufficient unreserved collateral"
             );
         }
     }

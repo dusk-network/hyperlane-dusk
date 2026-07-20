@@ -42,7 +42,7 @@ npm install
 bash demo/start-env.sh
 
 # 2. Deploy contracts on both chains
-bash demo/deploy.sh
+bash demo/deploy.sh --dusk-ism testMock
 
 # 3. Bridge tokens!
 bash demo/bridge.sh status          # Check balances
@@ -337,7 +337,7 @@ bash demo/demo.sh --skip-deploy
 
 ```bash
 # Deploy the full local route matrix on Dusk
-dusk-tx deploy-hyperlane --domain 4242 --deploy-warp-drc20 \
+dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc20 \
     --deploy-warp-native --warp-collateral-token warp-drc20
 
 # Pre-fund value-backed Mailbox dispatch fees for a route

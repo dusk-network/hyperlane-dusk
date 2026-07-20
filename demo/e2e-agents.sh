@@ -114,6 +114,22 @@ tail_logs_on_fail() {
     fi
 }
 
+assert_agents_alive() {
+    local relayer_pid="$1"
+    local validator_pid="$2"
+    local relayer_log="$3"
+    local validator_log="$4"
+
+    if ! kill -0 "$relayer_pid" 2>/dev/null; then
+        tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+        fail "relayer exited unexpectedly"
+    fi
+    if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
+        tail_logs_on_fail "$relayer_log" "$validator_log"
+        fail "validator exited unexpectedly"
+    fi
+}
+
 run_case() {
     local ism="$1"
 
@@ -243,11 +259,7 @@ PY
             tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
             fail "timeout waiting for EVM->Dusk delivery"
         fi
-        kill -0 "$relayer_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"; fail "relayer exited unexpectedly"; }
-        if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
-            tail_logs_on_fail "$relayer_log" "$validator_log"
-            fail "validator exited unexpectedly"
-        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         supply="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_warp" --method total_supply --return-type u64 2>/dev/null | jq -r '.value // 0')"
         if [ "$supply" = "$expected_dusk_supply" ]; then
             break
@@ -294,11 +306,7 @@ PY
             tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
             fail "timeout waiting for Dusk->EVM delivery"
         fi
-        kill -0 "$relayer_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"; fail "relayer exited unexpectedly"; }
-        if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
-            tail_logs_on_fail "$relayer_log" "$validator_log"
-            fail "validator exited unexpectedly"
-        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         local bal
         bal="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
         if [ "$bal" = "$expected_evm_balance" ]; then
@@ -332,7 +340,11 @@ PY
     start_ts="$(date +%s)"
     while true; do
         now="$(date +%s)"
-        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for native Dusk->EVM delivery"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for native Dusk->EVM delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         local native_evm_balance
         native_evm_balance="$(cast call "$evm_native_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
         [ "$native_evm_balance" = "$evm_native_target" ] && break
@@ -352,7 +364,11 @@ PY
     start_ts="$(date +%s)"
     while true; do
         now="$(date +%s)"
-        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for native EVM->Dusk delivery"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for native EVM->Dusk delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         native_locked="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
           --contract 0100000000000000000000000000000000000000000000000000000000000000 \
           --method contract_balance --return-type u64 --arg-bytes32 "$dusk_warp_native" 2>/dev/null | jq -r '.value')"
@@ -385,7 +401,11 @@ PY
     start_ts="$(date +%s)"
     while true; do
         now="$(date +%s)"
-        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for collateral Dusk->EVM delivery"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for collateral Dusk->EVM delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         local collateral_evm_balance
         collateral_evm_balance="$(cast call "$evm_collateral_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
         [ "$collateral_evm_balance" = "$evm_collateral_target" ] && break
@@ -407,7 +427,11 @@ PY
     start_ts="$(date +%s)"
     while true; do
         now="$(date +%s)"
-        [ $((now - start_ts)) -le "$TIMEOUT_SECS" ] || fail "timeout waiting for collateral EVM->Dusk delivery"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for collateral EVM->Dusk delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         owner_token_after="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
           --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
         [ "$owner_token_after" = "$owner_return_target" ] && break

@@ -58,6 +58,10 @@ impl TestSession {
         A: 'a + for<'b> Serialize<StandardBufSerializer<'b>>,
         D: Into<ContractData<'a, A>>,
     {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         self.0
             .deploy::<A, (), D>(bytecode, deploy_data, u64::MAX)
             .map(|(contract_id, _)| contract_id)
@@ -81,6 +85,10 @@ impl TestSession {
 
     /// Query account data for a public key.
     pub fn account(&mut self, pk: &AccountPublicKey) -> Result<AccountData, VMError> {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         self.0
             .call(TRANSFER_CONTRACT, "account", pk, GAS_LIMIT)
             .map(|r| r.data)
@@ -88,6 +96,10 @@ impl TestSession {
 
     /// Query the transfer contract for a contract's transparent DUSK balance.
     pub fn contract_balance(&mut self, contract: &ContractId) -> Result<u64, VMError> {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         self.0
             .call(TRANSFER_CONTRACT, "contract_balance", contract, GAS_LIMIT)
             .map(|r| r.data)
@@ -106,6 +118,10 @@ impl TestSession {
         R: Archive,
         R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
     {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         self.0
             .call::<_, R>(contract, fn_name, fn_arg, u64::MAX)
             .map_err(|e| match e {
@@ -195,6 +211,10 @@ impl TestSession {
 impl TestSession {
     /// Create a new test session with transfer + stake contracts and funded accounts.
     pub fn instantiate(public_pks: Vec<(&AccountPublicKey, u64)>) -> Self {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         let vm = VM::ephemeral().expect("Creating VM should succeed");
         let mut session = VM::genesis_session(&vm, 1);
 

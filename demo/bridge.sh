@@ -85,7 +85,7 @@ if [ ! -f "$BRIDGE_STATE_FILE" ]; then
     fail "No deployment found at $BRIDGE_STATE_FILE
 
   Deploy first:
-    bash demo/deploy.sh"
+    bash demo/deploy.sh --dusk-ism testMock"
 fi
 
 # Parse state

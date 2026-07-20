@@ -43,6 +43,7 @@ rg_to_file() {
     local rg_status
     shift 2
 
+    : >"$out_file" || fail "cannot create $label scan output: $out_file"
     set +e
     rg "$@" >"$out_file"
     rg_status=$?
@@ -64,6 +65,7 @@ git_grep_to_file() {
     repo="$3"
     shift 3
 
+    : >"$out_file" || fail "cannot create $label scan output: $out_file"
     set +e
     git -C "$repo" grep "$@" >"$out_file"
     grep_status=$?

@@ -82,12 +82,6 @@ data-driver:
 			--target $(WASM_TARGET) \
 			-p hyperlane-dusk-data-driver
 	@echo "  -> target/data-driver/$(WASM_TARGET)/release/hyperlane_dusk_data_driver.wasm"
-	@# Auto-copy to explorer if it exists
-	@if [ -d "$(HOME)/projects/explorer/src/lib/assets" ]; then \
-		cp target/data-driver/$(WASM_TARGET)/release/hyperlane_dusk_data_driver.wasm \
-			$(HOME)/projects/explorer/src/lib/assets/; \
-		echo "  -> copied to explorer/src/lib/assets/"; \
-	fi
 
 # Build dusk-tx CLI tool
 .PHONY: dusk-tx

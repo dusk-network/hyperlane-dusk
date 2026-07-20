@@ -16,9 +16,7 @@ use std::{env, fs, io::Read};
 use clap::{Parser, Subcommand};
 use dusk_bytes::Serializable;
 use dusk_core::abi::ContractId;
-use dusk_core::signatures::bls::{
-    PublicKey as BlsPublicKey, SecretKey as BlsSecretKey,
-};
+use dusk_core::signatures::bls::{PublicKey as BlsPublicKey, SecretKey as BlsSecretKey};
 use dusk_core::transfer::data::{ContractBytecode, ContractCall, ContractDeploy};
 use dusk_core::transfer::moonlight::Transaction as MoonlightTransaction;
 use dusk_core::transfer::Transaction;
@@ -37,6 +35,8 @@ mod rues;
 use rues::{RuesClient, TransactionStatus};
 
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
+const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
+const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
 
 // ── CLI definition ──────────────────────────────────────────────────────────
 
@@ -410,8 +410,16 @@ async fn main() {
             gas_price,
         } => {
             cmd_call(
-                &rues_url, keys, &password, secret_key, secret_key_stdin, &contract, &fn_name,
-                &args, gas_limit, gas_price,
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &contract,
+                &fn_name,
+                &args,
+                gas_limit,
+                gas_price,
             )
             .await
         }
@@ -436,17 +444,44 @@ async fn main() {
             multisig_threshold,
         } => {
             cmd_deploy_hyperlane(
-                &rues_url, keys, &password, secret_key, secret_key_stdin, domain, gas_limit,
-                gas_price, wasm_dir, deploy_warp_drc20, deploy_warp_native,
-                warp_collateral_token.as_deref(), &warp_name,
-                &warp_symbol, warp_decimals, &default_ism, &multisig_validators, multisig_threshold,
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                domain,
+                gas_limit,
+                gas_price,
+                wasm_dir,
+                deploy_warp_drc20,
+                deploy_warp_native,
+                warp_collateral_token.as_deref(),
+                &warp_name,
+                &warp_symbol,
+                warp_decimals,
+                &default_ism,
+                &multisig_validators,
+                multisig_threshold,
             )
             .await
         }
         Command::Query {
-            rues_url, contract, method, return_type, arg_u32, arg_bytes32,
+            rues_url,
+            contract,
+            method,
+            return_type,
+            arg_u32,
+            arg_bytes32,
         } => {
-            cmd_query(&rues_url, &contract, &method, &return_type, arg_u32, arg_bytes32).await
+            cmd_query(
+                &rues_url,
+                &contract,
+                &method,
+                &return_type,
+                arg_u32,
+                arg_bytes32,
+            )
+            .await
         }
         Command::FundDispatch {
             rues_url,
@@ -475,77 +510,199 @@ async fn main() {
             .await
         }
         Command::Dispatch {
-            rues_url, keys, password, secret_key, mailbox, test_recipient,
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            mailbox,
+            test_recipient,
             secret_key_stdin,
-            destination, recipient, body, gas_limit, gas_price,
+            destination,
+            recipient,
+            body,
+            gas_limit,
+            gas_price,
         } => {
             cmd_dispatch(
-                &rues_url, keys, &password, secret_key, secret_key_stdin, &mailbox, &test_recipient,
-                destination, &recipient, &body, gas_limit, gas_price,
-            ).await
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &mailbox,
+                &test_recipient,
+                destination,
+                &recipient,
+                &body,
+                gas_limit,
+                gas_price,
+            )
+            .await
         }
         Command::Process {
-            rues_url, keys, password, secret_key, mailbox, message,
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            mailbox,
+            message,
             secret_key_stdin,
-            gas_limit, gas_price,
+            gas_limit,
+            gas_price,
         } => {
             cmd_process(
-                &rues_url, keys, &password, secret_key, secret_key_stdin, &mailbox, &message,
-                gas_limit, gas_price,
-            ).await
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &mailbox,
+                &message,
+                gas_limit,
+                gas_price,
+            )
+            .await
         }
         Command::EncodeMessage {
-            version, nonce, origin, sender, destination, recipient, body,
-        } => {
-            cmd_encode_message(version, nonce, origin, &sender, destination, &recipient, &body)
-        }
+            version,
+            nonce,
+            origin,
+            sender,
+            destination,
+            recipient,
+            body,
+        } => cmd_encode_message(
+            version,
+            nonce,
+            origin,
+            &sender,
+            destination,
+            &recipient,
+            &body,
+        ),
         Command::EnrollRouter {
-            rues_url, keys, password, secret_key, warp_contract,
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            warp_contract,
             secret_key_stdin,
-            domain, router, gas_limit, gas_price,
+            domain,
+            router,
+            gas_limit,
+            gas_price,
         } => {
             cmd_enroll_router(
-                &rues_url, keys, &password, secret_key, secret_key_stdin, &warp_contract,
-                domain, &router, gas_limit, gas_price,
-            ).await
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &warp_contract,
+                domain,
+                &router,
+                gas_limit,
+                gas_price,
+            )
+            .await
         }
         Command::RegisterAccount {
-            rues_url, keys, password, secret_key, warp_contract,
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            warp_contract,
             secret_key_stdin,
-            gas_limit, gas_price,
+            gas_limit,
+            gas_price,
         } => {
             cmd_register_account(
-                &rues_url, keys, &password, secret_key, secret_key_stdin, &warp_contract,
-                gas_limit, gas_price,
-            ).await
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &warp_contract,
+                gas_limit,
+                gas_price,
+            )
+            .await
         }
         Command::Drc20Approve {
-            rues_url, keys, password, secret_key, secret_key_stdin,
-            token, spender, amount, gas_limit, gas_price,
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            token,
+            spender,
+            amount,
+            gas_limit,
+            gas_price,
         } => {
             cmd_drc20_approve(
-                &rues_url, keys, &password, secret_key, secret_key_stdin,
-                &token, &spender, amount, gas_limit, gas_price,
-            ).await
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &token,
+                &spender,
+                amount,
+                gas_limit,
+                gas_price,
+            )
+            .await
         }
         Command::Drc20Balance {
-            rues_url, keys, password, secret_key, secret_key_stdin,
-            token, account_contract,
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            token,
+            account_contract,
         } => {
             cmd_drc20_balance(
-                &rues_url, keys, &password, secret_key, secret_key_stdin,
-                &token, account_contract.as_deref(),
-            ).await
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &token,
+                account_contract.as_deref(),
+            )
+            .await
         }
         Command::TransferRemote {
-            rues_url, keys, password, secret_key, warp_contract,
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            warp_contract,
             secret_key_stdin,
-            destination, recipient, amount, native, gas_limit, gas_price,
+            destination,
+            recipient,
+            amount,
+            native,
+            gas_limit,
+            gas_price,
         } => {
             cmd_transfer_remote(
-                &rues_url, keys, &password, secret_key, secret_key_stdin, &warp_contract,
-                destination, &recipient, amount, native, gas_limit, gas_price,
-            ).await
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &warp_contract,
+                destination,
+                &recipient,
+                amount,
+                native,
+                gas_limit,
+                gas_price,
+            )
+            .await
         }
     };
 
@@ -566,15 +723,9 @@ fn load_keys(
 ) -> Result<(BlsSecretKey, BlsPublicKey), String> {
     if secret_key_stdin {
         if secret_key_hex.is_some() || keys_path.is_some() {
-            return Err(
-                "Provide only one of --keys, --secret-key, or --secret-key-stdin".into(),
-            );
+            return Err("Provide only one of --keys, --secret-key, or --secret-key-stdin".into());
         }
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .map_err(|e| format!("Failed to read secret key from stdin: {e}"))?;
-        let mut s = buf.trim().to_string();
+        let mut s = read_secret_key_hex(std::io::stdin().lock())?;
         if let Some(stripped) = s.strip_prefix("0x") {
             s = stripped.to_string();
         }
@@ -594,6 +745,20 @@ fn load_keys(
     } else {
         Err("Provide --keys <path>, --secret-key <hex>, or --secret-key-stdin".into())
     }
+}
+
+fn read_secret_key_hex(reader: impl Read) -> Result<String, String> {
+    let mut buf = String::new();
+    reader
+        .take((MAX_SECRET_KEY_STDIN_BYTES + 1) as u64)
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("Failed to read secret key from stdin: {e}"))?;
+    if buf.len() > MAX_SECRET_KEY_STDIN_BYTES {
+        return Err(format!(
+            "Secret key stdin exceeds {MAX_SECRET_KEY_STDIN_BYTES} bytes"
+        ));
+    }
+    Ok(buf.trim().to_string())
 }
 
 fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
@@ -616,8 +781,8 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
         return Ok(password);
     }
 
-    if let Ok(password) = env::var("DUSK_CONSENSUS_PASSWORD")
-        .or_else(|_| env::var("DUSK_CONSENSUS_KEYS_PASS"))
+    if let Ok(password) =
+        env::var("DUSK_CONSENSUS_PASSWORD").or_else(|_| env::var("DUSK_CONSENSUS_KEYS_PASS"))
     {
         if password.is_empty() {
             return Err("Dusk consensus password environment variable is empty".into());
@@ -631,8 +796,8 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_moonlight_nonce, resolve_keys_password, wait_for_transaction_with,
-        MAX_PASSWORD_FILE_BYTES,
+        next_moonlight_nonce, read_secret_key_hex, resolve_keys_password,
+        wait_for_transaction_with, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::TransactionStatus;
     use std::collections::VecDeque;
@@ -641,6 +806,17 @@ mod tests {
     use std::time::Duration;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn secret_key_stdin_is_bounded() {
+        let oversized = vec![b'a'; MAX_SECRET_KEY_STDIN_BYTES + 1];
+        assert!(read_secret_key_hex(oversized.as_slice())
+            .unwrap_err()
+            .contains("exceeds"));
+
+        let key = format!("0x{}\n", "11".repeat(32));
+        assert_eq!(read_secret_key_hex(key.as_bytes()).unwrap(), key.trim());
+    }
 
     fn clear_password_env() {
         std::env::remove_var("DUSK_CONSENSUS_PASSWORD_FILE");
@@ -653,10 +829,8 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         clear_password_env();
 
-        let path = std::env::temp_dir().join(format!(
-            "dusk-consensus-password-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("dusk-consensus-password-{}", std::process::id()));
         std::fs::write(&path, "from-file\n").unwrap();
         std::env::set_var("DUSK_CONSENSUS_PASSWORD_FILE", &path);
         std::env::set_var("DUSK_CONSENSUS_PASSWORD", "from-env");
@@ -965,17 +1139,15 @@ async fn cmd_call(
     let client = RuesClient::new(rues_url)?;
 
     // Parse contract ID
-    let contract_bytes = hex::decode(contract_hex)
-        .map_err(|e| format!("Invalid contract hex: {e}"))?;
+    let contract_bytes =
+        hex::decode(contract_hex).map_err(|e| format!("Invalid contract hex: {e}"))?;
     if contract_bytes.len() != 32 {
         return Err(format!(
             "Contract ID must be 32 bytes (64 hex), got {}",
             contract_bytes.len()
         ));
     }
-    let contract_id = ContractId::from_bytes(
-        contract_bytes.try_into().map_err(|_| "bad length")?,
-    );
+    let contract_id = ContractId::from_bytes(contract_bytes.try_into().map_err(|_| "bad length")?);
 
     // Parse args
     let fn_args = if args_hex.is_empty() {
@@ -1046,9 +1218,12 @@ async fn cmd_deploy_hyperlane(
         DefaultIsm::MessageIdMultisig => {
             let validators = parse_eth_addresses(multisig_validators)?;
             if validators.is_empty() {
-                return Err(
-                    "default_ism=messageIdMultisig requires --multisig-validators".into(),
-                );
+                return Err("default_ism=messageIdMultisig requires --multisig-validators".into());
+            }
+            if validators.len() > MAX_MULTISIG_VALIDATORS {
+                return Err(format!(
+                    "messageIdMultisig supports at most {MAX_MULTISIG_VALIDATORS} validators"
+                ));
             }
             if multisig_threshold == 0 {
                 return Err(
@@ -1092,8 +1267,7 @@ async fn cmd_deploy_hyperlane(
     // Load WASM bytecodes
     let load_wasm = |name: &str| -> Result<Vec<u8>, String> {
         let path = wasm_dir.join(format!("hyperlane_dusk_{name}.wasm"));
-        std::fs::read(&path)
-            .map_err(|e| format!("Failed to read {}: {e}", path.display()))
+        std::fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))
     };
 
     let test_mock_bytes = load_wasm("test_mock")?;
@@ -1124,6 +1298,28 @@ async fn cmd_deploy_hyperlane(
         .map(parse_bytes32)
         .transpose()?
         .map(ContractId::from_bytes);
+    if let Some(token) = explicit_collateral_token {
+        let token_hex = hex::encode(token.to_bytes());
+        if !client.contract_exists(&token_hex).await? {
+            return Err(format!(
+                "Explicit collateral token does not exist on-chain: {token_hex}"
+            ));
+        }
+        client
+            .contract_query::<_, u64>(
+                &token.to_bytes(),
+                "balance_of",
+                &Drc20BalanceOf {
+                    account: Drc20Account::External(pk),
+                },
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "Explicit collateral token {token_hex} does not expose the required DRC20 balance_of ABI: {error}"
+                )
+            })?;
+    }
     let warp_collateral_bytes = warp_collateral_token
         .is_some()
         .then(|| load_wasm("warp_drc20_collateral"))
@@ -1184,15 +1380,33 @@ async fn cmd_deploy_hyperlane(
     });
 
     eprintln!("\n  Contract IDs (pre-computed):");
-    eprintln!("    TestMock:        {}", hex::encode(test_mock_id.to_bytes()));
-    eprintln!("    TestRecipient:   {}", hex::encode(test_recipient_id.to_bytes()));
-    eprintln!("    MerkleTreeHook:  {}", hex::encode(merkle_tree_hook_id.to_bytes()));
+    eprintln!(
+        "    TestMock:        {}",
+        hex::encode(test_mock_id.to_bytes())
+    );
+    eprintln!(
+        "    TestRecipient:   {}",
+        hex::encode(test_recipient_id.to_bytes())
+    );
+    eprintln!(
+        "    MerkleTreeHook:  {}",
+        hex::encode(merkle_tree_hook_id.to_bytes())
+    );
     if let Some(ism_id) = &ism_multisig_id {
         eprintln!("    IsmMultisig:     {}", hex::encode(ism_id.to_bytes()));
     }
-    eprintln!("    ProtocolFee:     {}", hex::encode(protocol_fee_id.to_bytes()));
-    eprintln!("    AggregationHook: {}", hex::encode(aggregation_hook_id.to_bytes()));
-    eprintln!("    Mailbox:         {}", hex::encode(mailbox_id.to_bytes()));
+    eprintln!(
+        "    ProtocolFee:     {}",
+        hex::encode(protocol_fee_id.to_bytes())
+    );
+    eprintln!(
+        "    AggregationHook: {}",
+        hex::encode(aggregation_hook_id.to_bytes())
+    );
+    eprintln!(
+        "    Mailbox:         {}",
+        hex::encode(mailbox_id.to_bytes())
+    );
     eprintln!("    ValidatorAnnounce: {}", hex::encode(va_id.to_bytes()));
     eprintln!("    IGP:             {}", hex::encode(igp_id.to_bytes()));
     if let Some((ref id, _)) = warp_drc20_id {
@@ -1279,21 +1493,60 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     }
 
     let mut mn = account_nonce; // moonlight nonce
-    let mut dn = 0u64;         // deploy nonce
+    let mut dn = 0u64; // deploy nonce
 
     // Deploy contracts one at a time, waiting for block inclusion between each.
     // Rusk requires sequential nonce confirmation — a TX with nonce N+1 won't be
     // accepted until nonce N is included in a block.
 
     // 1. TestMock (no init)
-    deploy_one(&client, &sk, &pk, test_mock_bytes, vec![], &mut mn, &mut dn, gas_limit, gas_price, chain_id, "TestMock").await?;
+    deploy_one(
+        &client,
+        &sk,
+        &pk,
+        test_mock_bytes,
+        vec![],
+        &mut mn,
+        &mut dn,
+        gas_limit,
+        gas_price,
+        chain_id,
+        "TestMock",
+    )
+    .await?;
 
     // 2. TestRecipient (no init)
-    deploy_one(&client, &sk, &pk, test_recipient_bytes, vec![], &mut mn, &mut dn, gas_limit, gas_price, chain_id, "TestRecipient").await?;
+    deploy_one(
+        &client,
+        &sk,
+        &pk,
+        test_recipient_bytes,
+        vec![],
+        &mut mn,
+        &mut dn,
+        gas_limit,
+        gas_price,
+        chain_id,
+        "TestRecipient",
+    )
+    .await?;
 
     // 3. MerkleTreeHook: child of the aggregation hook.
     let mth_init = rkyv_serialize(&(aggregation_hook_id,));
-    deploy_one(&client, &sk, &pk, merkle_tree_hook_bytes, mth_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "MerkleTreeHook").await?;
+    deploy_one(
+        &client,
+        &sk,
+        &pk,
+        merkle_tree_hook_bytes,
+        mth_init,
+        &mut mn,
+        &mut dn,
+        gas_limit,
+        gas_price,
+        chain_id,
+        "MerkleTreeHook",
+    )
+    .await?;
 
     // 4. Optional: MessageIdMultisigISM
     if let Some(ism_multisig_bytes) = ism_multisig_bytes {
@@ -1325,14 +1578,38 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         owner_h256,
         owner_h256,
     ));
-    deploy_one(&client, &sk, &pk, protocol_fee_bytes, pf_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "ProtocolFee").await?;
+    deploy_one(
+        &client,
+        &sk,
+        &pk,
+        protocol_fee_bytes,
+        pf_init,
+        &mut mn,
+        &mut dn,
+        gas_limit,
+        gas_price,
+        chain_id,
+        "ProtocolFee",
+    )
+    .await?;
 
     // 6. AggregationHook: required Merkle insertion plus protocol fee custody.
-    let aggregation_init = rkyv_serialize(&(
-        mailbox_id,
-        vec![merkle_tree_hook_id, protocol_fee_id],
-    ));
-    deploy_one(&client, &sk, &pk, aggregation_hook_bytes, aggregation_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "AggregationHook").await?;
+    let aggregation_init =
+        rkyv_serialize(&(mailbox_id, vec![merkle_tree_hook_id, protocol_fee_id]));
+    deploy_one(
+        &client,
+        &sk,
+        &pk,
+        aggregation_hook_bytes,
+        aggregation_init,
+        &mut mn,
+        &mut dn,
+        gas_limit,
+        gas_price,
+        chain_id,
+        "AggregationHook",
+    )
+    .await?;
 
     // 7. Mailbox: init(local_domain, owner, default_ism, default_hook, required_hook)
     let default_ism_id = ism_multisig_id.unwrap_or(test_mock_id);
@@ -1360,7 +1637,20 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
 
     // 8. ValidatorAnnounce: init(local_domain, mailbox)
     let va_init = rkyv_serialize(&(domain, mailbox_id));
-    deploy_one(&client, &sk, &pk, va_bytes, va_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "ValidatorAnnounce").await?;
+    deploy_one(
+        &client,
+        &sk,
+        &pk,
+        va_bytes,
+        va_init,
+        &mut mn,
+        &mut dn,
+        gas_limit,
+        gas_price,
+        chain_id,
+        "ValidatorAnnounce",
+    )
+    .await?;
 
     // 9. IGP: init(mailbox, owner, beneficiary, initial_configs)
     let igp_init = rkyv_serialize(&(
@@ -1369,12 +1659,36 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         owner_h256,
         Vec::<(u32, DomainGasConfig)>::new(),
     ));
-    deploy_one(&client, &sk, &pk, igp_bytes, igp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "IGP").await?;
+    deploy_one(
+        &client, &sk, &pk, igp_bytes, igp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id,
+        "IGP",
+    )
+    .await?;
 
     // 10. Optional: synthetic DRC20 route.
     let deployed_warp_drc20 = if let Some((warp_id, warp_bytes)) = warp_drc20_id {
-        let warp_init = rkyv_serialize(&(mailbox_id, owner_h256, String::from(warp_name), String::from(warp_symbol), warp_decimals, Vec::<(u32, [u8; 32])>::new()));
-        deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpDrc20").await?;
+        let warp_init = rkyv_serialize(&(
+            mailbox_id,
+            owner_h256,
+            String::from(warp_name),
+            String::from(warp_symbol),
+            warp_decimals,
+            Vec::<(u32, [u8; 32])>::new(),
+        ));
+        deploy_one(
+            &client,
+            &sk,
+            &pk,
+            warp_bytes,
+            warp_init,
+            &mut mn,
+            &mut dn,
+            gas_limit,
+            gas_price,
+            chain_id,
+            "WarpDrc20",
+        )
+        .await?;
         Some(warp_id)
     } else {
         None
@@ -1382,12 +1696,21 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
 
     // 11. Optional: native DUSK collateral route.
     let deployed_warp_native = if let Some((warp_id, warp_bytes)) = warp_native_id {
-        let warp_init = rkyv_serialize(&(
-            mailbox_id,
-            owner_h256,
-            Vec::<(u32, [u8; 32])>::new(),
-        ));
-        deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpNative").await?;
+        let warp_init = rkyv_serialize(&(mailbox_id, owner_h256, Vec::<(u32, [u8; 32])>::new()));
+        deploy_one(
+            &client,
+            &sk,
+            &pk,
+            warp_bytes,
+            warp_init,
+            &mut mn,
+            &mut dn,
+            gas_limit,
+            gas_price,
+            chain_id,
+            "WarpNative",
+        )
+        .await?;
         Some(warp_id)
     } else {
         None
@@ -1402,7 +1725,20 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             owner_h256,
             Vec::<(u32, [u8; 32])>::new(),
         ));
-        deploy_one(&client, &sk, &pk, warp_bytes, warp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id, "WarpCollateral").await?;
+        deploy_one(
+            &client,
+            &sk,
+            &pk,
+            warp_bytes,
+            warp_init,
+            &mut mn,
+            &mut dn,
+            gas_limit,
+            gas_price,
+            chain_id,
+            "WarpCollateral",
+        )
+        .await?;
         Some(warp_id)
     } else {
         None
@@ -1454,8 +1790,7 @@ fn parse_default_ism(s: &str) -> Result<DefaultIsm, String> {
     if s.eq_ignore_ascii_case("testMock") || s.eq_ignore_ascii_case("test_mock") {
         return Ok(DefaultIsm::TestMock);
     }
-    if s.eq_ignore_ascii_case("messageIdMultisig")
-        || s.eq_ignore_ascii_case("message_id_multisig")
+    if s.eq_ignore_ascii_case("messageIdMultisig") || s.eq_ignore_ascii_case("message_id_multisig")
     {
         return Ok(DefaultIsm::MessageIdMultisig);
     }
@@ -1533,7 +1868,9 @@ async fn deploy_one(
         .checked_add(1)
         .ok_or_else(|| "Contract deployment nonce is exhausted".to_string())?;
 
-    let tx = moonlight_deployment(sk, bytecode, pk, init_args, gas_limit, gas_price, mn, dn, chain_id)?;
+    let tx = moonlight_deployment(
+        sk, bytecode, pk, init_args, gas_limit, gas_price, mn, dn, chain_id,
+    )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
     client
@@ -1550,8 +1887,7 @@ async fn deploy_one(
 /// Parse a 32-byte hex string into a fixed-size array.
 fn parse_bytes32(hex_str: &str) -> Result<[u8; 32], String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| format!("Invalid hex: {e}"))?;
+    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex: {e}"))?;
     if bytes.len() != 32 {
         return Err(format!("Expected 32 bytes (64 hex), got {}", bytes.len()));
     }
@@ -1717,7 +2053,11 @@ async fn cmd_query(
             let output = json!({ "success": true, "value": result });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
-        _ => return Err(format!("Unsupported return type: {return_type}. Use: u32, u64, bool, bytes32, bytes, string")),
+        _ => {
+            return Err(format!(
+            "Unsupported return type: {return_type}. Use: u32, u64, bool, bytes32, bytes, string"
+        ))
+        }
     }
 
     Ok(())
@@ -1760,8 +2100,14 @@ async fn cmd_dispatch(
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
-        &sk, test_recipient_id, "dispatch_message", dispatch_args,
-        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
+        &sk,
+        test_recipient_id,
+        "dispatch_message",
+        dispatch_args,
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
@@ -1799,8 +2145,8 @@ async fn cmd_process(
     let mailbox_id = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
 
     let message_hex = message_hex.strip_prefix("0x").unwrap_or(message_hex);
-    let encoded_message = hex::decode(message_hex)
-        .map_err(|e| format!("Invalid message hex: {e}"))?;
+    let encoded_message =
+        hex::decode(message_hex).map_err(|e| format!("Invalid message hex: {e}"))?;
 
     // Compute message ID for output
     let message_id = hyperlane_dusk_types::message::id(&encoded_message);
@@ -1813,8 +2159,14 @@ async fn cmd_process(
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
-        &sk, mailbox_id, "process", process_args,
-        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
+        &sk,
+        mailbox_id,
+        "process",
+        process_args,
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
@@ -1854,7 +2206,13 @@ fn cmd_encode_message(
     };
 
     let encoded = hyperlane_dusk_types::message::encode(
-        version, nonce, origin, sender, destination, recipient, &body,
+        version,
+        nonce,
+        origin,
+        sender,
+        destination,
+        recipient,
+        &body,
     );
     let message_id = hyperlane_dusk_types::message::id(&encoded);
 
@@ -1895,8 +2253,14 @@ async fn cmd_enroll_router(
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
-        &sk, warp_id, "enroll_remote_router", enroll_args,
-        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
+        &sk,
+        warp_id,
+        "enroll_remote_router",
+        enroll_args,
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
@@ -1939,8 +2303,14 @@ async fn cmd_register_account(
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
-        &sk, warp_id, "register_account", register_args,
-        gas_limit, gas_price, next_moonlight_nonce(nonce)?, chain_id,
+        &sk,
+        warp_id,
+        "register_account",
+        register_args,
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());

@@ -83,8 +83,13 @@ Current implementation:
 
 - WarpNative and WarpDrc20Collateral escrow unregistered recipients by
   recipient hash.
+- WarpDrc20Collateral tracks aggregate pending liability and reserves that
+  amount against live route custody. A direct delivery cannot consume token
+  backing already promised to pending recipients.
 - Only the matching BLS key can register and claim pending funds.
 - Admins cannot drain pending user escrow.
+- Pending claims do not expire. An invalid or permanently lost recipient
+  identity can therefore reserve funds indefinitely.
 
 Evidence:
 
@@ -102,6 +107,31 @@ Recommended stance:
 Accept no admin drain for v1 if Dusk wants a non-custodial failure mode. If Dusk
 wants recovery for lost keys or wrong recipient hashes, design that separately
 with governance, timelock, audit, and user-dispute rules.
+
+### Permissionless Dispatch-Credit Funding
+
+Decision:
+
+- [ ] Accept permissionless funding keyed to the beneficiary identity.
+- [ ] Restrict who may sponsor another sender before release.
+
+Current implementation:
+
+- Anyone may deposit native DUSK into another sender's Mailbox dispatch-credit
+  balance.
+- The funder receives no withdrawal or dispatch authority from that deposit.
+- Only the beneficiary sender's dispatch consumes the balance; exact
+  consumption removes its storage entry.
+- The stacked dispatch-credit PR adds beneficiary-authorized withdrawal and
+  does not grant the original funder a reclaim path.
+
+Recommended stance:
+
+Accept permissionless sponsorship. It supports relayer/operator funding without
+creating an allowance or custody claim for the sponsor. Unwanted dust is paid
+for by the sponsor and does not let them consume or redirect the beneficiary's
+credit. If Dusk wants funder-reclaimable deposits, model those as a distinct
+escrow product with explicit ownership rather than overloading fee credit.
 
 ## Operational Decisions
 

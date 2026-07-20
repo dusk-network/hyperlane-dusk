@@ -104,25 +104,16 @@ encode_token_message() {
 
 header "Step 0: Checking Prerequisites"
 
-# Check dusk-tx binary
-if [ ! -f "$DUSK_TX" ]; then
-    warn "dusk-tx not found at $DUSK_TX"
-    # Try debug build
-    DUSK_TX="$DUSK_DIR/target/debug/dusk-tx"
-    if [ ! -f "$DUSK_TX" ]; then
-        info "Building dusk-tx..."
-        (cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
-        DUSK_TX="$DUSK_DIR/target/release/dusk-tx"
-    fi
-fi
+# Always let Cargo evaluate freshness. File existence alone can select a CLI
+# that predates the checked-out ABI.
+info "Ensuring dusk-tx is current..."
+(cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
+DUSK_TX="$DUSK_DIR/target/release/dusk-tx"
 ok "dusk-tx binary: $DUSK_TX"
 
-# Check WASMs
-if [ ! -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ]; then
-    warn "Contract WASMs not found"
-    info "Building WASMs (this takes a few minutes)..."
-    (cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
-fi
+# Always let Cargo evaluate every contract artifact for freshness.
+info "Ensuring contract WASMs are current..."
+(cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
 ok "Contract WASMs: $WASM_DIR"
 
 # Check consensus keys
@@ -294,6 +285,7 @@ else
         --keys "$CONSENSUS_KEYS" \
         --domain "$DUSK_DOMAIN" \
         --wasm-dir "$WASM_DIR" \
+        --default-ism testMock \
         --deploy-warp-drc20 \
         --warp-name "$TOKEN_NAME" \
         --warp-symbol "$TOKEN_SYMBOL" \

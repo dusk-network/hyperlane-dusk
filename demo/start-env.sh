@@ -127,22 +127,25 @@ info "Ensuring contract WASMs are current..."
 (cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
 ok "Contract WASMs: $WASM_DIR"
 
-# Data-driver WASM (for explorer integration)
+# Data-driver WASM (for explorer integration). Decide whether the explorer is
+# usable before building its artifact, and always let Cargo repair a warm
+# artifact when it is usable.
 DATA_DRIVER_WASM="$DUSK_DIR/target/data-driver/wasm32-unknown-unknown/release/hyperlane_dusk_data_driver.wasm"
 if [ "${SKIP_DUSK_EXPLORER:-false}" = "true" ]; then
     warn "Skipping data-driver build (SKIP_DUSK_EXPLORER=true)"
+    SKIP_DUSK_EXPLORER=true
+elif ! command -v npm &>/dev/null; then
+    warn "npm not found — Dusk Explorer and data-driver build will be skipped"
+    SKIP_DUSK_EXPLORER=true
+elif [ ! -d "$EXPLORER_DIR/src/lib/assets" ]; then
+    warn "Dusk Explorer assets not found at $EXPLORER_DIR/src/lib/assets — skipping"
+    SKIP_DUSK_EXPLORER=true
 else
-    if [ ! -f "$DATA_DRIVER_WASM" ]; then
-        info "Data-driver WASM not found, building..."
-        (cd "$DUSK_DIR" && make data-driver) || fail "Failed to build data-driver"
-    fi
-    # Copy to explorer assets if explorer exists
-    if [ -d "$EXPLORER_DIR/src/lib/assets" ]; then
-        cp "$DATA_DRIVER_WASM" "$EXPLORER_DIR/src/lib/assets/"
-        ok "Data-driver WASM copied to explorer"
-    else
-        ok "Data-driver WASM: $DATA_DRIVER_WASM"
-    fi
+    SKIP_DUSK_EXPLORER=false
+    info "Ensuring data-driver WASM is current..."
+    (cd "$DUSK_DIR" && make data-driver) || fail "Failed to build data-driver"
+    cp "$DATA_DRIVER_WASM" "$EXPLORER_DIR/src/lib/assets/"
+    ok "Current data-driver WASM copied to explorer"
 fi
 
 # Docker
@@ -155,18 +158,6 @@ elif ! command -v docker &>/dev/null; then
 else
     SKIP_OTTERSCAN=false
     ok "Docker available"
-fi
-
-# Node.js / npm
-if [ "${SKIP_DUSK_EXPLORER:-false}" = "true" ]; then
-    warn "Skipping Dusk Explorer (SKIP_DUSK_EXPLORER=true)"
-    SKIP_DUSK_EXPLORER=true
-elif ! command -v npm &>/dev/null; then
-    warn "npm not found — Dusk Explorer will be skipped"
-    SKIP_DUSK_EXPLORER=true
-else
-    SKIP_DUSK_EXPLORER=false
-    ok "npm available"
 fi
 
 # Foundry
@@ -356,7 +347,7 @@ fi
 
 echo ""
 echo -e "${BOLD}Next steps:${NC}"
-echo "  1. Deploy contracts:  bash demo/deploy.sh"
+echo "  1. Deploy contracts:  bash demo/deploy.sh --dusk-ism testMock"
 echo "  2. Check status:      bash demo/bridge.sh status"
 echo "  3. Bridge to Dusk:    bash demo/bridge.sh to-dusk 3"
 echo "  4. Bridge to EVM:     bash demo/bridge.sh to-evm 1"

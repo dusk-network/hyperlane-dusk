@@ -26,7 +26,7 @@ use hyperlane_dusk_types::drc20::{
     Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
     BalanceOf as Drc20BalanceOf,
 };
-use hyperlane_dusk_types::{message, DomainGasConfig, EthAddress, H256, MessageId, VERSION};
+use hyperlane_dusk_types::{message, DomainGasConfig, EthAddress, MessageId, H256, VERSION};
 
 mod test_session;
 use test_session::{assert_contract_panic, TestSession};
@@ -37,9 +37,7 @@ fn assert_contract_panic_contains<R>(
 ) where
     R: rkyv::Archive,
     R::Archived: rkyv::Deserialize<R, rkyv::Infallible>
-        + for<'b> rkyv::bytecheck::CheckBytes<
-            rkyv::validation::validators::DefaultValidator<'b>,
-        >,
+        + for<'b> rkyv::bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
 {
     let contract_err = match call_result {
         Ok(_) => panic!("Contract call shouldn't pass"),
@@ -78,9 +76,8 @@ const TEST_RECIPIENT_BYTECODE: &[u8] = include_bytes!(
 const PROTOCOL_FEE_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_protocol_fee.wasm"
 );
-const IGP_BYTECODE: &[u8] = include_bytes!(
-    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_igp.wasm"
-);
+const IGP_BYTECODE: &[u8] =
+    include_bytes!("../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_igp.wasm");
 const ISM_MULTISIG_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_ism_multisig.wasm"
 );
@@ -116,11 +113,9 @@ static OWNER_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
     AccountSecretKey::random(&mut rng)
 });
 
-static OWNER_PK: LazyLock<AccountPublicKey> =
-    LazyLock::new(|| AccountPublicKey::from(&*OWNER_SK));
+static OWNER_PK: LazyLock<AccountPublicKey> = LazyLock::new(|| AccountPublicKey::from(&*OWNER_SK));
 
-static OWNER_ID: LazyLock<H256> =
-    LazyLock::new(|| message::keccak256(&OWNER_PK.to_bytes()));
+static OWNER_ID: LazyLock<H256> = LazyLock::new(|| message::keccak256(&OWNER_PK.to_bytes()));
 
 static RELAYER_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
     let mut rng = StdRng::seed_from_u64(0xDE1A7E00); // "DELAYE"
@@ -315,11 +310,8 @@ impl HyperlaneSession {
         metadata: Vec<u8>,
         encoded_message: Vec<u8>,
     ) -> Result<CallReceipt<()>, dusk_core::abi::ContractError> {
-        self.session.direct_call::<_, ()>(
-            MAILBOX_ID,
-            "process",
-            &(metadata, encoded_message),
-        )
+        self.session
+            .direct_call::<_, ()>(MAILBOX_ID, "process", &(metadata, encoded_message))
     }
 
     fn mailbox_process_via_tx(
@@ -518,11 +510,9 @@ fn test_merkle_tree_hook_double_init_panics() {
     // The VM disallows calling `init` after deployment.
     let mut s = HyperlaneSession::new();
 
-    let result = s.session.direct_call::<_, ()>(
-        MERKLE_TREE_HOOK_ID,
-        "init",
-        &(MAILBOX_ID,),
-    );
+    let result = s
+        .session
+        .direct_call::<_, ()>(MERKLE_TREE_HOOK_ID, "init", &(MAILBOX_ID,));
 
     assert!(result.is_err(), "Calling init after deployment should fail");
 }
@@ -541,10 +531,10 @@ fn test_process_delivers_message() {
 
     let encoded = message::encode(
         VERSION,
-        0,              // nonce
-        REMOTE_DOMAIN,  // origin
+        0,             // nonce
+        REMOTE_DOMAIN, // origin
         sender,
-        LOCAL_DOMAIN,   // destination
+        LOCAL_DOMAIN,                 // destination
         TEST_RECIPIENT_ID.to_bytes(), // recipient
         &body,
     );
@@ -574,10 +564,7 @@ fn test_process_delivers_message() {
         .iter()
         .filter(|e| e.topic.contains("process"))
         .collect();
-    assert!(
-        !process_events.is_empty(),
-        "process should emit events"
-    );
+    assert!(!process_events.is_empty(), "process should emit events");
 }
 
 #[test]
@@ -942,11 +929,7 @@ fn test_multisig_ism_init_rejects_no_validators() {
 
 #[test]
 fn test_multisig_ism_verify_rejects_short_metadata() {
-    let mut session = session_with_multisig_ism(
-        *OWNER_ID,
-        vec![EthAddress([1; 20])],
-        1,
-    );
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
 
     let result = session.direct_call::<_, bool>(
         ISM_MULTISIG_ID,
@@ -959,11 +942,7 @@ fn test_multisig_ism_verify_rejects_short_metadata() {
 
 #[test]
 fn test_multisig_ism_verify_rejects_partial_signature_bytes() {
-    let mut session = session_with_multisig_ism(
-        *OWNER_ID,
-        vec![EthAddress([1; 20])],
-        1,
-    );
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
 
     let result = session.direct_call::<_, bool>(
         ISM_MULTISIG_ID,
@@ -976,11 +955,7 @@ fn test_multisig_ism_verify_rejects_partial_signature_bytes() {
 
 #[test]
 fn test_multisig_ism_verify_rejects_insufficient_signatures() {
-    let mut session = session_with_multisig_ism(
-        *OWNER_ID,
-        vec![EthAddress([1; 20])],
-        1,
-    );
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
 
     let result = session.direct_call::<_, bool>(
         ISM_MULTISIG_ID,
@@ -993,11 +968,7 @@ fn test_multisig_ism_verify_rejects_insufficient_signatures() {
 
 #[test]
 fn test_multisig_ism_verify_rejects_corrupt_signature_bytes() {
-    let mut session = session_with_multisig_ism(
-        *OWNER_ID,
-        vec![EthAddress([1; 20])],
-        1,
-    );
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
 
     let mut metadata = vec![0u8; 68 + 65];
     metadata[132] = 27;
@@ -1013,11 +984,7 @@ fn test_multisig_ism_verify_rejects_corrupt_signature_bytes() {
 
 #[test]
 fn test_multisig_ism_admin_rejects_unauthorized_caller() {
-    let mut session = session_with_multisig_ism(
-        *OWNER_ID,
-        vec![EthAddress([1; 20])],
-        1,
-    );
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
 
     let result = session.call_public::<_, ()>(
         &RELAYER_SK,
@@ -1031,11 +998,7 @@ fn test_multisig_ism_admin_rejects_unauthorized_caller() {
 
 #[test]
 fn test_multisig_ism_admin_accepts_owner_moonlight_sender() {
-    let mut session = session_with_multisig_ism(
-        *OWNER_ID,
-        vec![EthAddress([1; 20])],
-        1,
-    );
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
 
     session
         .call_public::<_, ()>(
@@ -1068,11 +1031,7 @@ fn test_recipient_ism_override() {
     // Default: no ISM override (zero)
     let ism: ContractId = s
         .session
-        .direct_call::<_, ContractId>(
-            TEST_RECIPIENT_ID,
-            "interchain_security_module",
-            &(),
-        )
+        .direct_call::<_, ContractId>(TEST_RECIPIENT_ID, "interchain_security_module", &())
         .expect("query should succeed")
         .data;
     assert_eq!(ism, ContractId::from_bytes([0u8; 32]));
@@ -1088,11 +1047,7 @@ fn test_recipient_ism_override() {
 
     let ism: ContractId = s
         .session
-        .direct_call::<_, ContractId>(
-            TEST_RECIPIENT_ID,
-            "interchain_security_module",
-            &(),
-        )
+        .direct_call::<_, ContractId>(TEST_RECIPIENT_ID, "interchain_security_module", &())
         .expect("query should succeed")
         .data;
     assert_eq!(ism, TEST_MOCK_ID);
@@ -1177,10 +1132,7 @@ fn session_with_hooks_fee_and_igp_config(
             AGGREGATION_HOOK_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(
-                    MAILBOX_ID,
-                    vec![MERKLE_TREE_HOOK_ID, PROTOCOL_FEE_ID],
-                ))
+                .init_arg(&(MAILBOX_ID, vec![MERKLE_TREE_HOOK_ID, PROTOCOL_FEE_ID]))
                 .contract_id(AGGREGATION_HOOK_ID),
         )
         .expect("Deploying AggregationHook should succeed");
@@ -1204,9 +1156,9 @@ fn session_with_hooks_fee_and_igp_config(
                 .owner(DEPLOYER)
                 .init_arg(&(
                     LOCAL_DOMAIN,
-                    *OWNER_ID,       // owner
-                    TEST_MOCK_ID,    // default ISM
-                    IGP_ID,          // default hook = IGP
+                    *OWNER_ID,           // owner
+                    TEST_MOCK_ID,        // default ISM
+                    IGP_ID,              // default hook = IGP
                     AGGREGATION_HOOK_ID, // required = MerkleTreeHook + ProtocolFee
                 ))
                 .contract_id(MAILBOX_ID),
@@ -1243,7 +1195,8 @@ fn test_protocol_fee_init() {
         .expect("Deploying ProtocolFee should succeed");
 
     // Verify state
-    let quote: u64 = s.session
+    let quote: u64 = s
+        .session
         .direct_call::<_, u64>(
             PROTOCOL_FEE_ID,
             "quote_dispatch",
@@ -1253,13 +1206,15 @@ fn test_protocol_fee_init() {
         .data;
     assert_eq!(quote, 500);
 
-    let collected: u64 = s.session
+    let collected: u64 = s
+        .session
         .direct_call::<_, u64>(PROTOCOL_FEE_ID, "collected_fees", &())
         .expect("collected_fees should succeed")
         .data;
     assert_eq!(collected, 0);
 
-    let hook_type: u8 = s.session
+    let hook_type: u8 = s
+        .session
         .direct_call::<_, u8>(PROTOCOL_FEE_ID, "hook_type", &())
         .expect("hook_type should succeed")
         .data;
@@ -1289,7 +1244,12 @@ fn test_protocol_fee_charges_on_dispatch() {
             &OWNER_SK,
             TEST_RECIPIENT_ID,
             "dispatch_message",
-            &(MAILBOX_ID, REMOTE_DOMAIN, [0xBBu8; 32], b"testing protocol fee".to_vec()),
+            &(
+                MAILBOX_ID,
+                REMOTE_DOMAIN,
+                [0xBBu8; 32],
+                b"testing protocol fee".to_vec(),
+            ),
         )
         .expect("dispatch should succeed");
 
@@ -1444,13 +1404,7 @@ fn test_protocol_fee_init_rejects_fee_above_max() {
         PROTOCOL_FEE_BYTECODE,
         dusk_vm::ContractData::builder()
             .owner(DEPLOYER)
-            .init_arg(&(
-                20000u64,
-                10000u64,
-                MAILBOX_ID,
-                *OWNER_ID,
-                *OWNER_ID,
-            ))
+            .init_arg(&(20000u64, 10000u64, MAILBOX_ID, *OWNER_ID, *OWNER_ID))
             .contract_id(PROTOCOL_FEE_ID),
     );
     assert!(result.is_err(), "init with fee > max should fail");
@@ -1466,18 +1420,13 @@ fn test_protocol_fee_different_fee_values() {
             PROTOCOL_FEE_BYTECODE,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
-                .init_arg(&(
-                    2500u64,
-                    5000u64,
-                    MAILBOX_ID,
-                    *OWNER_ID,
-                    *OWNER_ID,
-                ))
+                .init_arg(&(2500u64, 5000u64, MAILBOX_ID, *OWNER_ID, *OWNER_ID))
                 .contract_id(PROTOCOL_FEE_ID),
         )
         .expect("Deploying ProtocolFee should succeed");
 
-    let quote: u64 = s.session
+    let quote: u64 = s
+        .session
         .direct_call::<_, u64>(
             PROTOCOL_FEE_ID,
             "quote_dispatch",
@@ -1487,7 +1436,8 @@ fn test_protocol_fee_different_fee_values() {
         .data;
     assert_eq!(quote, 2500);
 
-    let max: u64 = s.session
+    let max: u64 = s
+        .session
         .direct_call::<_, u64>(PROTOCOL_FEE_ID, "max_protocol_fee", &())
         .expect("max_protocol_fee should succeed")
         .data;
@@ -1522,12 +1472,8 @@ fn test_fee_contract_admin_paths_accept_owner_and_reject_non_owner() {
     session
         .call_public::<_, ()>(&OWNER_SK, PROTOCOL_FEE_ID, "set_protocol_fee", &(750u64,))
         .expect("ProtocolFee owner should update the fee");
-    let result = session.call_public::<_, ()>(
-        &RELAYER_SK,
-        PROTOCOL_FEE_ID,
-        "set_protocol_fee",
-        &(500u64,),
-    );
+    let result =
+        session.call_public::<_, ()>(&RELAYER_SK, PROTOCOL_FEE_ID, "set_protocol_fee", &(500u64,));
     assert_contract_panic(result, "ProtocolFee: caller is not the owner");
 
     let config = DomainGasConfig {
@@ -1582,7 +1528,15 @@ fn test_igp_quote_with_config() {
     // cost = 150_000 * 20 * 10_000_000_000 / 10_000_000_000
     //      = 150_000 * 20 = 3_000_000
     let metadata = 100_000u64.to_le_bytes().to_vec();
-    let encoded = message::encode(VERSION, 0, LOCAL_DOMAIN, [0u8; 32], REMOTE_DOMAIN, [0u8; 32], &[]);
+    let encoded = message::encode(
+        VERSION,
+        0,
+        LOCAL_DOMAIN,
+        [0u8; 32],
+        REMOTE_DOMAIN,
+        [0u8; 32],
+        &[],
+    );
     let quote: u64 = session
         .direct_call::<_, u64>(IGP_ID, "quote_dispatch", &(metadata, encoded))
         .expect("quote_dispatch should succeed")
@@ -1631,7 +1585,7 @@ fn test_igp_records_payment_on_dispatch() {
         DomainGasConfig {
             gas_overhead: 0,
             token_exchange_rate: 10_000_000_000u64, // 1:1
-            gas_price: 1u64,                         // 1 wei
+            gas_price: 1u64,                        // 1 wei
         },
     )]);
 
@@ -1641,7 +1595,12 @@ fn test_igp_records_payment_on_dispatch() {
             &OWNER_SK,
             TEST_RECIPIENT_ID,
             "dispatch_message",
-            &(MAILBOX_ID, REMOTE_DOMAIN, [0xBBu8; 32], b"testing igp".to_vec()),
+            &(
+                MAILBOX_ID,
+                REMOTE_DOMAIN,
+                [0xBBu8; 32],
+                b"testing igp".to_vec(),
+            ),
         )
         .expect("dispatch should succeed");
 
@@ -1890,12 +1849,8 @@ fn test_warp_drc20_ism_override() {
 fn test_warp_drc20_admin_rejects_non_owner() {
     let mut session = session_with_warp_drc20();
 
-    let result = session.call_public::<_, ()>(
-        &RELAYER_SK,
-        WARP_DRC20_ID,
-        "set_ism",
-        &(TEST_MOCK_ID,),
-    );
+    let result =
+        session.call_public::<_, ()>(&RELAYER_SK, WARP_DRC20_ID, "set_ism", &(TEST_MOCK_ID,));
 
     assert_contract_panic(result, "WarpDrc20: caller is not the owner");
 }
@@ -1921,9 +1876,7 @@ fn test_warp_drc20_admin_accepts_owner_moonlight_sender() {
 
 #[test]
 fn test_warp_native_init() {
-    let mut session = TestSession::instantiate(vec![
-        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
-    ]);
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
 
     session
         .deploy(
@@ -1950,9 +1903,7 @@ fn test_warp_native_init() {
 
 #[test]
 fn test_warp_native_register_account() {
-    let mut session = TestSession::instantiate(vec![
-        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
-    ]);
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
 
     session
         .deploy(
@@ -1966,12 +1917,7 @@ fn test_warp_native_register_account() {
 
     // Register OWNER_PK via Moonlight TX (so abi::public_sender() is set)
     session
-        .call_public::<_, ()>(
-            &OWNER_SK,
-            WARP_NATIVE_ID,
-            "register_account",
-            &(),
-        )
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
         .expect("register_account should succeed");
 
     // Compute the expected H256 = keccak256(pk.to_bytes())
@@ -2000,9 +1946,7 @@ fn test_warp_native_register_account() {
 
 #[test]
 fn test_warp_collateral_init() {
-    let mut session = TestSession::instantiate(vec![
-        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
-    ]);
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
 
     // Deploy a fake wrapped token (use TestMock as placeholder)
     session
@@ -2044,9 +1988,7 @@ fn test_warp_collateral_init() {
 
 #[test]
 fn test_warp_collateral_rejects_zero_token() {
-    let mut session = TestSession::instantiate(vec![
-        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
-    ]);
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
 
     let result = session.deploy(
         WARP_DRC20_COLLATERAL_BYTECODE,
@@ -2060,7 +2002,7 @@ fn test_warp_collateral_rejects_zero_token() {
             ))
             .contract_id(WARP_DRC20_COLLATERAL_ID),
     );
-    assert!(result.is_err(), "init with zero wrapped_token should fail");
+    assert_deploy_panic(result, "WarpCollateral: wrapped token cannot be zero");
 }
 
 #[test]
@@ -2081,7 +2023,7 @@ fn test_owned_contracts_reject_zero_owner_at_initialization() {
             ))
             .contract_id(MAILBOX_ID),
     );
-    assert!(mailbox.is_err(), "Mailbox must reject a zero owner");
+    assert_deploy_panic(mailbox, "Mailbox: owner cannot be zero");
 
     let igp = session.deploy(
         IGP_BYTECODE,
@@ -2095,7 +2037,7 @@ fn test_owned_contracts_reject_zero_owner_at_initialization() {
             ))
             .contract_id(IGP_ID),
     );
-    assert!(igp.is_err(), "IGP must reject a zero owner");
+    assert_deploy_panic(igp, "IGP: owner cannot be zero");
 
     let protocol_fee = session.deploy(
         PROTOCOL_FEE_BYTECODE,
@@ -2104,7 +2046,7 @@ fn test_owned_contracts_reject_zero_owner_at_initialization() {
             .init_arg(&(1u64, 2u64, MAILBOX_ID, *OWNER_ID, zero_owner))
             .contract_id(PROTOCOL_FEE_ID),
     );
-    assert!(protocol_fee.is_err(), "ProtocolFee must reject a zero owner");
+    assert_deploy_panic(protocol_fee, "ProtocolFee: owner cannot be zero");
 
     let multisig = session.deploy(
         ISM_MULTISIG_BYTECODE,
@@ -2113,7 +2055,7 @@ fn test_owned_contracts_reject_zero_owner_at_initialization() {
             .init_arg(&(zero_owner, vec![EthAddress([1u8; 20])], 1u8))
             .contract_id(ISM_MULTISIG_ID),
     );
-    assert!(multisig.is_err(), "MultisigISM must reject a zero owner");
+    assert_deploy_panic(multisig, "MultisigISM: owner cannot be zero");
 
     let synthetic = session.deploy(
         WARP_DRC20_BYTECODE,
@@ -2129,7 +2071,7 @@ fn test_owned_contracts_reject_zero_owner_at_initialization() {
             ))
             .contract_id(WARP_DRC20_ID),
     );
-    assert!(synthetic.is_err(), "WarpDrc20 must reject a zero owner");
+    assert_deploy_panic(synthetic, "WarpDrc20: owner cannot be zero");
 
     let native = session.deploy(
         WARP_NATIVE_BYTECODE,
@@ -2138,7 +2080,7 @@ fn test_owned_contracts_reject_zero_owner_at_initialization() {
             .init_arg(&(MAILBOX_ID, zero_owner, Vec::<(u32, H256)>::new()))
             .contract_id(WARP_NATIVE_ID),
     );
-    assert!(native.is_err(), "WarpNative must reject a zero owner");
+    assert_deploy_panic(native, "WarpNative: owner cannot be zero");
 
     let collateral = session.deploy(
         WARP_DRC20_COLLATERAL_BYTECODE,
@@ -2152,7 +2094,73 @@ fn test_owned_contracts_reject_zero_owner_at_initialization() {
             ))
             .contract_id(WARP_DRC20_COLLATERAL_ID),
     );
-    assert!(collateral.is_err(), "WarpCollateral must reject a zero owner");
+    assert_deploy_panic(collateral, "WarpCollateral: owner cannot be zero");
+}
+
+#[test]
+fn test_warp_routes_reject_zero_mailbox_at_initialization() {
+    let zero_mailbox = ContractId::from_bytes([0u8; 32]);
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+
+    let synthetic = session.deploy(
+        WARP_DRC20_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                zero_mailbox,
+                *OWNER_ID,
+                alloc::string::String::from("Token"),
+                alloc::string::String::from("TOK"),
+                18u8,
+                Vec::<(u32, H256)>::new(),
+            ))
+            .contract_id(WARP_DRC20_ID),
+    );
+    assert_deploy_panic(synthetic, "WarpDrc20: mailbox cannot be zero");
+
+    let native = session.deploy(
+        WARP_NATIVE_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(zero_mailbox, *OWNER_ID, Vec::<(u32, H256)>::new()))
+            .contract_id(WARP_NATIVE_ID),
+    );
+    assert_deploy_panic(native, "WarpNative: mailbox cannot be zero");
+
+    let collateral = session.deploy(
+        WARP_DRC20_COLLATERAL_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                TEST_MOCK_ID,
+                zero_mailbox,
+                *OWNER_ID,
+                Vec::<(u32, H256)>::new(),
+            ))
+            .contract_id(WARP_DRC20_COLLATERAL_ID),
+    );
+    assert_deploy_panic(collateral, "WarpCollateral: mailbox cannot be zero");
+}
+
+#[test]
+fn test_multisig_rejects_more_validators_than_threshold_abi_can_address() {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let validators = (0u16..=u8::MAX as u16)
+        .map(|index| {
+            let mut address = [0u8; 20];
+            address[18..].copy_from_slice(&index.to_be_bytes());
+            EthAddress(address)
+        })
+        .collect::<Vec<_>>();
+
+    let result = session.deploy(
+        ISM_MULTISIG_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(*OWNER_ID, validators, 1u8))
+            .contract_id(ISM_MULTISIG_ID),
+    );
+    assert_deploy_panic(result, "MultisigISM: too many validators");
 }
 
 // =============================================================================
@@ -2271,10 +2279,8 @@ fn test_warp_drc20_handle_mints_tokens() {
     // dest=LOCAL_DOMAIN, recipient=WARP_DRC20_ID
     // Body = TokenMessage(recipient=TEST_RECIPIENT_ID, amount=1_000_000)
     let mint_amount = 1_000_000u64;
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        TEST_RECIPIENT_ID.to_bytes(),
-        mint_amount,
-    );
+    let token_body =
+        hyperlane_dusk_types::token_message::encode(TEST_RECIPIENT_ID.to_bytes(), mint_amount);
 
     let encoded = message::encode(
         VERSION,
@@ -2315,10 +2321,8 @@ fn test_warp_drc20_handle_multiple_mints() {
     // Process three inbound transfers
     for i in 0u32..3 {
         let amount = (i as u64 + 1) * 500_000;
-        let token_body = hyperlane_dusk_types::token_message::encode(
-            TEST_RECIPIENT_ID.to_bytes(),
-            amount,
-        );
+        let token_body =
+            hyperlane_dusk_types::token_message::encode(TEST_RECIPIENT_ID.to_bytes(), amount);
 
         let encoded = message::encode(
             VERSION,
@@ -2349,10 +2353,8 @@ fn test_warp_drc20_handle_rejects_unenrolled_sender() {
 
     // Build inbound message with wrong sender (not the enrolled router)
     let wrong_sender = [0xBBu8; 32];
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        TEST_RECIPIENT_ID.to_bytes(),
-        1000,
-    );
+    let token_body =
+        hyperlane_dusk_types::token_message::encode(TEST_RECIPIENT_ID.to_bytes(), 1000);
 
     let encoded = message::encode(
         VERSION,
@@ -2364,11 +2366,7 @@ fn test_warp_drc20_handle_rejects_unenrolled_sender() {
         &token_body,
     );
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpDrc20: sender is not enrolled router for origin\")",
@@ -2380,10 +2378,8 @@ fn test_warp_drc20_handle_rejects_unenrolled_origin() {
     let (mut session, remote_router) = session_with_warp_drc20_flow();
 
     // Build inbound message from unknown origin domain (42)
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        TEST_RECIPIENT_ID.to_bytes(),
-        1000,
-    );
+    let token_body =
+        hyperlane_dusk_types::token_message::encode(TEST_RECIPIENT_ID.to_bytes(), 1000);
 
     let encoded = message::encode(
         VERSION,
@@ -2395,11 +2391,7 @@ fn test_warp_drc20_handle_rejects_unenrolled_origin() {
         &token_body,
     );
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpDrc20: sender is not enrolled router for origin\")",
@@ -2424,11 +2416,7 @@ fn test_warp_drc20_handle_rejects_invalid_token_message() {
     );
     let message_id = message::id(&encoded);
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpDrc20: invalid token message\")",
@@ -2438,7 +2426,10 @@ fn test_warp_drc20_handle_rejects_invalid_token_message() {
         .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message_id,))
         .expect("delivered query should succeed")
         .data;
-    assert!(!delivered, "malformed warp message must not be marked delivered");
+    assert!(
+        !delivered,
+        "malformed warp message must not be marked delivered"
+    );
 
     let supply: u64 = session
         .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
@@ -2470,10 +2461,7 @@ fn test_warp_drc20_handle_mints_to_registered_external_account() {
 
     // Build inbound message with recipient = registered account H256
     let mint_amount = 500_000u64;
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        recipient_h256,
-        mint_amount,
-    );
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient_h256, mint_amount);
 
     let encoded = message::encode(
         VERSION,
@@ -2693,10 +2681,7 @@ fn test_warp_native_handle_rejects_unenrolled_sender() {
         .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
         .expect("register_account should succeed");
 
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        recipient_h256,
-        1000,
-    );
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient_h256, 1000);
 
     let encoded = message::encode(
         VERSION,
@@ -2708,11 +2693,7 @@ fn test_warp_native_handle_rejects_unenrolled_sender() {
         &token_body,
     );
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpNative: sender is not enrolled router for origin\")",
@@ -2731,10 +2712,7 @@ fn test_warp_native_handle_rejects_unenrolled_origin() {
         .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
         .expect("register_account should succeed");
 
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        recipient_h256,
-        1000,
-    );
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient_h256, 1000);
 
     let encoded = message::encode(
         VERSION,
@@ -2746,11 +2724,7 @@ fn test_warp_native_handle_rejects_unenrolled_origin() {
         &token_body,
     );
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpNative: sender is not enrolled router for origin\")",
@@ -2773,11 +2747,7 @@ fn test_warp_native_handle_rejects_invalid_token_message() {
     );
     let message_id = message::id(&encoded);
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpNative: invalid token message\")",
@@ -2787,13 +2757,19 @@ fn test_warp_native_handle_rejects_invalid_token_message() {
         .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message_id,))
         .expect("delivered query should succeed")
         .data;
-    assert!(!delivered, "malformed native warp message must not be marked delivered");
+    assert!(
+        !delivered,
+        "malformed native warp message must not be marked delivered"
+    );
 
     let pending: u64 = session
         .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_balance", &([0x11u8; 32],))
         .expect("pending_balance should succeed")
         .data;
-    assert_eq!(pending, 0, "malformed native warp message must not escrow funds");
+    assert_eq!(
+        pending, 0,
+        "malformed native warp message must not escrow funds"
+    );
 }
 
 // =============================================================================
@@ -2866,9 +2842,9 @@ fn session_with_warp_collateral_flow() -> (TestSession, H256) {
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
                 .init_arg(&(
-                    WARP_DRC20_ID,  // wrapped token = WarpDrc20
+                    WARP_DRC20_ID, // wrapped token = WarpDrc20
                     MAILBOX_ID,
-                    *OWNER_ID,      // owner
+                    *OWNER_ID, // owner
                     vec![(REMOTE_DOMAIN, remote_router)],
                 ))
                 .contract_id(WARP_DRC20_COLLATERAL_ID),
@@ -2936,10 +2912,8 @@ fn test_warp_collateral_handle_rejects_unenrolled_sender() {
     let (mut session, _remote_router) = session_with_warp_collateral_flow();
 
     let wrong_sender = [0xDDu8; 32];
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        TEST_RECIPIENT_ID.to_bytes(),
-        1000,
-    );
+    let token_body =
+        hyperlane_dusk_types::token_message::encode(TEST_RECIPIENT_ID.to_bytes(), 1000);
 
     let encoded = message::encode(
         VERSION,
@@ -2951,11 +2925,7 @@ fn test_warp_collateral_handle_rejects_unenrolled_sender() {
         &token_body,
     );
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpCollateral: sender is not enrolled router for origin\")",
@@ -2966,10 +2936,8 @@ fn test_warp_collateral_handle_rejects_unenrolled_sender() {
 fn test_warp_collateral_handle_rejects_unenrolled_origin() {
     let (mut session, remote_router) = session_with_warp_collateral_flow();
 
-    let token_body = hyperlane_dusk_types::token_message::encode(
-        TEST_RECIPIENT_ID.to_bytes(),
-        1000,
-    );
+    let token_body =
+        hyperlane_dusk_types::token_message::encode(TEST_RECIPIENT_ID.to_bytes(), 1000);
 
     let encoded = message::encode(
         VERSION,
@@ -2981,11 +2949,7 @@ fn test_warp_collateral_handle_rejects_unenrolled_origin() {
         &token_body,
     );
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpCollateral: sender is not enrolled router for origin\")",
@@ -3008,11 +2972,7 @@ fn test_warp_collateral_handle_rejects_invalid_token_message() {
     );
     let message_id = message::id(&encoded);
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
     assert_contract_panic(
         result,
         "Mailbox: recipient handle failed: Panic(\"WarpCollateral: invalid token message\")",
@@ -3139,8 +3099,7 @@ fn test_warp_routes_reject_zero_amount_inbound_without_state_changes() {
         0
     );
 
-    let (mut collateral_session, collateral_router) =
-        session_with_warp_collateral_funded_flow();
+    let (mut collateral_session, collateral_router) = session_with_warp_collateral_funded_flow();
     let collateral_body = hyperlane_dusk_types::token_message::encode(recipient, 0);
     let collateral_message = message::encode(
         VERSION,
@@ -3159,11 +3118,7 @@ fn test_warp_routes_reject_zero_amount_inbound_without_state_changes() {
     assert_contract_panic_contains(result, "WarpCollateral: amount must be > 0");
     assert_eq!(
         collateral_session
-            .direct_call::<_, u64>(
-                WARP_DRC20_COLLATERAL_ID,
-                "pending_balance",
-                &(recipient,),
-            )
+            .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_balance", &(recipient,),)
             .expect("pending_balance should succeed")
             .data,
         0
@@ -3213,8 +3168,7 @@ fn test_warp_native_escrow_accumulates() {
     // Process two inbound messages to the same unregistered recipient
     for nonce in 0u32..2 {
         let amount = (u64::from(nonce) + 1) * 500_000;
-        let token_body =
-            hyperlane_dusk_types::token_message::encode(unregistered, amount);
+        let token_body = hyperlane_dusk_types::token_message::encode(unregistered, amount);
 
         let encoded = message::encode(
             VERSION,
@@ -3249,8 +3203,7 @@ fn test_warp_native_claim_pending_requires_pending() {
         .expect("register_account should succeed");
 
     // Try to claim with no pending transfers
-    let result =
-        session.call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "claim_pending", &());
+    let result = session.call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "claim_pending", &());
     assert_contract_panic(result, "WarpNative: no pending transfers");
 }
 
@@ -3276,12 +3229,7 @@ fn test_warp_collateral_register_account() {
 
     // Register via Moonlight TX
     session
-        .call_public::<_, ()>(
-            &OWNER_SK,
-            WARP_DRC20_COLLATERAL_ID,
-            "register_account",
-            &(),
-        )
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "register_account", &())
         .expect("register_account should succeed");
 
     // After registration
@@ -3301,12 +3249,7 @@ fn test_warp_collateral_handle_rejects_insufficient_locked_balance() {
     let (mut session, remote_router) = session_with_warp_collateral_flow();
 
     session
-        .call_public::<_, ()>(
-            &OWNER_SK,
-            WARP_DRC20_COLLATERAL_ID,
-            "register_account",
-            &(),
-        )
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "register_account", &())
         .expect("register_account should succeed");
 
     let recipient_h256 = message::keccak256(&OWNER_PK.to_bytes());
@@ -3322,15 +3265,8 @@ fn test_warp_collateral_handle_rejects_insufficient_locked_balance() {
         &token_body,
     );
 
-    let result = session.direct_call::<_, ()>(
-        MAILBOX_ID,
-        "process",
-        &(Vec::<u8>::new(), encoded),
-    );
-    assert_contract_panic_contains(
-        result,
-        "WarpDrc20: insufficient balance",
-    );
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
+    assert_contract_panic_contains(result, "WarpCollateral: insufficient unreserved collateral");
 }
 
 /// Deploy WarpDrc20Collateral with funded DRC20 balance so handle() can
@@ -3525,12 +3461,7 @@ fn test_warp_collateral_handle_resolves_registered_external() {
 
     // Register OWNER_PK on collateral contract
     session
-        .call_public::<_, ()>(
-            &OWNER_SK,
-            WARP_DRC20_COLLATERAL_ID,
-            "register_account",
-            &(),
-        )
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "register_account", &())
         .expect("register_account should succeed");
 
     // Inbound message to collateral: recipient = keccak256(OWNER_PK)
@@ -3538,8 +3469,7 @@ fn test_warp_collateral_handle_resolves_registered_external() {
     let recipient_h256 = message::keccak256(&pk_bytes);
 
     let unlock_amount = 500_000u64;
-    let token_body =
-        hyperlane_dusk_types::token_message::encode(recipient_h256, unlock_amount);
+    let token_body = hyperlane_dusk_types::token_message::encode(recipient_h256, unlock_amount);
 
     let encoded = message::encode(
         VERSION,
@@ -3585,10 +3515,21 @@ fn test_warp_collateral_handle_escrows_unregistered_recipient() {
         .expect("process should succeed — unregistered collateral recipient goes to escrow");
 
     let pending: u64 = session
-        .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_balance", &(unregistered,))
+        .direct_call::<_, u64>(
+            WARP_DRC20_COLLATERAL_ID,
+            "pending_balance",
+            &(unregistered,),
+        )
         .expect("pending_balance should succeed")
         .data;
     assert_eq!(pending, unlock_amount);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        unlock_amount
+    );
 
     let contract_balance_after = warp_drc20_balance_of(
         &mut session,
@@ -3624,12 +3565,7 @@ fn test_warp_collateral_claim_pending_transfers_after_registration() {
         .expect("process should escrow before registration");
 
     session
-        .call_public::<_, ()>(
-            &OWNER_SK,
-            WARP_DRC20_COLLATERAL_ID,
-            "register_account",
-            &(),
-        )
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "register_account", &())
         .expect("register_account should succeed");
     session
         .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "claim_pending", &())
@@ -3644,9 +3580,15 @@ fn test_warp_collateral_claim_pending_transfers_after_registration() {
         .expect("pending_balance should succeed")
         .data;
     assert_eq!(pending, 0);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        0
+    );
 
-    let external_balance =
-        warp_drc20_balance_of(&mut session, Drc20Account::External(*OWNER_PK));
+    let external_balance = warp_drc20_balance_of(&mut session, Drc20Account::External(*OWNER_PK));
     assert_eq!(external_balance, unlock_amount);
 
     let contract_balance_after = warp_drc20_balance_of(
@@ -3656,6 +3598,62 @@ fn test_warp_collateral_claim_pending_transfers_after_registration() {
     assert_eq!(
         contract_balance_after,
         contract_balance_before - unlock_amount
+    );
+}
+
+#[test]
+fn test_warp_collateral_reserves_pending_custody_from_direct_delivery() {
+    let (mut session, remote_router) = session_with_warp_collateral_funded_flow();
+    let pending_recipient = [0xE1; 32];
+    let pending_amount = 8_000_000u64;
+
+    let pending_body =
+        hyperlane_dusk_types::token_message::encode(pending_recipient, pending_amount);
+    let pending_message = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &pending_body,
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), pending_message))
+        .expect("backed pending collateral should be accepted");
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let recipient = message::keccak256(&OWNER_PK.to_bytes());
+    let direct_amount = 3_000_000u64;
+    let direct_body = hyperlane_dusk_types::token_message::encode(recipient, direct_amount);
+    let direct_message = message::encode(
+        VERSION,
+        2,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &direct_body,
+    );
+    let direct_id = message::id(&direct_message);
+    let result =
+        session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), direct_message));
+    assert_contract_panic_contains(result, "WarpCollateral: insufficient unreserved collateral");
+
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        pending_amount
+    );
+    assert!(
+        !session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(direct_id,))
+            .expect("delivered should succeed")
+            .data
     );
 }
 
@@ -3680,11 +3678,7 @@ fn test_warp_collateral_contract_recipient_claims_authenticated_escrow() {
         .expect("contract-recipient collateral should enter escrow");
     assert_eq!(
         session
-            .direct_call::<_, u64>(
-                WARP_DRC20_COLLATERAL_ID,
-                "pending_balance",
-                &(recipient,),
-            )
+            .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_balance", &(recipient,),)
             .expect("pending_balance should succeed")
             .data,
         unlock_amount
@@ -3700,11 +3694,7 @@ fn test_warp_collateral_contract_recipient_claims_authenticated_escrow() {
 
     assert_eq!(
         session
-            .direct_call::<_, u64>(
-                WARP_DRC20_COLLATERAL_ID,
-                "pending_balance",
-                &(recipient,),
-            )
+            .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_balance", &(recipient,),)
             .expect("pending_balance should succeed")
             .data,
         0

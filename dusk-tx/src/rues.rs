@@ -10,6 +10,8 @@ use serde_json::Value;
 
 const TRANSFER_CONTRACT: &str = "0100000000000000000000000000000000000000000000000000000000000000";
 const MAX_TRANSACTION_STATUS_RESPONSE_BYTES: usize = 256 * 1024;
+const MAX_CONTRACT_QUERY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 
 pub struct RuesClient {
     client: reqwest::Client,
@@ -93,8 +95,11 @@ impl RuesClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("Preverify failed ({status}): {body}"));
+            let body = read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "preverify").await?;
+            return Err(format!(
+                "Preverify failed ({status}): {}",
+                String::from_utf8_lossy(&body)
+            ));
         }
 
         // Propagate
@@ -110,8 +115,11 @@ impl RuesClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("Propagate failed ({status}): {body}"));
+            let body = read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "propagate").await?;
+            return Err(format!(
+                "Propagate failed ({status}): {}",
+                String::from_utf8_lossy(&body)
+            ));
         }
         Ok(())
     }
@@ -134,7 +142,12 @@ impl RuesClient {
             .map_err(|e| format!("HTTP error: {e}"))?;
 
         let status = response.status();
-        let body = read_transaction_status_body(response).await?;
+        let body = read_response_body(
+            response,
+            MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+            "transaction status",
+        )
+        .await?;
         if !status.is_success() {
             return Err(format!(
                 "Transaction status query failed ({status}): {}",
@@ -161,11 +174,13 @@ impl RuesClient {
             .map_err(|e| format!("HTTP error: {e}"))?;
 
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-
         if status.is_success() {
             return Ok(true);
         }
+
+        let body =
+            read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "contract existence").await?;
+        let body = String::from_utf8_lossy(&body);
 
         // Rusk reports non-existent contracts with a descriptive error body.
         // The status code and exact wording have varied across versions.
@@ -200,50 +215,59 @@ impl RuesClient {
             .map_err(|e| format!("HTTP error: {e}"))?;
 
         let status = response.status();
+        let max_bytes = if status.is_success() {
+            MAX_CONTRACT_QUERY_RESPONSE_BYTES
+        } else {
+            MAX_ERROR_RESPONSE_BYTES
+        };
+        let response_body = read_response_body(response, max_bytes, "contract query").await?;
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
             return Err(format!(
-                "Query {contract_hex}/{method} failed ({status}): {body}"
+                "Query {contract_hex}/{method} failed ({status}): {}",
+                String::from_utf8_lossy(&response_body)
             ));
         }
 
-        Ok(response.bytes().await.map_err(|e| format!("{e}"))?.to_vec())
+        Ok(response_body)
     }
 }
 
-async fn read_transaction_status_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+async fn read_response_body(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    context: &str,
+) -> Result<Vec<u8>, String> {
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_TRANSACTION_STATUS_RESPONSE_BYTES as u64)
+        .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(format!(
-            "Transaction status response exceeds {} bytes",
-            MAX_TRANSACTION_STATUS_RESPONSE_BYTES
-        ));
+        return Err(format!("{context} response exceeds {max_bytes} bytes"));
     }
 
     let mut body = Vec::with_capacity(
         response
             .content_length()
             .unwrap_or_default()
-            .min(MAX_TRANSACTION_STATUS_RESPONSE_BYTES as u64) as usize,
+            .min(max_bytes as u64) as usize,
     );
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| format!("Failed to read transaction status response: {e}"))?
+        .map_err(|e| format!("Failed to read {context} response: {e}"))?
     {
-        append_transaction_status_chunk(&mut body, &chunk)?;
+        append_bounded_chunk(&mut body, &chunk, max_bytes, context)?;
     }
     Ok(body)
 }
 
-fn append_transaction_status_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
-    if chunk.len() > MAX_TRANSACTION_STATUS_RESPONSE_BYTES.saturating_sub(body.len()) {
-        return Err(format!(
-            "Transaction status response exceeds {} bytes",
-            MAX_TRANSACTION_STATUS_RESPONSE_BYTES
-        ));
+fn append_bounded_chunk(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: usize,
+    context: &str,
+) -> Result<(), String> {
+    if chunk.len() > max_bytes.saturating_sub(body.len()) {
+        return Err(format!("{context} response exceeds {max_bytes} bytes"));
     }
     body.extend_from_slice(chunk);
     Ok(())
@@ -314,8 +338,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        append_transaction_status_chunk, parse_transaction_status_response,
-        transaction_status_query, TransactionStatus, MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+        append_bounded_chunk, parse_transaction_status_response, transaction_status_query,
+        TransactionStatus, MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
     };
 
     #[test]
@@ -358,11 +382,19 @@ mod tests {
     #[test]
     fn transaction_status_body_is_bounded_without_content_length() {
         let mut body = Vec::new();
-        append_transaction_status_chunk(
+        append_bounded_chunk(
             &mut body,
             &vec![b'x'; MAX_TRANSACTION_STATUS_RESPONSE_BYTES],
+            MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+            "transaction status",
         )
         .unwrap();
-        assert!(append_transaction_status_chunk(&mut body, b"x").is_err());
+        assert!(append_bounded_chunk(
+            &mut body,
+            b"x",
+            MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+            "transaction status",
+        )
+        .is_err());
     }
 }

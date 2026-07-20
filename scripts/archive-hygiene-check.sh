@@ -25,6 +25,7 @@ rg_to_file() {
     label="$2"
     shift 2
 
+    : >"$out_file" || fail "cannot create $label scan output: $out_file"
     set +e
     rg "$@" >"$out_file"
     rg_status=$?

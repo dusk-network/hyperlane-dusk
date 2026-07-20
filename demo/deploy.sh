@@ -7,7 +7,8 @@
 # registers the deployer's BLS account for token bridging.
 #
 # Usage:
-#   bash deploy.sh              Full deployment
+#   bash deploy.sh --dusk-ism testMock
+#   bash deploy.sh --dusk-ism messageIdMultisig --multisig-validators <addr> --multisig-threshold 1
 #   bash deploy.sh --skip-deploy  Reuse existing deployment files
 #   bash deploy.sh --reset      Delete existing and redeploy
 #
@@ -48,7 +49,7 @@ RESET=false
 
 # Dusk Mailbox default ISM. `testMock` is permissive (no validator/metadata).
 # `messageIdMultisig` requires running a validator agent for the EVM origin chain.
-DUSK_DEFAULT_ISM="${DUSK_DEFAULT_ISM:-testMock}"
+DUSK_DEFAULT_ISM="${DUSK_DEFAULT_ISM:-}"
 MULTISIG_VALIDATORS="${MULTISIG_VALIDATORS:-$ANVIL_DEPLOYER}"
 MULTISIG_THRESHOLD="${MULTISIG_THRESHOLD:-1}"
 DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
@@ -81,7 +82,10 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ "$DUSK_DEFAULT_ISM" != "testMock" ] && [ "$DUSK_DEFAULT_ISM" != "messageIdMultisig" ]; then
+if [ "$SKIP_DEPLOY" = false ] && [ -z "$DUSK_DEFAULT_ISM" ]; then
+    fail "Select the Dusk Mailbox policy explicitly with --dusk-ism testMock or --dusk-ism messageIdMultisig"
+fi
+if [ -n "$DUSK_DEFAULT_ISM" ] && [ "$DUSK_DEFAULT_ISM" != "testMock" ] && [ "$DUSK_DEFAULT_ISM" != "messageIdMultisig" ]; then
     fail "Invalid --dusk-ism '$DUSK_DEFAULT_ISM' (expected: testMock or messageIdMultisig)"
 fi
 
