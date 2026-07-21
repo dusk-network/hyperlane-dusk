@@ -2861,7 +2861,7 @@ checks.
 ## 2026-07-21 Stacked Withdrawal Compatibility Gate
 
 The withdrawal stack was merged with base head
-`62464287dce7472f52dcb11ee92ece6631ac9368`. Because withdrawal is a required
+`6246428d9246f4e4b581e7c90328d28f1439d9e5`. Because withdrawal is a required
 Mailbox ABI but adds no persisted field, the stacked Mailbox advances its
 deployment compatibility version from 1 to 2. Both reuse paths require that
 version, so a base-only Mailbox cannot be mistaken for a withdrawal-capable
