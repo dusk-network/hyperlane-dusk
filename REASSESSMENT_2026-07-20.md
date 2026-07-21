@@ -17,7 +17,7 @@ The final base covered-tree anchor is
 validated at `db040e3f1eab4ba012a12a6be92c8f86268a993f`; and the synchronized
 agent/E2E checkout was
 `356cf22a592d1d657519b9cfd5f6af9148096972` on upstream
-`669d966ad71582fe3c9d96b5ed1b8ea3724e07fe`. The base clean gate passed 12
+`67933966ed9c6f9e3d5ec095372e11414c82e4e7`. The base clean gate passed 13
 WASMs, clippy, 29 type tests, 99 VM tests, 17 CLI tests, 5 data-driver tests,
 the standalone operator compile, and secret hygiene. Its durable log is
 `/tmp/hyperlane-dusk-base-repro-aaad049.log` (SHA-256

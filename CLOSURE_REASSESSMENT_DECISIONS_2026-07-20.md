@@ -203,7 +203,7 @@ self-tests continue to cover missing files, missing references, and hash
 mismatches.
 
 The compile/runtime clean-layout anchor remains monorepo `b4c46ce9`; the later
-policy-only anchor `dad14dbbea4bbd59f6c6697f89cc245d5c1cf2a0` adds the two
+policy-only anchor `c35f86405cf8cd83927860aca8b5c38b042ee198` adds the two
 validator fail-stop files to the fork-boundary allowlist. That policy delta was
 validated by the exact boundary reproduction and a successful hosted
 `Dusk review policy gate`; it is tracked separately so it is not mislabeled as
