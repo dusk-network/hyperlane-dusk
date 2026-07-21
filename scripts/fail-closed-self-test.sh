@@ -56,6 +56,16 @@ rg -q -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/demo.sh \
     || fail "standalone demo does not delegate warm validation"
 rg -q -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh \
     || fail "agent config generation does not delegate live validation"
+rg -q -F '"key": "${ANVIL_RELAYER_PRIVATE_KEY}"' demo/gen-agent-configs.sh \
+    || fail "relayer config does not use its isolated EVM signer"
+[ "$(rg -c -F '"key": "${ANVIL_VALIDATOR_PRIVATE_KEY}"' demo/gen-agent-configs.sh)" -eq 3 ] \
+    || fail "validator configs do not consistently use the isolated validator identity"
+rg -q -F -- '--multisig-validators "$E2E_ANVIL_VALIDATOR"' demo/e2e-agents.sh \
+    || fail "live multisig E2E does not deploy against the isolated validator identity"
+rg -q -F 'ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY"' demo/e2e-agents.sh \
+    || fail "live E2E does not pass the isolated relayer signer to config generation"
+rg -q -F 'ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY"' demo/e2e-agents.sh \
+    || fail "live E2E does not pass the isolated validator signer to config generation"
 
 withdrawal_line="$(rg -n -F 'Withdrawing one LUX of WarpDrc20 dispatch credit' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
 dusk_validator_start_line="$(rg -n -F 'Starting Dusk-origin validator' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
