@@ -84,6 +84,12 @@ hygiene for both the base PR and PR #10. Pre-merge readiness consumes that
 proposal context; manual production mode continues to require the trusted
 default-branch review-policy context.
 
+Monorepo policy anchor `dad14dbbea4bbd59f6c6697f89cc245d5c1cf2a0`
+separately validates the fork-boundary allowlist for the already-tested
+validator fail-stop implementation. It does not replace static checkout
+`b4c46ce9`; it prevents that CI-only delta from being described as an untested
+runtime change.
+
 ## 2026-07-21 Final Combined Static and Isolated E2E Validation
 
 The final covered implementation set was the Dusk base anchor

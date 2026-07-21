@@ -35,6 +35,7 @@ jobs:
       MONOREPO_REF: ${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
       MONOREPO_COMPARE_VIA_GH: "1"
       MONOREPO_COMPARE_HEAD: dusk-network:${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
+      STATUS_CHECK_WAIT_SECONDS: "300"
 
     steps:
       - name: Checkout Dusk Hyperlane

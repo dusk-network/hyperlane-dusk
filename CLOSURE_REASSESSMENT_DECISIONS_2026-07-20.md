@@ -183,6 +183,15 @@ that physical archive and hash check enabled by default, and its fail-closed
 self-tests continue to cover missing files, missing references, and hash
 mismatches.
 
+The compile/runtime clean-layout anchor remains monorepo `b4c46ce9`; the later
+policy-only anchor `dad14dbbea4bbd59f6c6697f89cc245d5c1cf2a0` adds the two
+validator fail-stop files to the fork-boundary allowlist. That policy delta was
+validated by the exact boundary reproduction and a successful hosted
+`Dusk review policy gate`; it is tracked separately so it is not mislabeled as
+a rerun of the Rust/contract gate. Cross-repository readiness may wait up to
+five minutes for the agent contexts rather than converting a still-running
+hosted build into a failure after sixty seconds.
+
 `READINESS_MODE=premerge` validates the exact required checks on the current
 Dusk PR, the monorepo PR, and the workflow-dispatcher PR, but does not require
 any of them to be already approved or merged. Those requirements would create
