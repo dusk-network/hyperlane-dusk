@@ -658,11 +658,21 @@ cd "$SOLIDITY_DIR"
         echo "$addr"
     }
 
-    step "Deploying TestIsm..."
-    EVM_ISM=$(forge_deploy contracts/test/TestIsm.sol:TestIsm \
-        --rpc-url "$ANVIL_RPC" \
-        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy TestIsm"
-    ok "TestIsm: $EVM_ISM"
+    if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
+        step "Deploying EVM StorageMessageIdMultisigIsm..."
+        EVM_ISM=$(forge_deploy contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
+            --rpc-url "$ANVIL_RPC" \
+            --private-key "$ANVIL_PRIVATE_KEY" \
+            --constructor-args "[$ANVIL_DEPLOYER]" 1) \
+            || fail "Failed to deploy EVM MessageIdMultisigIsm"
+        ok "EVM MessageIdMultisigIsm: $EVM_ISM"
+    else
+        step "Deploying TestIsm..."
+        EVM_ISM=$(forge_deploy contracts/test/TestIsm.sol:TestIsm \
+            --rpc-url "$ANVIL_RPC" \
+            --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy TestIsm"
+        ok "TestIsm: $EVM_ISM"
+    fi
 
     step "Deploying TestPostDispatchHook..."
     EVM_HOOK=$(forge_deploy contracts/test/TestPostDispatchHook.sol:TestPostDispatchHook \

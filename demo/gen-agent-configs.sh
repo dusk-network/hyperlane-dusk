@@ -194,10 +194,15 @@ PY
 
 RELAYER_DB="$RUN_DIR/db-relayer"
 VALIDATOR_DB="$RUN_DIR/db-validator-anvil"
+VALIDATOR_DUSK_DB="$RUN_DIR/db-validator-dusk"
 CHECKPOINT_DIR="$RUN_DIR/checkpoints-anvil"
+CHECKPOINT_DUSK_DIR="$RUN_DIR/checkpoints-dusk"
+DUSK_RELAYER_EVENT_CURSOR_DIR="$RUN_DIR/event-cursors-relayer-dusk"
+DUSK_VALIDATOR_EVENT_CURSOR_DIR="$RUN_DIR/event-cursors-validator-dusk"
 
 RELAYER_CONFIG="$RUN_DIR/relayer.json"
 VALIDATOR_CONFIG="$RUN_DIR/validator-anvil.json"
+VALIDATOR_DUSK_CONFIG="$RUN_DIR/validator-dusk.json"
 DUSK_SIGNER_KEY_FILE="$RUN_DIR/dusk-signer.key"
 
 printf '0x%s\n' "$DUSK_SECRET_KEY_HEX" > "$DUSK_SIGNER_KEY_FILE"
@@ -232,6 +237,7 @@ cat > "$RELAYER_CONFIG" <<JSON
       "name": "dusk",
       "domainId": ${DUSK_DOMAIN},
       "chainId": ${DUSK_CHAIN_ID},
+      "eventCursorDir": "${DUSK_RELAYER_EVENT_CURSOR_DIR}",
       "protocol": "dusk",
       "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
       "gasLimit": ${DUSK_GAS_LIMIT},
@@ -250,7 +256,7 @@ JSON
 # ── Write Validator Config (only for MessageIdMultisig) ─────────────────────
 
 if [ "$ISM" = "messageIdMultisig" ]; then
-    mkdir -p "$CHECKPOINT_DIR"
+    mkdir -p "$CHECKPOINT_DIR" "$CHECKPOINT_DUSK_DIR"
 
     cat > "$VALIDATOR_CONFIG" <<JSON
 {
@@ -279,6 +285,36 @@ if [ "$ISM" = "messageIdMultisig" ]; then
   }
 }
 JSON
+
+    cat > "$VALIDATOR_DUSK_CONFIG" <<JSON
+{
+  "metricsPort": 19094,
+  "log": { "level": "debug", "format": "pretty" },
+  "db": "${VALIDATOR_DUSK_DB}",
+  "originChainName": "dusk",
+  "validator": { "type": "hexKey", "key": "${ANVIL_PRIVATE_KEY}" },
+  "checkpointSyncer": { "type": "localStorage", "path": "${CHECKPOINT_DUSK_DIR}" },
+  "interval": 2,
+  "chains": {
+    "dusk": {
+      "name": "dusk",
+      "domainId": ${DUSK_DOMAIN},
+      "chainId": ${DUSK_CHAIN_ID},
+      "eventCursorDir": "${DUSK_VALIDATOR_EVENT_CURSOR_DIR}",
+      "protocol": "dusk",
+      "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
+      "gasLimit": ${DUSK_GAS_LIMIT},
+      "gasPrice": ${DUSK_GAS_PRICE},
+      "mailbox": "0x${DUSK_MAILBOX}",
+      "interchainGasPaymaster": "0x${DUSK_IGP}",
+      "validatorAnnounce": "0x${DUSK_VALIDATOR_ANNOUNCE}",
+      "merkleTreeHook": "0x${DUSK_MERKLE_TREE_HOOK}",
+      "submitter": "Classic",
+      "signer": { "type": "duskKey", "keyFile": "${DUSK_SIGNER_KEY_FILE}" }
+    }
+  }
+}
+JSON
 fi
 
 # ── Print Paths as JSON ─────────────────────────────────────────────────────
@@ -287,11 +323,12 @@ if [ "$ISM" = "messageIdMultisig" ]; then
     output_json="$(jq -n \
       --arg relayer "$RELAYER_CONFIG" \
       --arg validator "$VALIDATOR_CONFIG" \
+      --arg dusk_validator "$VALIDATOR_DUSK_CONFIG" \
       --arg dusk_signer_key_file "$DUSK_SIGNER_KEY_FILE" \
       --arg run_dir "$RUN_DIR" \
       --arg deployment_snapshot "$STATE_SNAPSHOT" \
       --arg run_id "$RUN_ID" \
-      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, validator: $validator, duskSignerKeyFile: $dusk_signer_key_file}')"
+      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, validator: $validator, duskValidator: $dusk_validator, duskSignerKeyFile: $dusk_signer_key_file}')"
 else
     output_json="$(jq -n \
       --arg relayer "$RELAYER_CONFIG" \

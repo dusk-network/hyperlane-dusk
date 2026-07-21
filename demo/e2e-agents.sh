@@ -35,6 +35,8 @@ TIMEOUT_SECS="${TIMEOUT_SECS:-240}"
 # PIDs of the currently running agents (used by the EXIT trap).
 CURRENT_RELAYER_PID=""
 CURRENT_VALIDATOR_PID=""
+CURRENT_DUSK_VALIDATOR_PID=""
+CURRENT_DUSK_VALIDATOR_LOG=""
 GENERATED_DUSK_SIGNER_KEY_FILES=()
 GENERATED_AGENT_CONFIG_FILES=()
 GENERATED_AGENT_RUN_DIRS=()
@@ -91,6 +93,7 @@ cleanup() {
     # Best-effort cleanup on failures/timeouts.
     kill_pid "$CURRENT_RELAYER_PID"
     kill_pid "$CURRENT_VALIDATOR_PID"
+    kill_pid "$CURRENT_DUSK_VALIDATOR_PID"
     if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
         rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
     fi
@@ -108,6 +111,7 @@ trap cleanup EXIT
 tail_logs_on_fail() {
     local relayer_log="$1"
     local validator_log="${2:-}"
+    local dusk_validator_log="${3:-$CURRENT_DUSK_VALIDATOR_LOG}"
     echo "" >&2
     echo "=== relayer log (tail) ===" >&2
     tail -n 120 "$relayer_log" 2>/dev/null || true
@@ -115,6 +119,11 @@ tail_logs_on_fail() {
         echo "" >&2
         echo "=== validator log (tail) ===" >&2
         tail -n 120 "$validator_log" 2>/dev/null || true
+    fi
+    if [ -n "$dusk_validator_log" ]; then
+        echo "" >&2
+        echo "=== Dusk-origin validator log (tail) ===" >&2
+        tail -n 120 "$dusk_validator_log" 2>/dev/null || true
     fi
 }
 
@@ -131,6 +140,10 @@ assert_agents_alive() {
     if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
         tail_logs_on_fail "$relayer_log" "$validator_log"
         fail "validator exited unexpectedly"
+    fi
+    if [ -n "$CURRENT_DUSK_VALIDATOR_PID" ] && ! kill -0 "$CURRENT_DUSK_VALIDATOR_PID" 2>/dev/null; then
+        tail_logs_on_fail "$relayer_log" "$validator_log" "$CURRENT_DUSK_VALIDATOR_LOG"
+        fail "Dusk-origin validator exited unexpectedly"
     fi
 }
 
@@ -182,16 +195,18 @@ run_case() {
     # Register the generator's deterministic paths before invoking it. If the
     # generator succeeds but JSON parsing fails, the parent EXIT trap still
     # owns every emitted config and signer file.
-    local cfg_json relayer_cfg validator_cfg generated_signer_key_file
-    local expected_relayer_cfg expected_validator_cfg expected_run_dir
+    local cfg_json relayer_cfg validator_cfg dusk_validator_cfg generated_signer_key_file
+    local expected_relayer_cfg expected_validator_cfg expected_dusk_validator_cfg expected_run_dir
     expected_run_dir="/tmp/hyperlane-agent-${ism}-${run_id}"
     expected_relayer_cfg="$expected_run_dir/relayer.json"
     expected_validator_cfg="$expected_run_dir/validator-anvil.json"
+    expected_dusk_validator_cfg="$expected_run_dir/validator-dusk.json"
     dusk_signer_key_file="$expected_run_dir/dusk-signer.key"
     GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")
     GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
     if [ "$ism" = "messageIdMultisig" ]; then
         GENERATED_AGENT_CONFIG_FILES+=("$expected_validator_cfg")
+        GENERATED_AGENT_CONFIG_FILES+=("$expected_dusk_validator_cfg")
     fi
     GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
 
@@ -199,13 +214,16 @@ run_case() {
     cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id")"
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
     validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
+    dusk_validator_cfg="$(echo "$cfg_json" | jq -r '.duskValidator // empty')"
     generated_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
     [ "$relayer_cfg" = "$expected_relayer_cfg" ] || fail "generator returned an unexpected relayer config path"
     [ "$generated_signer_key_file" = "$dusk_signer_key_file" ] || fail "generator returned an unexpected Dusk signer path"
     if [ "$ism" = "messageIdMultisig" ]; then
         [ "$validator_cfg" = "$expected_validator_cfg" ] || fail "generator returned an unexpected validator config path"
+        [ "$dusk_validator_cfg" = "$expected_dusk_validator_cfg" ] || fail "generator returned an unexpected Dusk validator config path"
     else
         [ -z "$validator_cfg" ] || fail "TestMock generator unexpectedly returned a validator config"
+        [ -z "$dusk_validator_cfg" ] || fail "TestMock generator unexpectedly returned a Dusk validator config"
     fi
 
     # Build agent binaries (incremental).
@@ -213,8 +231,9 @@ run_case() {
 
     local relayer_log="/tmp/hyperlane-relayer-${ism}-${run_id}.log"
     local validator_log="/tmp/hyperlane-validator-${ism}-${run_id}.log"
+    local dusk_validator_log="/tmp/hyperlane-validator-dusk-${ism}-${run_id}.log"
 
-    local relayer_pid="" validator_pid=""
+    local relayer_pid="" validator_pid="" dusk_validator_pid=""
 
     # Start validator first (needed for messageIdMultisig metadata).
     if [ "$ism" = "messageIdMultisig" ]; then
@@ -226,6 +245,16 @@ run_case() {
         CURRENT_VALIDATOR_PID="$validator_pid"
         sleep 2
         kill -0 "$validator_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "$validator_log"; fail "validator failed to start"; }
+
+        info "Starting Dusk-origin validator..."
+        (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+          exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$dusk_validator_cfg" ./target/debug/validator \
+          >"$dusk_validator_log" 2>&1) &
+        dusk_validator_pid="$!"
+        CURRENT_DUSK_VALIDATOR_PID="$dusk_validator_pid"
+        CURRENT_DUSK_VALIDATOR_LOG="$dusk_validator_log"
+        sleep 2
+        kill -0 "$dusk_validator_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "$validator_log" "$dusk_validator_log"; fail "Dusk-origin validator failed to start"; }
     fi
 
     info "Starting relayer..."
@@ -501,14 +530,20 @@ PY
     info "Stopping agents..."
     kill_pid "$relayer_pid"
     kill_pid "$validator_pid"
+    kill_pid "$dusk_validator_pid"
     CURRENT_RELAYER_PID=""
     CURRENT_VALIDATOR_PID=""
+    CURRENT_DUSK_VALIDATOR_PID=""
+    CURRENT_DUSK_VALIDATOR_LOG=""
     if [ -n "$dusk_signer_key_file" ]; then
         rm -f "$dusk_signer_key_file" 2>/dev/null || true
     fi
     rm -f "$relayer_cfg" 2>/dev/null || true
     if [ -n "$validator_cfg" ]; then
         rm -f "$validator_cfg" 2>/dev/null || true
+    fi
+    if [ -n "$dusk_validator_cfg" ]; then
+        rm -f "$dusk_validator_cfg" 2>/dev/null || true
     fi
 
     info "Stopping environment..."
