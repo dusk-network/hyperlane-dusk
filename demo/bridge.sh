@@ -85,7 +85,7 @@ if [ ! -f "$BRIDGE_STATE_FILE" ]; then
     fail "No deployment found at $BRIDGE_STATE_FILE
 
   Deploy first:
-    bash demo/deploy.sh"
+    bash demo/deploy.sh --dusk-ism testMock"
 fi
 
 # Parse state
@@ -209,10 +209,9 @@ cmd_to_dusk() {
 
     # Step 3: Deliver to Dusk
     step "Processing message on Dusk Mailbox..."
-    "$DUSK_TX" process \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" process \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --mailbox "$DUSK_MAILBOX" \
         --message "$relay_msg" \
         2>&1 >/dev/null || fail "Dusk process failed"
@@ -268,10 +267,9 @@ cmd_to_evm() {
     evm_recipient_pad32=$(pad_evm_address "$ANVIL_DEPLOYER")
 
     step "Calling WarpDrc20.transfer_remote(domain=$EVM_DOMAIN, amount=$amount_wei)..."
-    "$DUSK_TX" transfer-remote \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --warp-contract "$DUSK_WARP" \
         --destination "$EVM_DOMAIN" \
         --recipient "$evm_recipient_pad32" \

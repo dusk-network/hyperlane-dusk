@@ -15,10 +15,14 @@ GitHub pull-request validation is split into two jobs with different authority:
   data, checks its diff and required file modes, and never checks out or runs
   proposed scripts.
 
-The trusted gate waits for the unprivileged check on the exact proposed commit.
-It also requires the proposal-validation and trusted-policy workflow files to
-be byte-for-byte unchanged from the base. This prevents a PR from weakening a
-policy workflow and then using that replacement to certify itself.
+The trusted gate waits for the exact locked proposal workflow file, exact
+`pull_request` event, and exact proposed commit through the Actions API. It
+does not accept a same-named job from another GitHub Actions workflow. It also
+requires the proposal-validation and trusted-policy workflow files to be
+byte-for-byte unchanged from the base. Once the proposed guard scripts exist
+on the trusted base, they are locked as well, so a PR cannot weaken a guard and
+its self-test together. First publication of the workflows and guard scripts is
+an owner-reviewed bootstrap; it is not self-certifying evidence.
 
 The implementation bootstrap introduces `production-readiness-gate.yml` as a
 trusted `pull_request_target` workflow because it may receive status-read
@@ -68,6 +72,31 @@ validator, relayer, image-publishing, or status-administration authority.
 No artifacts are uploaded. `persist-credentials: false` is set on every
 checkout. The ephemeral runner is discarded after its single job so private
 Rusk source, build output, and other workspace residue do not cross runs.
+
+On 2026-07-21, the `dusk-hyperlane-repro` environment was created with
+protected-branch deployment policy and `HDauven` as required reviewer. No
+repository Actions secrets are configured and no visible repository runner has
+both required Dusk labels. Put `DUSK_ORG_READ_TOKEN` in this environment, not at
+repository scope, only after the ephemeral runner is ready.
+
+The production-readiness workflow is manually invoked with
+`repository_dispatch`, which always loads the default-branch workflow. It does
+not accept `workflow_dispatch` because that would let a repository writer
+select a branch-controlled workflow while a status-read secret is present.
+`DUSK_STATUS_READ_TOKEN` is a separate read-only status credential; the broader
+source-read token is never a fallback for that job.
+
+After bootstrap, the trusted review gate also byte-locks the manual repro
+workflow, its dispatcher gate, and `.github/actionlint.yaml`. The gate binds a
+successful proposal run to the current PR number and its exact base ref, base
+SHA, and head SHA; a successful run for the same head on another PR or base is
+not reusable evidence.
+The trusted policy gate has no manual trigger, so a `workflow_dispatch` run on
+a chosen ref cannot emit its required PR status context.
+The dispatcher self-check retains a manual trigger for operator diagnostics,
+but its manual job uses `Manual repro dispatcher manual validation`; only a
+`pull_request` run can emit the required `Manual repro dispatcher gate`
+context. This prevents branch protection from accepting a same-name manual run.
 
 ## Pinned validation tooling
 

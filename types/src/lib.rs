@@ -19,6 +19,9 @@ use bytecheck::CheckBytes;
 use rkyv::{Archive, Deserialize, Serialize};
 
 pub mod checkpoint;
+pub mod caller;
+#[cfg(feature = "drc20")]
+pub mod drc20;
 pub mod events;
 pub mod merkle;
 pub mod message;
@@ -121,7 +124,7 @@ pub enum HookType {
 /// overhead for each remote domain.
 ///
 /// All fields use `u64` to avoid cross-architecture rkyv alignment issues
-/// with `u128` (which has different alignment on x86_64 vs wasm32).
+/// with `u128` (which has different alignment on `x86_64` vs `wasm32`).
 /// The IGP contract casts to `u128` during the cost calculation to prevent
 /// intermediate overflow.
 #[derive(

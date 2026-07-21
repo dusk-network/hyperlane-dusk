@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   dispatcher-gate:
-    name: Manual repro dispatcher gate
+    name: ${{ github.event_name == 'pull_request' && 'Manual repro dispatcher gate' || 'Manual repro dispatcher manual validation' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
