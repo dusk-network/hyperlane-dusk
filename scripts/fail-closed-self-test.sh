@@ -361,7 +361,7 @@ case "$*" in
         printf '[]\n'
         ;;
     "api --paginate repos/dusk-network/hyperlane-dusk/commits/1111111111111111111111111111111111111111/check-runs?per_page=100 --jq "*)
-        printf '%s\n' '{"name":"Dusk review policy gate","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/first"}'
+        printf '%s\n' '{"name":"Dusk proposal validation","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/first"}'
         if [ "${GH_MOCK_MISSING_EXACT:-0}" = "1" ]; then
             printf '%s\n' '{"name":"Production readiness guard / lookalike","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/lookalike"}'
         else
@@ -389,6 +389,13 @@ expect_fail \
     'missing required status checks: Production readiness guard' \
     env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
         READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_MISSING_EXACT=1 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-production-rejects-proposal-only \
+    'missing required status checks: Dusk review policy gate' \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=production STATUS_CHECK_WAIT_SECONDS=0 \
     bash scripts/production-readiness-guard.sh
 
 agent_state="$workdir/agent-state.json"

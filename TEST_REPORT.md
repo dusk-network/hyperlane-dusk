@@ -76,6 +76,14 @@ green is not production approval. Obsolete requirements for one old local
 archive path, historical run URLs, and duplicated handoff boilerplate were
 removed because they did not establish validity of the current candidate.
 
+Because the trusted `pull_request_target` review workflow is introduced by the
+still-open dispatcher PR #3, it cannot run against PR #1 before that bootstrap
+lands on `main`. A separate `Dusk proposal validation` workflow now exercises
+actionlint, diff hygiene, the fail-closed suite, report hygiene, and secret
+hygiene for both the base PR and PR #10. Pre-merge readiness consumes that
+proposal context; manual production mode continues to require the trusted
+default-branch review-policy context.
+
 ## 2026-07-21 Final Harness and Readiness Validation
 
 The final base covered-tree anchor is

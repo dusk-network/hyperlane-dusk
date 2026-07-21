@@ -167,6 +167,16 @@ hygiene scripts against the proposed tree. A PR cannot certify deletion or
 weakening of its own guard. Required check evaluation paginates all check runs,
 matches exact configured names, and treats a lookalike name as missing.
 
+That trusted workflow cannot execute for the implementation PR until dispatcher
+PR #3 installs it on the default branch. During this explicit bootstrap,
+`Dusk proposal validation` runs the proposed workflow lint, diff checks,
+fail-closed self-tests, report hygiene, and secret hygiene on PRs targeting
+`main` or the stacked base branch. Pre-merge readiness requires that proposal
+check and the readiness guard. Proposal validation is machine evidence, not a
+trusted-policy or production substitute: production mode still requires the
+default-branch `Dusk review policy gate`, and branch protection must switch to
+that trusted context once PR #3 lands.
+
 `READINESS_MODE=premerge` validates the exact required checks on the current
 Dusk PR, the monorepo PR, and the workflow-dispatcher PR, but does not require
 any of them to be already approved or merged. Those requirements would create
