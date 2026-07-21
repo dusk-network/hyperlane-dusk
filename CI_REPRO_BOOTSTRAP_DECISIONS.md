@@ -34,6 +34,11 @@ exact diff, use the documented admin bypass only for that policy update, and
 immediately verify that branch protection again requires `Dusk review policy
 gate`. Normal implementation PRs must not modify either locked workflow.
 
+The empty-script bootstrap branch does not infer scope from an empty worklist.
+It permits only the actionlint configuration, the four workflow-policy files,
+and this decision record. Any contract, runtime, test, or unrelated document
+change fails the proposal check even before the guard scripts exist on `main`.
+
 ## Exact evidence inputs
 
 All three dispatcher inputs are required 40-character commit SHAs. There are no
