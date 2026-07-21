@@ -235,6 +235,12 @@ pub struct TransferFromCall {
 ///
 /// Phoenix callers have no stable runtime principal and are rejected. They
 /// must use an explicitly signed, replay-protected authorization flow.
+///
+/// # Panics
+///
+/// Panics when the VM reports a root Moonlight call without its public sender,
+/// or a nested call without a contract caller. Both indicate an invalid host
+/// call context and must fail closed before an account principal is produced.
 #[cfg(feature = "abi")]
 #[must_use]
 pub fn sender_account() -> Principal {
