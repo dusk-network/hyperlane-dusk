@@ -40,11 +40,14 @@ silently relabeled as having run those tests.
   material or submitting any deterministic deployment.
 - **Transaction reconciliation:** transport/server failures remain retryable;
   deterministic HTTP-client and successful-response schema incompatibilities
-  terminate immediately while preserving the exact transaction hash. After
-  propagation, every observation error other than an explicit execution
-  rejection is labeled outcome-unknown and forbids retry before exact-hash
-  reconciliation. The demo rejects zero-exit helper JSON without a canonical
-  32-byte transaction ID instead of continuing without an audit identity.
+  terminate immediately while preserving the exact transaction hash. A status
+  response that exceeds the bounded body limit is a deterministic terminal
+  incompatibility, not a transient read failure; only a transport failure
+  while reading the body remains retryable. After propagation, every
+  observation error other than an explicit execution rejection is labeled
+  outcome-unknown and forbids retry before exact-hash reconciliation. The demo
+  rejects zero-exit helper JSON without a canonical 32-byte transaction ID
+  instead of continuing without an audit identity.
 - **Escrow parity:** synthetic, collateral, and native routes support
   capability-authenticated claims for contract-shaped recipients. The native
   route transfers through a fixed `receive_native_pending` callback, and root
