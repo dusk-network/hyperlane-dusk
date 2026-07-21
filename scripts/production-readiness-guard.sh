@@ -31,6 +31,7 @@ UPSTREAM_SUBMISSION_GATE_ONLY="${UPSTREAM_SUBMISSION_GATE_ONLY:-0}"
 CI_VISIBILITY_GATE_ONLY="${CI_VISIBILITY_GATE_ONLY:-0}"
 BRANCH_PROTECTION_GATE_ONLY="${BRANCH_PROTECTION_GATE_ONLY:-0}"
 DEPENDENCY_ALERT_GATE_ONLY="${DEPENDENCY_ALERT_GATE_ONLY:-0}"
+REPRO_DELTA_GATE_ONLY="${REPRO_DELTA_GATE_ONLY:-0}"
 DEPENDENCY_ALERT_STATUS_SCRIPT="${DEPENDENCY_ALERT_STATUS_SCRIPT:-$ROOT/scripts/dependency-alert-status.sh}"
 UPSTREAM_SUBMISSION_SEARCH_JSON="${UPSTREAM_SUBMISSION_SEARCH_JSON:-}"
 UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN="${UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN:-0}"
@@ -508,6 +509,22 @@ check_dependency_alerts() {
     rm -f "$dependency_alert_output"
 }
 
+check_dusk_repro_delta() {
+    if git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/null 2>&1; then
+        local covered_delta
+        covered_delta="$(git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF"..HEAD -- $DUSK_REPRO_COVERED_PATHS)"
+        if [ -n "$covered_delta" ]; then
+            echo "coveredPathDelta: present"
+            printf '%s\n' "$covered_delta" | sed 's/^/  /'
+            add_blocker "runtime/test covered paths changed since latest clean-layout repro"
+        else
+            echo "coveredPathDelta: none"
+        fi
+    else
+        add_blocker "latest clean-layout repro ref $LATEST_REPRO_DUSK_REF is unavailable"
+    fi
+}
+
 print_summary_and_exit() {
     section "Summary"
     if [ "${#blockers[@]}" -eq 0 ]; then
@@ -565,6 +582,11 @@ fi
 
 if [ "$DEPENDENCY_ALERT_GATE_ONLY" = "1" ]; then
     check_dependency_alerts
+    print_summary_and_exit
+fi
+
+if [ "$REPRO_DELTA_GATE_ONLY" = "1" ]; then
+    check_dusk_repro_delta
     print_summary_and_exit
 fi
 
@@ -659,18 +681,7 @@ else
     add_blocker "monorepo checkout or $UPSTREAM_REMOTE remote is unavailable"
 fi
 
-if git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/null 2>&1; then
-    covered_delta="$(git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF"..HEAD -- $DUSK_REPRO_COVERED_PATHS)"
-    if [ -n "$covered_delta" ]; then
-        echo "coveredPathDelta: present"
-        printf '%s\n' "$covered_delta" | sed 's/^/  /'
-        add_blocker "runtime/test covered paths changed since latest clean-layout repro"
-    else
-        echo "coveredPathDelta: none"
-    fi
-else
-    add_blocker "latest clean-layout repro ref $LATEST_REPRO_DUSK_REF is unavailable"
-fi
+check_dusk_repro_delta
 
 check_monorepo_repro_delta() {
     local all_delta="$1"
