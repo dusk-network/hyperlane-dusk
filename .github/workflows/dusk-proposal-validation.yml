@@ -23,36 +23,58 @@ jobs:
           persist-credentials: false
 
       - name: Lint GitHub Actions workflows
-        uses: docker://rhysd/actionlint:1.7.12
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
       - name: Check proposed diff
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          base_ref="${GITHUB_BASE_REF:?missing pull-request base ref}"
-          git diff --check "origin/$base_ref"...HEAD
+          git diff --check "$BASE_SHA...HEAD"
           if [ -n "$(git ls-files --others --exclude-standard)" ]; then
             git ls-files --others --exclude-standard
             echo "::error::untracked source paths found"
             exit 1
           fi
 
-      - name: Exercise proposal guardrails
+      - name: Exercise unprivileged proposal guardrails
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          required_scripts=(
+            scripts/fail-closed-self-test.sh
+            scripts/github-review-hygiene.sh
+            scripts/production-readiness-guard.sh
+            scripts/report-hygiene-check.sh
+            scripts/secret-hygiene-check.sh
+          )
+
+          base_script_count=0
+          head_script_count=0
+          for script in "${required_scripts[@]}"; do
+            git cat-file -e "$BASE_SHA:$script" 2>/dev/null && ((base_script_count += 1)) || true
+            [ -f "$script" ] && ((head_script_count += 1)) || true
+          done
+
+          if [ "$base_script_count" -eq 0 ] && [ "$head_script_count" -eq 0 ]; then
+            echo "Bootstrap PR contains policy workflows only; no guard scripts exist on either tree."
+            exit 0
+          fi
+
+          if [ "$head_script_count" -ne "${#required_scripts[@]}" ]; then
+            echo "::error::the proposed tree must contain every required review guard script"
+            exit 1
+          fi
+
           if ! command -v rg >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y ripgrep
           fi
 
-          for script in \
-            scripts/fail-closed-self-test.sh \
-            scripts/github-review-hygiene.sh \
-            scripts/production-readiness-guard.sh \
-            scripts/report-hygiene-check.sh \
-            scripts/secret-hygiene-check.sh; do
-            test -f "$script"
+          for script in "${required_scripts[@]}"; do
             bash -n "$script"
           done
 

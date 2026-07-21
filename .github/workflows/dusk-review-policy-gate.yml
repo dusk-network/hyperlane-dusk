@@ -1,8 +1,8 @@
 name: Dusk Review Policy Gate
 
 on:
-  # Run the trusted default-branch workflow while examining the proposed
-  # tree. A PR must never be able to certify its own replacement guard.
+  # Keep privileged policy execution on the trusted default-branch tree. The
+  # proposed commit is fetched as Git data and is never checked out or run here.
   pull_request_target:
     branches:
       - main
@@ -27,7 +27,7 @@ jobs:
           persist-credentials: false
 
       - name: Lint GitHub Actions workflows
-        uses: docker://rhysd/actionlint:1.7.12
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
       - name: Inspect proposed commit as data
         if: github.event_name == 'pull_request_target'
@@ -56,10 +56,22 @@ jobs:
             case "$mode" in
               100644|100755) ;;
               *)
-              echo "::error::$path is not a regular file in proposed commit $HEAD_SHA"
-              exit 1
-              ;;
+                echo "::error::$path is not a regular file in proposed commit $HEAD_SHA"
+                exit 1
+                ;;
             esac
+          done
+
+          # A proposed PR must not be able to replace either half of the policy
+          # handshake and then certify its replacement. Policy-workflow changes
+          # use a dedicated, owner-supervised bootstrap instead.
+          for path in \
+            .github/workflows/dusk-proposal-validation.yml \
+            .github/workflows/dusk-review-policy-gate.yml; do
+            if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+              echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
+              exit 1
+            fi
           done
 
       - name: Require unprivileged proposal validation
@@ -79,7 +91,8 @@ jobs:
                 per_page: 100,
               });
               const proposal = data.check_runs.find(
-                (run) => run.name === expectedName,
+                (run) => run.name === expectedName &&
+                  run.app?.slug === 'github-actions',
               );
               if (proposal?.status === 'completed') {
                 if (proposal.conclusion !== 'success') {
