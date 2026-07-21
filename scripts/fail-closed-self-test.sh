@@ -363,7 +363,8 @@ expect_fail \
 expect_fail \
     production-readiness-covered-test-delta \
     'runtime/test covered paths changed since latest clean-layout repro' \
-    env LATEST_REPRO_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
+    env REPRO_DELTA_GATE_ONLY=1 \
+        LATEST_REPRO_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
         DUSK_REPRO_COVERED_PATHS=tests/tests/integration.rs \
     bash scripts/production-readiness-guard.sh
 

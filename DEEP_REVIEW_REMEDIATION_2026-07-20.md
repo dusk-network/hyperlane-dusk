@@ -49,6 +49,7 @@ security boundaries deliberately.
 | C38: static Dusk dry run | Use Rusk's `/on/transactions/simulate` endpoint through `dusk-tx call --simulate-only`. Relayer preparation now executes the exact signed Mailbox payload in an ephemeral session, requires both simulation response fields, and rejects deterministic contract failures before propagation. |
 | C39: helper transport and ambiguous submission | Cap serialized helper arguments below the per-argument operating-system boundary, reject malformed public arguments before signer access, and preserve the exact hash across outcome-unknown propagation and confirmation timeout. Every mutating helper path uses the same submit/reconcile boundary; the agent reconciles that hash before reporting a transaction outcome. |
 | C40: transaction provenance and confirmation schema | Read Moonlight sender and nonce from the ledger transaction JSON instead of publishing zero sentinels. Treat a malformed non-null transaction record as schema corruption; retry only observation failures and explicit not-yet-included state. |
+| C41: policy self-tests must not depend on GitHub authentication | Give the clean-repro delta check a narrow gate-only entry point and exercise that entry point in the fail-closed suite. The negative test now reaches the intended Git comparison whether `gh` is authenticated, unauthenticated, or unavailable at the network boundary; the production guard still executes the same comparison in its full path. |
 
 ## Escrow scope
 
