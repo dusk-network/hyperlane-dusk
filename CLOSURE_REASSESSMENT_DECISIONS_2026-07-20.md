@@ -203,13 +203,22 @@ self-tests continue to cover missing files, missing references, and hash
 mismatches.
 
 The compile/runtime clean-layout anchor remains monorepo `b4c46ce9`; the later
-policy-only anchor `c35f86405cf8cd83927860aca8b5c38b042ee198` adds the two
+policy-only anchor `dad14dbbea4bbd59f6c6697f89cc245d5c1cf2a0` adds the two
 validator fail-stop files to the fork-boundary allowlist. That policy delta was
 validated by the exact boundary reproduction and a successful hosted
 `Dusk review policy gate`; it is tracked separately so it is not mislabeled as
 a rerun of the Rust/contract gate. Cross-repository readiness may wait up to
 five minutes for the agent contexts rather than converting a still-running
 hosted build into a failure after sixty seconds.
+
+After that evidence run, upstream advanced by one SVM/TypeScript-only commit.
+The monorepo PR was rebased onto `67933966ed9c6f9e3d5ec095372e11414c82e4e7`;
+all 79 Dusk commits are patch-equivalent under `git range-diff`. Rebased
+equivalents are runtime `e95d3ea282a55ead114471ffb1dece77706ffc81`, static
+checkout `833b77b4436e146a4776a3b35db68525014b3adb`, and policy
+`c35f86405cf8cd83927860aca8b5c38b042ee198`. The complete affected Rust cargo
+boundary passed again on the rebased PR head. This mapping does not relabel the
+older exact E2E logs as runs against the rebased commit.
 
 `READINESS_MODE=premerge` validates the exact required checks on the current
 Dusk PR, the monorepo PR, and the workflow-dispatcher PR, but does not require
@@ -281,11 +290,12 @@ heads.
 The implementation evidence requirement is satisfied for base runtime
 `9058755927473239d59ce702a8074acbae0e0a24`, withdrawal-stack runtime
 `dc8aba07773993878edd81735d59e66beddd66a3`, monorepo
-`d76eea936cf6f69f5d8117cd64599a7d917a255d`, and Rusk
+`6ef326b8a926d262714afd315960b26e441c7b40`, and Rusk
 `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. The exact aggregate reproduction,
 TestMock, MessageIdMultisig, and eight fail-closed live-run logs and hashes are
-recorded in the newest `TEST_REPORT.md` section. Later documentation-only
-commits do not change those runtime anchors.
+recorded in the newest `TEST_REPORT.md` section. The later monorepo rebase adds
+only upstream SVM/TypeScript state and patch-equivalent Dusk commits; later
+workflow/documentation commits do not change the validated Dusk runtime tree.
 
 This evidence closes the machine-validation prerequisite; it does not approve
 production or resolve the unchecked human decisions in
