@@ -16,6 +16,7 @@ DECISION_RECORD_STALE_PATTERNS="${DECISION_RECORD_STALE_PATTERNS:-https://github
 LATEST_REPRO_ARCHIVE_PATH="${LATEST_REPRO_ARCHIVE_PATH:-/home/hein_/projects/hyperlane/.codex-backups/hyperlane-clean-repro-current-head-1778751867.tgz}"
 LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-9e08ce22389f4a209d3d1ed79aa90de8d5384ce77ca7c142019c3264b799b7e7}"
 LATEST_REPRO_ARCHIVE_REQUIRED_FILES="${LATEST_REPRO_ARCHIVE_REQUIRED_FILES:-GOAL_AUDIT.md TEST_REPORT.md}"
+VERIFY_LATEST_REPRO_ARCHIVE="${VERIFY_LATEST_REPRO_ARCHIVE:-1}"
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -60,6 +61,10 @@ Environment:
                          Space-separated files that must mention the durable
                          latest repro evidence archive and hash.
                          Default: $LATEST_REPRO_ARCHIVE_REQUIRED_FILES
+  VERIFY_LATEST_REPRO_ARCHIVE
+                         Set to 0 only where the machine-local archive is not
+                         mounted; report staleness scans still run.
+                         Default: $VERIFY_LATEST_REPRO_ARCHIVE
 EOF
 }
 
@@ -71,6 +76,14 @@ fi
 [ "$#" -eq 0 ] || fail "unknown argument: $1"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
+
+case "$VERIFY_LATEST_REPRO_ARCHIVE" in
+    0|1)
+        ;;
+    *)
+        fail "VERIFY_LATEST_REPRO_ARCHIVE must be 0 or 1"
+        ;;
+esac
 
 stale_hits="$(mktemp -t hyperlane-report-hygiene.XXXXXX)"
 trap 'rm -f "$stale_hits"' EXIT
@@ -127,7 +140,7 @@ if [ -f "$DECISION_RECORD_FILE" ]; then
     fi
 fi
 
-if [ -n "$LATEST_REPRO_ARCHIVE_PATH" ]; then
+if [ "$VERIFY_LATEST_REPRO_ARCHIVE" = "1" ] && [ -n "$LATEST_REPRO_ARCHIVE_PATH" ]; then
     [ -f "$LATEST_REPRO_ARCHIVE_PATH" ] \
         || fail "latest repro durable archive file not found: $LATEST_REPRO_ARCHIVE_PATH"
     if [ -n "$LATEST_REPRO_ARCHIVE_SHA256" ]; then

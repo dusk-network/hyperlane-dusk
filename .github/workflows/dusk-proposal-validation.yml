@@ -57,5 +57,5 @@ jobs:
           done
 
           bash scripts/fail-closed-self-test.sh
-          make report-hygiene
+          VERIFY_LATEST_REPRO_ARCHIVE=0 make report-hygiene
           make secret-hygiene

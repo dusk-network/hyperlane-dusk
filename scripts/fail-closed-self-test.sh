@@ -514,6 +514,12 @@ expect_fail \
     env STALE_REPORT_PATTERNS='[invalid' \
     bash scripts/report-hygiene-check.sh
 
+expect_fail \
+    report-hygiene-invalid-archive-verification-mode \
+    'VERIFY_LATEST_REPRO_ARCHIVE must be 0 or 1' \
+    env VERIFY_LATEST_REPRO_ARCHIVE=invalid \
+    bash scripts/report-hygiene-check.sh
+
 stale_report="$workdir/stale-report.md"
 cat >"$stale_report" <<'EOF'
 Stale dispatcher smoke evidence:
