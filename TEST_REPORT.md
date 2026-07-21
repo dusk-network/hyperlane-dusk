@@ -2858,6 +2858,40 @@ base contract. The stacked withdrawal gate below raises Mailbox to compatibility
 version 2. Existing kind and policy probes remain in addition to those version
 checks.
 
+## 2026-07-21 Stacked Withdrawal Compatibility Gate
+
+The withdrawal stack was merged with base head
+`62464287dce7472f52dcb11ee92ece6631ac9368`. Because withdrawal is a required
+Mailbox ABI but adds no persisted field, the stacked Mailbox advances its
+deployment compatibility version from 1 to 2. Both reuse paths require that
+version, so a base-only Mailbox cannot be mistaken for a withdrawal-capable
+deployment. The corrected stacked implementation was frozen at
+`265b7e9b1e47f4feadc4e71644d23df04680661c` and reproduced from a detached,
+clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` with the standard local repro
+command.
+
+Durable local log:
+`/tmp/hyperlane-dusk-withdrawal-repro-265b7e9.log` (SHA-256
+`0bbaf2663eaa82982c95eed91921309feffa39b6ae1d649e6292ebcdd43d5f07`).
+
+Result:
+
+- all 12 contract WASMs built and the targeted wasm clippy surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 101 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 7 passed, 0 failed;
+- `dusk-tx`: 18 passed, 0 failed;
+- the data-driver release WASM built;
+- the standalone E2E operator binary compiled; and
+- secret-hygiene checks passed.
+
+The full fail-closed self-test also passed from the linked withdrawal worktree.
+Its validation-only agent-config probe now runs without an ignored
+`.env.bridge`, and completion-audit repository detection accepts both primary
+checkouts and linked Git worktrees. This closes the two clean-runner assumptions
+exposed when the policy workflow began executing the complete self-test.
+
 ## Remaining Work Before Production Readiness
 
 - Continue expanding negative/security coverage; current coverage includes
