@@ -127,8 +127,10 @@ mod mailbox {
 
         /// Initialize the Mailbox with domain and configuration.
         ///
-        /// Must be called once after deployment. Panics if already
-        /// initialized (owner is set).
+        /// Must be called once during deployment. Panics if already
+        /// initialized. The configuration sentinel remains set after ownership
+        /// is renounced, so renunciation cannot reopen initialization even if a
+        /// future runtime permits calling `init` after deployment.
         pub fn init(
             &mut self,
             local_domain: u32,
@@ -137,7 +139,10 @@ mod mailbox {
             default_hook: ContractId,
             required_hook: ContractId,
         ) {
-            assert!(self.owner.is_none(), "Mailbox: already initialized");
+            assert!(
+                self.owner.is_none() && self.default_ism == ZERO_CONTRACT,
+                "Mailbox: already initialized"
+            );
             assert!(owner != [0u8; 32], "Mailbox: owner cannot be zero");
             assert!(
                 default_ism != ZERO_CONTRACT,

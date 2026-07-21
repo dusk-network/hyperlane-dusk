@@ -228,6 +228,10 @@ mod warp_drc20_collateral {
             amount: u64,
         ) -> MessageId {
             assert!(amount > 0, "WarpCollateral: amount must be > 0");
+            assert!(
+                recipient != [0u8; 32],
+                "WarpCollateral: recipient cannot be zero"
+            );
             let sender = drc20::sender_account();
             let self_account = Account::Contract(abi::self_id());
             let custody_before = self.collateral_balance();
@@ -305,6 +309,10 @@ mod warp_drc20_collateral {
             // Decode token message
             let msg = token_message::decode(&body).expect("WarpCollateral: invalid token message");
             assert!(msg.amount > 0, "WarpCollateral: amount must be > 0");
+            assert!(
+                msg.recipient != [0u8; 32],
+                "WarpCollateral: recipient cannot be zero"
+            );
 
             // Pending claims reserve custody. A registered delivery must not
             // consume collateral already promised to an unregistered
@@ -315,15 +323,7 @@ mod warp_drc20_collateral {
             // Otherwise, hold the wrapped tokens in this contract's DRC20
             // balance until the recipient registers and claims them.
             if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
-                let _: () = abi::call(
-                    self.wrapped_token,
-                    "transfer",
-                    &TransferCall {
-                        to: Account::moonlight(pk),
-                        amount: msg.amount,
-                    },
-                )
-                .expect("WarpCollateral: transfer failed");
+                self.transfer_collateral_exact(Account::moonlight(pk), msg.amount);
             } else {
                 let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
                 *pending = pending
@@ -475,6 +475,17 @@ mod warp_drc20_collateral {
                 .checked_sub(amount)
                 .expect("WarpCollateral: pending liability underflow");
 
+            self.transfer_collateral_exact(account, amount);
+            abi::emit(
+                events::PendingTransferClaimed::TOPIC,
+                events::PendingTransferClaimed { recipient, amount },
+            );
+        }
+
+        /// Transfer collateral only when both sides report the exact movement.
+        fn transfer_collateral_exact(&self, account: Account, amount: u64) {
+            let custody_before = self.collateral_balance();
+            let recipient_before = self.account_balance(account);
             let _: () = abi::call(
                 self.wrapped_token,
                 "transfer",
@@ -484,9 +495,17 @@ mod warp_drc20_collateral {
                 },
             )
             .expect("WarpCollateral: transfer failed");
-            abi::emit(
-                events::PendingTransferClaimed::TOPIC,
-                events::PendingTransferClaimed { recipient, amount },
+            let custody_after = self.collateral_balance();
+            assert_eq!(
+                custody_before.checked_sub(custody_after),
+                Some(amount),
+                "WarpCollateral: transfer did not release exact collateral"
+            );
+            let recipient_after = self.account_balance(account);
+            assert_eq!(
+                recipient_after.checked_sub(recipient_before),
+                Some(amount),
+                "WarpCollateral: transfer did not credit exact recipient amount"
             );
         }
 
@@ -504,14 +523,12 @@ mod warp_drc20_collateral {
 
         /// Query the wrapped token balance owned by this route.
         fn collateral_balance(&self) -> u64 {
-            abi::call(
-                self.wrapped_token,
-                "balance_of",
-                &BalanceOf {
-                    account: Account::Contract(abi::self_id()),
-                },
-            )
-            .expect("WarpCollateral: balance query failed")
+            self.account_balance(Account::Contract(abi::self_id()))
+        }
+
+        fn account_balance(&self, account: Account) -> u64 {
+            abi::call(self.wrapped_token, "balance_of", &BalanceOf { account })
+                .expect("WarpCollateral: balance query failed")
         }
     }
 }

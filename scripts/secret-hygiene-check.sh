@@ -93,7 +93,8 @@ if [ "$#" -gt 0 ]; then
         fi
     done
 
-    if rg_to_file "$artifact_secret_hits" "runtime artifact secret text" -n \
+    if rg_to_file "$artifact_secret_hits" "runtime artifact secret text" \
+        --hidden --no-ignore --text -n \
         -e '"key"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' \
         -e '"privateKey"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' \
         -e '"private_key"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{64}"' \

@@ -83,7 +83,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "hooks"
             | "pending_total"
             | "state_version"
-            | "validators_and_threshold" => json_to_rkyv::<()>(json),
+            | "validators_and_threshold"
+            | "get_announced_validators" => json_to_rkyv::<()>(json),
             // Mailbox queries with args
             "delivered" | "delivered_at" => json_to_rkyv::<(MessageId,)>(json),
             "dispatched_message"
@@ -96,6 +97,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "gas_payment_at" => json_to_rkyv::<(u32,)>(json),
             "message_ids" | "gas_payments" => json_to_rkyv::<(u32, u32)>(json),
             "recipient_ism" | "fee_credit" => json_to_rkyv::<(H256,)>(json),
+            "get_announced_storage_locations_for_validator" => json_to_rkyv::<(EthAddress,)>(json),
+            "get_announced_storage_locations" => json_to_rkyv::<(Vec<EthAddress>,)>(json),
             "withdraw_dispatch_credit" => encode_withdrawal_input(json),
             // Hook queries
             "hook_type" | "total_gas_payments" | "collected_fees" | "protocol_fee"
@@ -140,6 +143,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "pending_total"
             | "state_version"
             | "validators_and_threshold"
+            | "get_announced_validators"
             | "hook_type"
             | "total_gas_payments"
             | "collected_fees"
@@ -165,6 +169,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "gas_payment_at" => rkyv_to_json::<(u32,)>(rkyv),
             "message_ids" | "gas_payments" => rkyv_to_json::<(u32, u32)>(rkyv),
             "recipient_ism" | "fee_credit" => rkyv_to_json::<(H256,)>(rkyv),
+            "get_announced_storage_locations_for_validator" => rkyv_to_json::<(EthAddress,)>(rkyv),
+            "get_announced_storage_locations" => rkyv_to_json::<(Vec<EthAddress>,)>(rkyv),
             "withdraw_dispatch_credit" => decode_withdrawal_input(rkyv),
             "quote_dispatch" => rkyv_to_json::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
                 .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv)),
@@ -229,6 +235,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "gas_payment_at" => rkyv_to_json::<GasPaymentRecord>(rkyv),
             "gas_payments" => rkyv_to_json::<Vec<GasPaymentRecord>>(rkyv),
             "validators_and_threshold" => rkyv_to_json::<(Vec<EthAddress>, u8)>(rkyv),
+            "get_announced_validators" => rkyv_to_json::<Vec<EthAddress>>(rkyv),
+            "get_announced_storage_locations_for_validator" => rkyv_to_json::<Vec<String>>(rkyv),
+            "get_announced_storage_locations" => rkyv_to_json::<Vec<Vec<String>>>(rkyv),
             // u64 from quote_dispatch / quote_gas_payment
             "quote_dispatch" | "quote_gas_payment" => rkyv_to_json_u64(rkyv),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
@@ -484,6 +493,62 @@ mod tests {
                 .decode_input_fn("quote_dispatch", &encoded)
                 .expect("supported quote_dispatch ABI should decode");
         }
+    }
+
+    #[test]
+    fn validator_announce_discovery_queries_round_trip() {
+        let driver = HyperlaneDataDriver;
+        let validator = EthAddress([7u8; 20]);
+
+        let no_args = driver
+            .encode_input_fn("get_announced_validators", "null")
+            .expect("validator registry query should encode");
+        driver
+            .decode_input_fn("get_announced_validators", &no_args)
+            .expect("validator registry query should decode");
+
+        let one_json = to_json((validator,)).unwrap().to_string();
+        let one = driver
+            .encode_input_fn("get_announced_storage_locations_for_validator", &one_json)
+            .expect("single-validator location query should encode");
+        driver
+            .decode_input_fn("get_announced_storage_locations_for_validator", &one)
+            .expect("single-validator location query should decode");
+
+        let many_json = to_json((vec![validator],)).unwrap().to_string();
+        let many = driver
+            .encode_input_fn("get_announced_storage_locations", &many_json)
+            .expect("batched location query should encode");
+        driver
+            .decode_input_fn("get_announced_storage_locations", &many)
+            .expect("batched location query should decode");
+
+        let validators =
+            json_to_rkyv::<Vec<EthAddress>>(&to_json(vec![validator]).unwrap().to_string())
+                .unwrap();
+        driver
+            .decode_output_fn("get_announced_validators", &validators)
+            .expect("validator registry output should decode");
+
+        let locations = json_to_rkyv::<Vec<alloc::string::String>>(
+            &to_json(vec![alloc::string::String::from("s3://checkpoint")])
+                .unwrap()
+                .to_string(),
+        )
+        .unwrap();
+        driver
+            .decode_output_fn("get_announced_storage_locations_for_validator", &locations)
+            .expect("single-validator location output should decode");
+
+        let batches = json_to_rkyv::<Vec<Vec<alloc::string::String>>>(
+            &to_json(vec![vec![alloc::string::String::from("s3://checkpoint")]])
+                .unwrap()
+                .to_string(),
+        )
+        .unwrap();
+        driver
+            .decode_output_fn("get_announced_storage_locations", &batches)
+            .expect("batched location output should decode");
     }
 
     #[test]

@@ -29,7 +29,7 @@ Usage: bash scripts/local-repro-check.sh [options]
 Runs the local reproducibility checks that do not require a live E2E network:
   - make all
   - make clippy-contracts
-  - cargo test -p hyperlane-dusk-types
+  - make test-types (including the canonical DRC20 ABI feature)
   - cargo test -p hyperlane-dusk-integration-tests
   - cargo test -p hyperlane-dusk-data-driver
   - cargo test -p dusk-tx
@@ -166,7 +166,7 @@ info "Running targeted Dusk wasm clippy checks"
 make clippy-contracts
 
 info "Running Dusk type tests"
-cargo test -p hyperlane-dusk-types
+make test-types
 
 info "Building pinned canonical DRC20 VM fixture"
 make canonical-drc20-fixture

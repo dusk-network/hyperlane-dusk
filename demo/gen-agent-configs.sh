@@ -30,6 +30,7 @@ else
     [ -f "$SCRIPT_DIR/.env.bridge" ] \
         || fail "Environment file not found at $SCRIPT_DIR/.env.bridge"
     source "$SCRIPT_DIR/.env.bridge"
+    command -v cast >/dev/null 2>&1 || fail "cast is required for validator identity checks"
 fi
 
 # ── Args ────────────────────────────────────────────────────────────────────
@@ -164,6 +165,21 @@ DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-2000}"
 # races between concurrently running processes.
 ANVIL_RELAYER_PRIVATE_KEY="${ANVIL_RELAYER_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
 ANVIL_VALIDATOR_PRIVATE_KEY="${ANVIL_VALIDATOR_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
+if [ "$ISM" = "messageIdMultisig" ]; then
+    DUSK_MULTISIG_POLICY="$(jq -ce '.dusk.multisig_policy | {
+        validators: ([.validators[] | ascii_downcase] | sort),
+        threshold: (.threshold | tonumber)
+    }' "$STATE_FILE")" \
+        || fail "Deployment state lacks the validated Dusk multisig policy"
+    DUSK_MULTISIG_THRESHOLD="$(jq -er '.threshold' <<<"$DUSK_MULTISIG_POLICY")"
+    [ "$DUSK_MULTISIG_THRESHOLD" -eq 1 ] \
+        || fail "The generated single-validator demo requires Dusk multisig threshold 1 (live threshold: $DUSK_MULTISIG_THRESHOLD)"
+    GENERATED_VALIDATOR_ADDRESS="$(cast wallet address --private-key "$ANVIL_VALIDATOR_PRIVATE_KEY" | tr '[:upper:]' '[:lower:]')" \
+        || fail "Cannot derive the configured validator address"
+    jq -e --arg validator "$GENERATED_VALIDATOR_ADDRESS" \
+        '.validators | index($validator) != null' <<<"$DUSK_MULTISIG_POLICY" >/dev/null \
+        || fail "Configured validator $GENERATED_VALIDATOR_ADDRESS is not authorized by the live Dusk multisig policy"
+fi
 
 # ── Decrypt Dusk Deployer Key (consensus.keys) ──────────────────────────────
 

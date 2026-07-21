@@ -364,6 +364,55 @@ query_dusk_domain_gas_config() {
         || fail "Saved $label returned a malformed domain gas configuration"
 }
 
+query_dusk_validator_policy() {
+    local contract="$1"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method validators_and_threshold \
+        --return-type validators-and-threshold 2>/dev/null) \
+        || fail "Saved Dusk multisig validator policy is not queryable"
+    jq -ce '.value | {
+        validators: ([.validators[] | ascii_downcase] | sort),
+        threshold: (.threshold | tonumber)
+    }' <<<"$response" \
+        || fail "Saved Dusk multisig validator policy is malformed"
+}
+
+ensure_dispatch_credit() {
+    local mailbox="$1"
+    local route="$2"
+    local label="$3"
+    local response current deficit
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$mailbox" \
+        --method fee_credit \
+        --return-type u64 \
+        --arg-bytes32 "$route" 2>/dev/null) \
+        || fail "Cannot query $label dispatch fee credit"
+    current=$(jq -er '.value | tonumber' <<<"$response") \
+        || fail "$label returned malformed dispatch fee credit"
+    if [ "$current" -ge "$DUSK_DISPATCH_FEE_CREDIT" ]; then
+        ok "$label dispatch fee credit already satisfies target ($current LUX)"
+        return 0
+    fi
+
+    deficit=$((DUSK_DISPATCH_FEE_CREDIT - current))
+    step "Funding $label dispatch fee deficit ($deficit LUX)..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
+        --rues-url "$DUSK_RUES_URL" \
+        --keys "$CONSENSUS_KEYS" \
+        --mailbox "$mailbox" \
+        --payer "$route" \
+        --amount "$deficit" \
+        >/dev/null || fail "Failed to fund $label dispatch fee deficit"
+    ok "$label dispatch fee credit brought to target"
+}
+
 validate_saved_deployment() {
     local saved_evm_chain_id saved_dusk_chain_id saved_dusk_ism
     local evm_mailbox evm_token evm_native_token evm_collateral_token evm_ism evm_hook
@@ -374,6 +423,7 @@ validate_saved_deployment() {
     local dusk_test_recipient expected_default_ism live_default_ism
     local live_default_hook live_required_hook live_route_value
     local saved_igp_config saved_igp_domain live_igp_config
+    local saved_multisig_policy live_multisig_policy
     local live_evm_value route expected_router
     local saved_account_h256 expected_children
 
@@ -506,10 +556,20 @@ validate_saved_deployment() {
         validate_dusk_state_version "$dusk_ism_multisig" "Dusk multisig ISM"
         [ "$(query_dusk_u8 "$dusk_ism_multisig" module_type "Dusk multisig ISM module type")" = "5" ] \
             || fail "Running Dusk multisig ISM has the wrong module type; redeploy"
+        saved_multisig_policy="$(jq -ce '.dusk.multisig_policy | {
+            validators: ([.validators[] | ascii_downcase] | sort),
+            threshold: (.threshold | tonumber)
+        }' "$BRIDGE_STATE_FILE")" \
+            || fail "Saved multisig deployment lacks its validator policy; redeploy"
+        live_multisig_policy="$(query_dusk_validator_policy "$dusk_ism_multisig")"
+        [ "$live_multisig_policy" = "$saved_multisig_policy" ] \
+            || fail "Running Dusk multisig validator policy differs from the saved deployment; redeploy or update the manifest deliberately"
         expected_default_ism="$dusk_ism_multisig"
     else
         [ -z "$dusk_ism_multisig" ] \
             || fail "Saved TestMock deployment unexpectedly records a multisig ISM; redeploy"
+        jq -e '.dusk.multisig_policy == null' "$BRIDGE_STATE_FILE" >/dev/null \
+            || fail "Saved TestMock deployment unexpectedly records a multisig validator policy; redeploy"
         expected_default_ism="$dusk_test_mock"
     fi
     [ "${dusk_default_ism,,}" = "${expected_default_ism,,}" ] \
@@ -614,9 +674,21 @@ validate_saved_deployment() {
 # ── Check for existing deployment ────────────────────────────────────────────
 
 if [ "$SKIP_DEPLOY" = true ] && [ -f "$BRIDGE_STATE_FILE" ]; then
+    SAVED_DUSK_MAILBOX="$(jq -er '.dusk.mailbox' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the Dusk Mailbox contract ID"
+    SAVED_DUSK_WARP="$(jq -er '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the Dusk synthetic route contract ID"
+    SAVED_DUSK_WARP_NATIVE="$(jq -er '.dusk.warp_native' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the Dusk native route contract ID"
+    SAVED_DUSK_WARP_COLLATERAL="$(jq -er '.dusk.warp_drc20_collateral' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the Dusk collateral route contract ID"
     info "Validating existing deployment (--skip-deploy)"
     validate_saved_deployment
     ok "Saved deployment matches the running chains and contracts"
+    header "Repair Dusk Dispatch Fees"
+    ensure_dispatch_credit "$SAVED_DUSK_MAILBOX" "$SAVED_DUSK_WARP" "WarpDrc20"
+    ensure_dispatch_credit "$SAVED_DUSK_MAILBOX" "$SAVED_DUSK_WARP_NATIVE" "WarpNative"
+    ensure_dispatch_credit "$SAVED_DUSK_MAILBOX" "$SAVED_DUSK_WARP_COLLATERAL" "WarpCollateral"
     echo ""
     info "State file: $BRIDGE_STATE_FILE"
     jq '.' "$BRIDGE_STATE_FILE"
@@ -836,6 +908,11 @@ DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_FILE")
 DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral' "$DUSK_DEPLOY_FILE")
+if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
+    DUSK_MULTISIG_POLICY_JSON="$(query_dusk_validator_policy "$DUSK_ISM_MULTISIG")"
+else
+    DUSK_MULTISIG_POLICY_JSON=null
+fi
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
 
 if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
@@ -862,40 +939,9 @@ info "  TestRecipient:  $DUSK_TEST_RECIPIENT"
 
 header "Fund Dusk Dispatch Fees"
 
-ensure_dispatch_credit() {
-    local route="$1"
-    local label="$2"
-    local response current deficit
-
-    response=$("$DUSK_TX" query \
-        --rues-url "$DUSK_RUES_URL" \
-        --contract "$DUSK_MAILBOX" \
-        --method fee_credit \
-        --return-type u64 \
-        --arg-bytes32 "$route" 2>/dev/null) \
-        || fail "Cannot query $label dispatch fee credit"
-    current=$(jq -er '.value | tonumber' <<<"$response") \
-        || fail "$label returned malformed dispatch fee credit"
-    if [ "$current" -ge "$DUSK_DISPATCH_FEE_CREDIT" ]; then
-        ok "$label dispatch fee credit already satisfies target ($current LUX)"
-        return 0
-    fi
-
-    deficit=$((DUSK_DISPATCH_FEE_CREDIT - current))
-    step "Funding $label dispatch fee deficit ($deficit LUX)..."
-    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
-        --rues-url "$DUSK_RUES_URL" \
-        --keys "$CONSENSUS_KEYS" \
-        --mailbox "$DUSK_MAILBOX" \
-        --payer "$route" \
-        --amount "$deficit" \
-        >/dev/null || fail "Failed to fund $label dispatch fee deficit"
-    ok "$label dispatch fee credit brought to target"
-}
-
-ensure_dispatch_credit "$DUSK_WARP" "WarpDrc20"
-ensure_dispatch_credit "$DUSK_WARP_NATIVE" "WarpNative"
-ensure_dispatch_credit "$DUSK_WARP_COLLATERAL" "WarpCollateral"
+ensure_dispatch_credit "$DUSK_MAILBOX" "$DUSK_WARP" "WarpDrc20"
+ensure_dispatch_credit "$DUSK_MAILBOX" "$DUSK_WARP_NATIVE" "WarpNative"
+ensure_dispatch_credit "$DUSK_MAILBOX" "$DUSK_WARP_COLLATERAL" "WarpCollateral"
 
 # ── Enroll Remote Routers ────────────────────────────────────────────────────
 
@@ -1016,6 +1062,7 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         "mailbox": "$DUSK_MAILBOX",
         "test_mock": "$DUSK_TEST_MOCK",
         "ism_multisig": "${DUSK_ISM_MULTISIG:-}",
+        "multisig_policy": ${DUSK_MULTISIG_POLICY_JSON},
         "default_ism": "$DUSK_DEFAULT_ISM_ID",
         "warp_drc20": "$DUSK_WARP",
         "warp_native": "$DUSK_WARP_NATIVE",

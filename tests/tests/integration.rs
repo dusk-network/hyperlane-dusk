@@ -1672,6 +1672,46 @@ fn test_protocol_fee_charges_on_dispatch() {
 }
 
 #[test]
+fn test_protocol_fee_contract_shaped_beneficiary_cannot_redirect_claim() {
+    let mut session = session_with_hooks();
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(
+                MAILBOX_ID,
+                REMOTE_DOMAIN,
+                [0xBBu8; 32],
+                b"contract beneficiary".to_vec(),
+            ),
+        )
+        .expect("dispatch should collect protocol fees");
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            PROTOCOL_FEE_ID,
+            "set_beneficiary",
+            &(TEST_RECIPIENT_ID.to_bytes(),),
+        )
+        .expect("owner should set the beneficiary");
+
+    let result = session.direct_call::<_, ()>(
+        TEST_RECIPIENT_ID,
+        "claim_protocol_fees",
+        &(PROTOCOL_FEE_ID,),
+    );
+    assert!(result.is_err(), "nested beneficiary claim must fail");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(PROTOCOL_FEE_ID, "claimable_fees", &())
+            .expect("claimable_fees should succeed")
+            .data,
+        1000
+    );
+}
+
+#[test]
 fn test_aggregation_hook_wiring_and_callback_authentication() {
     let mut session = session_with_hooks();
 
@@ -1725,6 +1765,28 @@ fn test_dispatch_rejects_sender_without_native_fee_credit() {
             .expect("ProtocolFee balance query should succeed"),
         0
     );
+
+    session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, 100_000u64),
+            100_000,
+        )
+        .expect("funding after the failed dispatch should succeed");
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "dispatch_default",
+            &(
+                REMOTE_DOMAIN,
+                [0xBBu8; 32],
+                b"funded retry after rollback".to_vec(),
+            ),
+        )
+        .expect("a later dispatch should prove the reentrancy guard rolled back");
 }
 
 #[test]
@@ -2456,6 +2518,49 @@ fn test_igp_records_payment_on_dispatch() {
         .data;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].payment, 50_000);
+}
+
+#[test]
+fn test_igp_contract_shaped_beneficiary_cannot_redirect_claim() {
+    let mut session = session_with_hooks_and_igp_config(vec![(
+        REMOTE_DOMAIN,
+        DomainGasConfig {
+            gas_overhead: 0,
+            token_exchange_rate: 10_000_000_000,
+            gas_price: 1,
+        },
+    )]);
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(
+                MAILBOX_ID,
+                REMOTE_DOMAIN,
+                [0xBBu8; 32],
+                b"contract IGP beneficiary".to_vec(),
+            ),
+        )
+        .expect("dispatch should collect IGP fees");
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_beneficiary",
+            &(TEST_RECIPIENT_ID.to_bytes(),),
+        )
+        .expect("owner should set the beneficiary");
+
+    let result = session.direct_call::<_, ()>(TEST_RECIPIENT_ID, "claim_igp_fees", &(IGP_ID,));
+    assert!(result.is_err(), "nested beneficiary claim must fail");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(IGP_ID, "claimable_fees", &())
+            .expect("claimable_fees should succeed")
+            .data,
+        50_000
+    );
 }
 
 #[test]
@@ -3859,6 +3964,15 @@ fn session_with_warp_native_flow() -> (TestSession, H256) {
         )
         .expect("Deploying TestMock should succeed");
 
+    session
+        .deploy(
+            TEST_RECIPIENT_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_RECIPIENT_ID),
+        )
+        .expect("Deploying TestRecipient should succeed");
+
     // Deploy MerkleTreeHook
     session
         .deploy(
@@ -4685,6 +4799,105 @@ fn test_warp_routes_reject_zero_amount_inbound_without_state_changes() {
     );
 }
 
+#[test]
+fn test_warp_routes_reject_zero_recipient_outbound() {
+    let (mut drc20_session, _) = session_with_warp_drc20_flow();
+    let result = drc20_session.direct_call::<_, MessageId>(
+        WARP_DRC20_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0u8; 32], 1u64),
+    );
+    assert_contract_panic(result, "WarpDrc20: recipient cannot be zero");
+
+    let (mut native_session, _) = session_with_warp_native_flow();
+    let result = native_session.direct_call::<_, MessageId>(
+        WARP_NATIVE_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0u8; 32], 1u64),
+    );
+    assert_contract_panic(result, "WarpNative: recipient cannot be zero");
+
+    let (mut collateral_session, _) = session_with_warp_collateral_flow();
+    let result = collateral_session.direct_call::<_, MessageId>(
+        WARP_DRC20_COLLATERAL_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0u8; 32], 1u64),
+    );
+    assert_contract_panic(result, "WarpCollateral: recipient cannot be zero");
+}
+
+#[test]
+fn test_warp_routes_reject_zero_recipient_inbound_without_state_changes() {
+    let recipient = [0u8; 32];
+    let body = hyperlane_dusk_types::token_message::encode(recipient, 1);
+
+    let (mut drc20_session, drc20_router) = session_with_warp_drc20_flow();
+    let message = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        drc20_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &body,
+    );
+    let result =
+        drc20_session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), message));
+    assert_contract_panic_contains(result, "WarpDrc20: recipient cannot be zero");
+    assert_eq!(
+        drc20_session
+            .direct_call::<_, u64>(WARP_DRC20_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        0
+    );
+
+    let (mut native_session, native_router) = session_with_warp_native_flow();
+    let message = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        native_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &body,
+    );
+    let result =
+        native_session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), message));
+    assert_contract_panic_contains(result, "WarpNative: recipient cannot be zero");
+    assert_eq!(
+        native_session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_balance", &(recipient,))
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
+
+    let (mut collateral_session, collateral_router) = session_with_warp_collateral_funded_flow();
+    let message = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        collateral_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &body,
+    );
+    let result = collateral_session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), message),
+    );
+    assert_contract_panic_contains(result, "WarpCollateral: recipient cannot be zero");
+    assert_eq!(
+        collateral_session
+            .direct_call::<_, u64>(WARP_DRC20_COLLATERAL_ID, "pending_balance", &(recipient,),)
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
+}
+
 // --- WarpNative: escrow for unregistered recipients ---
 
 fn fund_warp_native(session: &mut TestSession, amount: u64) {
@@ -4697,6 +4910,81 @@ fn fund_warp_native(session: &mut TestSession, amount: u64) {
             amount,
         )
         .expect("outbound native transfer should establish real DUSK custody");
+}
+
+#[test]
+fn test_warp_native_contract_recipient_claims_authenticated_escrow() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let recipient = TEST_RECIPIENT_ID.to_bytes();
+    let amount = 750_000u64;
+    fund_warp_native(&mut session, amount);
+
+    let encoded = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_NATIVE_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(recipient, amount),
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("contract-recipient native DUSK should enter escrow");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_balance", &(recipient,))
+            .expect("pending_balance should succeed")
+            .data,
+        amount
+    );
+
+    session
+        .direct_call::<_, ()>(
+            TEST_RECIPIENT_ID,
+            "claim_native_pending",
+            &(WARP_NATIVE_ID,),
+        )
+        .expect("the recipient contract should claim its own native escrow");
+
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_balance", &(recipient,))
+            .expect("pending_balance should succeed")
+            .data,
+        0
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_total", &())
+            .expect("pending_total should succeed")
+            .data,
+        0
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(TEST_RECIPIENT_ID, "native_pending_received", &())
+            .expect("native receipt query should succeed")
+            .data,
+        amount
+    );
+    assert_eq!(
+        session
+            .contract_balance(&TEST_RECIPIENT_ID)
+            .expect("recipient contract balance query should succeed"),
+        amount
+    );
+}
+
+#[test]
+fn test_warp_native_contract_claim_rejects_root_moonlight_caller() {
+    let (mut session, _remote_router) = session_with_warp_native_flow();
+    let result =
+        session.call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "claim_pending_contract", &());
+    assert_contract_panic(
+        result,
+        "WarpNative: claim_pending_contract requires contract caller",
+    );
 }
 
 #[test]
