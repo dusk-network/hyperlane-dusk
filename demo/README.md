@@ -235,6 +235,14 @@ bash demo/bridge.sh to-evm 2
 bash demo/bridge.sh help
 ```
 
+Every Dusk write prints its locally computed transaction hash before the first
+propagation attempt, and `bridge.sh` requires, validates, and prints the
+completed canonical hash before continuing. If the command is interrupted
+after that line or reports an unknown outcome, do not repeat the operation:
+reconcile that exact hash against Rusk first. This local demo does not provide
+a durable transaction journal and must not be treated as a production
+transaction orchestrator.
+
 ### Configuration
 
 All settings are in `demo/.env.bridge`. Key overrides:
@@ -353,6 +361,11 @@ dusk-tx fund-dispatch --mailbox <hex> --payer <route-hex> --amount <lux>
 
 # Query contract state
 dusk-tx query --contract <hex> --method nonce --return-type u32
+
+# Query one bounded ValidatorAnnounce discovery page
+dusk-tx query --contract <validator-announce-hex> \
+    --method get_announced_validators --return-type eth-address-list \
+    --arg-u32-pair 0,2
 
 # Enroll a remote router
 dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex>

@@ -79,7 +79,15 @@ warm_exit_line="$(rg -n -F 'Deployment loaded. Run' demo/deploy.sh | cut -d: -f1
     && [ "$warm_validate_line" -lt "$warm_credit_line" ] \
     && [ "$warm_credit_line" -lt "$warm_exit_line" ] \
     || fail "warm deployment readiness does not repair dispatch credit after validation"
-for script in demo/e2e-agents.sh demo/e2e-relayer-restart-stress.sh; do
+for script in \
+    demo/e2e-agents.sh \
+    demo/e2e-corrupt-checkpoint-metadata.sh \
+    demo/e2e-destination-rpc-failure.sh \
+    demo/e2e-duplicate-relayer-attempt.sh \
+    demo/e2e-low-dusk-signer-balance.sh \
+    demo/e2e-origin-rpc-failure.sh \
+    demo/e2e-relayer-restart-stress.sh \
+    demo/e2e-validator-delay.sh; do
     generator_line="$(rg -n -F 'cfg_json="$' "$script" | cut -d: -f1 | tail -1)"
     ownership_line="$(rg -n -F 'GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")' "$script" | cut -d: -f1 | tail -1)"
     [ -n "$generator_line" ] && [ -n "$ownership_line" ] && [ "$generator_line" -lt "$ownership_line" ] \

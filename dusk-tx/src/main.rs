@@ -178,6 +178,10 @@ enum Command {
         /// Optional u32 argument.
         #[arg(long, name = "arg-u32")]
         arg_u32: Option<u32>,
+        /// Optional pair of u32 arguments, encoded as FIRST,SECOND.
+        /// Required for ValidatorAnnounce get_announced_validators(start, limit).
+        #[arg(long, name = "arg-u32-pair", value_name = "FIRST,SECOND")]
+        arg_u32_pair: Option<String>,
         /// Optional bytes32 argument (64 hex chars).
         #[arg(long, name = "arg-bytes32")]
         arg_bytes32: Option<String>,
@@ -509,6 +513,7 @@ async fn main() {
             method,
             return_type,
             arg_u32,
+            arg_u32_pair,
             arg_bytes32,
             arg_eth_address,
             arg_eth_addresses,
@@ -519,6 +524,7 @@ async fn main() {
                 &method,
                 &return_type,
                 arg_u32,
+                arg_u32_pair.as_deref(),
                 arg_bytes32,
                 arg_eth_address,
                 arg_eth_addresses,
@@ -841,7 +847,7 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 mod tests {
     use super::{
         confirmation_error_with_hash, next_moonlight_nonce, parse_igp_domain_configs,
-        parse_validator_announce_query_addresses, prepare_bytes32_query_argument,
+        parse_u32_pair, parse_validator_announce_query_addresses, prepare_bytes32_query_argument,
         prepare_dispatch_call, prepare_process_call, read_secret_key_hex, resolve_keys_password,
         resolve_signing_chain_id, submission_error_with_hash, wait_for_transaction_with,
         Bytes32QueryArgument, MAX_CALL_ARGS_BYTES, MAX_PASSWORD_FILE_BYTES,
@@ -942,6 +948,15 @@ mod tests {
         assert!(parse_validator_announce_query_addresses(&three)
             .unwrap_err()
             .contains("at most 2"));
+    }
+
+    #[test]
+    fn paginated_query_arguments_encode_both_u32_values() {
+        assert_eq!(parse_u32_pair("0,2").unwrap(), (0, 2));
+        assert_eq!(parse_u32_pair("17,1").unwrap(), (17, 1));
+        for invalid in ["", "0", "0,", ",2", "0,2,3", "x,2", "0,x"] {
+            assert!(parse_u32_pair(invalid).is_err(), "accepted {invalid:?}");
+        }
     }
 
     #[test]
@@ -1059,6 +1074,14 @@ mod tests {
         let rejected =
             confirmation_error_with_hash("aabbcc", "Transaction aabbcc failed: contract rejected");
         assert_eq!(rejected, "Transaction aabbcc failed: contract rejected");
+
+        let incompatible = confirmation_error_with_hash(
+            "aabbcc",
+            "Transaction aabbcc status response is incompatible: missing data.tx.err",
+        );
+        assert!(incompatible.contains("confirmation outcome unknown"));
+        assert!(incompatible.contains("tx_id=aabbcc"));
+        assert!(incompatible.contains("reconcile this exact hash before retrying"));
     }
 
     #[tokio::test]
@@ -1411,13 +1434,13 @@ fn submission_error_with_hash(tx_id: &str, error: &str) -> String {
 }
 
 fn confirmation_error_with_hash(tx_id: &str, error: &str) -> String {
-    let timeout_prefix = format!("Transaction {tx_id} was not confirmed");
-    if error.starts_with(&timeout_prefix) {
+    let execution_failure_prefix = format!("Transaction {tx_id} failed:");
+    if error.starts_with(&execution_failure_prefix) {
+        error.to_owned()
+    } else {
         format!(
             "Transaction {tx_id} confirmation outcome unknown: {error}; retain tx_id={tx_id} and reconcile this exact hash before retrying"
         )
-    } else {
-        error.to_owned()
     }
 }
 
@@ -2144,6 +2167,26 @@ fn parse_validator_announce_query_addresses(list: &str) -> Result<Vec<EthAddress
     Ok(addresses)
 }
 
+fn parse_u32_pair(value: &str) -> Result<(u32, u32), String> {
+    let mut parts = value.split(',');
+    let first = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| "Expected --arg-u32-pair FIRST,SECOND".to_string())?
+        .parse::<u32>()
+        .map_err(|_| "FIRST in --arg-u32-pair is not a u32".to_string())?;
+    let second = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| "Expected --arg-u32-pair FIRST,SECOND".to_string())?
+        .parse::<u32>()
+        .map_err(|_| "SECOND in --arg-u32-pair is not a u32".to_string())?;
+    if parts.next().is_some() {
+        return Err("Expected exactly two values in --arg-u32-pair FIRST,SECOND".to_string());
+    }
+    Ok((first, second))
+}
+
 fn parse_eth_address(s: &str) -> Result<EthAddress, String> {
     let s = s.trim();
     let s = s.strip_prefix("0x").unwrap_or(s);
@@ -2237,6 +2280,13 @@ async fn propagate_and_wait(
     tx_id: &str,
     tx_bytes: &[u8],
 ) -> Result<(), String> {
+    // Emit the locally computed reconciliation identity before the first
+    // remote write. This gives an interrupted operator a concrete hash to
+    // reconcile before deciding whether a non-idempotent operation may be
+    // retried.
+    eprintln!(
+        "  Prepared TX {tx_id}; reconcile this exact hash before retrying if submission is interrupted"
+    );
     client
         .propagate_tx(tx_bytes)
         .await
@@ -2314,6 +2364,7 @@ async fn cmd_query(
     method: &str,
     return_type: &str,
     arg_u32: Option<u32>,
+    arg_u32_pair: Option<&str>,
     arg_bytes32: Option<String>,
     arg_eth_address: Option<String>,
     arg_eth_addresses: Option<String>,
@@ -2321,11 +2372,28 @@ async fn cmd_query(
     let client = RuesClient::new(rues_url)?;
     let contract_id = parse_bytes32(contract_hex)?;
     let argument_count = usize::from(arg_u32.is_some())
+        + usize::from(arg_u32_pair.is_some())
         + usize::from(arg_bytes32.is_some())
         + usize::from(arg_eth_address.is_some())
         + usize::from(arg_eth_addresses.is_some());
     if argument_count > 1 {
         return Err("Query accepts at most one argument option".to_string());
+    }
+    let arg_u32_pair = arg_u32_pair.map(parse_u32_pair).transpose()?;
+    if method == "get_announced_validators" {
+        let (_, limit) = arg_u32_pair.ok_or_else(|| {
+            "get_announced_validators requires --arg-u32-pair START,LIMIT".to_string()
+        })?;
+        if return_type != "eth-address-list" {
+            return Err(
+                "get_announced_validators requires --return-type eth-address-list".to_string(),
+            );
+        }
+        if !(1..=2).contains(&limit) {
+            return Err("get_announced_validators LIMIT must be 1 or 2".to_string());
+        }
+    } else if arg_u32_pair.is_some() && return_type != "eth-address-list" {
+        return Err("--arg-u32-pair is supported only for eth-address-list queries".to_string());
     }
 
     match return_type {
@@ -2411,7 +2479,11 @@ async fn cmd_query(
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         "eth-address-list" => {
-            let result: Vec<EthAddress> = client.contract_query(&contract_id, method, &()).await?;
+            let result: Vec<EthAddress> = if let Some(pair) = arg_u32_pair {
+                client.contract_query(&contract_id, method, &pair).await?
+            } else {
+                client.contract_query(&contract_id, method, &()).await?
+            };
             let output = json!({
                 "success": true,
                 "value": result

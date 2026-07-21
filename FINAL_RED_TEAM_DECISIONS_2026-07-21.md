@@ -40,7 +40,11 @@ silently relabeled as having run those tests.
   material or submitting any deterministic deployment.
 - **Transaction reconciliation:** transport/server failures remain retryable;
   deterministic HTTP-client and successful-response schema incompatibilities
-  terminate immediately while preserving the exact transaction hash.
+  terminate immediately while preserving the exact transaction hash. After
+  propagation, every observation error other than an explicit execution
+  rejection is labeled outcome-unknown and forbids retry before exact-hash
+  reconciliation. The demo rejects zero-exit helper JSON without a canonical
+  32-byte transaction ID instead of continuing without an audit identity.
 - **Escrow parity:** synthetic, collateral, and native routes support
   capability-authenticated claims for contract-shaped recipients. The native
   route transfers through a fixed `receive_native_pending` callback, and root
@@ -60,6 +64,10 @@ silently relabeled as having run those tests.
   removed because an attacker could consume it with self-owned keys and prevent
   later legitimate validators from enrolling. Per-validator location history
   remains bounded, while storage-paying enrollment has no shared finite quota.
+- **Validator pagination CLI parity:** generic read-only queries accept an
+  explicit `--arg-u32-pair FIRST,SECOND`, so `get_announced_validators(start,
+  limit)` is reachable through the operator CLI rather than only the data
+  driver and VM tests.
 - **Route dispatch fees:** synthetic, collateral, and native users contribute
   the route's quoted native-DUSK fee in their own Moonlight transaction. Mailbox
   authenticates the contract-to-contract transfer and credits the actual route.
@@ -77,7 +85,8 @@ silently relabeled as having run those tests.
 - **Artifact and repro fidelity:** secret-content scans include hidden and
   ignored regular files; the primary repro invokes the DRC20-feature-aware
   type target; oversized process metadata is rejected before signer/client
-  access; parent E2E cleanup ownership begins only after generator success.
+  access; every parent E2E cleanup path claims ownership only after generator
+  success, and collision paths cannot recursively delete pre-existing runs.
 - **Fee beneficiary identity:** ProtocolFee and IGP claims require a direct
   Moonlight call whose public-key hash equals the configured beneficiary. A
   contract-shaped beneficiary can no longer redirect funds to its outer caller.
