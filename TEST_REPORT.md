@@ -53,6 +53,40 @@ The associated relayer logs are
 The multisig validator log SHA256 is
 `e8e108a242221d2f0f4ba9ad011d30a41de0dfdb64cfd0621b0cc93d1abc073c`.
 
+## 2026-07-20 Final Base-PR Compatibility Validation
+
+The base implementation commit
+`4d8f5da013d56e5d3fa036ab924de6a6729b5f4f` was reproduced from a detached,
+clean worktree against current clean Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk 1.7.1). The exact command
+was:
+
+```bash
+RUSK_DIR=/tmp/rusk-private-hyperlane-current-20260720 \
+  bash scripts/local-repro-check.sh
+```
+
+Durable local log: `/tmp/hyperlane-dusk-base-repro-4d8f5da.log` (SHA-256
+`28bfda04709a62d12ebaa26a2351707a638408d0b2ce12b65e5bb5c97b58f948`).
+
+Result:
+
+- all 12 contract WASMs built and the production contract/type clippy surface
+  passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 94 passed, 0 failed;
+- `dusk-tx`: 16 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 5 passed, 0 failed;
+- the standalone E2E operator crate compiled; and
+- tracked-source secret hygiene passed.
+
+The additional coverage proves aggregate synthetic pending-supply reservation,
+coherent multisig policy queries, bounded Merkle/IGP pages, strict simulation
+response parsing, exact-hash preservation for ambiguous propagation and
+confirmation, full saved-topology validation, generated-agent policy binding,
+and fail-closed strict branch-protection checks. The repository-level
+ fail-closed self-test also passed in the primary clean worktree.
+
 ## 2026-07-20 Post-Deep-Review Contract Validation
 
 The custody/runtime remediation commit
