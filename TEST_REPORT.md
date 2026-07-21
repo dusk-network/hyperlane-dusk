@@ -29,7 +29,7 @@ a later legitimate dispatch after guard release.
 
 Base runtime anchor `9058755927473239d59ce702a8074acbae0e0a24` was reproduced
 from a detached clean layout against that frozen Rusk and monorepo
-`d76eea936cf6f69f5d8117cd64599a7d917a255d`. The gate passed all 13 contract
+`6ef326b8a926d262714afd315960b26e441c7b40`. The gate passed all 13 contract
 WASM builds, production-contract clippy, 29 type tests, 109 VM tests, 17
 `dusk-tx` tests, 5 data-driver tests, the standalone E2E operator build,
 tracked-source secret hygiene, and the full Dusk agent/base/validator/relayer/
@@ -53,11 +53,11 @@ The frozen base code anchor is
 `876848ecc6c671995fad3ae7b22843e68a3ce8ca`; the frozen combined withdrawal
 stack anchor is `b28d575527421d2a67245921ce561c88f554c099`. Both were tested against
 Rusk `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. The final static gates used
-monorepo checkout `833b77b4436e146a4776a3b35db68525014b3adb`; the live E2E used its
+monorepo checkout `b4c46ce9bdade2590018facaa51255d497a80db2`; the live E2E used its
 runtime-identical parent `bf11813b0ba9f065e1517eb22ab56c8f6264250b` because `b4c46ce` changes
 only documentation and the exact companion checkout string in CI. The Dusk
 agent implementation anchor in both is
-`e95d3ea282a55ead114471ffb1dece77706ffc81`.
+`af957a9fc814fa7533aadf997104863306eed645`.
 
 The exact base gate passed 12 WASM builds, contract/type clippy, 29 type tests,
 108 VM tests, 17 `dusk-tx` tests, 5 data-driver tests, the standalone operator,
@@ -124,7 +124,7 @@ hygiene for both the base PR and PR #10. Pre-merge readiness consumes that
 proposal context; manual production mode continues to require the trusted
 default-branch review-policy context.
 
-Monorepo policy anchor `c35f86405cf8cd83927860aca8b5c38b042ee198`
+Monorepo policy anchor `dad14dbbea4bbd59f6c6697f89cc245d5c1cf2a0`
 separately validates the fork-boundary allowlist for the already-tested
 validator fail-stop implementation. It does not replace static checkout
 `b4c46ce9`; it prevents that CI-only delta from being described as an untested

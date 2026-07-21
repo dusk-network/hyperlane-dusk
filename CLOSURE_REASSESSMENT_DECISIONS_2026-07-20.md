@@ -203,13 +203,22 @@ self-tests continue to cover missing files, missing references, and hash
 mismatches.
 
 The compile/runtime clean-layout anchor remains monorepo `b4c46ce9`; the later
-policy-only anchor `c35f86405cf8cd83927860aca8b5c38b042ee198` adds the two
+policy-only anchor `dad14dbbea4bbd59f6c6697f89cc245d5c1cf2a0` adds the two
 validator fail-stop files to the fork-boundary allowlist. That policy delta was
 validated by the exact boundary reproduction and a successful hosted
 `Dusk review policy gate`; it is tracked separately so it is not mislabeled as
 a rerun of the Rust/contract gate. Cross-repository readiness may wait up to
 five minutes for the agent contexts rather than converting a still-running
 hosted build into a failure after sixty seconds.
+
+After that evidence run, upstream advanced by one SVM/TypeScript-only commit.
+The monorepo PR was rebased onto `67933966ed9c6f9e3d5ec095372e11414c82e4e7`;
+all 79 Dusk commits are patch-equivalent under `git range-diff`. Rebased
+equivalents are runtime `e95d3ea282a55ead114471ffb1dece77706ffc81`, static
+checkout `833b77b4436e146a4776a3b35db68525014b3adb`, and policy
+`c35f86405cf8cd83927860aca8b5c38b042ee198`. The complete affected Rust cargo
+boundary passed again on the rebased PR head. This mapping does not relabel the
+older exact E2E logs as runs against the rebased commit.
 
 `READINESS_MODE=premerge` validates the exact required checks on the current
 Dusk PR, the monorepo PR, and the workflow-dispatcher PR, but does not require
