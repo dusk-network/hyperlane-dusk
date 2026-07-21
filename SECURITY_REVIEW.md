@@ -217,7 +217,9 @@ wedging later Dusk-origin messages.
 quote and clears it only after both hook callbacks and payments succeed. Any
 nested dispatch from quote, post-dispatch, or payment callbacks fails with
 `Mailbox: dispatch reentrancy`. A failed enclosing transaction rolls the guard
-back with the rest of Mailbox state. Base Mailbox state version advances to 2.
+back with the rest of Mailbox state. Base Mailbox state version advances to 2;
+the stacked withdrawal deployment advances to 3 so the withdrawal ABI cannot
+be confused with the guarded base deployment.
 
 **Proof**: `ReentrantHook` attempts the real nested call through pinned
 Piecrust/Rusk. The regression first failed on the vulnerable implementation
@@ -483,8 +485,13 @@ live demo funds all three route identities and observes the exact ProtocolFee
 increase for their outbound dispatches.
 
 The chosen fee-credit model is explicit prepayment, not per-dispatch
-`msg.value`. Production operations still need a policy for funders and unused
-credit withdrawal/refunds.
+`msg.value`. Funding is permissionless, but the named effective payer owns the
+resulting credit. A payer can withdraw unused credit to an explicit Moonlight
+key; the key is semantically validated before accounting changes, and callers
+cannot provide a different payer identity. Production warp routes
+provide an owner-only proxy that withdraws only the calling route's credit.
+There is no Mailbox-owner global drain. Operations still need to choose the
+route funder, target balance, and low-credit alert threshold.
 
 ### Owner roles use one reachable principal model
 
@@ -535,17 +542,17 @@ documented deviations:
 | Address mapping | External Dusk recipients are represented by `keccak256(bls_public_key_bytes)` and must register their BLS public key on Dusk for account delivery. | The mapping is deterministic and non-updatable. Lost or compromised keys are a user/account-management issue, not recoverable by current contracts. |
 | Unregistered recipients | WarpNative and WarpDrc20Collateral escrow unregistered recipients. | Inbound funds are not stranded at a synthetic contract account. Recipients must register the matching BLS key and call `claim_pending()`. |
 | Multisig metadata | MessageIdMultisigISM requires sorted validator sets, a valid threshold, initialized state, and exact fixed-width signature metadata. | This is stricter than accepting trailing metadata bytes and is intended to prevent malformed metadata acceptance. |
-| Fee accounting | Mailbox consumes sender-keyed native credits and pays the required AggregationHook plus the selected/default hook. ProtocolFee and IGP record only authenticated exact payments and retain real DUSK custody. | VM tests cover custody, claims, wrong-caller/value rejection, and aggregation forwarding. Live route-matrix tests assert one ProtocolFee collection per outbound Dusk route. Funding/refund policy remains operational. |
+| Fee accounting | Mailbox consumes sender-keyed native credits and pays the required AggregationHook plus the selected/default hook. Unused credit is withdrawable only by the effective payer to an explicit Moonlight key; route contracts proxy this power only for their owner. ProtocolFee and IGP record only authenticated exact payments and retain real DUSK custody. | VM tests cover custody, payer isolation, route-owner authorization, withdrawal, claims, wrong-caller/value rejection, and aggregation forwarding. Live route-matrix tests assert one ProtocolFee collection per outbound Dusk route. Route funding levels and monitoring remain operational policy. |
 | Secret handling | Demo/E2E configs use local dev keys and `/tmp` artifacts. `dusk-tx` supports `DUSK_CONSENSUS_PASSWORD_FILE`, password environment variables, and `--secret-key-stdin`; demo scripts no longer pass Dusk consensus passwords through CLI argv. `SECRET_HANDLING.md` and `make secret-hygiene` add source/artifact guardrails. Production use must still avoid logs, committed config, and CI artifact leakage for Dusk secrets. | This is a release gate outside the WASM contracts. Current scripts are acceptable only for local deterministic dev/test environments, and production signer storage/config generation needs operational sign-off. |
 
 ## Files Modified
 
 | File | Change |
 |---|---|
-| `contracts/warp-native/src/lib.rs` | Added deposit verification, escrow pattern (`pending_transfers`, `claim_pending`, `pending_balance`) |
+| `contracts/warp-native/src/lib.rs` | Added deposit verification, escrow pattern (`pending_transfers`, `claim_pending`, `pending_balance`), and owner-only route-credit withdrawal proxy |
 | `Cargo.toml` | Workspace release profile enables `overflow-checks = true`; contract code still uses explicit checked arithmetic for security-sensitive invariants |
-| `contracts/warp-drc20/src/lib.rs` | `checked_add` in `mint`/`do_transfer`, `checked_sub` in `burn`, zero-amount check in `transfer_remote`, immediate-caller-aware owner resolution |
-| `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, collateral escrow, `claim_pending`, `pending_balance`, and registered-recipient resolution in `handle` |
+| `contracts/warp-drc20/src/lib.rs` | `checked_add` in `mint`/`do_transfer`, `checked_sub` in `burn`, zero-amount check in `transfer_remote`, immediate-caller-aware owner resolution, and owner-only route-credit withdrawal proxy |
+| `contracts/warp-drc20-collateral/src/lib.rs` | Added `registered_accounts`, `register_account`, `is_registered`, collateral escrow, `claim_pending`, `pending_balance`, registered-recipient resolution in `handle`, and owner-only route-credit withdrawal proxy |
 | `contracts/warp-drc20-collateral/Cargo.toml` | Added `dusk-bytes = "0.1.7"` dependency |
 | `contracts/igp/src/lib.rs` | `u64::try_from(cost).expect(...)` instead of `cost as u64`; checked total gas payment accounting; checked `gas_payment_count` conversion |
 | `contracts/ism-multisig/src/lib.rs` | Reject uninitialized verification state and partial trailing signature metadata |
@@ -553,15 +560,17 @@ documented deviations:
 | `contracts/aggregation-hook/src/lib.rs` | Added authenticated aggregate hook invocation and exact child-payment forwarding |
 | `types/src/caller.rs` | Added the shared Moonlight/contract caller and transfer-callback authentication model |
 | `types/src/drc20.rs` | Added the current typed Dusk DRC20 account and call ABI |
-| `types/src/events.rs` | Added operational/admin, account registration, gas config, validator-set, pending-claim, and WarpDrc20 transfer events |
-| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, and ownership events; dispatch reentrancy guard; checked total-fee quotes; checked nonce increment; checked `processed_count` conversion |
+| `types/src/events.rs` | Added operational/admin, account registration, gas config, validator-set, pending-claim, dispatch-credit withdrawal, and WarpDrc20 transfer events |
+| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, ownership, and dispatch-credit custody events; dispatch reentrancy guard; payer-owned credit withdrawal; checked total-fee quotes; checked nonce increment; checked `processed_count` conversion |
 | `contracts/reentrant-hook/src/lib.rs` | Added a test-only adversarial quote hook that exercises real same-contract recursion |
 | `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotations for initialization and Merkle insertion events |
 | `contracts/validator-announce/src/lib.rs` | Explicit event annotations for initialization and validator announcement events |
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | VM tests include shared authorization, fee custody/aggregation, native custody, current-ABI DRC20 allowance/collateral coverage, and hostile hook reentrancy |
+| `tests/tests/integration.rs` | Current VM suite includes shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, post-debit transfer rollback, real-receipt data-driver decoding, downstream route-withdrawal rejection, native custody, current-ABI DRC20 allowance/collateral coverage, and hostile hook reentrancy; the authoritative total is recorded with the exact tested head in `TEST_REPORT.md` |
+| `data-driver/src/lib.rs` | Withdrawal-event decoding round trip and malformed-payload rejection; warm demo startup always delegates driver freshness to Cargo |
+| `dusk-tx/src/main.rs`, `dusk-tx/src/rues.rs` | Exact-hash execution confirmation with an immediate first query, authoritative absolute deadline, bounded responses, transient observation retry, and transaction-hash preservation across submission and confirmation errors |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |
 | `demo/start-env.sh` | Uses an explicit state archive and consensus-key path, refuses mismatched contract/node Rusk checkouts, and avoids explorer assets when the explorer is skipped |
 | `demo/stop-env.sh` | Stops only the Rusk process using the demo's exact state archive |
@@ -597,6 +606,12 @@ documented deviations:
 | `test_multisig_ism_verify_rejects_corrupt_signature_bytes` | Verify fails when fixed-width signature metadata is corrupt and cannot be recovered |
 | `test_multisig_ism_admin_rejects_unauthorized_caller` | Validator-set admin update is owner-gated |
 | `test_mailbox_quote_dispatch_rejects_fee_overflow` | Mailbox rejects a combined required-hook plus default-hook quote that would overflow `u64` |
+| `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed` | Third-party funding creates payer-owned credit; another caller cannot withdraw it; zero and invalid-recipient withdrawals fail without debiting custody; partial/full withdrawals exactly reduce credit and Mailbox custody; the actual VM event decodes through the data driver |
+| `test_dispatch_credit_withdrawal_rolls_back_after_transfer_failure` | A transfer-contract failure after the tentative credit debit rolls back credit, native custody, recipient balance, and caller context |
+| `test_warp_drc20_owner_can_withdraw_route_dispatch_credit` | Only the synthetic route owner can proxy withdrawal of that route's credit |
+| `test_warp_native_owner_can_withdraw_route_dispatch_credit` | Only the native route owner can proxy withdrawal of that route's credit |
+| `test_warp_collateral_owner_can_withdraw_route_dispatch_credit` | Only the collateral route owner can proxy withdrawal of that route's credit |
+| Withdrawal receipt gas assertions | Direct Mailbox and all three route-proxied withdrawals remain below the CLI's 30,000,000-gas default on the pinned Rusk runtime |
 | `test_protocol_fee_rejects_collected_fee_overflow` | ProtocolFee rejects lifetime collected-fee accounting overflow instead of saturating silently |
 | `test_igp_rejects_total_gas_payment_overflow` | IGP rejects lifetime gas-payment accounting overflow instead of saturating silently |
 
@@ -612,8 +627,10 @@ cargo test -p hyperlane-dusk-integration-tests
 All commands passed after the explicit event annotation cleanup, Mailbox fee
 overflow regression, fee-accounting overflow regression, and targeted clippy
 cleanup for the production contract/type surface. The type package reported
-`29 passed; 0 failed; 0 ignored`; the integration package reported
-`82 passed; 0 failed; 0 ignored` on current Rusk.
+`29 passed; 0 failed; 0 ignored`. Current integration, data-driver, and CLI
+totals are stated only in `TEST_REPORT.md` alongside the exact tested Dusk and
+Rusk heads; older totals in this document are historical rather than moving
+current-head claims.
 
 The production contract crates allow Clippy's `needless_pass_by_value` lint at
 crate level because Dusk ABI entrypoints and cross-contract call payloads use
@@ -625,7 +642,7 @@ running the rest of the pedantic lint set for the wasm contract surface.
 | Gap | Why |
 |---|---|
 | Mailbox nonce overflow panic path | The nonce is private Mailbox state with no production setter; reaching `u32::MAX` requires billions of successful dispatches. The code now uses `checked_add`, and the security property is reviewed statically rather than driven through the VM harness with a test-only state mutation hook. |
-| Dispatch-credit withdrawal/refund policy | The implemented fee model uses route-keyed prepayment and exact consumption. It intentionally has no withdrawal path yet; production governance must decide who funds routes and whether unused credits are recoverable. |
+| Contract-recipient dispatch-credit withdrawal | The focused withdrawal surface pays Moonlight accounts. Supporting contract recipients safely requires an explicit callback ABI, receiver authentication expectations, and failure semantics; route owners can meanwhile select an operational Moonlight treasury. |
 | IGP `u64::try_from` panic path | Would need gas oracle config that produces a fee > `u64::MAX`. The `checked_mul` calls before it would panic first in practice. |
 | WarpDrc20 checked arithmetic panic paths | Would need to mint or burn an amount that desyncs total supply beyond `u64` bounds, which requires either > `u64::MAX` inbound messages or a pre-existing impossible supply/balance invariant violation. Not practically testable. |
 
@@ -637,10 +654,10 @@ the final sign-off in https://github.com/dusk-network/hyperlane-dusk/issues/2.
 
 | Decision | Recommended release stance | Rationale and evidence | Reviewer action |
 |---|---|---|---|
-| Dispatch-credit funding and recovery | Require an explicit production policy before release. | Route identities consume pre-funded native credits. Exact payments and custody are enforced, but the contract does not choose an operator or refund policy. | Select the funder/monitoring model and either accept non-withdrawable credits or design an owner/user-safe withdrawal path. |
+| Dispatch-credit funding and recovery | Payer-owned withdrawal design accepted 2026-07-20; operational funding levels remain open. | Anyone may fund, but only the effective payer can withdraw. Production warp routes expose owner-only withdrawal of their own route credit. No Mailbox owner can globally drain credits. Moonlight payouts are implemented; contract-recipient callbacks are deferred. The CLI confirms the exact persisted transaction result and fails closed on contract rejection instead of inferring success from a spent nonce. | Select the route funder, target balance, low-credit alert, and Moonlight treasury. Revisit contract recipients only with a specified callback ABI. |
 | Mailbox `resolve_sender` when called from the transfer contract | Accept the current special case for Moonlight contract-call transactions. | In the current Rusk execution model, a Moonlight transaction that targets a contract reaches the target through `TRANSFER_CONTRACT`, while `abi::public_sender()` exposes the BLS key that signed the transaction. The Mailbox maps that direct-user path to `keccak256(public_sender)` and maps every other immediate caller to the caller `ContractId`. `test_dispatch_via_transaction` asserts the exact account hash; `test_dispatch_via_recipient_proxy` asserts an inter-contract dispatch uses the proxy contract ID. | Confirm with Rusk maintainers that `TRANSFER_CONTRACT` cannot call arbitrary user contracts for non-user-initiated reasons with an unrelated `public_sender`, or request a Rusk-level discriminator before release. |
 | `registered_accounts` has no deregistration | Accept immutable registration for v1. | The registered key is stored under `keccak256(pk.to_bytes())`, so replacing a compromised key at the same H256 is not meaningful: a new key produces a new H256/recipient. Deleting a registration would not recover funds already addressed to the old hash. Keeping registrations append-only avoids admin-controlled recipient remapping. | Confirm product/docs will tell users that Dusk recipients are bound to the BLS key hash used as the remote recipient. |
-| WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain | Accept no admin drain for v1. | Escrow is keyed by the recipient hash and can only be claimed by the matching BLS key. An admin drain would add a privileged path that can seize pending user funds and would require a governance/timelock/dispute process that is out of scope for this minimal bridge. If a user loses the private key after bridging to that hash, the funds remain locked. | Confirm Dusk wants this non-custodial failure mode, or design a separate governed recovery mechanism before production. |
+| WarpNative/WarpDrc20Collateral `pending_transfers` has no admin drain | Accepted 2026-07-20 for v1. | Escrow is keyed by the recipient hash and can only be claimed by the matching BLS key. An admin drain would add a privileged path that can seize pending user funds and would require a governance/timelock/dispute process that is out of scope for this minimal bridge. If a user loses the private key after bridging to that hash, the funds remain locked. | Document the non-custodial failure mode for users. Treat any future governed recovery mechanism as a separate design and audit. |
 
 ## Build & Test Verification
 
@@ -654,7 +671,7 @@ make clippy-contracts
 # 29 unit tests pass
 cargo test -p hyperlane-dusk-types
 
-# 82 integration tests pass
+# Run the complete integration suite; record the resulting total with its head.
 cargo test -p hyperlane-dusk-integration-tests
 ```
 

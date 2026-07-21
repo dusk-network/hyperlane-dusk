@@ -284,3 +284,21 @@ full version matrix, both E2E security modes, the Dusk-origin validator path,
 fault branches, and secret/archive hygiene. Only then are fresh independent
 GPT-5.6 xhigh and Controlecentrum deep/xhigh reviews run against those exact
 heads.
+
+### Replacement evidence status — 2026-07-21
+
+The implementation evidence requirement is satisfied for base runtime
+`9058755927473239d59ce702a8074acbae0e0a24`, withdrawal-stack runtime
+`dc8aba07773993878edd81735d59e66beddd66a3`, monorepo
+`6ef326b8a926d262714afd315960b26e441c7b40`, and Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. The exact aggregate reproduction,
+TestMock, MessageIdMultisig, and eight fail-closed live-run logs and hashes are
+recorded in the newest `TEST_REPORT.md` section. The later monorepo rebase adds
+only upstream SVM/TypeScript state and patch-equivalent Dusk commits; later
+workflow/documentation commits do not change the validated Dusk runtime tree.
+
+This evidence closes the machine-validation prerequisite; it does not approve
+production or resolve the unchecked human decisions in
+`PRODUCTION_REVIEW_DECISIONS.md`. Fresh independent GPT-5.6 xhigh and
+Controlecentrum deep/xhigh reviews remain the next gate and must use the final
+published PR heads.
