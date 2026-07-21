@@ -72,7 +72,6 @@ impl ConvertibleContract for HyperlaneDataDriver {
             // Mailbox queries (no args)
             "local_domain"
             | "nonce"
-            | "state_version"
             | "latest_dispatched_id"
             | "default_ism"
             | "default_hook"
@@ -126,7 +125,6 @@ impl ConvertibleContract for HyperlaneDataDriver {
         match fn_name {
             "local_domain"
             | "nonce"
-            | "state_version"
             | "latest_dispatched_id"
             | "default_ism"
             | "default_hook"
