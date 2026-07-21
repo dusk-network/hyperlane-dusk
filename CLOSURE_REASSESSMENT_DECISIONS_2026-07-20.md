@@ -150,6 +150,14 @@ An occupied Rusk port is accepted only after the configured RUES endpoint
 passes its health probe. Cold-start readiness timeout is fatal. Shutdown never
 kills a Rusk service recorded as external.
 
+The live Anvil harness assigns separate pre-funded development accounts to the
+operator, relayer, and validator. The same validator address and threshold are
+passed to both the EVM and Dusk MessageIdMultisigISM deployments. This prevents
+concurrent processes from sharing one EVM nonce stream and prevents a test from
+accidentally proving only one checkpoint direction. The operator and Dusk
+validator setup calls finish before either validator starts, for the analogous
+Dusk signer boundary.
+
 ## Review-policy decision
 
 The default-branch `pull_request_target` workflow is the trusted policy
@@ -158,6 +166,15 @@ out the trusted base and executes the base copies of the fail-closed and review
 hygiene scripts against the proposed tree. A PR cannot certify deletion or
 weakening of its own guard. Required check evaluation paginates all check runs,
 matches exact configured names, and treats a lookalike name as missing.
+
+`READINESS_MODE=premerge` validates the exact required checks on the current
+Dusk PR, the monorepo PR, and the workflow-dispatcher PR, but does not require
+any of them to be already approved or merged. Those requirements would create
+a circular cross-repository status check and duplicate branch protection.
+`READINESS_MODE=production` retains merged-and-approved requirements for all
+three PRs and all production-only sign-off, protection, dependency, runner, and
+secret gates. A green pre-merge check therefore means machine validation is
+green, not that production is authorized.
 
 ## Companion agent decisions
 

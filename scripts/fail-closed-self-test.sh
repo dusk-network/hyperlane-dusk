@@ -68,6 +68,16 @@ rg -q -F 'ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY"' demo/e2e-a
     || fail "live E2E does not pass the isolated relayer signer to config generation"
 rg -q -F 'ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY"' demo/e2e-agents.sh \
     || fail "live E2E does not pass the isolated validator signer to config generation"
+rg -q -F 'require_merged=0' scripts/production-readiness-guard.sh \
+    || fail "pre-merge readiness still requires an already merged PR"
+rg -q -F 'require_approved=0' scripts/production-readiness-guard.sh \
+    || fail "pre-merge readiness still requires prior reviewer approval"
+rg -q -F 'require_merged=1' scripts/production-readiness-guard.sh \
+    || fail "production readiness no longer requires merged PRs"
+rg -q -F 'require_approved=1' scripts/production-readiness-guard.sh \
+    || fail "production readiness no longer requires approved PRs"
+rg -q -F 'WORKFLOW_REQUIRED_STATUS_CONTEXTS="${WORKFLOW_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Manual repro dispatcher gate}"' scripts/production-readiness-guard.sh \
+    || fail "workflow dispatcher readiness uses the wrong required status contexts"
 
 validator_line="$(rg -n -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
 secret_write_line="$(rg -n -F "printf '0x%s\\n'" demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
