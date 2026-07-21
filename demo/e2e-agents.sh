@@ -214,7 +214,7 @@ run_case() {
     if [ "$ism" = "messageIdMultisig" ]; then
         info "Starting validator..."
         (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-          DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$validator_cfg" ./target/debug/validator \
+          exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$validator_cfg" ./target/debug/validator \
           >"$validator_log" 2>&1) &
         validator_pid="$!"
         CURRENT_VALIDATOR_PID="$validator_pid"
@@ -224,7 +224,7 @@ run_case() {
 
     info "Starting relayer..."
     (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-      DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$relayer_cfg" ./target/debug/relayer \
+      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$relayer_cfg" ./target/debug/relayer \
       >"$relayer_log" 2>&1) &
     relayer_pid="$!"
     CURRENT_RELAYER_PID="$relayer_pid"

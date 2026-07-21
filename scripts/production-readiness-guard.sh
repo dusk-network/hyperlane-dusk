@@ -162,18 +162,11 @@ count_non_completed_checks() {
 }
 
 count_relevant_checks() {
-    local current_run_id="${GITHUB_RUN_ID:-}"
-
-    jq --arg run_id "$current_run_id" '
-        [
-            .[]
-            | select(
-                ($run_id == "")
-                or (((.detailsUrl // "") | contains("/actions/runs/" + $run_id + "/")) | not)
-            )
-        ]
-        | length
-    '
+    # The running readiness job is itself one of the configured required
+    # checks, so include it when proving that the expected contexts exist.
+    # count_non_completed_checks and count_failed_checks still exclude this
+    # run to avoid the job waiting on, or failing because of, itself.
+    jq 'length'
 }
 
 count_failed_checks() {
