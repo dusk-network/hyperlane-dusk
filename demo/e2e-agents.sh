@@ -24,6 +24,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
 
+# Anvil's deterministic, pre-funded development accounts. Keep the operator
+# on account #0, the relayer on #1, and the validator on #2 so independent
+# processes never compete for one EVM nonce stream during the live test.
+E2E_ANVIL_RELAYER_PRIVATE_KEY="${E2E_ANVIL_RELAYER_PRIVATE_KEY:-0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}"
+E2E_ANVIL_VALIDATOR_PRIVATE_KEY="${E2E_ANVIL_VALIDATOR_PRIVATE_KEY:-0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a}"
+E2E_ANVIL_VALIDATOR="${E2E_ANVIL_VALIDATOR:-0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC}"
+
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[INFO] $*" >&2; }
 
@@ -173,7 +180,7 @@ run_case() {
     local deploy_log="/tmp/hyperlane-deploy-${ism}-${run_id}.log"
     if [ "$ism" = "messageIdMultisig" ]; then
         bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism messageIdMultisig \
-          --multisig-validators "$ANVIL_DEPLOYER" --multisig-threshold 1 >"$deploy_log" 2>&1 || {
+          --multisig-validators "$E2E_ANVIL_VALIDATOR" --multisig-threshold 1 >"$deploy_log" 2>&1 || {
             tail -n 200 "$deploy_log" >&2 || true
             fail "deploy.sh failed (log: $deploy_log)"
           }
@@ -211,7 +218,11 @@ run_case() {
     GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
 
     # Generate agent configs.
-    cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id")"
+    cfg_json="$(
+        ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY" \
+        ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY" \
+        bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id"
+    )"
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
     validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
     dusk_validator_cfg="$(echo "$cfg_json" | jq -r '.duskValidator // empty')"

@@ -158,6 +158,13 @@ fi
 DUSK_GAS_LIMIT="${DUSK_GAS_LIMIT:-30000000}"
 DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-2000}"
 
+# Keep the EVM relayer submitter and validator identities independently
+# configurable. Existing callers remain compatible, while the live E2E can
+# isolate them from the operator account and from each other to avoid nonce
+# races between concurrently running processes.
+ANVIL_RELAYER_PRIVATE_KEY="${ANVIL_RELAYER_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
+ANVIL_VALIDATOR_PRIVATE_KEY="${ANVIL_VALIDATOR_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
+
 # ── Decrypt Dusk Deployer Key (consensus.keys) ──────────────────────────────
 
 if [ ! -f "$CONSENSUS_KEYS" ]; then
@@ -231,7 +238,7 @@ cat > "$RELAYER_CONFIG" <<JSON
       "validatorAnnounce": "${EVM_VALIDATOR_ANNOUNCE}",
       "merkleTreeHook": "${EVM_MERKLE_TREE_HOOK}",
       "submitter": "Classic",
-      "signer": { "type": "hexKey", "key": "${ANVIL_PRIVATE_KEY}" }
+      "signer": { "type": "hexKey", "key": "${ANVIL_RELAYER_PRIVATE_KEY}" }
     },
     "dusk": {
       "name": "dusk",
@@ -264,7 +271,7 @@ if [ "$ISM" = "messageIdMultisig" ]; then
   "log": { "level": "debug", "format": "pretty" },
   "db": "${VALIDATOR_DB}",
   "originChainName": "anvil",
-  "validator": { "type": "hexKey", "key": "${ANVIL_PRIVATE_KEY}" },
+  "validator": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" },
   "checkpointSyncer": { "type": "localStorage", "path": "${CHECKPOINT_DIR}" },
   "interval": 2,
   "chains": {
@@ -280,7 +287,7 @@ if [ "$ISM" = "messageIdMultisig" ]; then
       "validatorAnnounce": "${EVM_VALIDATOR_ANNOUNCE}",
       "merkleTreeHook": "${EVM_MERKLE_TREE_HOOK}",
       "submitter": "Classic",
-      "signer": { "type": "hexKey", "key": "${ANVIL_PRIVATE_KEY}" }
+      "signer": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" }
     }
   }
 }
@@ -292,7 +299,7 @@ JSON
   "log": { "level": "debug", "format": "pretty" },
   "db": "${VALIDATOR_DUSK_DB}",
   "originChainName": "dusk",
-  "validator": { "type": "hexKey", "key": "${ANVIL_PRIVATE_KEY}" },
+  "validator": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" },
   "checkpointSyncer": { "type": "localStorage", "path": "${CHECKPOINT_DUSK_DIR}" },
   "interval": 2,
   "chains": {
