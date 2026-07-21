@@ -831,7 +831,7 @@ fn test_dispatch_via_transaction() {
             .direct_call::<_, u32>(MAILBOX_ID, "state_version", &())
             .expect("Mailbox state_version should succeed")
             .data,
-        2
+        3
     );
     assert_eq!(s.merkle_count(), 0);
     assert_eq!(
