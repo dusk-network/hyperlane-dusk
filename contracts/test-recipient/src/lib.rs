@@ -86,6 +86,12 @@ mod test_recipient {
         // Queries
         // =================================================================
 
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
         /// Returns the origin domain of the last received message.
         pub fn last_origin(&self) -> u32 {
             self.last_origin

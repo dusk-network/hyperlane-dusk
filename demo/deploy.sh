@@ -254,11 +254,13 @@ validate_saved_deployment() {
     validate_evm_contract "$evm_validator_announce" "EVM ValidatorAnnounce"
     validate_evm_contract "$evm_igp" "EVM IGP"
     validate_evm_contract "$evm_recipient" "EVM test recipient"
-    validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
-    validate_dusk_query "$dusk_test_mock" verify_count u32 "Dusk TestMock"
+    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox"
+    validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"
+    validate_dusk_query "$dusk_test_mock" module_type u8 "Dusk TestMock"
     if [ "$saved_dusk_ism" = "messageIdMultisig" ]; then
         [ -n "$dusk_ism_multisig" ] \
             || fail "Saved multisig deployment lacks its Dusk ISM contract ID; redeploy"
+        validate_dusk_state_version "$dusk_ism_multisig" "Dusk multisig ISM"
         validate_dusk_query "$dusk_ism_multisig" module_type u8 "Dusk multisig ISM"
         expected_default_ism="$dusk_ism_multisig"
     else
@@ -274,6 +276,12 @@ validate_saved_deployment() {
     validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"
     validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 2
     validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"
+    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route"
+    validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"
+    validate_dusk_state_version "$dusk_igp" "Dusk IGP"
+    validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"
+    validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"
+    validate_dusk_state_version "$dusk_test_recipient" "Dusk test recipient"
     validate_dusk_query "$dusk_warp_collateral" mailbox bytes32 "Dusk collateral warp route"
     validate_dusk_query "$dusk_validator_announce" local_domain u32 "Dusk ValidatorAnnounce"
     validate_dusk_query "$dusk_igp" hook_type u8 "Dusk IGP"
@@ -513,9 +521,20 @@ DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral' "$DUSK_DEPLOY_FI
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
 
 if [ "$SKIP_DEPLOY" = true ]; then
+    validate_dusk_state_version "$DUSK_MAILBOX" "Dusk Mailbox"
+    validate_dusk_state_version "$DUSK_TEST_MOCK" "Dusk TestMock"
+    if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
+        validate_dusk_state_version "$DUSK_ISM_MULTISIG" "Dusk multisig ISM"
+    fi
     validate_dusk_state_version "$DUSK_MERKLE" "Dusk MerkleTreeHook"
     validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route" 2
     validate_dusk_state_version "$DUSK_WARP_NATIVE" "Dusk native warp route"
+    validate_dusk_state_version "$DUSK_WARP_COLLATERAL" "Dusk collateral warp route"
+    validate_dusk_state_version "$DUSK_VALIDATOR_ANNOUNCE" "Dusk ValidatorAnnounce"
+    validate_dusk_state_version "$DUSK_IGP" "Dusk IGP"
+    validate_dusk_state_version "$DUSK_PROTOCOL_FEE" "Dusk ProtocolFee"
+    validate_dusk_state_version "$DUSK_AGGREGATION_HOOK" "Dusk AggregationHook"
+    validate_dusk_state_version "$DUSK_TEST_RECIPIENT" "Dusk test recipient"
 fi
 
 if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then

@@ -215,6 +215,12 @@ mod igp {
             4 // HookType::Igp
         }
 
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
         // =================================================================
         // Gas Payment Calculation
         // =================================================================

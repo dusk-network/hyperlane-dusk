@@ -206,6 +206,12 @@ mod warp_drc20_collateral {
             self.pending_total
         }
 
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
         // =================================================================
         // Warp Route: transfer_remote (send — lock tokens)
         // =================================================================

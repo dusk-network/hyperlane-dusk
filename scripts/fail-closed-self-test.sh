@@ -19,6 +19,43 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
+saved_version_checks=(
+    'validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox"'
+    'validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"'
+    'validate_dusk_state_version "$dusk_ism_multisig" "Dusk multisig ISM"'
+    'validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"'
+    'validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 2'
+    'validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"'
+    'validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route"'
+    'validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"'
+    'validate_dusk_state_version "$dusk_igp" "Dusk IGP"'
+    'validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"'
+    'validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"'
+    'validate_dusk_state_version "$dusk_test_recipient" "Dusk test recipient"'
+)
+post_parse_version_checks=(
+    'validate_dusk_state_version "$DUSK_MAILBOX" "Dusk Mailbox"'
+    'validate_dusk_state_version "$DUSK_TEST_MOCK" "Dusk TestMock"'
+    'validate_dusk_state_version "$DUSK_ISM_MULTISIG" "Dusk multisig ISM"'
+    'validate_dusk_state_version "$DUSK_MERKLE" "Dusk MerkleTreeHook"'
+    'validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route" 2'
+    'validate_dusk_state_version "$DUSK_WARP_NATIVE" "Dusk native warp route"'
+    'validate_dusk_state_version "$DUSK_WARP_COLLATERAL" "Dusk collateral warp route"'
+    'validate_dusk_state_version "$DUSK_VALIDATOR_ANNOUNCE" "Dusk ValidatorAnnounce"'
+    'validate_dusk_state_version "$DUSK_IGP" "Dusk IGP"'
+    'validate_dusk_state_version "$DUSK_PROTOCOL_FEE" "Dusk ProtocolFee"'
+    'validate_dusk_state_version "$DUSK_AGGREGATION_HOOK" "Dusk AggregationHook"'
+    'validate_dusk_state_version "$DUSK_TEST_RECIPIENT" "Dusk test recipient"'
+)
+for check in "${saved_version_checks[@]}"; do
+    rg -q -F "$check" demo/deploy.sh \
+        || fail "saved-deployment validation omits required contract state version: $check"
+done
+for check in "${post_parse_version_checks[@]}"; do
+    rg -q -F "$check" demo/deploy.sh \
+        || fail "post-parse deployment validation omits required contract state version: $check"
+done
+
 workdir="$(mktemp -d -t hyperlane-fail-closed-test.XXXXXX)"
 untracked_probe=""
 cleanup() {

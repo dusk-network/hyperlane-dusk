@@ -468,6 +468,12 @@ mod mailbox {
             self.owner
         }
 
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
         /// Compute a quote for dispatching a message.
         ///
         /// Returns the total fee required (required_hook quote + hook quote).

@@ -83,6 +83,8 @@ jobs:
             bash -n "$script"
           done
 
+          bash scripts/fail-closed-self-test.sh
+
           stale_dispatcher_comments="$(mktemp)"
           cat >"$stale_dispatcher_comments" <<'EOF'
           COMMENT_ID=1
