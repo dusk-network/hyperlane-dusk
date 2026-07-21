@@ -168,6 +168,9 @@ make clippy-contracts
 info "Running Dusk type tests"
 cargo test -p hyperlane-dusk-types
 
+info "Building pinned canonical DRC20 VM fixture"
+make canonical-drc20-fixture
+
 info "Running Dusk VM integration tests"
 cargo test -p hyperlane-dusk-integration-tests
 
