@@ -376,6 +376,11 @@ dusk-tx withdraw-dispatch --target <route-hex> --amount <lux> \
 # Query contract state
 dusk-tx query --contract <hex> --method nonce --return-type u32
 
+# Query one bounded ValidatorAnnounce discovery page
+dusk-tx query --contract <validator-announce-hex> \
+    --method get_announced_validators --return-type eth-address-list \
+    --arg-u32-pair 0,2
+
 # Enroll a remote router
 dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex>
 
