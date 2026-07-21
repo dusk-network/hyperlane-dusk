@@ -452,6 +452,9 @@ expect_fail \
     bash scripts/report-hygiene-check.sh
 
 tmp_only_repro_report="$workdir/tmp-only-repro-report.md"
+report_archive="$workdir/report-archive.tgz"
+printf 'hermetic report archive fixture\n' >"$report_archive"
+report_archive_hash="$(sha256sum "$report_archive" | awk '{print $1}')"
 cat >"$tmp_only_repro_report" <<'EOF'
 Latest clean-layout repro evidence:
 - log: /tmp/hyperlane-clean-repro-current-head-1778751867.log
@@ -461,20 +464,24 @@ expect_fail \
     report-hygiene-missing-latest-repro-archive \
     'latest repro durable archive missing' \
     env REPORT_FILES="$tmp_only_repro_report" \
+        LATEST_REPRO_ARCHIVE_PATH="$report_archive" \
+        LATEST_REPRO_ARCHIVE_SHA256="$report_archive_hash" \
         LATEST_REPRO_ARCHIVE_REQUIRED_FILES="$tmp_only_repro_report" \
         GOAL_AUDIT_FILE="$tmp_only_repro_report" \
     bash scripts/report-hygiene-check.sh
 
 path_only_repro_report="$workdir/path-only-repro-report.md"
-cat >"$path_only_repro_report" <<'EOF'
+cat >"$path_only_repro_report" <<EOF
 Latest clean-layout repro evidence:
-- archive: /home/hein_/projects/hyperlane/.codex-backups/hyperlane-clean-repro-current-head-1778751867.tgz
+- archive: $report_archive
 - log SHA256: df88d712f4bfada0b1958a9b4d7c1b96b0b2ec4754482c524dca91b0c83e738d
 EOF
 expect_fail \
     report-hygiene-missing-latest-repro-archive-hash \
     'latest repro durable archive hash missing' \
     env REPORT_FILES="$path_only_repro_report" \
+        LATEST_REPRO_ARCHIVE_PATH="$report_archive" \
+        LATEST_REPRO_ARCHIVE_SHA256="$report_archive_hash" \
         LATEST_REPRO_ARCHIVE_REQUIRED_FILES="$path_only_repro_report" \
         GOAL_AUDIT_FILE="$path_only_repro_report" \
     bash scripts/report-hygiene-check.sh
