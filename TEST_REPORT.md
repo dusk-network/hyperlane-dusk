@@ -7,6 +7,31 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
+## 2026-07-21 Final Harness and Readiness Validation
+
+The final base covered-tree anchor is
+`aaad04937483897ffc0fcc77cfcedbc53bfee326`. It adds no contract or agent
+semantics beyond `d32c0f56c66d93be203cc44e3f48a0a7257216f0`; it corrects the live E2E
+process boundary so the tracked PID is the relayer or validator binary rather
+than an intermediate shell. The correction was required after an otherwise
+successful run showed the TestMock relayer continuing to write during the
+following multisig case.
+
+A detached clean-layout reproduction against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` passed all 12 contract WASMs,
+contract/type clippy, 29 type tests, 99 VM tests, 17 `dusk-tx` tests, 5
+data-driver tests, the standalone E2E operator compile, and tracked-source
+secret hygiene. Durable log:
+`/tmp/hyperlane-dusk-base-repro-aaad049.log`, SHA-256
+`95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`.
+
+The readiness check also now counts its own running context when proving that
+both configured required checks exist, while still excluding itself from
+unfinished and failed-check counts. Its hosted rerun reported the monorepo
+branch 0 commits behind upstream and no covered-path delta. The only remaining
+premerge blockers were the deliberately required approval/merge of companion
+PRs, not code, check visibility, or fork freshness.
+
 ## 2026-07-21 Final Deep-Review Remediation Validation
 
 The final canonical deep review of base PR #1 at
@@ -53,7 +78,7 @@ the IGP pricing policy and deployment interface changed after the earlier live
 runs.
 
 The premerge readiness freshness anchors therefore advance to Dusk code anchor
-`d32c0f56c66d93be203cc44e3f48a0a7257216f0` and upstream-synchronized
+`aaad04937483897ffc0fcc77cfcedbc53bfee326` and upstream-synchronized
 monorepo code/CI anchor `23df1ec7c0211b0178079f12a4a5b4057463a363`.
 Documentation-only descendants do not invalidate those covered trees.
 

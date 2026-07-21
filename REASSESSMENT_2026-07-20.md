@@ -4,6 +4,32 @@ This pass re-evaluated the port against current Hyperlane, Rusk, Forge, and the
 current Dusk DRC20 contract surface. It also implemented and validated the
 contract changes identified by the first reassessment pass.
 
+## Final status addendum — 2026-07-21
+
+The final base covered-tree anchor is
+`aaad04937483897ffc0fcc77cfcedbc53bfee326`; the focused withdrawal stack was
+validated at `db040e3f1eab4ba012a12a6be92c8f86268a993f`; and the synchronized
+agent/E2E checkout was
+`356cf22a592d1d657519b9cfd5f6af9148096972` on upstream
+`669d966ad71582fe3c9d96b5ed1b8ea3724e07fe`. The base clean gate passed 12
+WASMs, clippy, 29 type tests, 99 VM tests, 17 CLI tests, 5 data-driver tests,
+the standalone operator compile, and secret hygiene. Its durable log is
+`/tmp/hyperlane-dusk-base-repro-aaad049.log` (SHA-256
+`95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`).
+
+The final live E2E was run only after fixing the harness to `exec` agent
+binaries, ensuring that a stopped case cannot leave an orphaned relayer in the
+next case. TestMock run `1784607919` and MessageIdMultisig run `1784608531`
+each withdrew exactly one LUX from WarpDrc20's contract-keyed dispatch credit,
+used the remaining credit, and delivered synthetic, native, and collateral
+routes in both directions with exact custody, allowance, and protocol-fee
+assertions. The multisig case used a real validator and signed checkpoint
+metadata. The combined harness log SHA-256 is
+`d796c471d024fbb3fce75fccddf01dfcaac426be45a25eb77de6c101e23948e7`;
+all retained harness, deploy, warm-validation, relayer, and validator logs
+passed the runtime secret scan. Earlier synchronization and E2E references
+below are historical and are superseded by this addendum where they differ.
+
 ## Synchronized references
 
 - Hyperlane upstream `main`:
@@ -55,8 +81,10 @@ default hook is IGP, so every deployed demo dispatch exercises both the
 required aggregation and gas-payment path.
 
 The demo pre-funds each deployed warp route's Mailbox credit. Credits are an
-explicit prepayment model; production policy still needs to define who funds
-them and whether unused credit needs a withdrawal or refund surface.
+explicit prepayment model. Base PR #1 intentionally stops at beneficiary-keyed
+sponsorship; stacked PR #10 adds beneficiary-authorized Moonlight withdrawal
+and owner-only proxies for each route's own contract-keyed credit, without a
+funder reclaim right or Mailbox-owner global drain.
 
 ### Current DRC20 compatibility
 
@@ -102,10 +130,10 @@ checkout guard.
 ## Verification
 
 - Final clean-layout static gate at
-  `d32c0f56c66d93be203cc44e3f48a0a7257216f0`, against exact Rusk
+  `aaad04937483897ffc0fcc77cfcedbc53bfee326`, against exact Rusk
   `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`, passed with durable log
-  `/tmp/hyperlane-dusk-base-repro-d32c0f5.log` (SHA-256
-  `1d006300471c538a0becaf4311c79f97835166ffe6a1f4552ebd580527bf6169`).
+  `/tmp/hyperlane-dusk-base-repro-aaad049.log` (SHA-256
+  `95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`).
 - All 12 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
 - `hyperlane-dusk-types`: 29 passed, 0 failed.
