@@ -40,15 +40,22 @@ silently relabeled as having run those tests.
   material or submitting any deterministic deployment.
 - **Transaction reconciliation:** transport/server failures remain retryable;
   deterministic HTTP-client and successful-response schema incompatibilities
-  terminate immediately while preserving the exact transaction hash. After
-  propagation, every observation error other than an explicit execution
-  rejection is labeled outcome-unknown and forbids retry before exact-hash
-  reconciliation. The demo rejects zero-exit helper JSON without a canonical
-  32-byte transaction ID instead of continuing without an audit identity.
+  terminate immediately while preserving the exact transaction hash. A status
+  response that exceeds the bounded body limit is a deterministic terminal
+  incompatibility, not a transient read failure; only a transport failure
+  while reading the body remains retryable. After propagation, every
+  observation error other than an explicit execution rejection is labeled
+  outcome-unknown and forbids retry before exact-hash reconciliation. The demo
+  rejects zero-exit helper JSON without a canonical 32-byte transaction ID
+  instead of continuing without an audit identity.
 - **Withdrawal endpoint identity:** `withdraw-dispatch` requires an explicit
   native chain ID and compares it with the endpoint before loading signer
   material. A wrong endpoint cannot silently select the signing domain for a
   withdrawal.
+- **Live withdrawal chain identity:** the agent E2E loads the persisted
+  two-hex-digit native chain ID, validates it, converts it to the CLI's u8
+  representation, and does so before invoking `withdraw-dispatch`. The prior
+  lowercase variable had no initialization under `set -u`.
 - **Operator-visible transaction identity:** `dusk-tx` emits the locally
   computed hash before its first propagation attempt. The local bridge demo no
   longer discards the helper JSON; it prints completed Dusk hashes and carries
@@ -110,6 +117,13 @@ silently relabeled as having run those tests.
   is justified by that source-only hardening.
 
 ## Retained proof obligations, not merge blockers
+
+- The older live TestMock and MessageIdMultisig receipts do not prove the
+  stacked withdrawal step because that historical script could terminate on
+  the unset native-chain-ID variable. Static fail-closed checks prove the
+  corrected source order, but fresh exact-head live runs of both modes remain
+  required before claiming live withdrawal coverage. The protected runner and
+  environment-scoped private-source token are not currently provisioned.
 
 - Dusk transaction rollback is the authority for restoring the persisted
   dispatch reentrancy flag on a trapped outer call. The suite now proves a

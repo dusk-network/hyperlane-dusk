@@ -31,6 +31,29 @@ pub enum TransactionStatusQueryError {
     Terminal(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResponseBodyError {
+    Transport(String),
+    Limit(String),
+}
+
+impl ResponseBodyError {
+    fn into_transaction_status_error(self) -> TransactionStatusQueryError {
+        match self {
+            Self::Transport(error) => TransactionStatusQueryError::Retryable(error),
+            Self::Limit(error) => TransactionStatusQueryError::Terminal(error),
+        }
+    }
+}
+
+impl core::fmt::Display for ResponseBodyError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Transport(error) | Self::Limit(error) => formatter.write_str(error),
+        }
+    }
+}
+
 impl core::fmt::Display for TransactionStatusQueryError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -166,7 +189,7 @@ impl RuesClient {
             "transaction status",
         )
         .await
-        .map_err(TransactionStatusQueryError::Retryable)?;
+        .map_err(ResponseBodyError::into_transaction_status_error)?;
         if !status.is_success() {
             let error = format!(
                 "Transaction status query failed ({status}): {}",
@@ -201,8 +224,9 @@ impl RuesClient {
             return Ok(true);
         }
 
-        let body =
-            read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "contract existence").await?;
+        let body = read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "contract existence")
+            .await
+            .map_err(|error| error.to_string())?;
         let body = String::from_utf8_lossy(&body);
 
         // Rusk reports non-existent contracts with a descriptive error body.
@@ -243,7 +267,9 @@ impl RuesClient {
         } else {
             MAX_ERROR_RESPONSE_BYTES
         };
-        let response_body = read_response_body(response, max_bytes, "contract query").await?;
+        let response_body = read_response_body(response, max_bytes, "contract query")
+            .await
+            .map_err(|error| error.to_string())?;
         if !status.is_success() {
             return Err(format!(
                 "Query {contract_hex}/{method} failed ({status}): {}",
@@ -264,12 +290,14 @@ async fn read_response_body(
     mut response: reqwest::Response,
     max_bytes: usize,
     context: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, ResponseBodyError> {
     if response
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(format!("{context} response exceeds {max_bytes} bytes"));
+        return Err(ResponseBodyError::Limit(format!(
+            "{context} response exceeds {max_bytes} bytes"
+        )));
     }
 
     let mut body = Vec::with_capacity(
@@ -278,11 +306,9 @@ async fn read_response_body(
             .unwrap_or_default()
             .min(max_bytes as u64) as usize,
     );
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("Failed to read {context} response: {e}"))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
+        ResponseBodyError::Transport(format!("Failed to read {context} response: {e}"))
+    })? {
         append_bounded_chunk(&mut body, &chunk, max_bytes, context)?;
     }
     Ok(body)
@@ -293,9 +319,11 @@ fn append_bounded_chunk(
     chunk: &[u8],
     max_bytes: usize,
     context: &str,
-) -> Result<(), String> {
+) -> Result<(), ResponseBodyError> {
     if chunk.len() > max_bytes.saturating_sub(body.len()) {
-        return Err(format!("{context} response exceeds {max_bytes} bytes"));
+        return Err(ResponseBodyError::Limit(format!(
+            "{context} response exceeds {max_bytes} bytes"
+        )));
     }
     body.extend_from_slice(chunk);
     Ok(())
@@ -366,7 +394,8 @@ where
 mod tests {
     use super::{
         append_bounded_chunk, parse_transaction_status_response, propagation_status_error,
-        transaction_status_query, TransactionStatus, MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+        transaction_status_query, ResponseBodyError, TransactionStatus,
+        MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
     };
 
     #[test]
@@ -433,12 +462,17 @@ mod tests {
             "transaction status",
         )
         .unwrap();
-        assert!(append_bounded_chunk(
+        let error = append_bounded_chunk(
             &mut body,
             b"x",
             MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
             "transaction status",
         )
-        .is_err());
+        .unwrap_err();
+        assert!(matches!(error, ResponseBodyError::Limit(_)));
+        assert!(matches!(
+            error.into_transaction_status_error(),
+            super::TransactionStatusQueryError::Terminal(_)
+        ));
     }
 }
