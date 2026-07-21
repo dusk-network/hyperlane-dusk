@@ -116,6 +116,12 @@ against authoritative ledger state before retry or success. Only a persisted
 result for that exact hash with an explicit successful execution result is
 definitive.
 
+Every agent submission supplies its configured native Dusk `chainId` to
+`dusk-tx`. The helper queries the endpoint chain ID and rejects a mismatch
+before reading signer material, querying the signer account, or constructing a
+transaction. The observed endpoint identity is therefore part of the signing
+boundary rather than an informational startup check.
+
 ## Deployment and harness decisions
 
 Warm reuse validates a complete live topology, not just bytecode existence:
@@ -160,8 +166,11 @@ The monorepo PR must follow these boundaries before new evidence is accepted:
 - Mailbox and Merkle hook identities remain separate in event provenance and
   checkpoint state;
 - event/header provenance is joined and indexed only after finality;
-- the finalized-event cursor persists enough identity and provenance to
-  detect replacement, not just height;
+- contract-scoped `finalizedEvents(contractId, limit, cursor)` pages are capped
+  at 16 rows and use each row's own event ID, height, block hash, origin,
+  source, topic, data, and reverted flag; the cursor and sequence-to-provenance
+  mapping are persisted atomically under an agent-exclusive `eventCursorDir`
+  so restart does not fall back to whole-block archive retrieval;
 - configured Dusk domain, Mailbox domain, ValidatorAnnounce domain, endpoint
   chain ID, and signing chain ID must agree at startup;
 - Dusk signing keys must be canonical, exactly 32 bytes, valid nonzero scalars;
@@ -172,6 +181,12 @@ The monorepo PR must follow these boundaries before new evidence is accepted:
 - archive retrieval cannot require buffering an entire block below the helper
   transport limit;
 - Dusk-origin validator E2E is required, not only EVM-origin validation.
+
+The `messageIdMultisig` demo deploys a real storage-backed MessageIdMultisig
+ISM on EVM as well as on Dusk. It runs one validator for each origin. Thus the
+Dusk-to-EVM leg must consume a Dusk-origin checkpoint and exercise the Dusk
+ValidatorAnnounce, finalized-event indexer, Merkle hook checkpoint, checkpoint
+syncer, relayer metadata, and EVM ISM verification path end to end.
 
 ## Replacement evidence rule
 

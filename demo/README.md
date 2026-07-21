@@ -73,6 +73,13 @@ Notes:
   in both directions. It checks exact native and token custody, DRC20 allowance
   consumption, and one value-backed ProtocolFee collection per outbound Dusk
   dispatch.
+- The `messageIdMultisig` case deploys a real MessageIdMultisig ISM on both
+  chains and runs both an Anvil-origin validator and a Dusk-origin validator.
+  Dusk -> EVM delivery therefore requires a checkpoint produced from Dusk
+  finalized events; it is not accepted by an EVM test ISM.
+- Every Dusk agent config has its own persistent `eventCursorDir`. Restarted
+  agents resume contract-scoped finalized-event cursors and provenance without
+  sharing mutable cursor state with another agent.
 - The script generates temporary agent configs in `/tmp` with restrictive file
   permissions, uses them only while agents run, and deletes them on exit.
 - Dusk consensus key passwords are passed to `dusk-tx` through environment

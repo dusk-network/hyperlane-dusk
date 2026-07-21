@@ -81,6 +81,10 @@ enum Command {
         /// Gas price in LUX.
         #[arg(long, default_value = "2000")]
         gas_price: u64,
+        /// Expected native Dusk chain ID. The endpoint must match before the
+        /// signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: Option<u8>,
         /// Reserved until Rusk supports a non-replayable simulation envelope.
         #[arg(long)]
         simulate_only: bool,
@@ -424,6 +428,7 @@ async fn main() {
             args,
             gas_limit,
             gas_price,
+            expected_chain_id,
             simulate_only,
         } => {
             cmd_call(
@@ -437,6 +442,7 @@ async fn main() {
                 &args,
                 gas_limit,
                 gas_price,
+                expected_chain_id,
                 simulate_only,
             )
             .await
@@ -819,8 +825,9 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 mod tests {
     use super::{
         confirmation_error_with_hash, next_moonlight_nonce, parse_igp_domain_configs,
-        read_secret_key_hex, resolve_keys_password, submission_error_with_hash,
-        wait_for_transaction_with, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
+        read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
+        submission_error_with_hash, wait_for_transaction_with, MAX_PASSWORD_FILE_BYTES,
+        MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::TransactionStatus;
     use std::collections::VecDeque;
@@ -829,6 +836,15 @@ mod tests {
     use std::time::Duration;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn signing_chain_id_must_match_the_configured_endpoint_identity() {
+        assert_eq!(resolve_signing_chain_id(None, 1).unwrap(), 1);
+        assert_eq!(resolve_signing_chain_id(Some(1), 1).unwrap(), 1);
+        assert!(resolve_signing_chain_id(Some(1), 2)
+            .unwrap_err()
+            .contains("does not match endpoint chain ID"));
+    }
 
     #[test]
     fn igp_domain_configs_are_explicit_unique_and_nonzero_priced() {
@@ -1205,6 +1221,7 @@ async fn cmd_call(
     args_hex: &str,
     gas_limit: u64,
     gas_price: u64,
+    expected_chain_id: Option<u8>,
     simulate_only: bool,
 ) -> Result<(), String> {
     // Reject malformed public inputs before reading one-shot signer material.
@@ -1236,10 +1253,11 @@ async fn cmd_call(
         );
     }
     let client = RuesClient::new(rues_url)?;
+    let observed_chain_id = client.query_chain_id().await?;
+    let chain_id = resolve_signing_chain_id(expected_chain_id, observed_chain_id)?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
-    // Query chain ID and account nonce
-    let chain_id = client.query_chain_id().await?;
+    // Query the account only after endpoint identity is bound.
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     // Build and submit TX
@@ -1266,6 +1284,18 @@ async fn cmd_call(
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+fn resolve_signing_chain_id(expected: Option<u8>, observed: u8) -> Result<u8, String> {
+    if let Some(expected) = expected {
+        if observed != expected {
+            return Err(format!(
+                "Configured Dusk chain ID {expected} does not match endpoint chain ID {observed}"
+            ));
+        }
+        return Ok(expected);
+    }
+    Ok(observed)
 }
 
 fn submission_error_with_hash(tx_id: &str, error: &str) -> String {
