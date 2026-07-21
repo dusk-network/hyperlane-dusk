@@ -15,10 +15,14 @@ GitHub pull-request validation is split into two jobs with different authority:
   data, checks its diff and required file modes, and never checks out or runs
   proposed scripts.
 
-The trusted gate waits for the unprivileged check on the exact proposed commit.
-It also requires the proposal-validation and trusted-policy workflow files to
-be byte-for-byte unchanged from the base. This prevents a PR from weakening a
-policy workflow and then using that replacement to certify itself.
+The trusted gate waits for the exact locked proposal workflow file, exact
+`pull_request` event, and exact proposed commit through the Actions API. It
+does not accept a same-named job from another GitHub Actions workflow. It also
+requires the proposal-validation and trusted-policy workflow files to be
+byte-for-byte unchanged from the base. Once the proposed guard scripts exist
+on the trusted base, they are locked as well, so a PR cannot weaken a guard and
+its self-test together. First publication of the workflows and guard scripts is
+an owner-reviewed bootstrap; it is not self-certifying evidence.
 
 The implementation bootstrap introduces `production-readiness-gate.yml` as a
 trusted `pull_request_target` workflow because it may receive status-read
@@ -33,6 +37,11 @@ policy workflow use another focused, owner-supervised bootstrap: review the
 exact diff, use the documented admin bypass only for that policy update, and
 immediately verify that branch protection again requires `Dusk review policy
 gate`. Normal implementation PRs must not modify either locked workflow.
+
+The empty-script bootstrap branch does not infer scope from an empty worklist.
+It permits only the actionlint configuration, the four workflow-policy files,
+and this decision record. Any contract, runtime, test, or unrelated document
+change fails the proposal check even before the guard scripts exist on `main`.
 
 ## Exact evidence inputs
 
@@ -63,6 +72,12 @@ validator, relayer, image-publishing, or status-administration authority.
 No artifacts are uploaded. `persist-credentials: false` is set on every
 checkout. The ephemeral runner is discarded after its single job so private
 Rusk source, build output, and other workspace residue do not cross runs.
+
+On 2026-07-21, the `dusk-hyperlane-repro` environment was created with
+protected-branch deployment policy and `HDauven` as required reviewer. No
+repository Actions secrets are configured and no visible repository runner has
+both required Dusk labels. Put `DUSK_ORG_READ_TOKEN` in this environment, not at
+repository scope, only after the ephemeral runner is ready.
 
 ## Pinned validation tooling
 

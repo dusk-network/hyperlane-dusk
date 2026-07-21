@@ -239,10 +239,10 @@ bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism testMock >"$deploy_log" 2>&1 || 
 expected_run_dir="/tmp/hyperlane-agent-testMock-${run_id}"
 expected_relayer_cfg="$expected_run_dir/relayer.json"
 expected_dusk_signer_key_file="$expected_run_dir/dusk-signer.key"
+cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$run_id")"
 GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")
 GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
 GENERATED_DUSK_SIGNER_KEY_FILES+=("$expected_dusk_signer_key_file")
-cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$run_id")"
 relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
 generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
 [ "$relayer_cfg" = "$expected_relayer_cfg" ] || fail "generator returned an unexpected relayer config path"

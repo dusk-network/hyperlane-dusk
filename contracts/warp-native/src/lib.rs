@@ -37,12 +37,13 @@ mod warp_native {
     extern crate alloc;
 
     use alloc::collections::BTreeMap;
+    use alloc::string::String;
     use alloc::vec::Vec;
 
     use dusk_bytes::Serializable;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
-    use dusk_core::transfer::{ContractToAccount, TRANSFER_CONTRACT};
+    use dusk_core::transfer::{ContractToAccount, ContractToContract, TRANSFER_CONTRACT};
 
     use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
@@ -191,6 +192,42 @@ mod warp_native {
             );
         }
 
+        /// Claim pending DUSK addressed to the immediate calling contract.
+        ///
+        /// The recipient contract must expose a `receive_native_pending`
+        /// transfer callback and authenticate this route as the declared
+        /// transfer source. Root Moonlight callers must use [`Self::claim_pending`].
+        pub fn claim_pending_contract(&mut self) {
+            let recipient = abi::caller().expect("WarpNative: contract caller unavailable");
+            assert!(
+                recipient != TRANSFER_CONTRACT,
+                "WarpNative: claim_pending_contract requires contract caller"
+            );
+            let recipient_h256 = recipient.to_bytes();
+            let amount = self.pending_transfers.remove(&recipient_h256).unwrap_or(0);
+            assert!(amount > 0, "WarpNative: no pending transfers");
+            self.pending_total = self
+                .pending_total
+                .checked_sub(amount)
+                .expect("WarpNative: pending liability underflow");
+
+            let transfer = ContractToContract {
+                contract: recipient,
+                value: amount,
+                fn_name: String::from("receive_native_pending"),
+                data: Vec::new(),
+            };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_contract", &transfer)
+                .expect("WarpNative: contract_to_contract failed");
+            abi::emit(
+                events::PendingTransferClaimed::TOPIC,
+                events::PendingTransferClaimed {
+                    recipient: recipient_h256,
+                    amount,
+                },
+            );
+        }
+
         /// Returns the pending (escrowed) balance for an H256 recipient.
         pub fn pending_balance(&self, h: H256) -> u64 {
             self.pending_transfers.get(&h).copied().unwrap_or(0)
@@ -223,6 +260,10 @@ mod warp_native {
             amount: u64,
         ) -> MessageId {
             assert!(amount > 0, "WarpNative: amount must be > 0");
+            assert!(
+                recipient != [0u8; 32],
+                "WarpNative: recipient cannot be zero"
+            );
 
             // Claim the DUSK deposit from the Moonlight TX.
             // The transfer contract validates that the TX deposit field
@@ -286,6 +327,10 @@ mod warp_native {
             // Decode token message
             let msg = token_message::decode(&body).expect("WarpNative: invalid token message");
             assert!(msg.amount > 0, "WarpNative: amount must be > 0");
+            assert!(
+                msg.recipient != [0u8; 32],
+                "WarpNative: recipient cannot be zero"
+            );
 
             // Pending claims reserve custody. A registered delivery must not
             // consume DUSK already promised to an unregistered recipient, and

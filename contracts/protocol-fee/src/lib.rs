@@ -162,7 +162,10 @@ mod protocol_fee {
                 caller::authentic_transfer_callback(transfer.contract, self.mailbox),
                 "ProtocolFee: unauthenticated payment"
             );
-            assert!(transfer.data.is_empty(), "ProtocolFee: unexpected payment data");
+            assert!(
+                transfer.data.is_empty(),
+                "ProtocolFee: unexpected payment data"
+            );
             let (sender, expected_fee) = self
                 .pending_payment
                 .take()
@@ -249,6 +252,10 @@ mod protocol_fee {
         /// Transfer all claimable native DUSK to the beneficiary account.
         pub fn claim(&mut self) {
             assert!(
+                abi::callstack().len() == 1,
+                "ProtocolFee: beneficiary must call directly"
+            );
+            assert!(
                 caller::effective_caller() == self.beneficiary,
                 "ProtocolFee: caller is not beneficiary"
             );
@@ -256,7 +263,10 @@ mod protocol_fee {
             let amount = self.claimable_fees;
             assert!(amount > 0, "ProtocolFee: no fees to claim");
             self.claimable_fees = 0;
-            let transfer = ContractToAccount { account, value: amount };
+            let transfer = ContractToAccount {
+                account,
+                value: amount,
+            };
             let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
                 .expect("ProtocolFee: claim transfer failed");
         }

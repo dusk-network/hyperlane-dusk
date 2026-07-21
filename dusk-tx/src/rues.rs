@@ -25,6 +25,20 @@ pub enum TransactionStatus {
     Failed(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionStatusQueryError {
+    Retryable(String),
+    Terminal(String),
+}
+
+impl core::fmt::Display for TransactionStatusQueryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Retryable(error) | Self::Terminal(error) => formatter.write_str(error),
+        }
+    }
+}
+
 impl RuesClient {
     pub fn new(base_url: &str) -> Result<Self, String> {
         let client = reqwest::Client::builder()
@@ -126,7 +140,10 @@ impl RuesClient {
     }
 
     /// Query the persisted execution result for an exact transaction hash.
-    pub async fn query_transaction_status(&self, tx_id: &str) -> Result<TransactionStatus, String> {
+    pub async fn query_transaction_status(
+        &self,
+        tx_id: &str,
+    ) -> Result<TransactionStatus, TransactionStatusQueryError> {
         let url = format!("{}/graphql", self.base_url);
         let query = transaction_status_query(tx_id);
         let response = self
@@ -140,7 +157,7 @@ impl RuesClient {
             )
             .send()
             .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+            .map_err(|e| TransactionStatusQueryError::Retryable(format!("HTTP error: {e}")))?;
 
         let status = response.status();
         let body = read_response_body(
@@ -148,15 +165,20 @@ impl RuesClient {
             MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
             "transaction status",
         )
-        .await?;
+        .await
+        .map_err(TransactionStatusQueryError::Retryable)?;
         if !status.is_success() {
-            return Err(format!(
+            let error = format!(
                 "Transaction status query failed ({status}): {}",
                 String::from_utf8_lossy(&body)
-            ));
+            );
+            if status.is_server_error() || status.as_u16() == 429 {
+                return Err(TransactionStatusQueryError::Retryable(error));
+            }
+            return Err(TransactionStatusQueryError::Terminal(error));
         }
 
-        parse_transaction_status_response(&body)
+        parse_transaction_status_response(&body).map_err(TransactionStatusQueryError::Terminal)
     }
 
     /// Returns whether a contract exists on-chain, using VM metadata.

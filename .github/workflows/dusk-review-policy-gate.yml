@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: read
-  checks: read
+  actions: read
 
 jobs:
   review-policy-gate:
@@ -60,6 +60,18 @@ jobs:
                 exit 1
                 ;;
             esac
+
+            # The proposal job executes these scripts. Once a script exists on
+            # the trusted base, a PR must not weaken it and its self-tests in
+            # the same proposed tree. First publication is an owner-reviewed
+            # bootstrap; later changes use the same focused bootstrap process
+            # as policy-workflow changes.
+            if git cat-file -e "$BASE_SHA:$path" 2>/dev/null; then
+              if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+                echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
+                exit 1
+              fi
+            fi
           done
 
           # A proposed PR must not be able to replace either half of the policy
@@ -101,22 +113,24 @@ jobs:
             const { owner, repo } = context.repo;
             const headSha = context.payload.pull_request.head.sha;
             const expectedName = 'Dusk proposal validation';
+            const workflowId = 'dusk-proposal-validation.yml';
             for (let attempt = 0; attempt < 40; attempt += 1) {
-              const { data } = await github.rest.checks.listForRef({
+              const { data } = await github.rest.actions.listWorkflowRuns({
                 owner,
                 repo,
-                ref: headSha,
-                filter: 'latest',
+                workflow_id: workflowId,
+                head_sha: headSha,
+                event: 'pull_request',
                 per_page: 100,
               });
-              const proposal = data.check_runs.find(
-                (run) => run.name === expectedName &&
-                  run.app?.slug === 'github-actions',
+              const proposal = data.workflow_runs.find(
+                (run) => run.head_sha === headSha &&
+                  run.event === 'pull_request',
               );
               if (proposal?.status === 'completed') {
                 if (proposal.conclusion !== 'success') {
                   core.setFailed(
-                    `${expectedName} concluded ${proposal.conclusion} for ${headSha}`,
+                    `${expectedName} (${workflowId}) concluded ${proposal.conclusion} for ${headSha}: ${proposal.html_url}`,
                   );
                 }
                 return;
@@ -124,5 +138,5 @@ jobs:
               await new Promise((resolve) => setTimeout(resolve, 15000));
             }
             core.setFailed(
-              `Timed out waiting for ${expectedName} on proposed commit ${headSha}`,
+              `Timed out waiting for ${expectedName} (${workflowId}) on proposed commit ${headSha}`,
             );

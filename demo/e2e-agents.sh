@@ -199,9 +199,9 @@ run_case() {
         fail "saved deployment validation failed (log: $warm_validate_log)"
     }
 
-    # Register the generator's deterministic paths before invoking it. If the
-    # generator succeeds but JSON parsing fails, the parent EXIT trap still
-    # owns every emitted config and signer file.
+    # Compute deterministic paths before invoking the generator, but do not
+    # claim ownership yet. If another invocation already owns the run ID, the
+    # generator must fail without letting this process delete that directory.
     local cfg_json relayer_cfg validator_cfg dusk_validator_cfg generated_signer_key_file
     local expected_relayer_cfg expected_validator_cfg expected_dusk_validator_cfg expected_run_dir
     expected_run_dir="/tmp/hyperlane-agent-${ism}-${run_id}"
@@ -209,6 +209,12 @@ run_case() {
     expected_validator_cfg="$expected_run_dir/validator-anvil.json"
     expected_dusk_validator_cfg="$expected_run_dir/validator-dusk.json"
     dusk_signer_key_file="$expected_run_dir/dusk-signer.key"
+    # Generate agent configs.
+    cfg_json="$(
+        ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY" \
+        ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY" \
+        bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id"
+    )"
     GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")
     GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
     if [ "$ism" = "messageIdMultisig" ]; then
@@ -216,13 +222,6 @@ run_case() {
         GENERATED_AGENT_CONFIG_FILES+=("$expected_dusk_validator_cfg")
     fi
     GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
-
-    # Generate agent configs.
-    cfg_json="$(
-        ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY" \
-        ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY" \
-        bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id"
-    )"
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
     validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
     dusk_validator_cfg="$(echo "$cfg_json" | jq -r '.duskValidator // empty')"

@@ -323,6 +323,10 @@ mod warp_drc20 {
             amount: u64,
         ) -> MessageId {
             assert!(amount > 0, "WarpDrc20: amount must be > 0");
+            assert!(
+                recipient != [0u8; 32],
+                "WarpDrc20: recipient cannot be zero"
+            );
             let sender = drc20::sender_account();
 
             // Burn tokens from sender
@@ -383,6 +387,10 @@ mod warp_drc20 {
             // Decode token message
             let msg = token_message::decode(&body).expect("WarpDrc20: invalid token message");
             assert!(msg.amount > 0, "WarpDrc20: amount must be > 0");
+            assert!(
+                msg.recipient != [0u8; 32],
+                "WarpDrc20: recipient cannot be zero"
+            );
 
             // A registered BLS hash is unambiguously an external account.
             // An unregistered H256 could also be a contract ID, so do not

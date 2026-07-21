@@ -60,8 +60,23 @@ jobs:
           done
 
           if [ "$base_script_count" -eq 0 ] && [ "$head_script_count" -eq 0 ]; then
-            echo "Bootstrap PR contains policy workflows only; no guard scripts exist on either tree."
-            exit 0
+            bootstrap_violation=0
+            while IFS= read -r path; do
+              case "$path" in
+                .github/actionlint.yaml|\
+                .github/workflows/dusk-proposal-validation.yml|\
+                .github/workflows/dusk-review-policy-gate.yml|\
+                .github/workflows/manual-repro-check.yml|\
+                .github/workflows/manual-repro-dispatcher-gate.yml|\
+                CI_REPRO_BOOTSTRAP_DECISIONS.md)
+                  ;;
+                *)
+                  echo "::error file=$path::change falls outside the policy-only bootstrap boundary"
+                  bootstrap_violation=1
+                  ;;
+              esac
+            done < <(git diff --name-only "$BASE_SHA...HEAD")
+            exit "$bootstrap_violation"
           fi
 
           if [ "$head_script_count" -ne "${#required_scripts[@]}" ]; then

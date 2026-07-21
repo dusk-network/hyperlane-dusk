@@ -235,13 +235,13 @@ Evidence:
 - `.github/workflows/manual-repro-check.yml`.
 - `.github/workflows/production-readiness-gate.yml`, the lightweight
   status-check candidate for `make production-readiness-guard`.
-- `.github/workflows/dusk-review-policy-gate.yml`, the shared required
-  status-check policy gate now required by both Dusk org default branches.
-- Required status-check promotion completed on 2026-05-14:
-  `dusk-network/hyperlane-dusk` requires `Dusk review policy gate` and
-  `Production readiness guard`, and `dusk-network/hyperlane-monorepo` requires
-  `Dusk review policy gate` and `Dusk agent validation`. `make gate-status`
-  reports `missingRequiredStatusChecks: none` for both repos.
+- `.github/workflows/dusk-review-policy-gate.yml`, the proposed shared trusted
+  status-check policy gate for promotion after the bootstrap merges.
+- Live settings observed on 2026-07-21 temporarily require only `Dusk proposal
+  validation` in `dusk-network/hyperlane-dusk`, and `Dusk proposal validation`
+  plus `Dusk agent validation` in `dusk-network/hyperlane-monorepo`. The trusted
+  policy/readiness contexts are intentionally pending default-branch bootstrap;
+  `make gate-status` must continue to report them missing until promotion.
 - dusk-network/hyperlane-dusk#3, the narrow default-branch dispatcher PR.
 - `scripts/local-repro-check.sh`.
 - `make repro-check-agent`.
@@ -283,9 +283,9 @@ token policy. The status token, if used, is for the production-readiness
 workflow only and must not be used by manual repro checkout steps or any Dusk
 runtime process.
 Keep the protected `main` and required-review baseline now enabled for
-`dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`. The
-proposed GitHub Actions contexts are already enforced: `Production readiness
-guard` on `dusk-network/hyperlane-dusk` and `Dusk agent validation` on
+`dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`. After the
+bootstrap workflows land, promote `Production readiness guard` on
+`dusk-network/hyperlane-dusk` and `Dusk agent validation` on
 `dusk-network/hyperlane-monorepo`, each alongside `Dusk review policy gate`.
 If Dusk chooses another private CI system, record the replacement contexts in
 #8 and #2 and override the guard's accepted context list accordingly. The

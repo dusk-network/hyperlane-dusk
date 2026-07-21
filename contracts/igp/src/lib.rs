@@ -314,6 +314,10 @@ mod igp {
         /// Transfer all claimable native DUSK to the beneficiary account.
         pub fn claim(&mut self) {
             assert!(
+                abi::callstack().len() == 1,
+                "IGP: beneficiary must call directly"
+            );
+            assert!(
                 caller::effective_caller() == self.beneficiary,
                 "IGP: caller is not beneficiary"
             );

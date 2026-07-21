@@ -68,6 +68,23 @@ rg -q -F 'ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY"' demo/e2e-a
     || fail "live E2E does not pass the isolated relayer signer to config generation"
 rg -q -F 'ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY"' demo/e2e-agents.sh \
     || fail "live E2E does not pass the isolated validator signer to config generation"
+rg -q -F 'live_multisig_policy="$(query_dusk_validator_policy' demo/deploy.sh \
+    || fail "warm deployment validation omits the live multisig policy snapshot"
+rg -q -F '.validators | index($validator) != null' demo/gen-agent-configs.sh \
+    || fail "agent config generation does not bind its validator to the live Dusk policy"
+warm_validate_line="$(rg -n -F 'validate_saved_deployment' demo/deploy.sh | cut -d: -f1 | tail -1)"
+warm_credit_line="$(rg -n -F 'ensure_dispatch_credit "$SAVED_DUSK_MAILBOX"' demo/deploy.sh | cut -d: -f1 | head -1)"
+warm_exit_line="$(rg -n -F 'Deployment loaded. Run' demo/deploy.sh | cut -d: -f1 | head -1)"
+[ -n "$warm_validate_line" ] && [ -n "$warm_credit_line" ] && [ -n "$warm_exit_line" ] \
+    && [ "$warm_validate_line" -lt "$warm_credit_line" ] \
+    && [ "$warm_credit_line" -lt "$warm_exit_line" ] \
+    || fail "warm deployment readiness does not repair dispatch credit after validation"
+for script in demo/e2e-agents.sh demo/e2e-relayer-restart-stress.sh; do
+    generator_line="$(rg -n -F 'cfg_json="$' "$script" | cut -d: -f1 | tail -1)"
+    ownership_line="$(rg -n -F 'GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")' "$script" | cut -d: -f1 | tail -1)"
+    [ -n "$generator_line" ] && [ -n "$ownership_line" ] && [ "$generator_line" -lt "$ownership_line" ] \
+        || fail "$script claims cleanup ownership before generator success"
+done
 rg -q -F 'require_merged=0' scripts/production-readiness-guard.sh \
     || fail "pre-merge readiness still requires an already merged PR"
 rg -q -F 'require_approved=0' scripts/production-readiness-guard.sh \
@@ -667,6 +684,15 @@ expect_fail \
     secret-hygiene-env-private-key-artifact \
     'runtime artifact scan found' \
     bash scripts/secret-hygiene-check.sh "$workdir/env-key-artifacts"
+
+mkdir -p "$workdir/hidden-key-artifacts"
+cat >"$workdir/hidden-key-artifacts/.runtime.log" <<'EOF'
+secret_key_bls=hidden-but-still-sensitive
+EOF
+expect_fail \
+    secret-hygiene-hidden-secret-artifact \
+    'runtime artifact scan found' \
+    bash scripts/secret-hygiene-check.sh "$workdir/hidden-key-artifacts"
 
 mkdir -p "$workdir/secret-artifacts"
 printf 'safe log\n' >"$workdir/secret-artifacts/unreadable.log"

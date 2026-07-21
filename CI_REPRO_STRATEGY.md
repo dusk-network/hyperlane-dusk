@@ -12,13 +12,14 @@ setup to accept, change, or replace.
   `hyperlane-monorepo` checkout.
 - Public GitHub-hosted runners cannot reproduce the full workspace without
   private Dusk repository access.
-- The internal PRs now have GitHub status-check rollups. Both Dusk org default
-  branches enforce strict required status checks. `dusk-network/hyperlane-dusk`
-  requires `Dusk review policy gate` and `Production readiness guard`;
-  `dusk-network/hyperlane-monorepo` requires `Dusk review policy gate` and
-  `Dusk agent cargo check`. Heavy repro and E2E evidence in `TEST_REPORT.md`
-  is still local/clean-Rusk evidence until the private runner/token path is
-  accepted and provisioned.
+- The internal PRs now have GitHub status-check rollups. During the bootstrap,
+  `dusk-network/hyperlane-dusk` temporarily requires only `Dusk proposal
+  validation`; `dusk-network/hyperlane-monorepo` temporarily requires `Dusk
+  proposal validation` and `Dusk agent validation`. The trusted policy and
+  readiness contexts cannot be required until their workflows exist on the
+  default branches. Heavy repro and E2E evidence in `TEST_REPORT.md` remains
+  local/clean-Rusk evidence until the private runner/token path is accepted and
+  provisioned.
 - A 2026-05-12 permission probe showed repo-level Actions is enabled on both
   `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, with
   allowed actions set to `all` and default workflow permissions set to `write`.
@@ -29,10 +30,10 @@ setup to accept, change, or replace.
   skipped on the Dusk fork by a `github.repository_owner == 'hyperlane-xyz'`
   job guard in the monorepo PR. Dusk does not need to provision Hyperlane-owned
   image publishing or GitHub App credentials for this internal review path.
-- Both Dusk org repos now have protected `main` branches with required PR
-  review, stale-review dismissal, last-push approval, conversation resolution,
-  admin enforcement, force-push/delete disabled, and strict required status
-  checks for the policy and CI/provisioning guard contexts listed above.
+- Both Dusk org repos have protected `main` branches with one required review,
+  strict bootstrap status checks, and force-push/delete disabled. Admin
+  enforcement is intentionally off so owners retain the documented bootstrap
+  bypass; this does not make an unreviewed bootstrap a release-ready merge.
 - `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
   repro workflow is currently introduced by the `feat/dusk-hardening-v2`
   review branch, so it becomes normally discoverable in the GitHub Actions UI
@@ -440,23 +441,24 @@ Recommended sequence:
 4. Only after the manual run is stable, decide whether to make the non-E2E
    repro check required on internal PRs.
 5. Keep protected `main` settings on `dusk-network/hyperlane-dusk` and
-   `dusk-network/hyperlane-monorepo`; both already require PR review, the
-   shared `Dusk review policy gate`, and the proposed CI/provisioning guard
-   contexts. Do not treat either repo as production-ready until the required
-   checks are passing under the accepted runner/token path and the remaining
-   sign-off gates close.
+   `dusk-network/hyperlane-monorepo`. After the policy bootstrap lands, replace
+   the temporary proposal contexts with the shared `Dusk review policy gate`
+   and the appropriate readiness/agent context. Do not treat either repo as
+   production-ready until that promotion and the remaining sign-off gates
+   close.
 6. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides
    a runner specifically intended for long-running local network tests.
 
 ### Required Check Promotion
 
-Required status-check promotion was completed on 2026-05-14 without dropping
-the existing review-policy gate. `make gate-status` reports
-`missingRequiredStatusChecks: none` for both protected default branches. The
-remaining #8 gates are Dusk accepting or replacing this CI/repro path,
-publishing the manual workflow from #3 to the default branch, provisioning the
-read-only checkout token, providing visible `dusk-hyperlane` runner capacity,
-and recording a stable exact-ref run.
+Required status-check promotion is pending the bootstrap merges. As observed
+through the live API on 2026-07-21, `make gate-status` correctly reports the
+trusted/readiness contexts missing. After the workflow policy exists on each
+default branch, apply the settings below and immediately read them back. The
+protected `dusk-hyperlane-repro` environment was created on 2026-07-21 with an
+owner approval rule. Remaining #8 gates include accepting or replacing this
+CI/repro path, provisioning the environment-scoped read-only checkout token and
+ephemeral runner capacity, and recording a stable exact-ref run.
 
 ```bash
 gh api -X PATCH \

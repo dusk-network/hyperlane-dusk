@@ -32,12 +32,14 @@ use serde_json::json;
 mod keys;
 mod rues;
 
-use rues::{RuesClient, TransactionStatus};
+use rues::{RuesClient, TransactionStatus, TransactionStatusQueryError};
 
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
 const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
 const MAX_CALL_ARGS_BYTES: usize = 60 * 1024;
+const IGP_TOKEN_EXCHANGE_RATE_SCALE: u128 = 10_000_000_000;
+const IGP_MAX_GAS_LIMIT: u64 = 1_000_000_000;
 
 // ── CLI definition ──────────────────────────────────────────────────────────
 
@@ -166,7 +168,9 @@ enum Command {
         #[arg(long)]
         method: String,
         /// Return type: u8, u32, u64, bool, bytes32, option-bytes32,
-        /// contract-id-list, bytes, string, or domain-gas-config.
+        /// contract-id-list, eth-address-list, string-list,
+        /// string-list-list, validators-and-threshold, bytes, string, or
+        /// domain-gas-config.
         #[arg(long, name = "return-type", default_value = "u32")]
         return_type: String,
         /// Optional u32 argument.
@@ -175,6 +179,12 @@ enum Command {
         /// Optional bytes32 argument (64 hex chars).
         #[arg(long, name = "arg-bytes32")]
         arg_bytes32: Option<String>,
+        /// Optional Ethereum address argument (20-byte hex).
+        #[arg(long, name = "arg-eth-address")]
+        arg_eth_address: Option<String>,
+        /// Optional comma-separated Ethereum address list argument.
+        #[arg(long, name = "arg-eth-addresses")]
+        arg_eth_addresses: Option<String>,
     },
     /// Deposit native DUSK into a Mailbox dispatch-fee credit.
     FundDispatch {
@@ -498,6 +508,8 @@ async fn main() {
             return_type,
             arg_u32,
             arg_bytes32,
+            arg_eth_address,
+            arg_eth_addresses,
         } => {
             cmd_query(
                 &rues_url,
@@ -506,6 +518,8 @@ async fn main() {
                 &return_type,
                 arg_u32,
                 arg_bytes32,
+                arg_eth_address,
+                arg_eth_addresses,
             )
             .await
         }
@@ -825,11 +839,11 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 mod tests {
     use super::{
         confirmation_error_with_hash, next_moonlight_nonce, parse_igp_domain_configs,
-        read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
-        submission_error_with_hash, wait_for_transaction_with, MAX_PASSWORD_FILE_BYTES,
-        MAX_SECRET_KEY_STDIN_BYTES,
+        prepare_process_call, read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
+        submission_error_with_hash, wait_for_transaction_with, MAX_CALL_ARGS_BYTES,
+        MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
-    use crate::rues::TransactionStatus;
+    use crate::rues::{TransactionStatus, TransactionStatusQueryError};
     use std::collections::VecDeque;
     use std::future::ready;
     use std::sync::Mutex;
@@ -861,6 +875,8 @@ mod tests {
             Vec::<String>::new(),
             vec!["31338:0:0:1".to_string()],
             vec!["31338:0:10000000000:0".to_string()],
+            vec!["31338:0:1:1".to_string()],
+            vec![format!("31338:{}:{}:{}", u64::MAX, u64::MAX, u64::MAX)],
             vec![
                 "31338:0:10000000000:1".to_string(),
                 "31338:1:10000000000:2".to_string(),
@@ -879,6 +895,18 @@ mod tests {
 
         let key = format!("0x{}\n", "11".repeat(32));
         assert_eq!(read_secret_key_hex(key.as_bytes()).unwrap(), key.trim());
+    }
+
+    #[test]
+    fn process_call_arguments_share_the_helper_transport_bound() {
+        let oversized_metadata = hex::encode(vec![0u8; MAX_CALL_ARGS_BYTES]);
+        assert!(prepare_process_call("00", &oversized_metadata)
+            .unwrap_err()
+            .contains("helper transport limit"));
+
+        let (args, message_id) = prepare_process_call("00", "").unwrap();
+        assert!(args.len() <= MAX_CALL_ARGS_BYTES);
+        assert_eq!(message_id, hyperlane_dusk_types::message::id(&[0u8]));
     }
 
     fn clear_password_env() {
@@ -984,7 +1012,9 @@ mod tests {
     #[tokio::test]
     async fn transaction_wait_retries_observation_errors_and_keeps_the_hash() {
         let mut statuses = VecDeque::from([
-            Err("temporary GraphQL outage".to_string()),
+            Err(TransactionStatusQueryError::Retryable(
+                "temporary GraphQL outage".to_string(),
+            )),
             Ok(TransactionStatus::Executed),
         ]);
 
@@ -998,7 +1028,9 @@ mod tests {
         .await
         .expect("a later exact-hash success should reconcile the transaction");
 
-        let mut statuses = VecDeque::from([Err("archive unavailable".to_string())]);
+        let mut statuses = VecDeque::from([Err(TransactionStatusQueryError::Retryable(
+            "archive unavailable".to_string(),
+        ))]);
         let error = wait_for_transaction_with(
             "ddeeff",
             || ready(statuses.pop_front().expect("status response should exist")),
@@ -1010,6 +1042,28 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("ddeeff"));
         assert!(error.contains("archive unavailable"));
+    }
+
+    #[tokio::test]
+    async fn transaction_wait_fails_immediately_on_terminal_status_schema_errors() {
+        let mut queries = 0usize;
+        let error = wait_for_transaction_with(
+            "a1b2c3",
+            || {
+                queries += 1;
+                ready(Err(TransactionStatusQueryError::Terminal(
+                    "response is missing data.tx.err".to_string(),
+                )))
+            },
+            20,
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(queries, 1);
+        assert!(error.contains("a1b2c3"));
+        assert!(error.contains("missing data.tx.err"));
     }
 
     #[tokio::test]
@@ -1968,6 +2022,7 @@ fn parse_igp_domain_configs(values: &[String]) -> Result<Vec<(u32, DomainGasConf
         if config.gas_price == 0 {
             return Err(format!("IGP domain {domain} gas price cannot be zero"));
         }
+        validate_igp_domain_config(domain, config)?;
         configs.push((domain, config));
     }
     configs.sort_by_key(|(domain, _)| *domain);
@@ -1977,6 +2032,27 @@ fn parse_igp_domain_configs(values: &[String]) -> Result<Vec<(u32, DomainGasConf
         }
     }
     Ok(configs)
+}
+
+fn validate_igp_domain_config(domain: u32, config: DomainGasConfig) -> Result<(), String> {
+    let quote = |gas_limit: u64| {
+        (u128::from(gas_limit) + u128::from(config.gas_overhead))
+            .checked_mul(u128::from(config.gas_price))
+            .and_then(|value| value.checked_mul(u128::from(config.token_exchange_rate)))
+            .map(|value| value / IGP_TOKEN_EXCHANGE_RATE_SCALE)
+    };
+    let minimum = quote(1)
+        .ok_or_else(|| format!("IGP domain {domain} configured quote arithmetic overflows"))?;
+    if minimum == 0 {
+        return Err(format!(
+            "IGP domain {domain} configured payment rounds to zero"
+        ));
+    }
+    let maximum = quote(IGP_MAX_GAS_LIMIT)
+        .ok_or_else(|| format!("IGP domain {domain} configured quote arithmetic overflows"))?;
+    u64::try_from(maximum)
+        .map(|_| ())
+        .map_err(|_| format!("IGP domain {domain} configured quote exceeds u64"))
 }
 
 fn parse_eth_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
@@ -2117,7 +2193,7 @@ async fn wait_for_transaction_with<F, Fut>(
 ) -> Result<(), String>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = Result<TransactionStatus, String>>,
+    Fut: Future<Output = Result<TransactionStatus, TransactionStatusQueryError>>,
 {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut last_query_error = None;
@@ -2134,7 +2210,14 @@ where
                 return Err(format!("Transaction {tx_id} failed: {error}"));
             }
             Ok(Ok(TransactionStatus::NotFound)) => {}
-            Ok(Err(error)) => last_query_error = Some(error),
+            Ok(Err(TransactionStatusQueryError::Retryable(error))) => {
+                last_query_error = Some(error);
+            }
+            Ok(Err(TransactionStatusQueryError::Terminal(error))) => {
+                return Err(format!(
+                    "Transaction {tx_id} status response is incompatible: {error}"
+                ));
+            }
             Err(_) => break,
         }
 
@@ -2170,9 +2253,18 @@ async fn cmd_query(
     return_type: &str,
     arg_u32: Option<u32>,
     arg_bytes32: Option<String>,
+    arg_eth_address: Option<String>,
+    arg_eth_addresses: Option<String>,
 ) -> Result<(), String> {
     let client = RuesClient::new(rues_url)?;
     let contract_id = parse_bytes32(contract_hex)?;
+    let argument_count = usize::from(arg_u32.is_some())
+        + usize::from(arg_bytes32.is_some())
+        + usize::from(arg_eth_address.is_some())
+        + usize::from(arg_eth_addresses.is_some());
+    if argument_count > 1 {
+        return Err("Query accepts at most one argument option".to_string());
+    }
 
     match return_type {
         "u8" => {
@@ -2249,6 +2341,57 @@ async fn cmd_query(
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
+        "eth-address-list" => {
+            let result: Vec<EthAddress> = client.contract_query(&contract_id, method, &()).await?;
+            let output = json!({
+                "success": true,
+                "value": result
+                    .iter()
+                    .map(|address| format!("0x{}", hex::encode(address.0)))
+                    .collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
+        "string-list" => {
+            let address = arg_eth_address.as_deref().ok_or_else(|| {
+                "--return-type string-list requires --arg-eth-address <address>".to_string()
+            })?;
+            let address = parse_eth_address(address)?;
+            let result: Vec<String> = client
+                .contract_query(&contract_id, method, &address)
+                .await?;
+            let output = json!({ "success": true, "value": result });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
+        "string-list-list" => {
+            let addresses = arg_eth_addresses.as_deref().ok_or_else(|| {
+                "--return-type string-list-list requires --arg-eth-addresses <list>".to_string()
+            })?;
+            let addresses = parse_eth_addresses(addresses)?;
+            if addresses.len() > 16 {
+                return Err("ValidatorAnnounce batch query supports at most 16 addresses".into());
+            }
+            let result: Vec<Vec<String>> = client
+                .contract_query(&contract_id, method, &addresses)
+                .await?;
+            let output = json!({ "success": true, "value": result });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
+        "validators-and-threshold" => {
+            let result: (Vec<EthAddress>, u8) =
+                client.contract_query(&contract_id, method, &()).await?;
+            let output = json!({
+                "success": true,
+                "value": {
+                    "validators": result.0
+                        .iter()
+                        .map(|address| format!("0x{}", hex::encode(address.0)))
+                        .collect::<Vec<_>>(),
+                    "threshold": result.1,
+                },
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
         "bytes" => {
             let result: Vec<u8> = if let Some(val) = arg_u32 {
                 client.contract_query(&contract_id, method, &val).await?
@@ -2292,7 +2435,7 @@ async fn cmd_query(
         }
         _ => {
             return Err(format!(
-                "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, option-bytes32, contract-id-list, bytes, string, domain-gas-config"
+                "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, option-bytes32, contract-id-list, eth-address-list, string-list, string-list-list, validators-and-threshold, bytes, string, domain-gas-config"
             ));
         }
     }
@@ -2376,23 +2519,11 @@ async fn cmd_process(
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url)?;
-
     let mailbox_id = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
+    let (process_args, message_id) = prepare_process_call(message_hex, metadata_hex)?;
 
-    let message_hex = message_hex.strip_prefix("0x").unwrap_or(message_hex);
-    let encoded_message =
-        hex::decode(message_hex).map_err(|e| format!("Invalid message hex: {e}"))?;
-    let metadata_hex = metadata_hex.strip_prefix("0x").unwrap_or(metadata_hex);
-    let metadata = hex::decode(metadata_hex).map_err(|e| format!("Invalid metadata hex: {e}"))?;
-
-    // Compute message ID for output
-    let message_id = hyperlane_dusk_types::message::id(&encoded_message);
-
-    // Serialize args: (metadata: Vec<u8>, encoded_message: Vec<u8>)
-    let process_args = rkyv_serialize(&(metadata, encoded_message));
-
+    let client = RuesClient::new(rues_url)?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
@@ -2419,6 +2550,29 @@ async fn cmd_process(
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+fn prepare_process_call(
+    message_hex: &str,
+    metadata_hex: &str,
+) -> Result<(Vec<u8>, [u8; 32]), String> {
+    let message_hex = message_hex.strip_prefix("0x").unwrap_or(message_hex);
+    let encoded_message =
+        hex::decode(message_hex).map_err(|e| format!("Invalid message hex: {e}"))?;
+    let metadata_hex = metadata_hex.strip_prefix("0x").unwrap_or(metadata_hex);
+    let metadata = hex::decode(metadata_hex).map_err(|e| format!("Invalid metadata hex: {e}"))?;
+
+    // Compute message ID for output
+    let message_id = hyperlane_dusk_types::message::id(&encoded_message);
+
+    // Serialize args: (metadata: Vec<u8>, encoded_message: Vec<u8>)
+    let process_args = rkyv_serialize(&(metadata, encoded_message));
+    if process_args.len() > MAX_CALL_ARGS_BYTES {
+        return Err(format!(
+            "Process arguments exceed the {MAX_CALL_ARGS_BYTES}-byte helper transport limit"
+        ));
+    }
+    Ok((process_args, message_id))
 }
 
 // ── cmd_encode_message ────────────────────────────────────────────────────
