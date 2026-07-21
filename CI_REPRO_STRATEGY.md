@@ -46,13 +46,15 @@ setup to accept, change, or replace.
   `.github/workflows/production-readiness-gate.yml`. This is a lightweight
   GitHub-hosted status-check candidate that runs
   `make production-readiness-guard` in one of two modes. Pull requests use
-  `READINESS_MODE=premerge`: the current PR is not required to be already
-  merged or self-approved, while prerequisite PRs, status checks, upstream
-  freshness, and exact-ref repro freshness still fail closed. Manual dispatch
-  uses `READINESS_MODE=production` and additionally enforces final sign-off,
-  branch-protection visibility, dependency-alert visibility, runner/secret
-  provisioning, and all production decision issues. This avoids making a
-  required PR check depend circularly on its own prior merge.
+  `READINESS_MODE=premerge`: none of the three linked PRs is required to be
+  already merged or approved, while their exact required status checks,
+  upstream freshness, and exact-ref repro freshness still fail closed. Branch
+  protection remains the authority for approval and merge. Manual dispatch
+  uses `READINESS_MODE=production` and requires all three PRs to be merged and
+  approved in addition to final sign-off, branch-protection visibility,
+  dependency-alert visibility, runner/secret provisioning, and all production
+  decision issues. This avoids both a self-cycle and a cross-repository cycle
+  in the required pre-merge check without weakening the production gate.
 
 ## Proposed Runner
 

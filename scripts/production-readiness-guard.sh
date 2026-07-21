@@ -15,12 +15,13 @@ WORKFLOW_PR_NUMBER="${WORKFLOW_PR_NUMBER:-3}"
 SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo tests Cargo.toml Cargo.lock Makefile rust-toolchain.toml scripts/local-repro-check.sh .github/workflows/manual-repro-check.yml}"
-LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-aaad04937483897ffc0fcc77cfcedbc53bfee326}"
+LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-876848ecc6c671995fad3ae7b22843e68a3ce8ca}"
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
-LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-9e386e81851fd02df86d957fb9fce6f15d81df34}"
+LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-bf11813b0ba9f065e1517eb22ab56c8f6264250b}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-2}"
 DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
 MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent validation}"
+WORKFLOW_REQUIRED_STATUS_CONTEXTS="${WORKFLOW_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Manual repro dispatcher gate}"
 MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
 MONOREPO_UPSTREAM_REPO="${MONOREPO_UPSTREAM_REPO:-hyperlane-xyz/hyperlane-monorepo}"
 MONOREPO_COMPARE_BASE="${MONOREPO_COMPARE_BASE:-main}"
@@ -550,7 +551,7 @@ print_summary_and_exit() {
         if [ "$READINESS_MODE" = "premerge" ]; then
             echo "premergeReadinessGuard: passed"
             echo "productionReadinessGuard: deferred"
-            echo "Merge prerequisites are closed; the production-only audit still requires a manual dispatch."
+            echo "Pre-merge machine checks are closed; approvals, merges, and the production-only audit remain deferred."
         else
             echo "productionReadinessGuard: passed"
             echo "Known machine-checkable blockers are closed, but Dusk reviewer judgment and fresh release evidence still apply."
@@ -618,17 +619,24 @@ fi
 section "Internal PRs"
 printf 'readinessMode: %s\n' "$READINESS_MODE"
 if [ "$READINESS_MODE" = "premerge" ]; then
-    # Branch protection owns approval and merge-state enforcement for the PR
-    # that is currently producing this required check. Requiring this PR to be
-    # merged here would make the required check impossible to satisfy.
-    check_pr "dusk" "$DUSK_REPO" "$CURRENT_PR_NUMBER" 0 0 "$DUSK_REQUIRED_STATUS_CONTEXTS"
+    # A required pre-merge status cannot depend on any PR already being merged
+    # or approved: doing so creates a cross-repository cycle and conflates code
+    # validation with reviewer authority. Branch protection owns approval and
+    # merge-state enforcement. The manual production mode below still requires
+    # all three PRs to be merged and approved.
+    dusk_pr_number="$CURRENT_PR_NUMBER"
+    require_merged=0
+    require_approved=0
 else
-    check_pr "dusk" "$DUSK_REPO" 1 1 1 "$DUSK_REQUIRED_STATUS_CONTEXTS"
+    dusk_pr_number=1
+    require_merged=1
+    require_approved=1
 fi
-check_pr "monorepo" "$MONOREPO_REPO" 1 1 1 "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
+check_pr "dusk" "$DUSK_REPO" "$dusk_pr_number" "$require_merged" "$require_approved" "$DUSK_REQUIRED_STATUS_CONTEXTS"
+check_pr "monorepo" "$MONOREPO_REPO" 1 "$require_merged" "$require_approved" "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
 
 if gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json state >/dev/null 2>&1; then
-    check_pr "workflowDispatcher" "$DUSK_REPO" "$WORKFLOW_PR_NUMBER" 1 1 "$DUSK_REQUIRED_STATUS_CONTEXTS"
+    check_pr "workflowDispatcher" "$DUSK_REPO" "$WORKFLOW_PR_NUMBER" "$require_merged" "$require_approved" "$WORKFLOW_REQUIRED_STATUS_CONTEXTS"
 else
     add_blocker "workflow dispatcher PR #$WORKFLOW_PR_NUMBER is missing or inaccessible"
 fi

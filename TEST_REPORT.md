@@ -7,6 +7,63 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
+## 2026-07-21 Escrow, Dispatch Credit, and Agent Reassessment
+
+The frozen base code anchor is
+`876848ecc6c671995fad3ae7b22843e68a3ce8ca`; the frozen combined withdrawal
+stack anchor is `b28d575527421d2a67245921ce561c88f554c099`. Both were tested against
+Rusk `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` and monorepo checkout
+`bf11813b0ba9f065e1517eb22ab56c8f6264250b` (Dusk agent implementation
+anchor `af957a9fc814fa7533aadf997104863306eed645`).
+
+The exact base gate passed 12 WASM builds, contract/type clippy, 29 type tests,
+108 VM tests, 17 `dusk-tx` tests, 5 data-driver tests, the standalone operator,
+secret hygiene, and the full agent compile boundary. Durable log:
+`/tmp/hyperlane-base-repro-876848e-bf11813-20260721.log`, SHA-256
+`182691cb5ef5c864c3fc657cd4bd87134d7a1cc71f6f14a4513d5e2095b8a364`.
+
+The exact combined stack gate passed the same build and lint surfaces plus 114
+VM tests, 19 `dusk-tx` tests, 7 data-driver tests, release data-driver WASM,
+secret hygiene, and the full agent compile boundary. Durable log:
+`/tmp/hyperlane-reassessment-repro-b28d575-bf11813-20260721.log`, SHA-256
+`c0a47f43340d35369725bd3f215d120a62e0aab0a7558cb37fa2e24b023cbf62`.
+
+Live E2E first exposed and fixed three harness defects instead of treating a
+successful happy path as sufficient evidence: warm reuse expected the wrong
+MerkleTree hook type; withdrawal raced the Dusk validator self-announcement on
+one signer; and operator, relayer, and validator shared one Anvil nonce stream.
+Separating the EVM roles then exposed a fourth defect: the EVM multisig ISM was
+hard-coded to the operator while Dusk used the isolated validator. The failed
+Dusk-to-EVM attempt is negative evidence that the mismatched validator was
+rejected. Both ISMs now consume the same validator policy, and setup finishes
+before agents start.
+
+The corrected `messageIdMultisig` run at stack anchor `b28d575` passed
+beneficiary withdrawal, EVM-to-Dusk and Dusk-to-EVM signed checkpoint delivery,
+protocol-fee collection, native DUSK exact custody, canonical DRC20 exact
+allowance/custody, and clean teardown. Run ID `1784628130`; durable harness log
+`/tmp/hyperlane-reassessment-e2e-multisig-b28d575-bf11813-20260721.log`,
+SHA-256
+`d6d9100b3f306662000d5d865d849f492bf1810f88c245a53fda998843898df6`.
+The post-run audit found only validator `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC`
+in fetched checkpoints through index 2, no `nonce too low`, no leaked signer
+material, no orphan agent, and no listener left on ports 8080 or 8545.
+
+The corrected `testMock` run at the same stack anchor passed the same
+beneficiary withdrawal, bidirectional synthetic delivery, fee, native custody,
+and canonical DRC20 custody assertions using the isolated relayer signer. Run
+ID `1784629402`; durable harness log
+`/tmp/hyperlane-reassessment-e2e-testmock-b28d575-bf11813-20260721.log`,
+SHA-256
+`c155747f8d49beb16e8cf005c3bca77eff62b3d3fe0c3e86fa4737a8ca3b0540`.
+Its post-run audit likewise found no nonce collision, signer leak, orphan
+agent, or listener left on ports 8080 or 8545.
+
+The pre-merge readiness check now validates exact required contexts for all
+three linked PRs without requiring prior approval or merge. Branch protection
+owns those decisions. Manual production mode still requires every linked PR to
+be approved and merged and retains all production-only gates.
+
 ## 2026-07-21 Final Combined Static and Isolated E2E Validation
 
 The final covered implementation set was the Dusk base anchor
