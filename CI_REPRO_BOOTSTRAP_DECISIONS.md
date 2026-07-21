@@ -79,6 +79,21 @@ repository Actions secrets are configured and no visible repository runner has
 both required Dusk labels. Put `DUSK_ORG_READ_TOKEN` in this environment, not at
 repository scope, only after the ephemeral runner is ready.
 
+The production-readiness workflow is manually invoked with
+`repository_dispatch`, which always loads the default-branch workflow. It does
+not accept `workflow_dispatch` because that would let a repository writer
+select a branch-controlled workflow while a status-read secret is present.
+`DUSK_STATUS_READ_TOKEN` is a separate read-only status credential; the broader
+source-read token is never a fallback for that job.
+
+After bootstrap, the trusted review gate also byte-locks the manual repro
+workflow, its dispatcher gate, and `.github/actionlint.yaml`. The gate binds a
+successful proposal run to the current PR number and its exact base ref, base
+SHA, and head SHA; a successful run for the same head on another PR or base is
+not reusable evidence.
+The trusted policy gate has no manual trigger, so a `workflow_dispatch` run on
+a chosen ref cannot emit its required PR status context.
+
 ## Pinned validation tooling
 
 The official checkout and GitHub-script actions are pinned to immutable commit

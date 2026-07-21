@@ -30,7 +30,8 @@ use hyperlane_dusk_types::drc20::{
     BalanceOf as Drc20BalanceOf,
 };
 use hyperlane_dusk_types::{
-    events, message, DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256, VERSION,
+    events, message, token_message, DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256,
+    VERSION,
 };
 
 mod test_session;
@@ -1094,9 +1095,15 @@ fn session_with_validator_announce() -> TestSession {
 }
 
 fn validator_announcement(location: &str) -> (EthAddress, Vec<u8>) {
+    validator_announcement_with_index(location, 7)
+}
+
+fn validator_announcement_with_index(location: &str, index: u64) -> (EthAddress, Vec<u8>) {
     let secp = Secp256k1::new();
-    let secret =
-        SecpSecretKey::from_byte_array([7u8; 32]).expect("validator test secret should be valid");
+    let mut secret_bytes = [0u8; 32];
+    secret_bytes[24..].copy_from_slice(&index.to_be_bytes());
+    let secret = SecpSecretKey::from_byte_array(secret_bytes)
+        .expect("validator test secret should be valid");
     let public = secp256k1::PublicKey::from_secret_key(&secp, &secret).serialize_uncompressed();
     let public_hash = message::keccak256(&public[1..]);
     let mut address = [0u8; 20];
@@ -1113,6 +1120,41 @@ fn validator_announcement(location: &str) -> (EthAddress, Vec<u8>) {
     encoded[..64].copy_from_slice(&compact);
     encoded[64] = i32::from(recovery_id) as u8 + 27;
     (EthAddress(address), encoded)
+}
+
+#[test]
+fn test_validator_announce_has_paginated_discovery_without_global_enrollment_cap() {
+    let mut session = session_with_validator_announce();
+    const ABOVE_HISTORICAL_CAP: u32 = 1_025;
+    let location = alloc::string::String::from("s3://validator/checkpoints");
+
+    for index in 1..=ABOVE_HISTORICAL_CAP {
+        let (validator, signature) = validator_announcement_with_index(&location, u64::from(index));
+        session
+            .call_public::<_, bool>(
+                &OWNER_SK,
+                VALIDATOR_ANNOUNCE_ID,
+                "announce",
+                &(validator, location.clone(), signature),
+            )
+            .expect("a storage-paying validator must not be blocked by a global registry cap");
+    }
+
+    let count = session
+        .direct_call::<_, u32>(VALIDATOR_ANNOUNCE_ID, "announced_validator_count", &())
+        .expect("validator count query should succeed")
+        .data;
+    assert_eq!(count, ABOVE_HISTORICAL_CAP);
+
+    let last_page = session
+        .direct_call::<_, Vec<EthAddress>>(
+            VALIDATOR_ANNOUNCE_ID,
+            "get_announced_validators",
+            &(ABOVE_HISTORICAL_CAP - 2, 2u32),
+        )
+        .expect("the final bounded page should remain discoverable")
+        .data;
+    assert_eq!(last_page.len(), 2);
 }
 
 #[test]
@@ -1183,11 +1225,31 @@ fn test_validator_announce_bounds_signed_location_history() {
     );
     assert_contract_panic(result, "ValidatorAnnounce: location limit reached");
 
+    let count = session
+        .direct_call::<_, u32>(VALIDATOR_ANNOUNCE_ID, "announced_validator_count", &())
+        .expect("validator registry count should succeed")
+        .data;
+    assert_eq!(count, 1);
+
     let validators = session
-        .direct_call::<_, Vec<EthAddress>>(VALIDATOR_ANNOUNCE_ID, "get_announced_validators", &())
+        .direct_call::<_, Vec<EthAddress>>(
+            VALIDATOR_ANNOUNCE_ID,
+            "get_announced_validators",
+            &(0u32, 2u32),
+        )
         .expect("validator registry query should succeed")
         .data;
     assert_eq!(validators, vec![validator]);
+
+    let empty = session
+        .direct_call::<_, Vec<EthAddress>>(
+            VALIDATOR_ANNOUNCE_ID,
+            "get_announced_validators",
+            &(1u32, 2u32),
+        )
+        .expect("an exhausted validator page should succeed")
+        .data;
+    assert!(empty.is_empty());
 }
 
 // =============================================================================
@@ -1669,6 +1731,108 @@ fn test_protocol_fee_charges_on_dispatch() {
         .expect("claimable_fees should succeed")
         .data;
     assert_eq!(claimable, 0);
+}
+
+#[test]
+fn test_warp_user_contributes_exact_dispatch_fee_without_spending_sponsor_credit() {
+    let mut session = session_with_hooks();
+    let remote_router = [0xA5u8; 32];
+    let mint_amount = 1_000_000u64;
+    const SPONSOR_CREDIT: u64 = 2_000_000;
+
+    session
+        .deploy(
+            WARP_DRC20_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    alloc::string::String::from("Wrapped ETH"),
+                    alloc::string::String::from("WETH"),
+                    18u8,
+                    vec![(REMOTE_DOMAIN, remote_router)],
+                ))
+                .contract_id(WARP_DRC20_ID),
+        )
+        .expect("Deploying WarpDrc20 should succeed");
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("the outbound token owner should register");
+
+    let owner_hash = message::keccak256(&OWNER_PK.to_bytes());
+    let inbound = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &token_message::encode(owner_hash, mint_amount),
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound))
+        .expect("the registered owner should receive synthetic tokens");
+
+    session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(WARP_DRC20_ID.to_bytes(), SPONSOR_CREDIT),
+            SPONSOR_CREDIT,
+        )
+        .expect("operational sponsor credit should be funded");
+    let args = (REMOTE_DOMAIN, [0xD5u8; 32], 1u64);
+    let fee = session
+        .direct_call::<_, u64>(WARP_DRC20_ID, "quote_transfer_remote", &args)
+        .expect("the route quote should succeed")
+        .data;
+    assert!(fee > 0);
+
+    let unfunded =
+        session.call_public::<_, MessageId>(&OWNER_SK, WARP_DRC20_ID, "transfer_remote", &args);
+    assert_contract_panic_contains(unfunded, "dispatch fee deposit failed");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(WARP_DRC20_ID.to_bytes(),),)
+            .expect("route credit should remain queryable")
+            .data,
+        SPONSOR_CREDIT
+    );
+
+    session
+        .call_public_with_deposit::<_, MessageId>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "transfer_remote",
+            &args,
+            fee,
+        )
+        .expect("an exact user fee contribution should dispatch");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(WARP_DRC20_ID.to_bytes(),),)
+            .expect("route credit should remain queryable")
+            .data,
+        SPONSOR_CREDIT,
+        "the user's transfer must not decrement shared sponsor credit"
+    );
+}
+
+#[test]
+fn test_mailbox_rejects_forged_contract_dispatch_funding_callback() {
+    let mut session = session_with_hooks();
+    let result = session.direct_call::<_, ()>(
+        MAILBOX_ID,
+        "receive_dispatch_funding",
+        &(ReceiveFromContract {
+            contract: WARP_DRC20_ID,
+            value: 1_000,
+            data: Vec::new(),
+        },),
+    );
+    assert_contract_panic(result, "Mailbox: unauthenticated dispatch funding");
 }
 
 #[test]

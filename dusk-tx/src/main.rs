@@ -37,6 +37,8 @@ const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
 const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
 const MAX_CALL_ARGS_BYTES: usize = 60 * 1024;
+// Keep this synchronized with validator-announce's MAX_QUERY_VALIDATORS.
+const MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS: usize = 2;
 const IGP_TOKEN_EXCHANGE_RATE_SCALE: u128 = 10_000_000_000;
 const IGP_MAX_GAS_LIMIT: u64 = 1_000_000_000;
 
@@ -891,8 +893,10 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 mod tests {
     use super::{
         confirmation_error_with_hash, next_moonlight_nonce, parse_account_public_key,
-        parse_igp_domain_configs, prepare_process_call, read_secret_key_hex, resolve_keys_password,
-        resolve_signing_chain_id, submission_error_with_hash, wait_for_transaction_with,
+        parse_igp_domain_configs, parse_validator_announce_query_addresses,
+        prepare_bytes32_query_argument, prepare_dispatch_call, prepare_process_call,
+        read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
+        submission_error_with_hash, wait_for_transaction_with, Bytes32QueryArgument,
         MAX_CALL_ARGS_BYTES, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::{TransactionStatus, TransactionStatusQueryError};
@@ -980,6 +984,54 @@ mod tests {
         assert!(parse_account_public_key("abcd")
             .unwrap_err()
             .contains("96 bytes"));
+    }
+
+    #[test]
+    fn dispatch_call_arguments_are_bounded_before_signer_access() {
+        let id = "11".repeat(32);
+        let recipient = "22".repeat(32);
+        let (_, args) = prepare_dispatch_call(&id, &id, 31338, &recipient, "hello").unwrap();
+        assert!(args.len() <= MAX_CALL_ARGS_BYTES);
+
+        let oversized_body = "a".repeat(MAX_CALL_ARGS_BYTES);
+        assert!(
+            prepare_dispatch_call(&id, &id, 31338, &recipient, &oversized_body)
+                .unwrap_err()
+                .contains("helper transport limit")
+        );
+    }
+
+    #[test]
+    fn validator_announce_query_matches_the_contract_batch_bound() {
+        let two = format!("0x{},0x{}", "11".repeat(20), "22".repeat(20));
+        assert_eq!(
+            parse_validator_announce_query_addresses(&two)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let three = format!("{two},0x{}", "33".repeat(20));
+        assert!(parse_validator_announce_query_addresses(&three)
+            .unwrap_err()
+            .contains("at most 2"));
+    }
+
+    #[test]
+    fn bytes32_queries_preserve_bytes32_arguments() {
+        let value = "42".repeat(32);
+        assert_eq!(
+            prepare_bytes32_query_argument(None, Some(&value)).unwrap(),
+            Bytes32QueryArgument::Bytes32([0x42; 32])
+        );
+        assert_eq!(
+            prepare_bytes32_query_argument(Some(7), None).unwrap(),
+            Bytes32QueryArgument::U32(7)
+        );
+        assert_eq!(
+            prepare_bytes32_query_argument(None, None).unwrap(),
+            Bytes32QueryArgument::Unit
+        );
     }
 
     fn clear_password_env() {
@@ -1308,12 +1360,12 @@ async fn cmd_fund_dispatch(
     if amount == 0 {
         return Err("Funding amount must be greater than zero".into());
     }
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url)?;
     let mailbox = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
     let payer = parse_bytes32(payer_hex)?;
     let args = rkyv_serialize(&(payer, amount));
+    let client = RuesClient::new(rues_url)?;
     let chain_id = client.query_chain_id().await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call_with_deposit(
         &sk,
@@ -2244,6 +2296,16 @@ fn parse_eth_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
     Ok(out)
 }
 
+fn parse_validator_announce_query_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
+    let addresses = parse_eth_addresses(list)?;
+    if addresses.len() > MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS {
+        return Err(format!(
+            "ValidatorAnnounce batch query supports at most {MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS} addresses"
+        ));
+    }
+    Ok(addresses)
+}
+
 fn parse_eth_address(s: &str) -> Result<EthAddress, String> {
     let s = s.trim();
     let s = s.strip_prefix("0x").unwrap_or(s);
@@ -2473,11 +2535,18 @@ async fn cmd_query(
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         "bytes32" => {
-            let result: [u8; 32] = if let Some(val) = arg_u32 {
-                client.contract_query(&contract_id, method, &val).await?
-            } else {
-                client.contract_query(&contract_id, method, &()).await?
-            };
+            let result: [u8; 32] =
+                match prepare_bytes32_query_argument(arg_u32, arg_bytes32.as_deref())? {
+                    Bytes32QueryArgument::U32(value) => {
+                        client.contract_query(&contract_id, method, &value).await?
+                    }
+                    Bytes32QueryArgument::Bytes32(value) => {
+                        client.contract_query(&contract_id, method, &value).await?
+                    }
+                    Bytes32QueryArgument::Unit => {
+                        client.contract_query(&contract_id, method, &()).await?
+                    }
+                };
             let output = json!({ "success": true, "value": hex::encode(result) });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
@@ -2526,10 +2595,7 @@ async fn cmd_query(
             let addresses = arg_eth_addresses.as_deref().ok_or_else(|| {
                 "--return-type string-list-list requires --arg-eth-addresses <list>".to_string()
             })?;
-            let addresses = parse_eth_addresses(addresses)?;
-            if addresses.len() > 16 {
-                return Err("ValidatorAnnounce batch query supports at most 16 addresses".into());
-            }
+            let addresses = parse_validator_announce_query_addresses(addresses)?;
             let result: Vec<Vec<String>> = client
                 .contract_query(&contract_id, method, &addresses)
                 .await?;
@@ -2602,6 +2668,26 @@ async fn cmd_query(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Bytes32QueryArgument {
+    U32(u32),
+    Bytes32([u8; 32]),
+    Unit,
+}
+
+fn prepare_bytes32_query_argument(
+    arg_u32: Option<u32>,
+    arg_bytes32: Option<&str>,
+) -> Result<Bytes32QueryArgument, String> {
+    if let Some(value) = arg_u32 {
+        Ok(Bytes32QueryArgument::U32(value))
+    } else if let Some(value) = arg_bytes32 {
+        Ok(Bytes32QueryArgument::Bytes32(parse_bytes32(value)?))
+    } else {
+        Ok(Bytes32QueryArgument::Unit)
+    }
+}
+
 // ── cmd_dispatch ──────────────────────────────────────────────────────────
 
 async fn cmd_dispatch(
@@ -2618,24 +2704,16 @@ async fn cmd_dispatch(
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let (test_recipient_id, dispatch_args) = prepare_dispatch_call(
+        mailbox_hex,
+        test_recipient_hex,
+        destination,
+        recipient_hex,
+        body,
+    )?;
     let client = RuesClient::new(rues_url)?;
-
-    let mailbox_id = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
-    let test_recipient_id = ContractId::from_bytes(parse_bytes32(test_recipient_hex)?);
-    let recipient = parse_bytes32(recipient_hex)?;
-
-    // Parse body: if starts with 0x, treat as hex; otherwise UTF-8
-    let body_bytes: Vec<u8> = if body.starts_with("0x") {
-        hex::decode(&body[2..]).map_err(|e| format!("Invalid body hex: {e}"))?
-    } else {
-        body.as_bytes().to_vec()
-    };
-
-    // Serialize args: (mailbox_id, destination, recipient, body)
-    let dispatch_args = rkyv_serialize(&(mailbox_id, destination, recipient, body_bytes));
-
     let chain_id = client.query_chain_id().await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
@@ -2662,6 +2740,30 @@ async fn cmd_dispatch(
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+fn prepare_dispatch_call(
+    mailbox_hex: &str,
+    test_recipient_hex: &str,
+    destination: u32,
+    recipient_hex: &str,
+    body: &str,
+) -> Result<(ContractId, Vec<u8>), String> {
+    let mailbox_id = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
+    let test_recipient_id = ContractId::from_bytes(parse_bytes32(test_recipient_hex)?);
+    let recipient = parse_bytes32(recipient_hex)?;
+    let body_bytes = if let Some(body_hex) = body.strip_prefix("0x") {
+        hex::decode(body_hex).map_err(|e| format!("Invalid body hex: {e}"))?
+    } else {
+        body.as_bytes().to_vec()
+    };
+    let dispatch_args = rkyv_serialize(&(mailbox_id, destination, recipient, body_bytes));
+    if dispatch_args.len() > MAX_CALL_ARGS_BYTES {
+        return Err(format!(
+            "Dispatch arguments exceed the {MAX_CALL_ARGS_BYTES}-byte helper transport limit"
+        ));
+    }
+    Ok((test_recipient_id, dispatch_args))
 }
 
 // ── cmd_process ───────────────────────────────────────────────────────────
@@ -2894,15 +2996,15 @@ async fn cmd_drc20_approve(
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url)?;
     let token = ContractId::from_bytes(parse_bytes32(token_hex)?);
     let spender = ContractId::from_bytes(parse_bytes32(spender_hex)?);
     let args = rkyv_serialize(&Drc20ApproveCall {
         spender: Drc20Account::Contract(spender),
         amount,
     });
+    let client = RuesClient::new(rues_url)?;
     let chain_id = client.query_chain_id().await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
@@ -2978,11 +3080,30 @@ async fn cmd_transfer_remote(
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let warp_bytes = parse_bytes32(warp_contract_hex)?;
+    let warp_id = ContractId::from_bytes(warp_bytes);
+    let recipient = parse_bytes32(recipient_hex)?;
     let client = RuesClient::new(rues_url)?;
 
-    let warp_id = ContractId::from_bytes(parse_bytes32(warp_contract_hex)?);
-    let recipient = parse_bytes32(recipient_hex)?;
+    // Quote before loading signing material. The transfer call repeats the
+    // quote and checks its Mailbox credit is unchanged, so a changed quote
+    // fails atomically instead of consuming shared route credit.
+    let dispatch_fee: u64 = client
+        .contract_query(
+            &warp_bytes,
+            "quote_transfer_remote",
+            &(destination, recipient, amount),
+        )
+        .await?;
+    let deposit = if native {
+        amount
+            .checked_add(dispatch_fee)
+            .ok_or_else(|| "Native transfer deposit overflows u64".to_string())?
+    } else {
+        dispatch_fee
+    };
+
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
     // Serialize args: (destination: u32, recipient: H256, amount: u64)
     let transfer_args = rkyv_serialize(&(destination, recipient, amount));
@@ -2990,7 +3111,6 @@ async fn cmd_transfer_remote(
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
-    let deposit = if native { amount } else { 0 };
     let tx = moonlight_call_with_deposit(
         &sk,
         warp_id,
@@ -3014,6 +3134,8 @@ async fn cmd_transfer_remote(
         "recipient": recipient_hex,
         "amount": amount,
         "native": native,
+        "dispatch_fee": dispatch_fee,
+        "deposit": deposit,
         "tx_id": tx_id,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());

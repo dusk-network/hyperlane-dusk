@@ -37,10 +37,11 @@ mod warp_drc20_collateral {
     extern crate alloc;
 
     use alloc::collections::BTreeMap;
+    use alloc::string::String;
     use alloc::vec::Vec;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
-    use dusk_core::transfer::TRANSFER_CONTRACT;
+    use dusk_core::transfer::{ContractToContract, TRANSFER_CONTRACT};
 
     use dusk_bytes::Serializable;
 
@@ -232,6 +233,18 @@ mod warp_drc20_collateral {
                 recipient != [0u8; 32],
                 "WarpCollateral: recipient cannot be zero"
             );
+            // Look up enrolled router
+            let router = *self
+                .enrolled_routers
+                .get(&destination)
+                .expect("WarpCollateral: no router enrolled for destination");
+
+            // Encode token message body
+            let body = token_message::encode(recipient, amount);
+            let credit_before = self.dispatch_credit();
+            let dispatch_fee = self.quote_dispatch(destination, router, body.clone());
+            self.collect_and_forward_dispatch_fee(dispatch_fee);
+
             let sender = drc20::sender_account();
             let self_account = Account::Contract(abi::self_id());
             let custody_before = self.collateral_balance();
@@ -254,22 +267,18 @@ mod warp_drc20_collateral {
                 "WarpCollateral: transfer_from did not deliver exact collateral"
             );
 
-            // Look up enrolled router
-            let router = self
-                .enrolled_routers
-                .get(&destination)
-                .expect("WarpCollateral: no router enrolled for destination");
-
-            // Encode token message body
-            let body = token_message::encode(recipient, amount);
-
             // Dispatch via Mailbox
             let message_id: MessageId = abi::call(
                 self.mailbox,
                 "dispatch",
-                &(destination, *router, body, Vec::<u8>::new(), self.hook),
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
             )
             .expect("WarpCollateral: dispatch failed");
+            assert_eq!(
+                self.dispatch_credit(),
+                credit_before,
+                "WarpCollateral: dispatch must consume only caller-funded credit"
+            );
 
             abi::emit(
                 events::SentTransferRemote::TOPIC,
@@ -281,6 +290,24 @@ mod warp_drc20_collateral {
             );
 
             message_id
+        }
+
+        /// Quote the native-DUSK fee that must accompany `transfer_remote`.
+        pub fn quote_transfer_remote(&self, destination: u32, recipient: H256, amount: u64) -> u64 {
+            assert!(amount > 0, "WarpCollateral: amount must be > 0");
+            assert!(
+                recipient != [0u8; 32],
+                "WarpCollateral: recipient cannot be zero"
+            );
+            let router = self
+                .enrolled_routers
+                .get(&destination)
+                .expect("WarpCollateral: no router enrolled for destination");
+            self.quote_dispatch(
+                destination,
+                *router,
+                token_message::encode(recipient, amount),
+            )
         }
 
         // =================================================================
@@ -456,6 +483,39 @@ mod warp_drc20_collateral {
         // =================================================================
         // Internal helpers
         // =================================================================
+
+        /// Query the route's current Mailbox credit.
+        fn dispatch_credit(&self) -> u64 {
+            abi::call(self.mailbox, "fee_credit", &(abi::self_id().to_bytes(),))
+                .expect("WarpCollateral: fee credit query failed")
+        }
+
+        /// Quote dispatch with this route as the encoded sender.
+        fn quote_dispatch(&self, destination: u32, router: H256, body: Vec<u8>) -> u64 {
+            abi::call(
+                self.mailbox,
+                "quote_dispatch_for_contract",
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
+            )
+            .expect("WarpCollateral: dispatch quote failed")
+        }
+
+        /// Claim the caller's exact Moonlight deposit and forward it to Mailbox.
+        fn collect_and_forward_dispatch_fee(&self, fee: u64) {
+            if fee == 0 {
+                return;
+            }
+            let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &fee)
+                .expect("WarpCollateral: dispatch fee deposit failed");
+            let transfer = ContractToContract {
+                contract: self.mailbox,
+                value: fee,
+                fn_name: String::from("receive_dispatch_funding"),
+                data: Vec::new(),
+            };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_contract", &transfer)
+                .expect("WarpCollateral: dispatch fee forwarding failed");
+        }
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {

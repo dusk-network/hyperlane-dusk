@@ -12,6 +12,13 @@ contract changes identified by the first reassessment pass.
 
 ## Final status addendum — 2026-07-21
 
+The final readiness hardening binds required check names to their originating
+GitHub Actions workflow run and exact PR/head/base identity. This closes the
+same-name/check-conclusion spoofing gap: only a completed `SUCCESS` from the
+expected workflow path and event is accepted. The fail-closed self-test covers
+lookalike names, skipped conclusions, wrong workflow provenance, and the manual
+dispatcher's `pull_request` event.
+
 The final base covered-tree anchor is
 `aaad04937483897ffc0fcc77cfcedbc53bfee326`; the focused withdrawal stack was
 validated at `db040e3f1eab4ba012a12a6be92c8f86268a993f`; and the synchronized
@@ -100,14 +107,22 @@ their combined exact payment from Mailbox, and forwards each child quote. The
 default hook is IGP, so every deployed demo dispatch exercises both the
 required aggregation and gas-payment path.
 
-The demo pre-funds each deployed warp route's Mailbox credit. Credits are an
-explicit prepayment model. Base PR #1 intentionally stops at beneficiary-keyed
-sponsorship. Permissionless funding does not confer withdrawal
-rights: the effective payer owns the credit. Moonlight payers may withdraw to
-an explicit, semantically valid Moonlight key, and each production warp route
-exposes an owner-only proxy for its own contract-keyed credit. There is no Mailbox-owner
-global drain. Contract-recipient payouts remain deferred until a callback ABI
-is specified.
+The demo ensures each deployed warp route's Mailbox credit satisfies a minimum
+ready balance. That balance is an operational reserve, not a public subsidy:
+each synthetic, collateral, or native route call quotes its own dispatch,
+collects that native-DUSK fee from the caller, forwards it through an
+authenticated transfer callback, and proves the route's pre-existing credit is
+unchanged afterward. Native calls deposit the bridge amount plus the fee; token
+routes deposit the fee only. Permissionless sponsorship may still leave a route
+above the readiness minimum.
+
+Base PR #1 intentionally stops at beneficiary-keyed sponsorship. This stacked
+PR adds beneficiary-authorized Moonlight withdrawal and owner-only proxies for
+each route's own contract-keyed credit. Permissionless funding does not confer
+withdrawal rights: the effective payer owns the credit. Moonlight payers may
+withdraw to an explicit, semantically valid Moonlight key. There is no funder
+reclaim right or Mailbox-owner global drain. Contract-recipient payouts remain
+deferred until a callback ABI is specified.
 
 The withdrawal submission boundary is non-idempotent. Public target and
 recipient arguments are validated before signer material is read. After a

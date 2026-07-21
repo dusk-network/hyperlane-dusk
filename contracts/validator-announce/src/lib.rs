@@ -46,9 +46,7 @@ mod validator_announce {
     const MAX_LOCATION_BYTES: usize = 1_024;
     /// Bound historical locations retained for one validator.
     const MAX_LOCATIONS_PER_VALIDATOR: usize = 16;
-    /// Bound the registry returned by `get_announced_validators`.
-    const MAX_VALIDATORS: usize = 1_024;
-    /// Legacy batch reads are deliberately small; agents should query one validator at a time.
+    /// Discovery pages and legacy batch reads are deliberately small.
     const MAX_QUERY_VALIDATORS: usize = 2;
 
     /// ValidatorAnnounce contract state.
@@ -136,10 +134,6 @@ mod validator_announce {
 
             // Register validator if first announcement.
             if !self.storage_locations.contains_key(&validator.0) {
-                assert!(
-                    self.validators.len() < MAX_VALIDATORS,
-                    "ValidatorAnnounce: validator limit reached"
-                );
                 self.validators.push(validator);
             }
 
@@ -197,9 +191,31 @@ mod validator_announce {
                 .unwrap_or_default()
         }
 
-        /// Returns all validators that have announced.
-        pub fn get_announced_validators(&self) -> Vec<EthAddress> {
-            self.validators.clone()
+        /// Returns a bounded page of validators that have announced.
+        ///
+        /// A page-based ABI avoids an unbounded query response without creating
+        /// a globally exhaustible validator-enrollment cap. `start` is a
+        /// zero-based index and an index at or beyond the current count returns
+        /// an empty page.
+        pub fn get_announced_validators(&self, start: u32, limit: u32) -> Vec<EthAddress> {
+            assert!(limit > 0, "ValidatorAnnounce: query limit is zero");
+            let limit = usize::try_from(limit).expect("ValidatorAnnounce: invalid query limit");
+            assert!(
+                limit <= MAX_QUERY_VALIDATORS,
+                "ValidatorAnnounce: query batch too large"
+            );
+            let start = usize::try_from(start).expect("ValidatorAnnounce: invalid query start");
+            if start >= self.validators.len() {
+                return Vec::new();
+            }
+            let end = start.saturating_add(limit).min(self.validators.len());
+            self.validators[start..end].to_vec()
+        }
+
+        /// Returns the number of validators available through paginated discovery.
+        pub fn announced_validator_count(&self) -> u32 {
+            u32::try_from(self.validators.len())
+                .expect("ValidatorAnnounce: validator count exceeds ABI range")
         }
 
         /// Returns the Mailbox contract ID.

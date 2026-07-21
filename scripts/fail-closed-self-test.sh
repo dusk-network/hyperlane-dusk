@@ -95,6 +95,37 @@ rg -q -F 'require_approved=1' scripts/production-readiness-guard.sh \
     || fail "production readiness no longer requires approved PRs"
 rg -q -F 'WORKFLOW_REQUIRED_STATUS_CONTEXTS="${WORKFLOW_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Manual repro dispatcher gate}"' scripts/production-readiness-guard.sh \
     || fail "workflow dispatcher readiness uses the wrong required status contexts"
+rg -q -F 'PROPOSED_DUSK_REF="${PROPOSED_DUSK_REF:-HEAD}"' scripts/production-readiness-guard.sh \
+    || fail "production readiness does not bind repro delta checks to an explicit proposed ref"
+rg -q -F '"pull/$CURRENT_PR_NUMBER/head"' .github/workflows/production-readiness-gate.yml \
+    || fail "trusted production readiness does not fetch the exact pull-request head as inert data"
+rg -q -F 'repository_dispatch:' .github/workflows/production-readiness-gate.yml \
+    || fail "manual production readiness is not anchored to the default-branch workflow"
+if rg -q -F 'workflow_dispatch:' .github/workflows/production-readiness-gate.yml; then
+    fail "production readiness permits a writer-selected workflow ref to access status credentials"
+fi
+rg -q -F 'bash scripts/report-hygiene-check.sh' .github/workflows/dusk-proposal-validation.yml \
+    || fail "proposal validation resolves report hygiene through mutable Makefile indirection"
+rg -q -F 'bash scripts/secret-hygiene-check.sh' .github/workflows/dusk-proposal-validation.yml \
+    || fail "proposal validation resolves secret hygiene through mutable Makefile indirection"
+for locked_policy_path in \
+    '.github/actionlint.yaml' \
+    '.github/workflows/manual-repro-check.yml' \
+    '.github/workflows/manual-repro-dispatcher-gate.yml'; do
+    rg -q -F "$locked_policy_path" .github/workflows/dusk-review-policy-gate.yml \
+        || fail "trusted review policy does not lock $locked_policy_path"
+done
+for proposal_identity_field in \
+    'pr.number === prNumber' \
+    'pr.head?.sha === headSha' \
+    'pr.base?.sha === baseSha' \
+    'pr.base?.ref === baseRef'; do
+    rg -q -F "$proposal_identity_field" .github/workflows/dusk-review-policy-gate.yml \
+        || fail "trusted review policy omits proposal identity field: $proposal_identity_field"
+done
+if rg -q -F 'workflow_dispatch:' .github/workflows/dusk-review-policy-gate.yml; then
+    fail "trusted review policy permits a manual run to spoof its required PR context"
+fi
 
 withdrawal_line="$(rg -n -F 'Withdrawing one LUX of WarpDrc20 dispatch credit' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
 dusk_validator_start_line="$(rg -n -F 'Starting Dusk-origin validator' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
@@ -201,7 +232,7 @@ case "$*" in
     "api repos/dusk-network/hyperlane-dusk/actions/secrets")
         printf '{"total_count":0,"secrets":[]}\n'
         ;;
-    "api repos/dusk-network/hyperlane-monorepo/actions/secrets")
+    "api repos/dusk-network/hyperlane-dusk/environments/dusk-hyperlane-repro/secrets")
         printf '{"total_count":0,"secrets":[]}\n'
         ;;
     *)
@@ -226,7 +257,7 @@ expect_fail \
 
 expect_fail \
     production-readiness-missing-ci-secret \
-    'repo-level Actions secret DUSK_ORG_READ_TOKEN is not visible' \
+    'environment dusk-hyperlane-repro secret DUSK_ORG_READ_TOKEN is not visible' \
     env PATH="$workdir/ci-visibility-mock-bin:$PATH" CI_VISIBILITY_GATE_ONLY=1 \
     bash scripts/production-readiness-guard.sh
 
@@ -377,6 +408,12 @@ case "$*" in
     "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .head.sha")
         printf '1111111111111111111111111111111111111111\n'
         ;;
+    "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .base.sha")
+        printf '2222222222222222222222222222222222222222\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .base.ref")
+        printf 'main\n'
+        ;;
     "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq if "*)
         printf 'OPEN\n'
         ;;
@@ -384,13 +421,29 @@ case "$*" in
         printf '[]\n'
         ;;
     "api --paginate repos/dusk-network/hyperlane-dusk/commits/1111111111111111111111111111111111111111/check-runs?per_page=100 --jq "*)
-        printf '%s\n' '{"name":"Dusk proposal validation","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/first"}'
+        printf '%s\n' '{"id":101,"name":"Dusk proposal validation","headSha":"1111111111111111111111111111111111111111","appSlug":"github-actions","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/dusk-network/hyperlane-dusk/actions/runs/101/job/1"}'
         if [ "${GH_MOCK_MISSING_EXACT:-0}" = "1" ]; then
-            printf '%s\n' '{"name":"Production readiness guard / lookalike","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/lookalike"}'
+            printf '%s\n' '{"id":102,"name":"Production readiness guard / lookalike","headSha":"1111111111111111111111111111111111111111","appSlug":"github-actions","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/dusk-network/hyperlane-dusk/actions/runs/102/job/1"}'
         else
             # This record represents a required context only present on the
             # second paginated response.
-            printf '%s\n' '{"name":"Production readiness guard","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/second-page"}'
+            conclusion="SUCCESS"
+            [ "${GH_MOCK_SKIPPED:-0}" = "1" ] && conclusion="SKIPPED"
+            name="Production readiness guard"
+            [ "${GH_MOCK_MANUAL_DISPATCHER:-0}" = "1" ] && name="Manual repro dispatcher gate"
+            printf '%s\n' "{\"id\":102,\"name\":\"$name\",\"headSha\":\"1111111111111111111111111111111111111111\",\"appSlug\":\"github-actions\",\"status\":\"COMPLETED\",\"conclusion\":\"$conclusion\",\"detailsUrl\":\"https://github.com/dusk-network/hyperlane-dusk/actions/runs/102/job/1\"}"
+        fi
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/actions/runs/101 --jq "*)
+        path='.github/workflows/dusk-proposal-validation.yml'
+        [ "${GH_MOCK_WRONG_WORKFLOW:-0}" = "1" ] && path='.github/workflows/unrelated.yml'
+        printf '{"workflowPath":"%s","event":"pull_request","runHeadSha":"1111111111111111111111111111111111111111","runRepo":"dusk-network/hyperlane-dusk","pullRequests":[{"number":1,"head":{"sha":"1111111111111111111111111111111111111111"},"base":{"sha":"2222222222222222222222222222222222222222","ref":"main"}}]}\n' "$path"
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/actions/runs/102 --jq "*)
+        if [ "${GH_MOCK_MANUAL_DISPATCHER:-0}" = "1" ]; then
+            printf '%s\n' '{"workflowPath":".github/workflows/manual-repro-dispatcher-gate.yml","event":"pull_request","runHeadSha":"1111111111111111111111111111111111111111","runRepo":"dusk-network/hyperlane-dusk","pullRequests":[{"number":1,"head":{"sha":"1111111111111111111111111111111111111111"},"base":{"sha":"2222222222222222222222222222222222222222","ref":"main"}}]}'
+        else
+            printf '%s\n' '{"workflowPath":".github/workflows/production-readiness-gate.yml","event":"pull_request_target","runHeadSha":"2222222222222222222222222222222222222222","runRepo":"dusk-network/hyperlane-dusk","pullRequests":[{"number":1,"head":{"sha":"1111111111111111111111111111111111111111"},"base":{"sha":"2222222222222222222222222222222222222222","ref":"main"}}]}'
         fi
         ;;
     *)
@@ -407,11 +460,33 @@ expect_pass \
         READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 \
     bash scripts/production-readiness-guard.sh
 
+expect_pass \
+    production-readiness-accepts-manual-dispatcher-pull-request-provenance \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 \
+        DUSK_REQUIRED_STATUS_CONTEXTS='Manual repro dispatcher gate' \
+        GH_MOCK_MANUAL_DISPATCHER=1 \
+    bash scripts/production-readiness-guard.sh
+
 expect_fail \
     production-readiness-rejects-lookalike-check-name \
     'missing required status checks: Production readiness guard' \
     env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
         READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_MISSING_EXACT=1 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-rejects-skipped-required-check \
+    'has 1 failed status checks' \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_SKIPPED=1 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-rejects-wrong-workflow-provenance \
+    'missing required status checks: Dusk proposal validation' \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_WRONG_WORKFLOW=1 \
     bash scripts/production-readiness-guard.sh
 
 expect_fail \
@@ -482,6 +557,14 @@ expect_fail \
     'runtime/test covered paths changed since latest clean-layout repro' \
     env REPRO_DELTA_GATE_ONLY=1 \
         LATEST_REPRO_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
+        DUSK_REPRO_COVERED_PATHS=tests/tests/integration.rs \
+    bash scripts/production-readiness-guard.sh
+
+expect_pass \
+    production-readiness-uses-explicit-proposed-ref \
+    env REPRO_DELTA_GATE_ONLY=1 \
+        LATEST_REPRO_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
+        PROPOSED_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
         DUSK_REPRO_COVERED_PATHS=tests/tests/integration.rs \
     bash scripts/production-readiness-guard.sh
 

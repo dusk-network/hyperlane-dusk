@@ -10,12 +10,31 @@ silently relabeled as having run those tests.
 ## Accepted and fixed
 
 - **Trusted CI identity:** the privileged policy gate now queries the exact
-  workflow file, pull-request event, and proposed head SHA. A same-name check
-  from another GitHub Actions workflow cannot satisfy the gate. The proposed
-  Dusk guard scripts are also byte-locked to the base branch after bootstrap.
+  workflow file, pull-request event, current PR number, base ref/SHA, and
+  proposed head SHA. A same-name check or same-head run for another PR/base
+  cannot satisfy the gate. The proposed Dusk guard scripts, manual repro
+  workflows, and actionlint policy are byte-locked to the base after bootstrap.
+  The trusted gate has no manual trigger that could spoof its PR-only context.
+- **Trusted readiness revision:** `pull_request_target` still executes only
+  trusted base code, but it now fetches the exact event head as inert Git data
+  and compares that SHA with the repro anchor. Manual production audits use
+  `repository_dispatch`, which loads the default-branch workflow; the status
+  job no longer accepts a writer-selected workflow ref or the source-read
+  credential as a fallback.
+- **Required-check provenance:** a check name attached to the proposed SHA is
+  not sufficient authority. Readiness resolves each candidate check to its
+  GitHub Actions workflow run and requires the exact workflow path, expected
+  event type, repository, PR number, proposed head SHA, base SHA/ref, and the
+  `github-actions` app before considering it. Only `SUCCESS` is accepted;
+  `NEUTRAL`, `SKIPPED`, missing run metadata, and lookalike workflows fail
+  closed. The manual dispatcher is deliberately bound to `pull_request`, while
+  the trusted review/readiness gates remain `pull_request_target`.
 - **Bootstrap scope:** the first guard introduction permits one explicit
   six-file bootstrap set. An empty computed worklist is no longer treated as
   proof that arbitrary changes are safe.
+- **Proposal scanner binding:** the unprivileged proposal workflow invokes the
+  report and secret scanners directly. A proposed Makefile can no longer turn
+  the required status green by replacing those targets with no-ops.
 - **IGP deployment preflight:** CLI admission applies the contract's minimum
   quote, checked-arithmetic, and maximum-quote rules before loading signer
   material or submitting any deterministic deployment.
@@ -35,7 +54,26 @@ silently relabeled as having run those tests.
   before reporting readiness.
 - **Validator discovery:** the data driver and CLI now encode and decode all
   bounded ValidatorAnnounce discovery shapes. The CLI also exposes the atomic
-  validators-and-threshold query used by warm validation.
+  validators-and-threshold query used by warm validation. Its batch limit now
+  matches the contract's two-validator query bound exactly. Discovery is now
+  paginated and exposes a separate count; the former 1,024-entry global cap was
+  removed because an attacker could consume it with self-owned keys and prevent
+  later legitimate validators from enrolling. Per-validator location history
+  remains bounded, while storage-paying enrollment has no shared finite quota.
+- **Route dispatch fees:** synthetic, collateral, and native users contribute
+  the route's quoted native-DUSK fee in their own Moonlight transaction. Mailbox
+  authenticates the contract-to-contract transfer and credits the actual route.
+  Each route snapshots its pre-existing credit and requires the same balance
+  after dispatch, so a user cannot spend shared operational/sponsor credit even
+  if a hook quote changes between preflight and execution. Native deposits are
+  `bridge amount + fee`; token routes deposit only the fee. The CLI queries this
+  amount before loading signer material, while the contract repeats and enforces
+  the quote atomically.
+- **CLI public-input boundaries:** specialized dispatch calls apply the shared
+  serialized-argument ceiling before endpoint or signer access; fund-dispatch
+  and DRC20 approval parse deterministic contract identities before signer
+  access; bytes32-returning queries preserve bytes32 arguments such as
+  `recipient_ism`.
 - **Artifact and repro fidelity:** secret-content scans include hidden and
   ignored regular files; the primary repro invokes the DRC20-feature-aware
   type target; oversized process metadata is rejected before signer/client
@@ -72,6 +110,16 @@ silently relabeled as having run those tests.
   control plane.
 
 ## Operational decisions
+
+- Dispatch credit readiness is a **minimum-balance** invariant, not an exact
+  cap. Funding remains additive and permissionless so third-party sponsors are
+  never blocked. A concurrent sponsor can safely leave more than the minimum;
+  a concurrent dispatch that leaves less makes deployment readiness fail. The
+  script re-reads and reports the observed post-funding balance instead of
+  claiming an exact target. Only the sponsor's deposited value is exposed to
+  overfunding, so an atomic capped top-up is not justified. Sponsor credit is
+  operational reserve only: public warp-route transfers must leave the route's
+  pre-existing balance unchanged and therefore cannot consume that reserve.
 
 - The `dusk-hyperlane-repro` environment exists and is protected by the owner
   reviewer. No source secret or matching self-hosted runner has been provisioned,

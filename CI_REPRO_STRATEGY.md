@@ -157,24 +157,28 @@ The implementation branch includes:
 .github/workflows/production-readiness-gate.yml
 ```
 
-It runs on pull requests to `main` and through `workflow_dispatch`. Pull-request
-runs are merge-readiness checks; manual runs are the full production-readiness
-audit. The job context remains:
+It runs on pull requests to `main` and through a `production-readiness`
+`repository_dispatch`. Both event types load the workflow from the trusted
+default branch. Pull-request runs are merge-readiness checks; repository
+dispatches are the full production-readiness audit. The job context remains:
 
 ```text
 Production readiness guard
 ```
 
-The job checks out a full-history copy of `dusk-network/hyperlane-dusk`,
-reports the Dusk head, and asks `make production-readiness-guard` to use
-GitHub's compare API for monorepo upstream freshness:
+The job checks out a full-history copy of the trusted Dusk base, fetches the
+exact pull-request head as inert Git data, verifies it against the event SHA,
+and compares the repro anchor with that proposed SHA. It asks
+`make production-readiness-guard` to use GitHub's compare API for monorepo
+upstream freshness:
 
 ```bash
 make production-readiness-guard
 ```
 
-For manual dispatch, set `monorepo_ref` to the monorepo PR branch or ref. Manual
-dispatch sets `READINESS_MODE=production`; pull requests set
+For a production audit, send the repository dispatch with an optional
+`client_payload.monorepo_ref`. Repository dispatch sets
+`READINESS_MODE=production`; pull requests set
 `READINESS_MODE=premerge` and obtain `CURRENT_PR_NUMBER` from the event. On pull
 requests, the default monorepo ref is `feat/dusk-support-v2`. Local
 reviewers should still use `make gate-status-fresh` when they have the adjacent
@@ -225,7 +229,8 @@ It is intentionally scoped to source checkout for the manual repro workflow and
 the monorepo companion checkout path.
 
 The lightweight production-readiness guard also reports visibility for branch
-protection, Actions secrets, self-hosted runners, and Dependabot alerts. Those
+protection, the protected repro-environment source secret, the optional
+repository status secret, self-hosted runners, and Dependabot alerts. Those
 GitHub APIs can require admin, Actions-runner, or security-events permissions
 that are broader than source checkout. If the default `GITHUB_TOKEN` or
 `DUSK_ORG_READ_TOKEN` cannot read one of those APIs, the guard reports that
@@ -245,9 +250,9 @@ DUSK_STATUS_READ_TOKEN
 
 `DUSK_STATUS_READ_TOKEN` is only for GitHub status visibility in
 `.github/workflows/production-readiness-gate.yml`; it must not be used by the
-manual repro workflow checkout steps. If absent, the workflow falls back to
-`DUSK_ORG_READ_TOKEN` and then `github.token`, which is why the current CI run
-reports Dependabot alert triage as unavailable under the integration token.
+manual repro workflow checkout steps. If absent, the workflow falls back only
+to `github.token`. The source-read token is never exposed to the production
+readiness job.
 
 ## Admin Provisioning Runbook
 
@@ -255,8 +260,7 @@ If Dusk accepts this CI path, provision the read-only token in both internal
 repositories without placing the token on process argv:
 
 ```bash
-gh secret set DUSK_ORG_READ_TOKEN --repo dusk-network/hyperlane-dusk < /path/to/read-only-token.txt
-gh secret set DUSK_ORG_READ_TOKEN --repo dusk-network/hyperlane-monorepo < /path/to/read-only-token.txt
+gh secret set DUSK_ORG_READ_TOKEN --env dusk-hyperlane-repro --repo dusk-network/hyperlane-dusk < /path/to/read-only-token.txt
 ```
 
 If Dusk approves CI-side status visibility instead of a local admin rerun,
@@ -265,6 +269,14 @@ workflow needs it:
 
 ```bash
 gh secret set DUSK_STATUS_READ_TOKEN --repo dusk-network/hyperlane-dusk < /path/to/status-read-token.txt
+```
+
+Trigger the default-branch production audit without selecting a workflow ref:
+
+```bash
+gh api repos/dusk-network/hyperlane-dusk/dispatches \
+  -f event_type=production-readiness \
+  -F 'client_payload[monorepo_ref]=feat/dusk-support-v2'
 ```
 
 Then confirm a self-hosted runner with the required labels is available to

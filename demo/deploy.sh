@@ -56,6 +56,7 @@ RESET=false
 DUSK_DEFAULT_ISM="${DUSK_DEFAULT_ISM:-}"
 MULTISIG_VALIDATORS="${MULTISIG_VALIDATORS:-$ANVIL_DEPLOYER}"
 MULTISIG_THRESHOLD="${MULTISIG_THRESHOLD:-1}"
+# Minimum ready balance per route. Permissionless sponsorship may exceed it.
 DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
 DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-50000}"
 DUSK_IGP_TOKEN_EXCHANGE_RATE="${DUSK_IGP_TOKEN_EXCHANGE_RATE:-10000000000}"
@@ -385,7 +386,7 @@ ensure_dispatch_credit() {
     local mailbox="$1"
     local route="$2"
     local label="$3"
-    local response current deficit
+    local response current deficit observed
 
     response=$("$DUSK_TX" query \
         --rues-url "$DUSK_RUES_URL" \
@@ -397,7 +398,7 @@ ensure_dispatch_credit() {
     current=$(jq -er '.value | tonumber' <<<"$response") \
         || fail "$label returned malformed dispatch fee credit"
     if [ "$current" -ge "$DUSK_DISPATCH_FEE_CREDIT" ]; then
-        ok "$label dispatch fee credit already satisfies target ($current LUX)"
+        ok "$label dispatch fee credit already satisfies minimum ($current LUX)"
         return 0
     fi
 
@@ -410,7 +411,18 @@ ensure_dispatch_credit() {
         --payer "$route" \
         --amount "$deficit" \
         >/dev/null || fail "Failed to fund $label dispatch fee deficit"
-    ok "$label dispatch fee credit brought to target"
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$mailbox" \
+        --method fee_credit \
+        --return-type u64 \
+        --arg-bytes32 "$route" 2>/dev/null) \
+        || fail "Cannot verify $label dispatch fee credit after funding"
+    observed=$(jq -er '.value | tonumber' <<<"$response") \
+        || fail "$label returned malformed dispatch fee credit after funding"
+    [ "$observed" -ge "$DUSK_DISPATCH_FEE_CREDIT" ] \
+        || fail "$label dispatch fee credit remains below the minimum after funding ($observed LUX)"
+    ok "$label dispatch fee credit satisfies minimum ($observed LUX)"
 }
 
 validate_saved_deployment() {

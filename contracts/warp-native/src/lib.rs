@@ -250,9 +250,8 @@ mod warp_native {
 
         /// Send native DUSK to a remote chain.
         ///
-        /// The caller must include a Moonlight TX with `deposit >= amount`
-        /// to fund this contract. The amount is recorded in the Hyperlane
-        /// message and the remote router mints equivalent tokens.
+        /// The caller must include a Moonlight TX deposit equal to the bridged
+        /// `amount` plus the quoted dispatch fee.
         pub fn transfer_remote(
             &mut self,
             destination: u32,
@@ -265,28 +264,38 @@ mod warp_native {
                 "WarpNative: recipient cannot be zero"
             );
 
-            // Claim the DUSK deposit from the Moonlight TX.
-            // The transfer contract validates that the TX deposit field
-            // matches `amount` exactly and that the target is this contract.
-            let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &amount)
-                .expect("WarpNative: deposit failed — TX deposit must equal amount");
-
             // Look up enrolled router
-            let router = self
+            let router = *self
                 .enrolled_routers
                 .get(&destination)
                 .expect("WarpNative: no router enrolled for destination");
 
             // Encode token message body
             let body = token_message::encode(recipient, amount);
+            let credit_before = self.dispatch_credit();
+            let dispatch_fee = self.quote_dispatch(destination, router, body.clone());
+            let deposit = amount
+                .checked_add(dispatch_fee)
+                .expect("WarpNative: transfer deposit overflow");
+
+            // Claim the exact bridge amount plus this dispatch's fee, then
+            // forward only the fee to Mailbox.
+            let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &deposit)
+                .expect("WarpNative: deposit failed — incorrect amount or dispatch fee");
+            self.forward_dispatch_fee(dispatch_fee);
 
             // Dispatch via Mailbox
             let message_id: MessageId = abi::call(
                 self.mailbox,
                 "dispatch",
-                &(destination, *router, body, Vec::<u8>::new(), self.hook),
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
             )
             .expect("WarpNative: dispatch failed");
+            assert_eq!(
+                self.dispatch_credit(),
+                credit_before,
+                "WarpNative: dispatch must consume only caller-funded credit"
+            );
 
             abi::emit(
                 events::SentTransferRemote::TOPIC,
@@ -298,6 +307,26 @@ mod warp_native {
             );
 
             message_id
+        }
+
+        /// Quote the native-DUSK fee that accompanies `transfer_remote`.
+        ///
+        /// The Moonlight transaction deposit is `amount + returned_fee`.
+        pub fn quote_transfer_remote(&self, destination: u32, recipient: H256, amount: u64) -> u64 {
+            assert!(amount > 0, "WarpNative: amount must be > 0");
+            assert!(
+                recipient != [0u8; 32],
+                "WarpNative: recipient cannot be zero"
+            );
+            let router = self
+                .enrolled_routers
+                .get(&destination)
+                .expect("WarpNative: no router enrolled for destination");
+            self.quote_dispatch(
+                destination,
+                *router,
+                token_message::encode(recipient, amount),
+            )
         }
 
         // =================================================================
@@ -475,6 +504,37 @@ mod warp_native {
         // =================================================================
         // Internal helpers
         // =================================================================
+
+        /// Query the route's current Mailbox credit.
+        fn dispatch_credit(&self) -> u64 {
+            abi::call(self.mailbox, "fee_credit", &(abi::self_id().to_bytes(),))
+                .expect("WarpNative: fee credit query failed")
+        }
+
+        /// Quote dispatch with this route as the encoded sender.
+        fn quote_dispatch(&self, destination: u32, router: H256, body: Vec<u8>) -> u64 {
+            abi::call(
+                self.mailbox,
+                "quote_dispatch_for_contract",
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
+            )
+            .expect("WarpNative: dispatch quote failed")
+        }
+
+        /// Forward the dispatch portion of an already-claimed native deposit.
+        fn forward_dispatch_fee(&self, fee: u64) {
+            if fee == 0 {
+                return;
+            }
+            let transfer = ContractToContract {
+                contract: self.mailbox,
+                value: fee,
+                fn_name: String::from("receive_dispatch_funding"),
+                data: Vec::new(),
+            };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_contract", &transfer)
+                .expect("WarpNative: dispatch fee forwarding failed");
+        }
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {

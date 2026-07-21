@@ -94,5 +94,5 @@ jobs:
           done
 
           bash scripts/fail-closed-self-test.sh
-          VERIFY_LATEST_REPRO_ARCHIVE=0 make report-hygiene
-          make secret-hygiene
+          VERIFY_LATEST_REPRO_ARCHIVE=0 bash scripts/report-hygiene-check.sh
+          bash scripts/secret-hygiene-check.sh

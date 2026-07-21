@@ -1,17 +1,14 @@
 name: Dusk Hyperlane Production Readiness Gate
 
 on:
-  # Status/administration secrets are available only to the trusted
-  # default-branch workflow. Proposed code is never checked out or executed.
+  # Both events execute the workflow stored on the trusted default branch.
+  # Proposed code is fetched only as inert Git data for the repro-delta check.
   pull_request_target:
     branches:
       - main
-  workflow_dispatch:
-    inputs:
-      monorepo_ref:
-        description: "dusk-network/hyperlane-monorepo branch or ref to compare"
-        required: true
-        default: "feat/dusk-support-v2"
+  repository_dispatch:
+    types:
+      - production-readiness
 
 permissions:
   actions: read
@@ -28,15 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      GH_TOKEN: ${{ secrets.DUSK_STATUS_READ_TOKEN || secrets.DUSK_ORG_READ_TOKEN || github.token }}
+      GH_TOKEN: ${{ secrets.DUSK_STATUS_READ_TOKEN || github.token }}
       DUSK_STATUS_READ_TOKEN_CONFIGURED: ${{ secrets.DUSK_STATUS_READ_TOKEN != '' }}
-      DUSK_ORG_READ_TOKEN_CONFIGURED: ${{ secrets.DUSK_ORG_READ_TOKEN != '' }}
       DUSK_DIR: ${{ github.workspace }}/hyperlane/dusk
       READINESS_MODE: ${{ github.event_name == 'pull_request_target' && 'premerge' || 'production' }}
       CURRENT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
-      MONOREPO_REF: ${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
+      MONOREPO_REF: ${{ github.event.client_payload.monorepo_ref || 'feat/dusk-support-v2' }}
       MONOREPO_COMPARE_VIA_GH: "1"
-      MONOREPO_COMPARE_HEAD: dusk-network:${{ inputs.monorepo_ref || 'feat/dusk-support-v2' }}
+      MONOREPO_COMPARE_HEAD: dusk-network:${{ github.event.client_payload.monorepo_ref || 'feat/dusk-support-v2' }}
       STATUS_CHECK_WAIT_SECONDS: "300"
 
     steps:
@@ -48,22 +44,41 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Resolve proposed Dusk head as inert Git data
+        shell: bash
+        env:
+          EXPECTED_DUSK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            [[ "$CURRENT_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+            git -C "$DUSK_DIR" fetch --no-tags --depth=1 origin \
+              "pull/$CURRENT_PR_NUMBER/head"
+            proposed_ref="$(git -C "$DUSK_DIR" rev-parse FETCH_HEAD)"
+          else
+            proposed_ref="$(git -C "$DUSK_DIR" rev-parse HEAD)"
+          fi
+          [ "$proposed_ref" = "$EXPECTED_DUSK_HEAD_SHA" ] || {
+            printf 'resolved proposed Dusk SHA %s does not match event SHA %s\n' \
+              "$proposed_ref" "$EXPECTED_DUSK_HEAD_SHA" >&2
+            exit 1
+          }
+          printf 'PROPOSED_DUSK_REF=%s\n' "$proposed_ref" >> "$GITHUB_ENV"
+
       - name: Report resolved check refs
         shell: bash
         run: |
           set -euo pipefail
           printf 'dusk_ref=%s\n' "$GITHUB_SHA"
           git -C "$DUSK_DIR" rev-parse HEAD
+          printf 'proposed_dusk_ref=%s\n' "$PROPOSED_DUSK_REF"
           printf 'monorepo_ref=%s\n' "$MONOREPO_REF"
           printf 'monorepo_compare_head=%s\n' "$MONOREPO_COMPARE_HEAD"
           printf 'readiness_mode=%s\n' "$READINESS_MODE"
           printf 'current_pr_number=%s\n' "$CURRENT_PR_NUMBER"
           printf 'dusk_status_read_token_configured=%s\n' "$DUSK_STATUS_READ_TOKEN_CONFIGURED"
-          printf 'dusk_org_read_token_configured=%s\n' "$DUSK_ORG_READ_TOKEN_CONFIGURED"
           if [ "$DUSK_STATUS_READ_TOKEN_CONFIGURED" = "true" ]; then
             printf 'production_readiness_token_source=%s\n' 'DUSK_STATUS_READ_TOKEN'
-          elif [ "$DUSK_ORG_READ_TOKEN_CONFIGURED" = "true" ]; then
-            printf 'production_readiness_token_source=%s\n' 'DUSK_ORG_READ_TOKEN'
           else
             printf 'production_readiness_token_source=%s\n' 'github.token'
           fi

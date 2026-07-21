@@ -16,6 +16,7 @@ SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo tests Cargo.toml Cargo.lock Makefile rust-toolchain.toml scripts/local-repro-check.sh .github/workflows/manual-repro-check.yml}"
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-876848ecc6c671995fad3ae7b22843e68a3ce8ca}"
+PROPOSED_DUSK_REF="${PROPOSED_DUSK_REF:-HEAD}"
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
 LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-c35f86405cf8cd83927860aca8b5c38b042ee198}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-2}"
@@ -42,6 +43,7 @@ UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN="${UPSTREAM_SUBMISSION_INTERNAL_BLOCK
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
+REPRO_ENVIRONMENT="${REPRO_ENVIRONMENT:-dusk-hyperlane-repro}"
 STATUS_CHECK_WAIT_SECONDS="${STATUS_CHECK_WAIT_SECONDS:-60}"
 STATUS_CHECK_POLL_SECONDS="${STATUS_CHECK_POLL_SECONDS:-5}"
 READINESS_MODE="${READINESS_MODE:-production}"
@@ -126,14 +128,24 @@ status_rollup() {
     local repo="$1"
     local number="$2"
     local head_sha
+    local base_sha
+    local base_ref
     local raw
+    local enriched=""
     local err_file
+    local record
+    local details_url
+    local run_id
+    local run_meta
+    local merged
 
     head_sha="$(pr_head_sha "$repo" "$number")"
+    base_sha="$(gh api "repos/$repo/pulls/$number" --jq .base.sha)"
+    base_ref="$(gh api "repos/$repo/pulls/$number" --jq .base.ref)"
     err_file="/tmp/hyperlane-readiness-check-runs.$$.err"
     if ! raw="$(gh api --paginate \
         "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
-        --jq '.check_runs[] | {name, status: (.status | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase), detailsUrl: .html_url}' \
+        --jq '.check_runs[] | {id, name, headSha: .head_sha, appSlug: .app.slug, status: (.status | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase), detailsUrl: .html_url}' \
         2>"$err_file")"; then
         printf '[]\n'
         sed 's/^/  gh: /' "$err_file" >&2
@@ -142,7 +154,57 @@ status_rollup() {
     fi
     rm -f "$err_file"
 
-    if ! printf '%s\n' "$raw" | jq -s '.'; then
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        details_url="$(printf '%s\n' "$record" | jq -r '.detailsUrl // ""')"
+        run_id="$(printf '%s\n' "$details_url" | sed -nE 's#^.*/actions/runs/([0-9]+)(/.*)?$#\1#p')"
+        run_meta='{}'
+        if [ -n "$run_id" ]; then
+            run_meta="$(gh api "repos/$repo/actions/runs/$run_id" --jq '{workflowPath: .path, event: .event, runHeadSha: .head_sha, runRepo: .repository.full_name, pullRequests: (.pull_requests // [])}' 2>/dev/null || printf '{}')"
+        fi
+        merged="$(jq -cn --argjson check "$record" --argjson run "$run_meta" '$check + $run')"
+        enriched="${enriched}${merged}"$'\n'
+    done <<<"$raw"
+
+    if ! printf '%s' "$enriched" | jq -s \
+        --arg repo "$repo" \
+        --argjson number "$number" \
+        --arg base_sha "$base_sha" \
+        --arg base_ref "$base_ref" \
+        --arg head "$head_sha" '
+        def expected_path:
+            if .name == "Dusk proposal validation" then ".github/workflows/dusk-proposal-validation.yml"
+            elif .name == "Dusk review policy gate" then ".github/workflows/dusk-review-policy-gate.yml"
+            elif .name == "Production readiness guard" then ".github/workflows/production-readiness-gate.yml"
+            elif .name == "Dusk agent validation" then ".github/workflows/dusk-agent-gate.yml"
+            elif .name == "Manual repro dispatcher gate" then ".github/workflows/manual-repro-dispatcher-gate.yml"
+            else null end;
+        def expected_event:
+            if .name == "Dusk proposal validation"
+                or .name == "Dusk agent validation"
+                or .name == "Manual repro dispatcher gate"
+            then "pull_request" else "pull_request_target" end;
+        map(. + {
+            trusted: (
+                expected_path != null
+                and .headSha == $head
+                and .appSlug == "github-actions"
+                and .workflowPath == expected_path
+                and .event == expected_event
+                and .runRepo == $repo
+                and any(.pullRequests[]?;
+                    .number == $number
+                    and .head.sha == $head
+                    and .base.sha == $base_sha
+                    and .base.ref == $base_ref
+                )
+            )
+        })
+        | map(select(.trusted))
+        | sort_by(.name, (.id // 0))
+        | group_by(.name)
+        | map(max_by(.id // 0))
+    '; then
         printf '[]\n'
     fi
 }
@@ -199,11 +261,7 @@ count_failed_checks() {
             .[]
             | select(.name as $name | $required_names | index($name) != null)
             | select(.status == "COMPLETED")
-            | select(
-                .conclusion != "SUCCESS"
-                and .conclusion != "NEUTRAL"
-                and .conclusion != "SKIPPED"
-            )
+            | select(.conclusion != "SUCCESS")
             | select(
                 ($run_id == "")
                 or (((.detailsUrl // "") | contains("/actions/runs/" + $run_id + "/")) | not)
@@ -404,6 +462,8 @@ check_ci_visibility() {
     local org_runner_has_label
     local repo_secrets_json
     local repo_secrets_count
+    local environment_secrets_json
+    local environment_secrets_count
     local required_secret_visible
     local status_secret_visible
 
@@ -466,31 +526,6 @@ check_ci_visibility() {
             ;;
     esac
 
-    check_required_secret() {
-        local repo="$1"
-        local label="$2"
-        local err_file="$3"
-        local secrets_json
-        local secrets_count
-        local required_secret_visible
-
-        if secrets_json="$(gh api "repos/$repo/actions/secrets" 2>"$err_file")"; then
-            secrets_count="$(printf '%s\n' "$secrets_json" | jq .total_count)"
-            required_secret_visible="$(printf '%s\n' "$secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
-            printf '%sSecretsVisible: %s\n' "$label" "$secrets_count"
-            printf '%sRequiredSecretVisible: %s\n' "$label" "$required_secret_visible"
-            if [ "$required_secret_visible" != "true" ]; then
-                add_blocker "$label Actions secret $REQUIRED_SECRET_NAME is not visible"
-            fi
-        else
-            printf '%sSecretsVisible: unknown\n' "$label"
-            printf '%sRequiredSecretVisible: unknown\n' "$label"
-            sed 's/^/  /' "$err_file"
-            add_blocker "$label Actions secret visibility is unknown"
-        fi
-        rm -f "$err_file"
-    }
-
     if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
         repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
         required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
@@ -498,8 +533,8 @@ check_ci_visibility() {
         printf 'repoSecretsVisible: %s\n' "$repo_secrets_count"
         printf 'repoRequiredSecretVisible: %s\n' "$required_secret_visible"
         printf 'repoStatusSecretVisible: %s\n' "$status_secret_visible"
-        if [ "$required_secret_visible" != "true" ]; then
-            add_blocker "repo-level Actions secret $REQUIRED_SECRET_NAME is not visible"
+        if [ "$required_secret_visible" = "true" ]; then
+            add_blocker "source-read secret $REQUIRED_SECRET_NAME must not be stored at repository scope"
         fi
     else
         echo "repoSecretsVisible: unknown"
@@ -510,7 +545,23 @@ check_ci_visibility() {
     fi
     rm -f /tmp/hyperlane-readiness-secrets.$$.err
 
-    check_required_secret "$MONOREPO_REPO" "monorepoRepo" "/tmp/hyperlane-readiness-monorepo-secrets.$$.err"
+    if environment_secrets_json="$(gh api "repos/$DUSK_REPO/environments/$REPRO_ENVIRONMENT/secrets" 2>/tmp/hyperlane-readiness-environment-secrets.$$.err)"; then
+        environment_secrets_count="$(printf '%s\n' "$environment_secrets_json" | jq .total_count)"
+        required_secret_visible="$(printf '%s\n' "$environment_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+        printf 'reproEnvironment: %s\n' "$REPRO_ENVIRONMENT"
+        printf 'reproEnvironmentSecretsVisible: %s\n' "$environment_secrets_count"
+        printf 'reproEnvironmentRequiredSecretVisible: %s\n' "$required_secret_visible"
+        if [ "$required_secret_visible" != "true" ]; then
+            add_blocker "environment $REPRO_ENVIRONMENT secret $REQUIRED_SECRET_NAME is not visible"
+        fi
+    else
+        printf 'reproEnvironment: %s\n' "$REPRO_ENVIRONMENT"
+        echo "reproEnvironmentSecretsVisible: unknown"
+        echo "reproEnvironmentRequiredSecretVisible: unknown"
+        sed 's/^/  /' /tmp/hyperlane-readiness-environment-secrets.$$.err
+        add_blocker "environment $REPRO_ENVIRONMENT Actions secret visibility is unknown"
+    fi
+    rm -f /tmp/hyperlane-readiness-environment-secrets.$$.err
 }
 
 check_dependency_alerts() {
@@ -532,18 +583,24 @@ check_dependency_alerts() {
 }
 
 check_dusk_repro_delta() {
-    if git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/null 2>&1; then
-        local covered_delta
-        covered_delta="$(git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF"..HEAD -- $DUSK_REPRO_COVERED_PATHS)"
-        if [ -n "$covered_delta" ]; then
-            echo "coveredPathDelta: present"
-            printf '%s\n' "$covered_delta" | sed 's/^/  /'
-            add_blocker "runtime/test covered paths changed since latest clean-layout repro"
-        else
-            echo "coveredPathDelta: none"
-        fi
-    else
+    if ! git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/null 2>&1; then
         add_blocker "latest clean-layout repro ref $LATEST_REPRO_DUSK_REF is unavailable"
+        return 0
+    fi
+    if ! git -C "$ROOT" rev-parse --verify "$PROPOSED_DUSK_REF^{commit}" >/dev/null 2>&1; then
+        add_blocker "proposed Dusk ref $PROPOSED_DUSK_REF is unavailable"
+        return 0
+    fi
+
+    local covered_delta
+    covered_delta="$(git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF".."$PROPOSED_DUSK_REF" -- $DUSK_REPRO_COVERED_PATHS)"
+    printf 'proposedDuskRef: %s\n' "$(git -C "$ROOT" rev-parse "$PROPOSED_DUSK_REF^{commit}")"
+    if [ -n "$covered_delta" ]; then
+        echo "coveredPathDelta: present"
+        printf '%s\n' "$covered_delta" | sed 's/^/  /'
+        add_blocker "runtime/test covered paths changed since latest clean-layout repro"
+    else
+        echo "coveredPathDelta: none"
     fi
 }
 
