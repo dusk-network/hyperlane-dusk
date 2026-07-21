@@ -25,9 +25,19 @@ state version advances to 2; the stacked withdrawal Mailbox advances to 3.
 The focused regression passes after the fix and proves nested dispatch
 rejection, one-to-one nonce/message storage, singular ordered
 Dispatch/DispatchId events, successful completion of the outer dispatch, and
-a later legitimate dispatch after guard release. Full clean-layout static and
-live E2E anchors remain pending and will replace this candidate paragraph
-before handoff; all evidence below predates the reentrancy fix.
+a later legitimate dispatch after guard release.
+
+Base runtime anchor `9058755927473239d59ce702a8074acbae0e0a24` was reproduced
+from a detached clean layout against that frozen Rusk and monorepo
+`6ef326b8a926d262714afd315960b26e441c7b40`. The gate passed all 13 contract
+WASM builds, production-contract clippy, 29 type tests, 109 VM tests, 17
+`dusk-tx` tests, 5 data-driver tests, the standalone E2E operator build,
+tracked-source secret hygiene, and the full Dusk agent/base/validator/relayer/
+scraper/lander compile surface. Durable log:
+`/tmp/hyperlane-base-reentry-9058755.log`, SHA-256
+`16ac8e62d2d8c5952a9363c90f77e15ff756043a102302780f0f9e272a166d62`.
+The combined stack and live E2E anchors remain pending; all evidence below
+predates the reentrancy fix.
 
 The same review found that the proposed `pull_request_target` policy wrapper
 passed the proposed checkout to trusted scripts that subsequently executed
