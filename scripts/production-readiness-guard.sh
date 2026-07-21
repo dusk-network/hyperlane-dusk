@@ -19,7 +19,9 @@ LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-876848ecc6c671995fad3ae7b22843e6
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
 LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-b4c46ce9bdade2590018facaa51255d497a80db2}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-2}"
-DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
+DUSK_REQUIRED_STATUS_CONTEXTS="${DUSK_REQUIRED_STATUS_CONTEXTS:-}"
+DUSK_PREMERGE_REQUIRED_STATUS_CONTEXTS="${DUSK_PREMERGE_REQUIRED_STATUS_CONTEXTS:-Dusk proposal validation|Production readiness guard}"
+DUSK_PRODUCTION_REQUIRED_STATUS_CONTEXTS="${DUSK_PRODUCTION_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Production readiness guard}"
 MONOREPO_REQUIRED_STATUS_CONTEXTS="${MONOREPO_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Dusk agent validation}"
 WORKFLOW_REQUIRED_STATUS_CONTEXTS="${WORKFLOW_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Manual repro dispatcher gate}"
 MONOREPO_COMPARE_VIA_GH="${MONOREPO_COMPARE_VIA_GH:-0}"
@@ -582,6 +584,14 @@ case "$READINESS_MODE" in
         exit 1
         ;;
 esac
+
+if [ -z "$DUSK_REQUIRED_STATUS_CONTEXTS" ]; then
+    if [ "$READINESS_MODE" = "premerge" ]; then
+        DUSK_REQUIRED_STATUS_CONTEXTS="$DUSK_PREMERGE_REQUIRED_STATUS_CONTEXTS"
+    else
+        DUSK_REQUIRED_STATUS_CONTEXTS="$DUSK_PRODUCTION_REQUIRED_STATUS_CONTEXTS"
+    fi
+fi
 
 if [ "$UPSTREAM_SUBMISSION_GATE_ONLY" = "1" ]; then
     check_upstream_submission_gate

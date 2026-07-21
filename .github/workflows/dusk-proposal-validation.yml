@@ -1,0 +1,61 @@
+name: Dusk Proposal Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - feat/dusk-hardening-v2
+
+permissions:
+  contents: read
+
+jobs:
+  proposal-validation:
+    name: Dusk proposal validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout proposed tree
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.12
+
+      - name: Check proposed diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${GITHUB_BASE_REF:?missing pull-request base ref}"
+          git diff --check "origin/$base_ref"...HEAD
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            git ls-files --others --exclude-standard
+            echo "::error::untracked source paths found"
+            exit 1
+          fi
+
+      - name: Exercise proposal guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
+          for script in \
+            scripts/fail-closed-self-test.sh \
+            scripts/github-review-hygiene.sh \
+            scripts/production-readiness-guard.sh \
+            scripts/report-hygiene-check.sh \
+            scripts/secret-hygiene-check.sh; do
+            test -f "$script"
+            bash -n "$script"
+          done
+
+          bash scripts/fail-closed-self-test.sh
+          make report-hygiene
+          make secret-hygiene
