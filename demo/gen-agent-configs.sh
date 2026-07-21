@@ -18,11 +18,19 @@ set -euo pipefail
 umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/.env.bridge"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
+
+if [ "${AGENT_CONFIG_VALIDATE_ONLY:-0}" = "1" ]; then
+    [ -n "${BRIDGE_STATE_FILE:-}" ] \
+        || fail "BRIDGE_STATE_FILE is required for validation-only mode"
+else
+    [ -f "$SCRIPT_DIR/.env.bridge" ] \
+        || fail "Environment file not found at $SCRIPT_DIR/.env.bridge"
+    source "$SCRIPT_DIR/.env.bridge"
+fi
 
 # ── Args ────────────────────────────────────────────────────────────────────
 
