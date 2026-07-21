@@ -2,7 +2,7 @@
 //
 // Standard hook metadata parsing for Dusk.
 
-//! Helpers for parsing the StandardHookMetadata format.
+//! Helpers for parsing the `StandardHookMetadata` format.
 //!
 //! On EVM this is an 86-byte struct. On Dusk we use a simplified binary
 //! encoding: the first 8 bytes (little-endian `u64`) encode the gas limit.

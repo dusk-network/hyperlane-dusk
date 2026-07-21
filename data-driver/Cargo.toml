@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 dusk-data-driver = { workspace = true }
-hyperlane-dusk-types = { workspace = true, features = ["serde"] }
+hyperlane-dusk-types = { workspace = true, features = ["serde", "drc20"] }
 
 [features]
 ffi = ["dusk-data-driver/wasm-export"]

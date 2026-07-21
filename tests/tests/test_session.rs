@@ -8,12 +8,14 @@
 use dusk_core::abi::{
     ContractError, ContractId, Metadata, StandardBufSerializer, CONTRACT_ID_BYTES,
 };
+use dusk_core::plonk::PlonkVersion;
 use dusk_core::signatures::bls::{PublicKey as AccountPublicKey, SecretKey as AccountSecretKey};
 use dusk_core::stake::STAKE_CONTRACT;
 use dusk_core::transfer::data::ContractCall;
 use dusk_core::transfer::moonlight::AccountData;
 use dusk_core::transfer::{Transaction, TRANSFER_CONTRACT};
 use dusk_core::LUX;
+use dusk_vm::host_queries::{set_host_query_policy, HardFork, HostQueryPolicy};
 use dusk_vm::{execute, CallReceipt, ContractData, Error as VMError, ExecutionConfig, Session, VM};
 use rkyv::bytecheck::CheckBytes;
 use rkyv::ser::serializers::{BufferScratch, BufferSerializer, CompositeSerializer};
@@ -31,7 +33,15 @@ const CONFIG: ExecutionConfig = ExecutionConfig {
     min_deploy_gas_price: 0u64,
     with_public_sender: true,
     with_blob: true,
-    disable_wasm64: false,
+    disable_wasm64: true,
+    disable_wasm32: false,
+    disable_3rd_party: false,
+    disable_phoenix: true,
+    with_reference_types: true,
+    phoenix_refund_check: true,
+    deploy_remaining_gas_check: true,
+    charge_init_gas: true,
+    withdrawal_nullifier_check: true,
 };
 
 /// VM Session with transfer + stake contracts deployed and funded accounts.
@@ -48,7 +58,13 @@ impl TestSession {
         A: 'a + for<'b> Serialize<StandardBufSerializer<'b>>,
         D: Into<ContractData<'a, A>>,
     {
-        self.0.deploy(bytecode, deploy_data, u64::MAX)
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
+        self.0
+            .deploy::<A, (), D>(bytecode, deploy_data, u64::MAX)
+            .map(|(contract_id, _)| contract_id)
     }
 
     /// Returns the current block-height.
@@ -69,8 +85,23 @@ impl TestSession {
 
     /// Query account data for a public key.
     pub fn account(&mut self, pk: &AccountPublicKey) -> Result<AccountData, VMError> {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         self.0
             .call(TRANSFER_CONTRACT, "account", pk, GAS_LIMIT)
+            .map(|r| r.data)
+    }
+
+    /// Query the transfer contract for a contract's transparent DUSK balance.
+    pub fn contract_balance(&mut self, contract: &ContractId) -> Result<u64, VMError> {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
+        self.0
+            .call(TRANSFER_CONTRACT, "contract_balance", contract, GAS_LIMIT)
             .map(|r| r.data)
     }
 
@@ -87,6 +118,10 @@ impl TestSession {
         R: Archive,
         R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
     {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         self.0
             .call::<_, R>(contract, fn_name, fn_arg, u64::MAX)
             .map_err(|e| match e {
@@ -110,6 +145,24 @@ impl TestSession {
         R: Archive,
         R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
     {
+        self.call_public_with_deposit(sender_sk, contract, fn_name, fn_arg, 0)
+    }
+
+    /// Call through the transfer contract with an attached DUSK deposit.
+    pub fn call_public_with_deposit<A, R>(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_arg: &A,
+        deposit: u64,
+    ) -> Result<CallReceipt<R>, ContractError>
+    where
+        A: for<'b> Serialize<StandardBufSerializer<'b>>,
+        A::Archived: for<'b> CheckBytes<DefaultValidator<'b>>,
+        R: Archive,
+        R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
+    {
         let contract_call = ContractCall {
             contract,
             fn_name: String::from(fn_name),
@@ -126,7 +179,7 @@ impl TestSession {
             sender_sk,
             None,
             0,
-            0,
+            deposit,
             GAS_LIMIT,
             LUX,
             nonce + 1,
@@ -135,6 +188,10 @@ impl TestSession {
         )
         .expect("Creating moonlight transaction should succeed");
 
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         let receipt = execute(&mut self.0, &transaction, &CONFIG)
             .unwrap_or_else(|e| panic!("Unspendable transaction due to '{e}'"));
 
@@ -154,13 +211,17 @@ impl TestSession {
 impl TestSession {
     /// Create a new test session with transfer + stake contracts and funded accounts.
     pub fn instantiate(public_pks: Vec<(&AccountPublicKey, u64)>) -> Self {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
         let vm = VM::ephemeral().expect("Creating VM should succeed");
         let mut session = VM::genesis_session(&vm, 1);
 
         // Deploy transfer contract
         let transfer_contract = include_bytes!("genesis-contracts/transfer_contract.wasm");
         session
-            .deploy(
+            .deploy::<_, (), _>(
                 transfer_contract,
                 ContractData::builder()
                     .owner(ZERO_ADDRESS.to_bytes())
@@ -172,7 +233,7 @@ impl TestSession {
         // Deploy stake contract
         let stake_contract = include_bytes!("genesis-contracts/stake_contract.wasm");
         session
-            .deploy(
+            .deploy::<_, (), _>(
                 stake_contract,
                 ContractData::builder()
                     .owner(ZERO_ADDRESS.to_bytes())

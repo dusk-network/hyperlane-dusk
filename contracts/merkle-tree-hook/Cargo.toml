@@ -12,6 +12,7 @@ dusk-forge = { workspace = true }
 
 [features]
 contract = ["dusk-core/abi-dlmalloc", "hyperlane-dusk-types/abi"]
+data-driver = []
 
 [lib]
 crate-type = ["cdylib"]

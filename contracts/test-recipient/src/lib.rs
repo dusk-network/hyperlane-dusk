@@ -23,8 +23,9 @@ mod test_recipient {
     use alloc::vec::Vec;
 
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
+    use dusk_core::transfer::ReceiveFromContract;
 
-    use hyperlane_dusk_types::{H256, MessageId};
+    use hyperlane_dusk_types::{caller, MessageId, H256};
 
     /// Zero contract ID (meaning "no ISM override").
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -42,6 +43,8 @@ mod test_recipient {
         /// ISM override (returned by `interchain_security_module`).
         /// Zero means "use mailbox default".
         ism: ContractId,
+        /// Native DUSK received through the pending-escrow test callback.
+        native_pending_received: u64,
     }
 
     impl TestRecipient {
@@ -53,6 +56,7 @@ mod test_recipient {
                 last_body: Vec::new(),
                 handled_count: 0,
                 ism: ZERO_CONTRACT,
+                native_pending_received: 0,
             }
         }
 
@@ -85,6 +89,12 @@ mod test_recipient {
         // =================================================================
         // Queries
         // =================================================================
+
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
 
         /// Returns the origin domain of the last received message.
         pub fn last_origin(&self) -> u32 {
@@ -131,13 +141,60 @@ mod test_recipient {
             recipient: H256,
             body: Vec<u8>,
         ) -> MessageId {
-            let id: MessageId = abi::call(
-                mailbox,
-                "dispatch_default",
-                &(destination, recipient, body),
-            )
-            .expect("TestRecipient: dispatch_message failed");
+            let id: MessageId =
+                abi::call(mailbox, "dispatch_default", &(destination, recipient, body))
+                    .expect("TestRecipient: dispatch_message failed");
             id
+        }
+
+        /// Claim collateral-route tokens escrowed for this contract ID.
+        pub fn claim_collateral_pending(&self, route: ContractId) {
+            let _: () = abi::call(route, "claim_pending_contract", &())
+                .expect("TestRecipient: collateral claim failed");
+        }
+
+        /// Claim synthetic-route tokens pending for this contract ID.
+        pub fn claim_synthetic_pending(&self, route: ContractId) {
+            let _: () = abi::call(route, "claim_pending_contract", &())
+                .expect("TestRecipient: synthetic claim failed");
+        }
+
+        /// Claim native DUSK escrowed for this contract ID.
+        pub fn claim_native_pending(&self, route: ContractId) {
+            let _: () = abi::call(route, "claim_pending_contract", &())
+                .expect("TestRecipient: native claim failed");
+        }
+
+        /// Attempt a protocol-fee claim through this contract.
+        pub fn claim_protocol_fees(&self, protocol_fee: ContractId) {
+            let _: () = abi::call(protocol_fee, "claim", &())
+                .expect("TestRecipient: protocol fee claim failed");
+        }
+
+        /// Attempt an IGP fee claim through this contract.
+        pub fn claim_igp_fees(&self, igp: ContractId) {
+            let _: () = abi::call(igp, "claim", &()).expect("TestRecipient: IGP fee claim failed");
+        }
+
+        /// Accept native DUSK released by a route's contract-claim path.
+        pub fn receive_native_pending(&mut self, transfer: ReceiveFromContract) {
+            assert!(
+                caller::authentic_transfer_callback(transfer.contract, transfer.contract),
+                "TestRecipient: unauthenticated native claim"
+            );
+            assert!(
+                transfer.data.is_empty(),
+                "TestRecipient: unexpected native claim data"
+            );
+            self.native_pending_received = self
+                .native_pending_received
+                .checked_add(transfer.value)
+                .expect("TestRecipient: native claim overflow");
+        }
+
+        /// Return native DUSK received by the pending-escrow callback.
+        pub fn native_pending_received(&self) -> u64 {
+            self.native_pending_received
         }
     }
 }

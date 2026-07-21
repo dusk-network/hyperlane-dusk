@@ -1,0 +1,85 @@
+name: Dusk Manual Repro Dispatcher Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dispatcher-gate:
+    name: ${{ github.event_name == 'pull_request' && 'Manual repro dispatcher gate' || 'Manual repro dispatcher manual validation' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Dusk Hyperlane
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate dispatcher files
+        shell: bash
+        run: |
+          set -euo pipefail
+          dispatcher=.github/workflows/manual-repro-check.yml
+          test -f "$dispatcher"
+          test -f .github/actionlint.yaml
+          grep -q "workflow_dispatch:" "$dispatcher"
+          for input in dusk_ref rusk_ref monorepo_ref; do
+            grep -q "^[[:space:]]*$input:" "$dispatcher" || {
+              echo "::error::$dispatcher lost required input $input"
+              exit 1
+            }
+          done
+          if grep -Eq '^[[:space:]]+default:' "$dispatcher"; then
+            echo "::error::exact-ref dispatcher inputs must not have moving defaults"
+            exit 1
+          fi
+          for file in "$dispatcher" .github/actionlint.yaml; do
+            grep -q "dusk-hyperlane" "$file" || {
+              echo "::error::$file lost the Dusk runner label"
+              exit 1
+            }
+          done
+          for label in resolved_dusk_sha resolved_rusk_sha resolved_monorepo_sha; do
+            grep -q "$label=" "$dispatcher" || {
+              echo "::error::$dispatcher no longer reports $label"
+              exit 1
+            }
+          done
+
+      - name: Check dispatcher secret hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            .github/workflows/manual-repro-check.yml \
+            .github/workflows/manual-repro-dispatcher-gate.yml \
+            .github/workflows/dusk-proposal-validation.yml \
+            .github/workflows/dusk-review-policy-gate.yml \
+            .github/actionlint.yaml
+          )
+          for file in "${files[@]}"; do
+            test -f "$file"
+          done
+
+          status=0
+          secret_pattern='upload-''artifact|hex''Key|key''File|key''Env|pass''word|--secret-''key|BEGIN .*PRIV''ATE'
+          grep -En "$secret_pattern" \
+            "${files[@]}" || status=$?
+          case "$status" in
+            1) ;;
+            0)
+              echo "::error::secret-hygiene pattern matched"
+              exit 1
+              ;;
+            *)
+              echo "::error::secret-hygiene scan failed with exit $status"
+              exit 1
+              ;;
+          esac

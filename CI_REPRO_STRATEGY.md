@@ -1,0 +1,504 @@
+# CI And Repro Strategy
+
+This document turns the current local verification into an explicit Dusk
+runner proposal. It is not a production sign-off; it gives reviewers a concrete
+setup to accept, change, or replace.
+
+## Current State
+
+- The Dusk contract/tooling workspace depends on private Rusk path
+  dependencies from an adjacent `rusk-private` checkout.
+- The Hyperlane agent check depends on an adjacent
+  `hyperlane-monorepo` checkout.
+- Public GitHub-hosted runners cannot reproduce the full workspace without
+  private Dusk repository access.
+- The internal PRs now have GitHub status-check rollups. During the bootstrap,
+  `dusk-network/hyperlane-dusk` temporarily requires only `Dusk proposal
+  validation`; `dusk-network/hyperlane-monorepo` temporarily requires `Dusk
+  proposal validation` and `Dusk agent validation`. The trusted policy and
+  readiness contexts cannot be required until their workflows exist on the
+  default branches. Heavy repro and E2E evidence in `TEST_REPORT.md` remains
+  local/clean-Rusk evidence until the private runner/token path is accepted and
+  provisioned.
+- A 2026-05-12 permission probe showed repo-level Actions is enabled on both
+  `dusk-network/hyperlane-dusk` and `dusk-network/hyperlane-monorepo`, with
+  allowed actions set to `all` and default workflow permissions set to `write`.
+  The current CI blocker is runner/secret/workflow provisioning, not disabled
+  repo-level Actions. The probe is recorded in
+  dusk-network/hyperlane-dusk#8.
+- The inherited Hyperlane Rust image-publishing workflow is intentionally
+  skipped on the Dusk fork by a `github.repository_owner == 'hyperlane-xyz'`
+  job guard in the monorepo PR. Dusk does not need to provision Hyperlane-owned
+  image publishing or GitHub App credentials for this internal review path.
+- Both Dusk org repos have protected `main` branches with one required review,
+  strict bootstrap status checks, and force-push/delete disabled. Admin
+  enforcement is intentionally off so owners retain the documented bootstrap
+  bypass; this does not make an unreviewed bootstrap a release-ready merge.
+- `dusk-network/hyperlane-dusk` uses `main` as its default branch. The manual
+  repro workflow is currently introduced by the `feat/dusk-hardening-v2`
+  review branch, so it becomes normally discoverable in the GitHub Actions UI
+  after the workflow file is merged or otherwise added to the default branch.
+- A workflow-only default-branch dispatcher PR exists as
+  dusk-network/hyperlane-dusk#3. It contains the manual repro workflow,
+  dispatcher self-check workflow, shared Dusk review-policy workflow, and
+  actionlint config, so Dusk can make the manual repro workflow visible without
+  first merging the full Hyperlane implementation PR.
+- The implementation branch now also proposes
+  `.github/workflows/production-readiness-gate.yml`. This is a lightweight
+  GitHub-hosted status-check candidate that runs
+  `make production-readiness-guard` in one of two modes. Pull requests use
+  `READINESS_MODE=premerge`: none of the three linked PRs is required to be
+  already merged or approved, while their exact required status checks,
+  upstream freshness, and exact-ref repro freshness still fail closed. Branch
+  protection remains the authority for approval and merge. Manual dispatch
+  uses `READINESS_MODE=production` and requires all three PRs to be merged and
+  approved in addition to final sign-off, branch-protection visibility,
+  dependency-alert visibility, runner/secret provisioning, and all production
+  decision issues. This avoids both a self-cycle and a cross-repository cycle
+  in the required pre-merge check without weakening the production gate.
+
+## Proposed Runner
+
+Use a Dusk-controlled self-hosted Linux runner with the labels:
+
+```text
+self-hosted, linux, dusk-hyperlane
+```
+
+Runner requirements:
+
+- Rust toolchain compatible with this repository's `rust-toolchain.toml`.
+- `wasm32-unknown-unknown` target installed.
+- `make`, `bash`, `git`, and `cargo` available on `PATH`.
+- Enough CPU, memory, and disk for contract WASM builds, VM integration tests,
+  and the Hyperlane Rust agent `cargo check`.
+- No automatic artifact upload from the working directory or `/tmp`.
+- Workspace cleanup after each run, including generated Hyperlane relayer and
+  validator configs.
+
+## Repository Layout
+
+The manual workflow checks out repositories into the same relative layout used
+by local development:
+
+```text
+<runner-workspace>/
+  rusk-private/
+  hyperlane/
+    dusk/
+    hyperlane-monorepo/
+```
+
+This layout matches `scripts/local-repro-check.sh`, whose default Rusk path is
+`../../rusk-private` relative to `hyperlane/dusk`.
+
+For local reviewer repros that already have a clean Rusk checkout somewhere
+else, the same script accepts an override and creates a temporary compatible
+layout automatically:
+
+```bash
+RUSK_DIR=/path/to/clean/rusk-private make repro-check-agent
+```
+
+Set `HYPERLANE_DUSK_REPRO_WORKDIR=/tmp/some-dir` to keep that temporary layout
+and its logs after the run.
+
+Reviewers can also print the current machine-checkable gate state without
+running the heavy build/test repro:
+
+```bash
+make review-gates
+make production-readiness-guard
+make gate-status
+make gate-status-fresh
+```
+
+`make review-gates` runs the lightweight non-E2E gate bundle:
+`make completion-audit-status`, `make archive-hygiene-test`,
+`make archive-hygiene`,
+`make dependency-alert-status`, `make review-hygiene`, and
+`make gate-status-fresh`.
+
+`make production-readiness-guard` defaults to the full production mode and is
+expected to fail while production blockers remain open. It reports
+machine-checkable blockers such as open internal PRs, review gates, unchecked
+sign-off items, open split decision issues, missing
+`DUSK_ORG_READ_TOKEN` visibility in both internal repos, missing self-hosted
+runner visibility for the `dusk-hyperlane` label, Dusk Cargo dependency-alert
+triage, upstream drift, and latest clean-layout repro covered-path delta.
+
+`make gate-status` calls `scripts/release-gate-status.sh`, which reports local
+worktree state, untracked source status, implementation PR and
+workflow-dispatcher PR mergeability/review/status state, production sign-off
+checklist counts, split decision issue states, default-branch protection and
+merge method settings, workflow visibility, CI provisioning visibility,
+including the exact `DUSK_ORG_READ_TOKEN` and `dusk-hyperlane` runner-label
+checks for the Dusk repo, optional `DUSK_STATUS_READ_TOKEN` visibility for the
+production-readiness workflow, plus the monorepo `DUSK_ORG_READ_TOKEN` check
+needed by `.github/workflows/dusk-agent-gate.yml`,
+reviewer-facing evidence-link visibility, Dusk Dependabot open-alert
+visibility, local `Cargo.lock` vulnerable-range comparison through
+`make dependency-alert-status`, reviewer-facing `make gate-status-fresh` and
+`make dependency-alert-status`, `make completion-audit-status`, and
+`make review-gates`, and `make production-readiness-guard` handoff visibility,
+reviewer-facing branch protection/status-check policy handoff visibility,
+Hyperlane upstream drift, latest clean-layout repro path delta, and Dusk runtime
+placeholder scans. It also reports whether any open upstream
+`hyperlane-xyz/hyperlane-monorepo` PRs already exist from
+`dusk-network:feat/dusk-support-v2` before the internal review gates close.
+`make gate-status-fresh` first fetches Hyperlane `upstream/main` before
+reporting drift. These commands do not close any production gates.
+
+## Production Readiness Workflow
+
+The implementation branch includes:
+
+```text
+.github/workflows/production-readiness-gate.yml
+```
+
+It runs on pull requests to `main` and through a `production-readiness`
+`repository_dispatch`. Both event types load the workflow from the trusted
+default branch. Pull-request runs are merge-readiness checks; repository
+dispatches are the full production-readiness audit. The job context remains:
+
+```text
+Production readiness guard
+```
+
+The job checks out a full-history copy of the trusted Dusk base, fetches the
+exact pull-request head as inert Git data, verifies it against the event SHA,
+and compares the repro anchor with that proposed SHA. It asks
+`make production-readiness-guard` to use GitHub's compare API for monorepo
+upstream freshness:
+
+```bash
+make production-readiness-guard
+```
+
+For a production audit, send the repository dispatch with an optional
+`client_payload.monorepo_ref`. Repository dispatch sets
+`READINESS_MODE=production`; pull requests set
+`READINESS_MODE=premerge` and obtain `CURRENT_PR_NUMBER` from the event. On pull
+requests, the default monorepo ref is `feat/dusk-support-v2`. Local
+reviewers should still use `make gate-status-fresh` when they have the adjacent
+monorepo checkout; the workflow avoids cloning the full Hyperlane monorepo just
+to produce a policy status check.
+
+When it runs in GitHub Actions, the guard ignores its own current
+`GITHUB_RUN_ID` while counting non-completed PR status checks and polls briefly
+for other concurrently-started checks before reporting the count. This avoids a
+self-blocking readiness check while still surfacing genuinely queued or
+incomplete companion checks.
+
+`make review-gates` remains the local reviewer bundle because it verifies
+preserved backup archives and extracts/scans durable evidence archives under
+`.codex-backups`, which are intentionally not uploaded to GitHub-hosted
+runners. It also regression-tests the archive scanner against safe, traversal,
+symlink, and secret-bearing archive cases.
+
+This workflow is intentionally a negative release gate. A failing run means at
+least one machine-checkable blocker remains open. A passing run would still
+need Dusk reviewer approval, fresh E2E evidence, and the production sign-off
+issue to be complete before any production-readiness claim.
+
+## Access Token
+
+Use one GitHub secret for source checkout:
+
+```text
+DUSK_ORG_READ_TOKEN
+```
+
+Required scope:
+
+- Read-only access to `dusk-network/hyperlane-dusk`.
+- Read-only access to `dusk-network/rusk-private`.
+- Read-only access to `dusk-network/hyperlane-monorepo` if the workflow runs
+  from `dusk-network/hyperlane-dusk`.
+
+Forbidden uses:
+
+- Do not use this token as a Dusk signer, validator key, consensus key
+  password, deployment key, or relayer key.
+- Do not persist it in local git config. The workflow sets
+  `persist-credentials: false` on all checkout steps.
+
+Do not broaden `DUSK_ORG_READ_TOKEN` just to satisfy status-reporting APIs.
+It is intentionally scoped to source checkout for the manual repro workflow and
+the monorepo companion checkout path.
+
+The lightweight production-readiness guard also reports visibility for branch
+protection, the protected repro-environment source secret, the optional
+repository status secret, self-hosted runners, and Dependabot alerts. Those
+GitHub APIs can require admin, Actions-runner, or security-events permissions
+that are broader than source checkout. If the default `GITHUB_TOKEN` or
+`DUSK_ORG_READ_TOKEN` cannot read one of those APIs, the guard reports that
+visibility as unavailable and remains blocked. Dusk should satisfy those gates
+by either rerunning `make production-readiness-guard` with an approved admin or
+security-read local `gh` credential, or by provisioning a separate
+Dusk-approved CI credential specifically for status visibility. That credential
+must not be a signer, validator key, consensus password, deployment key,
+relayer key, or image-publishing credential.
+
+The proposed production-readiness workflow can consume that optional status
+credential as:
+
+```text
+DUSK_STATUS_READ_TOKEN
+```
+
+`DUSK_STATUS_READ_TOKEN` is only for GitHub status visibility in
+`.github/workflows/production-readiness-gate.yml`; it must not be used by the
+manual repro workflow checkout steps. If absent, the workflow falls back only
+to `github.token`. The source-read token is never exposed to the production
+readiness job.
+
+## Admin Provisioning Runbook
+
+If Dusk accepts this CI path, provision the read-only token in both internal
+repositories without placing the token on process argv:
+
+```bash
+gh secret set DUSK_ORG_READ_TOKEN --env dusk-hyperlane-repro --repo dusk-network/hyperlane-dusk < /path/to/read-only-token.txt
+```
+
+If Dusk approves CI-side status visibility instead of a local admin rerun,
+provision the separate status token only in repos whose production-readiness
+workflow needs it:
+
+```bash
+gh secret set DUSK_STATUS_READ_TOKEN --repo dusk-network/hyperlane-dusk < /path/to/status-read-token.txt
+```
+
+Trigger the default-branch production audit without selecting a workflow ref:
+
+```bash
+gh api repos/dusk-network/hyperlane-dusk/dispatches \
+  -f event_type=production-readiness \
+  -F 'client_payload[monorepo_ref]=feat/dusk-support-v2'
+```
+
+Then confirm a self-hosted runner with the required labels is available to
+`dusk-network/hyperlane-dusk`. A repo-level check is:
+
+```bash
+gh api repos/dusk-network/hyperlane-dusk/actions/runners \
+  --jq '.runners[] | {name, status, labels:[.labels[].name]}'
+```
+
+If Dusk uses an org-level runner, the equivalent check requires org admin or
+Actions runner permissions:
+
+```bash
+gh api orgs/dusk-network/actions/runners \
+  --jq '.runners[] | {name, status, labels:[.labels[].name]}'
+```
+
+After provisioning, rerun:
+
+```bash
+make gate-status-fresh
+make production-readiness-guard
+```
+
+`make production-readiness-guard` should still fail until the remaining review,
+sign-off, internal merge, and upstream-prep blockers close; the token and
+runner-specific blockers should be gone. If Dependabot alerts, branch
+protection, Actions secret, or runner visibility still reports `unknown` or
+`unavailable`, rerun the guard with Dusk-approved credentials that have the
+needed read/admin visibility, or record the approved alternate verification in
+the production sign-off issue.
+
+## Manual Workflow
+
+The current workflow is:
+
+```text
+.github/workflows/manual-repro-check.yml
+```
+
+It is `workflow_dispatch` only and accepts:
+
+- `dusk_ref`: defaults to `feat/dusk-hardening-v2`.
+- `rusk_ref`: defaults to clean Rusk reference
+  `bc281d2cd1e789db92e99bc59849c92363524e37`.
+- `monorepo_ref`: defaults to `feat/dusk-support-v2`.
+
+Set `dusk_ref` to a PR branch or exact commit SHA when running the workflow
+from the default branch, so the repro checks the review head rather than the
+default branch contents.
+
+Once the workflow exists on the default branch, either by merging
+dusk-network/hyperlane-dusk#3 or by another Dusk-approved equivalent, and the
+runner/token are available, dispatch against exact current internal review
+heads by resolving the PR heads immediately before running the workflow. This
+avoids stale hard-coded SHAs after docs-only commits while still recording the
+exact commits used for release evidence:
+
+```bash
+dusk_ref="$(gh pr view 1 --repo dusk-network/hyperlane-dusk --json headRefOid --jq .headRefOid)"
+monorepo_ref="$(gh pr view 1 --repo dusk-network/hyperlane-monorepo --json headRefOid --jq .headRefOid)"
+rusk_ref="bc281d2cd1e789db92e99bc59849c92363524e37"
+
+gh workflow run manual-repro-check.yml \
+  --repo dusk-network/hyperlane-dusk \
+  --ref main \
+  -f dusk_ref="$dusk_ref" \
+  -f rusk_ref="$rusk_ref" \
+  -f monorepo_ref="$monorepo_ref"
+```
+
+Expected resolved heads:
+
+- Dusk: the live head of dusk-network/hyperlane-dusk#1.
+- Rusk: `bc281d2cd1e789db92e99bc59849c92363524e37`.
+- Monorepo: the live head of dusk-network/hyperlane-monorepo#1.
+
+Record the workflow URL, requested refs, resolved heads, and pass/fail result
+in `TEST_REPORT.md`. The workflow prints each requested ref and resolved
+checkout head before running the repro command so reviewers can copy the exact
+Dusk, Rusk, and monorepo SHAs from the Actions log.
+
+Earlier local review-head E2E evidence tested Dusk
+`2ac225175b15aac465d100e748ba68f8b14bd545`; commit
+`11f6744bb3514f96db846de1108378e43d161a3e` recorded that evidence in
+`TEST_REPORT.md` and `GOAL_AUDIT.md`, and later docs commits may move the Dusk
+PR head again. The manual workflow should be dispatched against the live PR
+heads resolved above so CI evidence matches the PR headers exactly.
+
+It runs:
+
+```bash
+set -euo pipefail
+make repro-check-agent
+```
+
+The workflow explicitly uses `shell: bash` for this final repro step so the
+strict shell flags are applied consistently on the self-hosted runner.
+
+That wraps:
+
+```bash
+make all
+make clippy-contracts
+cargo test -p hyperlane-dusk-types
+cargo test -p hyperlane-dusk-integration-tests
+cargo test -p dusk-tx
+make secret-hygiene
+cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander
+```
+
+The final `cargo check` runs from
+`hyperlane/hyperlane-monorepo/rust/main`.
+
+Until this workflow file exists on the default branch, reviewers should treat it
+as a branch-proposed runner definition plus default-branch dispatcher PR and
+use the local equivalent:
+
+```bash
+make repro-check-agent
+```
+
+This default-branch requirement was checked explicitly on 2026-05-12. A direct
+dispatch attempt against the feature branch failed before scheduling a run:
+
+```bash
+gh workflow run manual-repro-check.yml \
+  --repo dusk-network/hyperlane-dusk \
+  --ref feat/dusk-hardening-v2 \
+  -f dusk_ref=2de3d22b811eda9762599bbbb5c07d2f2fdad52e \
+  -f rusk_ref=c0c64db4659500d077bb253ad13acba0e347d3fc \
+  -f monorepo_ref=ecb11359747dce240a24c50fa229afd4479919b5
+```
+
+Result:
+
+```text
+HTTP 404: Not Found (https://api.github.com/repos/dusk-network/hyperlane-dusk/actions/workflows/manual-repro-check.yml)
+```
+
+## Artifact Policy
+
+Default policy: upload no artifacts.
+
+Before any artifact upload is enabled, scan the exact file set:
+
+```bash
+bash scripts/secret-hygiene-check.sh <artifact-path>...
+```
+
+Never upload:
+
+- `/tmp/hyperlane-relayer-*.json`
+- `/tmp/hyperlane-validator-*.json`
+- `demo/.env*`
+- `e2e/consensus.keys`
+- `*.keys`
+- password files
+- generated configs containing `hexKey`, inline raw keys, or secret-like Dusk
+  key files
+
+Logs may be uploaded only after the exact files pass the hygiene check.
+
+## Promotion Path
+
+Recommended sequence:
+
+1. Keep the workflow manual until the Dusk runner and token scope are accepted.
+2. Run it once against the current Dusk PR head and monorepo branch.
+3. Record the workflow URL, `dusk_ref`, resolved Dusk head, `monorepo_ref`,
+   resolved monorepo head, `rusk_ref`, resolved Rusk head, and pass/fail result
+   in `TEST_REPORT.md`.
+4. Only after the manual run is stable, decide whether to make the non-E2E
+   repro check required on internal PRs.
+5. Keep protected `main` settings on `dusk-network/hyperlane-dusk` and
+   `dusk-network/hyperlane-monorepo`. After the policy bootstrap lands, replace
+   the temporary proposal contexts with the shared `Dusk review policy gate`
+   and the appropriate readiness/agent context. Do not treat either repo as
+   production-ready until that promotion and the remaining sign-off gates
+   close.
+6. Keep live E2E, fault-injection, and soak runs separate unless Dusk provides
+   a runner specifically intended for long-running local network tests.
+
+### Required Check Promotion
+
+Required status-check promotion is pending the bootstrap merges. As observed
+through the live API on 2026-07-21, `make gate-status` correctly reports the
+trusted/readiness contexts missing. After the workflow policy exists on each
+default branch, apply the settings below and immediately read them back. The
+protected `dusk-hyperlane-repro` environment was created on 2026-07-21 with an
+owner approval rule. Remaining #8 gates include accepting or replacing this
+CI/repro path, provisioning the environment-scoped read-only checkout token and
+ephemeral runner capacity, and recording a stable exact-ref run.
+
+```bash
+gh api -X PATCH \
+  repos/dusk-network/hyperlane-dusk/branches/main/protection/required_status_checks \
+  -F strict=true \
+  -f 'contexts[]=Dusk review policy gate' \
+  -f 'contexts[]=Production readiness guard'
+
+gh api -X PATCH \
+  repos/dusk-network/hyperlane-monorepo/branches/main/protection/required_status_checks \
+  -F strict=true \
+  -f 'contexts[]=Dusk review policy gate' \
+  -f 'contexts[]=Dusk agent cargo check'
+
+gh api repos/dusk-network/hyperlane-dusk/branches/main/protection/required_status_checks \
+  --jq '{strict, contexts}'
+gh api repos/dusk-network/hyperlane-monorepo/branches/main/protection/required_status_checks \
+  --jq '{strict, contexts}'
+```
+
+If Dusk chooses another private CI system, replace the second context in each
+repo with the accepted check name and record the replacement in #8 and #2.
+
+## Open Decision
+
+Dusk still needs to decide whether this self-hosted workflow is the accepted
+CI/repro strategy for internal review, or whether another private CI system
+should own these checks. That decision remains tracked in
+https://github.com/dusk-network/hyperlane-dusk/issues/8 and rolls up into the
+production sign-off tracker at
+https://github.com/dusk-network/hyperlane-dusk/issues/2.

@@ -4,10 +4,12 @@ members = [
     "types",
     "contracts/mailbox",
     "contracts/merkle-tree-hook",
+    "contracts/aggregation-hook",
     "contracts/ism-multisig",
     "contracts/validator-announce",
     "contracts/test-recipient",
     "contracts/test-mock",
+    "contracts/reentrant-hook",
     "contracts/protocol-fee",
     "contracts/igp",
     "contracts/warp-drc20",
@@ -29,10 +31,10 @@ license = "MIT OR Apache-2.0"
 hyperlane-dusk-types = { path = "./types" }
 
 # Dusk
-# Using local rusk fork for secp256k1_recover host function
-dusk-core = { path = "../../rusk/core" }
-dusk-forge = { path = "../forge" }
-dusk-data-driver = "0.3"
+# Use the current Dusk private stack for contract ABI, VM tests, and host functions.
+dusk-core = { path = "../../rusk-private/core" }
+dusk-forge = { git = "https://github.com/dusk-network/forge", rev = "d1e39a16ad5e2cd0675c7aafa6e2c459310bcb1a" }
+dusk-data-driver = { path = "../../rusk-private/data-drivers/data-driver" }
 
 # Serialization
 bytecheck = { version = "0.6.12", default-features = false }
@@ -47,11 +49,11 @@ serde = { version = "1", default-features = false, features = [
 serde_json = { version = "1", default-features = false }
 
 # Testing
-dusk-vm = { version = "=1.4.0", default-features = false }
+dusk-vm = { path = "../../rusk-private/vm", default-features = false }
 rand = "0.8"
 ff = { version = "0.13", default-features = false }
-rusk-prover = "1.3"
-wasmtime = "25"
+rusk-prover = { path = "../../rusk-private/rusk-prover" }
+wasmtime = "36"
 
 # Pin to avoid edition2024 issues
 blake2b_simd = "=1.0.3"
@@ -62,3 +64,11 @@ time-core = "=0.1.6"
 # Enable overflow checks in release builds for contract safety
 [profile.release]
 overflow-checks = true
+
+[patch.crates-io]
+# Keep consumers of the current Rusk workspace on the same compatibility
+# revisions used by Rusk itself. Workspace patches do not propagate through
+# path dependencies.
+dusk-plonk = { git = "https://github.com/dusk-network/plonk-private.git", rev = "f63cfb0c4a5e5f485361c83ae15584257d3339ab" }
+phoenix-core = { git = "https://github.com/dusk-network/phoenix-private.git", rev = "68d48a1d6ad124bfd17b6d4770f6308778422d02" }
+phoenix-circuits = { git = "https://github.com/dusk-network/phoenix-private.git", rev = "68d48a1d6ad124bfd17b6d4770f6308778422d02" }

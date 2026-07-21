@@ -9,19 +9,21 @@ publish = false
 
 [dev-dependencies]
 # Types crate (without abi feature — uses software keccak256 fallback)
-hyperlane-dusk-types = { workspace = true }
+hyperlane-dusk-types = { workspace = true, features = ["drc20"] }
 
-# Dusk (crates.io version to match dusk-vm's dependency)
-dusk-core = "1.4"
+# Dusk
+dusk-core = { workspace = true }
 dusk-bytes = "0.1.7"
 dusk-vm = { workspace = true, default-features = false }
 
 # Test utilities
 ff = { workspace = true }
+bytecheck = { workspace = true }
 rand = { workspace = true }
 rkyv = { workspace = true, features = ["validation"] }
 rusk-prover = { workspace = true }
 wasmtime = { workspace = true }
+secp256k1 = { version = "0.31.1", features = ["recovery"] }
 
 # Pin to avoid edition2024 issues (no blake2b_simd pin — let cargo resolve
 # both versions needed by crates.io dusk-core and local dusk-core)
