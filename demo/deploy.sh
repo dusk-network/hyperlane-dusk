@@ -663,7 +663,7 @@ cd "$SOLIDITY_DIR"
         EVM_ISM=$(forge_deploy contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
             --rpc-url "$ANVIL_RPC" \
             --private-key "$ANVIL_PRIVATE_KEY" \
-            --constructor-args "[$ANVIL_DEPLOYER]" 1) \
+            --constructor-args "[$MULTISIG_VALIDATORS]" "$MULTISIG_THRESHOLD") \
             || fail "Failed to deploy EVM MessageIdMultisigIsm"
         ok "EVM MessageIdMultisigIsm: $EVM_ISM"
     else

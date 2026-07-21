@@ -62,6 +62,8 @@ rg -q -F '"key": "${ANVIL_RELAYER_PRIVATE_KEY}"' demo/gen-agent-configs.sh \
     || fail "validator configs do not consistently use the isolated validator identity"
 rg -q -F -- '--multisig-validators "$E2E_ANVIL_VALIDATOR"' demo/e2e-agents.sh \
     || fail "live multisig E2E does not deploy against the isolated validator identity"
+rg -q -F -- '--constructor-args "[$MULTISIG_VALIDATORS]" "$MULTISIG_THRESHOLD"' demo/deploy.sh \
+    || fail "EVM and Dusk multisig deployments do not consume the same validator policy"
 rg -q -F 'ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY"' demo/e2e-agents.sh \
     || fail "live E2E does not pass the isolated relayer signer to config generation"
 rg -q -F 'ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY"' demo/e2e-agents.sh \
