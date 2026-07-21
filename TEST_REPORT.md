@@ -7,30 +7,31 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
-## 2026-07-21 Final Clean-Current-Rusk Gate
+## 2026-07-21 Final Combined Static Gate
 
 The stacked withdrawal implementation at
-`183b56a875e5c2962ef621937258b8e497baef2a`, based on the final contract
-implementation `4d8f5da013d56e5d3fa036ab924de6a6729b5f4f`, was reproduced in a detached
+`54587f9267a6f26d2a7127288f9587d877ee3b62`, based on remediated contract
+implementation `d32c0f56c66d93be203cc44e3f48a0a7257216f0`, was reproduced in a detached
 clean layout against Rusk
 `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
 
 The gate passed:
 
 - all 12 contract WASM builds and production contract/type clippy;
-- 29 type tests and 100 VM integration tests;
+- 29 type tests and 105 VM integration tests;
 - 7 data-driver tests and its release WASM build;
-- 18 `dusk-tx` tests;
+- 19 `dusk-tx` tests;
 - the standalone E2E host build; and
 - tracked-source secret hygiene.
 
 The durable local log is
-`/tmp/hyperlane-dusk-withdrawal-repro-183b56a.log`, SHA256
-`4b70209aeddd30fe161a71d5b83110d3b7c5a7de9a42d02e6b4e1d1fcb2f2e69`.
-The later `137ce09e19ffd30a36027ba417ebf1992521613f` commit changes only the live E2E
-harness: it withdraws one unit from a route's actual contract-keyed Mailbox
-credit, asserts the exact decrement, and then requires the remaining credit to
-fund the later bidirectional route exercise.
+`/tmp/hyperlane-dusk-withdrawal-repro-54587f9.log`, SHA256
+`df5d8272b47a341473660b547a77e69c1959928cb552c0b812db52f49cb5ecdb`.
+The stack requires Mailbox, WarpDrc20, and IGP compatibility version 2; every
+other deployed contract remains version 1. It preserves the base branch's
+single combined-manifest reuse authority and exact saved/live IGP policy check.
+
+### Earlier live E2E evidence (superseded)
 
 That harness passed from clean state with agent implementation
 `37e24eed2c7ad7aed63e3fa033d1fe8a28355ec0` in both topologies:
@@ -52,6 +53,56 @@ The associated relayer logs are
 `e098460937f2c151b10e3d1ba703169d7af31253b14c25e6dad18cdba06d479a`).
 The multisig validator log SHA256 is
 `e8e108a242221d2f0f4ba9ad011d30a41de0dfdb64cfd0621b0cc93d1abc073c`.
+
+## 2026-07-21 Final Deep-Review Remediation Validation
+
+The final canonical deep review of base PR #1 at
+`8a2467acd5edba5e08cd6b7954f7c3dc622340b5` identified seven deployment,
+reuse, agent-configuration, data-driver, and manual-process interface gaps.
+All seven, plus the related zero-router enrollment obligation, were remediated
+at code anchor `d32c0f56c66d93be203cc44e3f48a0a7257216f0` and reproduced from a
+detached clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk 1.7.1). The exact command
+was:
+
+```bash
+RUSK_DIR=/tmp/hyperlane-rusk-5c6a0b-20260720 \
+  bash scripts/local-repro-check.sh
+```
+
+Durable local log: `/tmp/hyperlane-dusk-base-repro-d32c0f5.log` (SHA-256
+`1d006300471c538a0becaf4311c79f97835166ffe6a1f4552ebd580527bf6169`).
+
+Result:
+
+- all 12 contract WASMs built and the targeted contract/type WASM clippy
+  surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 99 passed, 0 failed;
+- `dusk-tx`: 17 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 5 passed, 0 failed;
+- the standalone E2E operator binary compiled;
+- the fail-closed self-test passed; and
+- tracked-source secret hygiene passed.
+
+The validated deployment boundary requires one combined manifest, verifies the
+complete live topology before any reuse or signer/config write, and compares
+the persisted IGP destination policy with its live contract query. WarpDrc20
+and IGP are compatibility version 2; every other contract on base PR #1 is
+version 1. Unknown IGP destinations, zero-priced configurations, rounded-zero
+payments, zero Mailbox dependencies, and zero remote routers fail closed.
+Manual `process` metadata and all published Merkle provenance queries are
+available through the operator and data-driver interfaces respectively.
+
+This is the final static base-PR gate. The combined withdrawal stack and fresh
+TestMock/MessageIdMultisig bidirectional E2E are validated separately because
+the IGP pricing policy and deployment interface changed after the earlier live
+runs.
+
+The premerge readiness freshness anchors therefore advance to Dusk code anchor
+`d32c0f56c66d93be203cc44e3f48a0a7257216f0` and upstream-synchronized
+monorepo code/CI anchor `23df1ec7c0211b0178079f12a4a5b4057463a363`.
+Documentation-only descendants do not invalidate those covered trees.
 
 ## 2026-07-20 Final Base-PR Compatibility Validation
 
