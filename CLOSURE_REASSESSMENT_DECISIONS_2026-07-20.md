@@ -177,6 +177,12 @@ trusted-policy or production substitute: production mode still requires the
 default-branch `Dusk review policy gate`, and branch protection must switch to
 that trusted context once PR #3 lands.
 
+Hosted report hygiene scans tracked report content but does not claim to verify
+the existence of the developer-machine repro archive path. The local gate keeps
+that physical archive and hash check enabled by default, and its fail-closed
+self-tests continue to cover missing files, missing references, and hash
+mismatches.
+
 `READINESS_MODE=premerge` validates the exact required checks on the current
 Dusk PR, the monorepo PR, and the workflow-dispatcher PR, but does not require
 any of them to be already approved or merged. Those requirements would create
