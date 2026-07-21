@@ -86,8 +86,10 @@ require_cmd git
 require_cmd awk
 require_cmd sha256sum
 
-[ -d "$ROOT/.git" ] || fail "$ROOT is not a git repository"
-[ -d "$MONOREPO_DIR/.git" ] || fail "$MONOREPO_DIR is not a git repository"
+git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || fail "$ROOT is not a git repository"
+git -C "$MONOREPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || fail "$MONOREPO_DIR is not a git repository"
 
 MONOREPO_DIR="$(cd "$MONOREPO_DIR" && pwd -P)"
 
