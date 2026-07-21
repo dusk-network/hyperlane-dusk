@@ -368,10 +368,17 @@ expect_fail \
         DUSK_REPRO_COVERED_PATHS=tests/tests/integration.rs \
     bash scripts/production-readiness-guard.sh
 
+agent_scan_repo="$workdir/agent-scan-repo"
+mkdir -p "$agent_scan_repo/rust/main/chains/hyperlane-dusk/src"
+git -C "$agent_scan_repo" init -q
+printf 'pub fn scan_fixture() {}\n' \
+    >"$agent_scan_repo/rust/main/chains/hyperlane-dusk/src/lib.rs"
+git -C "$agent_scan_repo" add rust/main/chains/hyperlane-dusk/src/lib.rs
+
 expect_fail \
     review-hygiene-invalid-agent-pattern \
     'Dusk agent runtime panic/placeholder scan failed' \
-    env AGENT_PLACEHOLDER_PATTERN='[invalid' \
+    env MONOREPO_DIR="$agent_scan_repo" AGENT_PLACEHOLDER_PATTERN='[invalid' \
     bash scripts/github-review-hygiene.sh --agent-placeholder-scan-only
 
 stale_dispatcher_comments="$workdir/stale-dispatcher-comments.txt"
@@ -567,6 +574,7 @@ printf 'temporary completion audit probe\n' >"$untracked_probe"
 expect_fail \
     completion-audit-untracked-source \
     'dusk has untracked source paths' \
+    env MONOREPO_DIR="$agent_scan_repo" UNTRACKED_SOURCE_GATE_ONLY=1 \
     bash scripts/completion-audit-status.sh
 rm -f -- "$untracked_probe"
 untracked_probe=""

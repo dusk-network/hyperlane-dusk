@@ -177,7 +177,8 @@ command -v rg >/dev/null 2>&1 || fail "rg is required"
 
 check_agent_placeholder_scan() {
     info "Checking local Dusk agent runtime panic/placeholder paths"
-    [ -d "$MONOREPO_DIR/.git" ] || fail "missing local monorepo checkout at $MONOREPO_DIR"
+    git -C "$MONOREPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || fail "missing local monorepo checkout at $MONOREPO_DIR"
     agent_hits="${EXPORT_DIR:-/tmp}/dusk-agent-panic-placeholder-hits.txt"
     if git_grep_to_file "$agent_hits" "Dusk agent runtime panic/placeholder" "$MONOREPO_DIR" -n -E "$AGENT_PLACEHOLDER_PATTERN" -- rust/main/chains/hyperlane-dusk/src; then
         cat "$agent_hits" >&2
