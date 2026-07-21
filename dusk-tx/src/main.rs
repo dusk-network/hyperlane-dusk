@@ -236,6 +236,10 @@ enum Command {
         /// Explicit 96-byte Moonlight BLS public key (hex). Defaults to signer.
         #[arg(long)]
         recipient_public_key: Option<String>,
+        /// Expected native Dusk chain ID. The endpoint must match before the
+        /// signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         #[arg(long, default_value = "2000")]
@@ -586,6 +590,7 @@ async fn main() {
             target,
             amount,
             recipient_public_key,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -598,6 +603,7 @@ async fn main() {
                 &target,
                 amount,
                 recipient_public_key.as_deref(),
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -896,10 +902,11 @@ mod tests {
         parse_igp_domain_configs, parse_validator_announce_query_addresses,
         prepare_bytes32_query_argument, prepare_dispatch_call, prepare_process_call,
         read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
-        submission_error_with_hash, wait_for_transaction_with, Bytes32QueryArgument,
+        submission_error_with_hash, wait_for_transaction_with, Bytes32QueryArgument, Cli,
         MAX_CALL_ARGS_BYTES, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::{TransactionStatus, TransactionStatusQueryError};
+    use clap::Parser;
     use dusk_bytes::Serializable;
     use std::collections::VecDeque;
     use std::future::ready;
@@ -915,6 +922,31 @@ mod tests {
         assert!(resolve_signing_chain_id(Some(1), 2)
             .unwrap_err()
             .contains("does not match endpoint chain ID"));
+    }
+
+    #[test]
+    fn withdrawal_requires_an_explicit_expected_chain_id() {
+        let target = "11".repeat(32);
+        assert!(Cli::try_parse_from([
+            "dusk-tx",
+            "withdraw-dispatch",
+            "--target",
+            &target,
+            "--amount",
+            "1",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "dusk-tx",
+            "withdraw-dispatch",
+            "--target",
+            &target,
+            "--amount",
+            "1",
+            "--expected-chain-id",
+            "1",
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -1132,6 +1164,14 @@ mod tests {
         let rejected =
             confirmation_error_with_hash("aabbcc", "Transaction aabbcc failed: contract rejected");
         assert_eq!(rejected, "Transaction aabbcc failed: contract rejected");
+
+        let incompatible = confirmation_error_with_hash(
+            "aabbcc",
+            "Transaction aabbcc status response is incompatible: missing data.tx.err",
+        );
+        assert!(incompatible.contains("confirmation outcome unknown"));
+        assert!(incompatible.contains("tx_id=aabbcc"));
+        assert!(incompatible.contains("reconcile this exact hash before retrying"));
     }
 
     #[tokio::test]
@@ -1402,6 +1442,7 @@ async fn cmd_withdraw_dispatch(
     target_hex: &str,
     amount: u64,
     recipient_public_key_hex: Option<&str>,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -1415,10 +1456,11 @@ async fn cmd_withdraw_dispatch(
         .map(parse_account_public_key)
         .transpose()?;
     let client = RuesClient::new(rues_url)?;
+    let observed_chain_id = client.query_chain_id().await?;
+    let chain_id = resolve_signing_chain_id(Some(expected_chain_id), observed_chain_id)?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let recipient = explicit_recipient.unwrap_or(pk);
     let args = rkyv_serialize(&(recipient, amount));
-    let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call_with_deposit(
         &sk,
@@ -1573,13 +1615,13 @@ fn submission_error_with_hash(tx_id: &str, error: &str) -> String {
 }
 
 fn confirmation_error_with_hash(tx_id: &str, error: &str) -> String {
-    let timeout_prefix = format!("Transaction {tx_id} was not confirmed");
-    if error.starts_with(&timeout_prefix) {
+    let execution_failure_prefix = format!("Transaction {tx_id} failed:");
+    if error.starts_with(&execution_failure_prefix) {
+        error.to_owned()
+    } else {
         format!(
             "Transaction {tx_id} confirmation outcome unknown: {error}; retain tx_id={tx_id} and reconcile this exact hash before retrying"
         )
-    } else {
-        error.to_owned()
     }
 }
 

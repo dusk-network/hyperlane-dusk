@@ -105,7 +105,9 @@ Semantics:
   rejected.
 - `dusk-tx withdraw-dispatch` defaults to the signer but accepts
   `--recipient-public-key` so production routes can use a distinct operational
-  treasury without changing route ownership or signer custody.
+  treasury without changing route ownership or signer custody. It also
+  requires `--expected-chain-id`, compares that operator-pinned value with the
+  endpoint before reading signer material, and signs only after they match.
 - `dusk-tx fund-dispatch` and `withdraw-dispatch` report success only after the
   exact transaction hash is present in Rusk's ledger with no execution error.
   Moonlight nonce advancement is intentionally not treated as success because
@@ -115,6 +117,10 @@ Semantics:
   before propagation; propagation transport/read failures are labeled
   outcome-unknown and instruct the operator to reconcile that hash before any
   retry of the non-idempotent withdrawal.
+- Every post-propagation observation failure other than an explicit on-chain
+  execution rejection is an unknown outcome. Timeouts and incompatible
+  successful HTTP/GraphQL response schemas both retain the exact hash and
+  require reconciliation before retry.
 - Transaction-result polling checks immediately, enforces a 60-second wall-
   clock deadline as the authoritative bound rather than stopping at a smaller
   attempt count, retries transient observation failures without losing the

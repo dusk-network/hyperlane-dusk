@@ -219,11 +219,11 @@ cmd_to_dusk() {
         [ -n "$dusk_process_error" ] && fail "Dusk process failed: $dusk_process_error"
         fail "Dusk process failed; do not retry until the prepared TX hash printed above is reconciled"
     fi
-    dusk_process_tx=$(echo "$dusk_process_result" | jq -r '.tx_id // empty')
+    dusk_process_tx=$(echo "$dusk_process_result" \
+        | jq -er '.tx_id | strings | select(test("^[0-9a-fA-F]{64}$"))') \
+        || fail "Dusk process returned success without a canonical tx_id; stop and reconcile the prepared hash before continuing"
     ok "Message processed on Dusk!"
-    if [ -n "$dusk_process_tx" ]; then
-        echo -e "  ${DIM}Dusk TX: $dusk_process_tx${NC}"
-    fi
+    echo -e "  ${DIM}Dusk TX: $dusk_process_tx${NC}"
 
     # Wait for Dusk block (~10s block time)
     step "Waiting for Dusk block confirmation..."
@@ -287,11 +287,11 @@ cmd_to_evm() {
         [ -n "$dusk_transfer_error" ] && fail "Dusk transfer_remote failed: $dusk_transfer_error"
         fail "Dusk transfer_remote failed; do not retry until the prepared TX hash printed above is reconciled"
     fi
-    dusk_transfer_tx=$(echo "$dusk_transfer_result" | jq -r '.tx_id // empty')
+    dusk_transfer_tx=$(echo "$dusk_transfer_result" \
+        | jq -er '.tx_id | strings | select(test("^[0-9a-fA-F]{64}$"))') \
+        || fail "Dusk transfer_remote returned success without a canonical tx_id; stop and reconcile the prepared hash before continuing"
     ok "Burned $amount $TOKEN_SYMBOL on Dusk"
-    if [ -n "$dusk_transfer_tx" ]; then
-        echo -e "  ${DIM}Dusk TX: $dusk_transfer_tx${NC}"
-    fi
+    echo -e "  ${DIM}Dusk TX: $dusk_transfer_tx${NC}"
 
     # Wait for Dusk block (~10s block time)
     step "Waiting for Dusk block confirmation..."

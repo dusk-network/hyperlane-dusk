@@ -269,7 +269,8 @@ run_case() {
       || fail "invalid pre-withdrawal dispatch credit: $credit_before"
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" withdraw-dispatch \
       --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
-      --target "$dusk_warp" --amount 1 >/dev/null
+      --target "$dusk_warp" --amount 1 \
+      --expected-chain-id "$dusk_chain_id" >/dev/null
     credit_after="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
       --contract "$dusk_mailbox" --method fee_credit --return-type u64 \
       --arg-bytes32 "$dusk_warp" | jq -r '.value')"

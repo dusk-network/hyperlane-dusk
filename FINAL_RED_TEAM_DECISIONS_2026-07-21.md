@@ -40,7 +40,15 @@ silently relabeled as having run those tests.
   material or submitting any deterministic deployment.
 - **Transaction reconciliation:** transport/server failures remain retryable;
   deterministic HTTP-client and successful-response schema incompatibilities
-  terminate immediately while preserving the exact transaction hash.
+  terminate immediately while preserving the exact transaction hash. After
+  propagation, every observation error other than an explicit execution
+  rejection is labeled outcome-unknown and forbids retry before exact-hash
+  reconciliation. The demo rejects zero-exit helper JSON without a canonical
+  32-byte transaction ID instead of continuing without an audit identity.
+- **Withdrawal endpoint identity:** `withdraw-dispatch` requires an explicit
+  native chain ID and compares it with the endpoint before loading signer
+  material. A wrong endpoint cannot silently select the signing domain for a
+  withdrawal.
 - **Operator-visible transaction identity:** `dusk-tx` emits the locally
   computed hash before its first propagation attempt. The local bridge demo no
   longer discards the helper JSON; it prints completed Dusk hashes and carries
