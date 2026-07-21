@@ -4,6 +4,43 @@ This pass re-evaluated the port against current Hyperlane, Rusk, Forge, and the
 current Dusk DRC20 contract surface. It also implemented and validated the
 contract changes identified by the first reassessment pass.
 
+## Final implementation addendum — 2026-07-21
+
+The final independently reproducible implementation set is:
+
+- Dusk base contracts/tooling:
+  `4d8f5da013d56e5d3fa036ab924de6a6729b5f4f`;
+- stacked dispatch-credit withdrawal:
+  `183b56a875e5c2962ef621937258b8e497baef2a`;
+- Dusk Hyperlane agent integration:
+  `37e24eed2c7ad7aed63e3fa033d1fe8a28355ec0`; and
+- current clean Rusk:
+  `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`.
+
+The final contract gate passed 12 WASMs, contract clippy, 29 type tests, 100 VM
+tests, 7 data-driver tests, 18 CLI tests, the release driver and standalone E2E
+builds, and secret hygiene. The agent gate passed 19 Dusk-chain tests, 7 Dusk
+base/config tests, warning-free Dusk clippy, package formatting, and checks of
+the Dusk chain, base, validator, relayer, scraper, and lander packages.
+
+The main design decisions did not change during remediation: pending warp
+liabilities stay reserved without a route-admin drain; dispatch credit belongs
+to the effective payer rather than its sponsor or the Mailbox owner; direct
+Moonlight payers may withdraw to a validated Moonlight key; and route contracts
+expose only an owner-gated proxy over their own contract-keyed credit. Final
+hardening added aggregate pending-supply accounting, bounded history queries,
+atomic multisig reads, real Rusk transaction simulation, and exact-hash
+reconciliation whenever propagation or confirmation is outcome-unknown.
+
+Fresh-state live runs then passed with Dusk harness code
+`137ce09e19ffd30a36027ba417ebf1992521613f`: TestMock run `1784592169` and
+MessageIdMultisig run `1784592942`. Each run withdrew one LUX from the live
+WarpDrc20 contract-keyed dispatch credit, asserted the exact decrement, and
+then used the remaining credit while delivering synthetic, native, and
+collateral routes in both directions. The relayer executed the real Rusk
+process-simulation path for all EVM-to-Dusk deliveries; the multisig run also
+produced and consumed signed validator checkpoints.
+
 ## Synchronized references
 
 - Hyperlane upstream `main`:

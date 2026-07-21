@@ -138,9 +138,11 @@ Evidence:
 - Direct and all three owner-proxied VM withdrawal receipts are asserted below
   the documented 30,000,000-gas CLI default on the pinned current Rusk runtime.
 - Clean-current-Rusk reproduction at implementation anchor
-  `8064476efa30126186971316f72b2646f0c3b7d2`: 12 WASMs, production contract
-  clippy, 29 type tests, 95 VM tests, 6 data-driver tests, 13 `dusk-tx` tests,
-  release data-driver WASM, and tracked-source secret hygiene all pass.
+  `183b56a875e5c2962ef621937258b8e497baef2a`: 12 WASMs, production contract
+  clippy, 29 type tests, 100 VM tests, 7 data-driver tests, 18 `dusk-tx` tests,
+  release data-driver WASM, standalone E2E host build, and tracked-source
+  secret hygiene all pass. The exact log SHA256 is
+  `4b70209aeddd30fe161a71d5b83110d3b7c5a7de9a42d02e6b4e1d1fcb2f2e69`.
 
 ### Pending Escrow Without Admin Drain
 

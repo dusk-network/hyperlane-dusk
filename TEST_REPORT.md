@@ -7,6 +7,52 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
+## 2026-07-21 Final Clean-Current-Rusk Gate
+
+The stacked withdrawal implementation at
+`183b56a875e5c2962ef621937258b8e497baef2a`, based on the final contract
+implementation `4d8f5da013d56e5d3fa036ab924de6a6729b5f4f`, was reproduced in a detached
+clean layout against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
+
+The gate passed:
+
+- all 12 contract WASM builds and production contract/type clippy;
+- 29 type tests and 100 VM integration tests;
+- 7 data-driver tests and its release WASM build;
+- 18 `dusk-tx` tests;
+- the standalone E2E host build; and
+- tracked-source secret hygiene.
+
+The durable local log is
+`/tmp/hyperlane-dusk-withdrawal-repro-183b56a.log`, SHA256
+`4b70209aeddd30fe161a71d5b83110d3b7c5a7de9a42d02e6b4e1d1fcb2f2e69`.
+The later `137ce09e19ffd30a36027ba417ebf1992521613f` commit changes only the live E2E
+harness: it withdraws one unit from a route's actual contract-keyed Mailbox
+credit, asserts the exact decrement, and then requires the remaining credit to
+fund the later bidirectional route exercise.
+
+That harness passed from clean state with agent implementation
+`37e24eed2c7ad7aed63e3fa033d1fe8a28355ec0` in both topologies:
+
+- TestMock run `1784592169` delivered synthetic, native, and collateral routes
+  in both directions, asserted exact custody/allowance changes, confirmed the
+  live withdrawal, and observed successful Rusk process simulation. Harness
+  log SHA256:
+  `1cac650a1ba192eb314984c5003169ee4767b4f840ee6f71ecf0a304efcaf190`.
+- MessageIdMultisig run `1784592942` repeated that matrix through a real
+  validator, signed checkpoints, threshold metadata, and successful Rusk
+  process simulation. Harness log SHA256:
+  `802d61c3df233ab25dcfbebc58d8b6facf2f5282fbb86c4981e738a9e643363c`.
+
+The associated relayer logs are
+`/tmp/hyperlane-relayer-testMock-1784592169.log` (SHA256
+`e6a96a464a9497fb39b759fe2037cddbb5cbfac66bd4630a971871eb14557e7c`) and
+`/tmp/hyperlane-relayer-messageIdMultisig-1784592942.log` (SHA256
+`e098460937f2c151b10e3d1ba703169d7af31253b14c25e6dad18cdba06d479a`).
+The multisig validator log SHA256 is
+`e8e108a242221d2f0f4ba9ad011d30a41de0dfdb64cfd0621b0cc93d1abc073c`.
+
 ## 2026-07-20 Post-Deep-Review Contract Validation
 
 The custody/runtime remediation commit
