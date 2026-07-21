@@ -24,6 +24,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
 
+# Anvil's deterministic, pre-funded development accounts. Keep the operator
+# on account #0, the relayer on #1, and the validator on #2 so independent
+# processes never compete for one EVM nonce stream during the live test.
+E2E_ANVIL_RELAYER_PRIVATE_KEY="${E2E_ANVIL_RELAYER_PRIVATE_KEY:-0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}"
+E2E_ANVIL_VALIDATOR_PRIVATE_KEY="${E2E_ANVIL_VALIDATOR_PRIVATE_KEY:-0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a}"
+E2E_ANVIL_VALIDATOR="${E2E_ANVIL_VALIDATOR:-0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC}"
+
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[INFO] $*" >&2; }
 
@@ -35,6 +42,11 @@ TIMEOUT_SECS="${TIMEOUT_SECS:-240}"
 # PIDs of the currently running agents (used by the EXIT trap).
 CURRENT_RELAYER_PID=""
 CURRENT_VALIDATOR_PID=""
+CURRENT_DUSK_VALIDATOR_PID=""
+CURRENT_DUSK_VALIDATOR_LOG=""
+GENERATED_DUSK_SIGNER_KEY_FILES=()
+GENERATED_AGENT_CONFIG_FILES=()
+GENERATED_AGENT_RUN_DIRS=()
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -88,6 +100,16 @@ cleanup() {
     # Best-effort cleanup on failures/timeouts.
     kill_pid "$CURRENT_RELAYER_PID"
     kill_pid "$CURRENT_VALIDATOR_PID"
+    kill_pid "$CURRENT_DUSK_VALIDATOR_PID"
+    if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
+    fi
+    if [ "${#GENERATED_AGENT_CONFIG_FILES[@]}" -gt 0 ]; then
+        rm -f "${GENERATED_AGENT_CONFIG_FILES[@]}" 2>/dev/null || true
+    fi
+    if [ "${#GENERATED_AGENT_RUN_DIRS[@]}" -gt 0 ]; then
+        rm -rf -- "${GENERATED_AGENT_RUN_DIRS[@]}" 2>/dev/null || true
+    fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
 
@@ -96,6 +118,7 @@ trap cleanup EXIT
 tail_logs_on_fail() {
     local relayer_log="$1"
     local validator_log="${2:-}"
+    local dusk_validator_log="${3:-$CURRENT_DUSK_VALIDATOR_LOG}"
     echo "" >&2
     echo "=== relayer log (tail) ===" >&2
     tail -n 120 "$relayer_log" 2>/dev/null || true
@@ -103,6 +126,31 @@ tail_logs_on_fail() {
         echo "" >&2
         echo "=== validator log (tail) ===" >&2
         tail -n 120 "$validator_log" 2>/dev/null || true
+    fi
+    if [ -n "$dusk_validator_log" ]; then
+        echo "" >&2
+        echo "=== Dusk-origin validator log (tail) ===" >&2
+        tail -n 120 "$dusk_validator_log" 2>/dev/null || true
+    fi
+}
+
+assert_agents_alive() {
+    local relayer_pid="$1"
+    local validator_pid="$2"
+    local relayer_log="$3"
+    local validator_log="$4"
+
+    if ! kill -0 "$relayer_pid" 2>/dev/null; then
+        tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+        fail "relayer exited unexpectedly"
+    fi
+    if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
+        tail_logs_on_fail "$relayer_log" "$validator_log"
+        fail "validator exited unexpectedly"
+    fi
+    if [ -n "$CURRENT_DUSK_VALIDATOR_PID" ] && ! kill -0 "$CURRENT_DUSK_VALIDATOR_PID" 2>/dev/null; then
+        tail_logs_on_fail "$relayer_log" "$validator_log" "$CURRENT_DUSK_VALIDATOR_LOG"
+        fail "Dusk-origin validator exited unexpectedly"
     fi
 }
 
@@ -132,7 +180,7 @@ run_case() {
     local deploy_log="/tmp/hyperlane-deploy-${ism}-${run_id}.log"
     if [ "$ism" = "messageIdMultisig" ]; then
         bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism messageIdMultisig \
-          --multisig-validators "$ANVIL_DEPLOYER" --multisig-threshold 1 >"$deploy_log" 2>&1 || {
+          --multisig-validators "$E2E_ANVIL_VALIDATOR" --multisig-threshold 1 >"$deploy_log" 2>&1 || {
             tail -n 200 "$deploy_log" >&2 || true
             fail "deploy.sh failed (log: $deploy_log)"
           }
@@ -143,35 +191,85 @@ run_case() {
         }
     fi
 
+    # Exercise the complete saved-topology validation against the live fresh
+    # deployment before any agent config is generated from that state.
+    local warm_validate_log="/tmp/hyperlane-warm-validate-${ism}-${run_id}.log"
+    bash "$SCRIPT_DIR/deploy.sh" --skip-deploy >"$warm_validate_log" 2>&1 || {
+        tail -n 200 "$warm_validate_log" >&2 || true
+        fail "saved deployment validation failed (log: $warm_validate_log)"
+    }
+
+    # Compute deterministic paths before invoking the generator, but do not
+    # claim ownership yet. If another invocation already owns the run ID, the
+    # generator must fail without letting this process delete that directory.
+    local cfg_json relayer_cfg validator_cfg dusk_validator_cfg generated_signer_key_file
+    local expected_relayer_cfg expected_validator_cfg expected_dusk_validator_cfg expected_run_dir
+    expected_run_dir="/tmp/hyperlane-agent-${ism}-${run_id}"
+    expected_relayer_cfg="$expected_run_dir/relayer.json"
+    expected_validator_cfg="$expected_run_dir/validator-anvil.json"
+    expected_dusk_validator_cfg="$expected_run_dir/validator-dusk.json"
+    dusk_signer_key_file="$expected_run_dir/dusk-signer.key"
     # Generate agent configs.
-    local cfg_json relayer_cfg validator_cfg
-    cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id")"
+    cfg_json="$(
+        ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY" \
+        ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY" \
+        bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id"
+    )"
+    GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")
+    GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
+    if [ "$ism" = "messageIdMultisig" ]; then
+        GENERATED_AGENT_CONFIG_FILES+=("$expected_validator_cfg")
+        GENERATED_AGENT_CONFIG_FILES+=("$expected_dusk_validator_cfg")
+    fi
+    GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
     validator_cfg="$(echo "$cfg_json" | jq -r '.validator // empty')"
+    dusk_validator_cfg="$(echo "$cfg_json" | jq -r '.duskValidator // empty')"
+    generated_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile // empty')"
+    [ "$relayer_cfg" = "$expected_relayer_cfg" ] || fail "generator returned an unexpected relayer config path"
+    [ "$generated_signer_key_file" = "$dusk_signer_key_file" ] || fail "generator returned an unexpected Dusk signer path"
+    if [ "$ism" = "messageIdMultisig" ]; then
+        [ "$validator_cfg" = "$expected_validator_cfg" ] || fail "generator returned an unexpected validator config path"
+        [ "$dusk_validator_cfg" = "$expected_dusk_validator_cfg" ] || fail "generator returned an unexpected Dusk validator config path"
+    else
+        [ -z "$validator_cfg" ] || fail "TestMock generator unexpectedly returned a validator config"
+        [ -z "$dusk_validator_cfg" ] || fail "TestMock generator unexpectedly returned a Dusk validator config"
+    fi
 
     # Build agent binaries (incremental).
     (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer -p validator >/dev/null)
 
     local relayer_log="/tmp/hyperlane-relayer-${ism}-${run_id}.log"
     local validator_log="/tmp/hyperlane-validator-${ism}-${run_id}.log"
+    local dusk_validator_log="/tmp/hyperlane-validator-dusk-${ism}-${run_id}.log"
 
-    local relayer_pid="" validator_pid=""
+    local relayer_pid="" validator_pid="" dusk_validator_pid=""
 
     # Start validator first (needed for messageIdMultisig metadata).
     if [ "$ism" = "messageIdMultisig" ]; then
         info "Starting validator..."
         (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-          DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$validator_cfg" ./target/debug/validator \
+          exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$validator_cfg" ./target/debug/validator \
           >"$validator_log" 2>&1) &
         validator_pid="$!"
         CURRENT_VALIDATOR_PID="$validator_pid"
         sleep 2
         kill -0 "$validator_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "$validator_log"; fail "validator failed to start"; }
+
+        info "Starting Dusk-origin validator..."
+        (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+          exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$dusk_validator_cfg" ./target/debug/validator \
+          >"$dusk_validator_log" 2>&1) &
+        dusk_validator_pid="$!"
+        CURRENT_DUSK_VALIDATOR_PID="$dusk_validator_pid"
+        CURRENT_DUSK_VALIDATOR_LOG="$dusk_validator_log"
+        sleep 2
+        kill -0 "$dusk_validator_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "$validator_log" "$dusk_validator_log"; fail "Dusk-origin validator failed to start"; }
     fi
 
     info "Starting relayer..."
     (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-      DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$relayer_cfg" ./target/debug/relayer \
+      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$relayer_cfg" ./target/debug/relayer \
       >"$relayer_log" 2>&1) &
     relayer_pid="$!"
     CURRENT_RELAYER_PID="$relayer_pid"
@@ -180,9 +278,16 @@ run_case() {
 
     # Load state.
     local state="$BRIDGE_STATE_FILE"
-    local evm_token dusk_warp account_h256 evm_domain dusk_domain
+    local evm_token evm_native_token evm_collateral_token
+    local dusk_warp dusk_warp_native dusk_warp_collateral dusk_protocol_fee
+    local account_h256 evm_domain dusk_domain
     evm_token="$(jq -r '.evm.token' "$state")"
+    evm_native_token="$(jq -r '.evm.native_token' "$state")"
+    evm_collateral_token="$(jq -r '.evm.collateral_token' "$state")"
     dusk_warp="$(jq -r '.dusk.warp_drc20' "$state")"
+    dusk_warp_native="$(jq -r '.dusk.warp_native' "$state")"
+    dusk_warp_collateral="$(jq -r '.dusk.warp_drc20_collateral' "$state")"
+    dusk_protocol_fee="$(jq -r '.dusk.protocol_fee' "$state")"
     account_h256="$(jq -r '.account_h256' "$state")"
     evm_domain="$(jq -r '.evm_domain' "$state")"
     dusk_domain="$(jq -r '.dusk_domain' "$state")"
@@ -220,11 +325,7 @@ PY
             tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
             fail "timeout waiting for EVM->Dusk delivery"
         fi
-        kill -0 "$relayer_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"; fail "relayer exited unexpectedly"; }
-        if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
-            tail_logs_on_fail "$relayer_log" "$validator_log"
-            fail "validator exited unexpectedly"
-        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         supply="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_warp" --method total_supply --return-type u64 2>/dev/null | jq -r '.value // 0')"
         if [ "$supply" = "$expected_dusk_supply" ]; then
             break
@@ -240,15 +341,17 @@ PY
     amount_to_evm_wei="$(to_wei "$AMOUNT_TO_EVM")"
     local evm_balance_mid
     evm_balance_mid="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    local protocol_collected_before protocol_fee_per_dispatch
+    protocol_collected_before="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
+    protocol_fee_per_dispatch="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method protocol_fee --return-type u64 2>/dev/null | jq -r '.value')"
 
     info "Dispatching Dusk -> EVM ($AMOUNT_TO_EVM wDUSK)..."
     local evm_recipient_pad32
     evm_recipient_pad32="$(pad_evm_address "$ANVIL_DEPLOYER")"
 
-    "$DUSK_TX" transfer-remote \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
       --rues-url "$DUSK_RUES_URL" \
       --keys "$CONSENSUS_KEYS" \
-      --password "$CONSENSUS_PASSWORD" \
       --warp-contract "$dusk_warp" \
       --destination "$evm_domain" \
       --recipient "$evm_recipient_pad32" \
@@ -269,11 +372,7 @@ PY
             tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
             fail "timeout waiting for Dusk->EVM delivery"
         fi
-        kill -0 "$relayer_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"; fail "relayer exited unexpectedly"; }
-        if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
-            tail_logs_on_fail "$relayer_log" "$validator_log"
-            fail "validator exited unexpectedly"
-        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         local bal
         bal="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
         if [ "$bal" = "$expected_evm_balance" ]; then
@@ -283,12 +382,155 @@ PY
     done
     info "Dusk->EVM delivered."
 
+    local protocol_collected_after expected_protocol_collected
+    protocol_collected_after="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
+    expected_protocol_collected="$((protocol_collected_before + protocol_fee_per_dispatch))"
+    if [ "$protocol_collected_after" != "$expected_protocol_collected" ]; then
+        fail "protocol fee custody mismatch: expected $expected_protocol_collected, got $protocol_collected_after"
+    fi
+    info "ProtocolFee collected the live Dusk dispatch fee ($protocol_fee_per_dispatch LUX)."
+
+    # ----------------------------
+    # Native DUSK route round trip
+    # ----------------------------
+    local native_send=100000000 native_return=40000000
+    local evm_native_before evm_native_target
+    evm_native_before="$(cast call "$evm_native_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    evm_native_target="$((evm_native_before + native_send))"
+    info "Dispatching native DUSK -> EVM ($native_send LUX)..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+      --warp-contract "$dusk_warp_native" --destination "$evm_domain" \
+      --recipient "$evm_recipient_pad32" --amount "$native_send" --native >/dev/null
+
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for native Dusk->EVM delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
+        local native_evm_balance
+        native_evm_balance="$(cast call "$evm_native_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+        [ "$native_evm_balance" = "$evm_native_target" ] && break
+        sleep 2
+    done
+    local native_locked
+    native_locked="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+      --contract 0100000000000000000000000000000000000000000000000000000000000000 \
+      --method contract_balance --return-type u64 --arg-bytes32 "$dusk_warp_native" 2>/dev/null | jq -r '.value')"
+    [ "$native_locked" = "$native_send" ] || fail "native custody mismatch after lock: $native_locked"
+
+    info "Returning native DUSK EVM -> Dusk ($native_return LUX)..."
+    cast send "$evm_native_token" "transferRemote(uint32,bytes32,uint256)" \
+      "$dusk_domain" "0x${account_h256}" "$native_return" \
+      --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+    local native_locked_target="$((native_send - native_return))"
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for native EVM->Dusk delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
+        native_locked="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+          --contract 0100000000000000000000000000000000000000000000000000000000000000 \
+          --method contract_balance --return-type u64 --arg-bytes32 "$dusk_warp_native" 2>/dev/null | jq -r '.value')"
+        [ "$native_locked" = "$native_locked_target" ] && break
+        sleep 2
+    done
+    info "Native route round trip delivered with exact DUSK custody."
+
+    # ----------------------------
+    # DRC20 collateral round trip
+    # ----------------------------
+    local collateral_send=500000000000000000 collateral_return=200000000000000000
+    local owner_token_before collateral_locked_before
+    owner_token_before="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+    collateral_locked_before="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
+      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-approve \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" \
+      --spender "$dusk_warp_collateral" --amount "$collateral_send" >/dev/null
+
+    local evm_collateral_before evm_collateral_target
+    evm_collateral_before="$(cast call "$evm_collateral_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    evm_collateral_target="$((evm_collateral_before + collateral_send))"
+    info "Dispatching DRC20 collateral Dusk -> EVM..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+      --warp-contract "$dusk_warp_collateral" --destination "$evm_domain" \
+      --recipient "$evm_recipient_pad32" --amount "$collateral_send" >/dev/null
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for collateral Dusk->EVM delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
+        local collateral_evm_balance
+        collateral_evm_balance="$(cast call "$evm_collateral_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+        [ "$collateral_evm_balance" = "$evm_collateral_target" ] && break
+        sleep 2
+    done
+    local owner_token_after collateral_locked_after
+    owner_token_after="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+    collateral_locked_after="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
+      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+    [ "$owner_token_after" = "$((owner_token_before - collateral_send))" ] || fail "owner collateral debit mismatch"
+    [ "$collateral_locked_after" = "$((collateral_locked_before + collateral_send))" ] || fail "DRC20 custody mismatch after lock"
+
+    info "Returning DRC20 collateral EVM -> Dusk..."
+    cast send "$evm_collateral_token" "transferRemote(uint32,bytes32,uint256)" \
+      "$dusk_domain" "0x${account_h256}" "$collateral_return" \
+      --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+    local owner_return_target="$((owner_token_after + collateral_return))"
+    start_ts="$(date +%s)"
+    while true; do
+        now="$(date +%s)"
+        if [ $((now - start_ts)) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for collateral EVM->Dusk delivery"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
+        owner_token_after="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
+          --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+        [ "$owner_token_after" = "$owner_return_target" ] && break
+        sleep 2
+    done
+    collateral_locked_after="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
+      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+    [ "$collateral_locked_after" = "$((collateral_locked_before + collateral_send - collateral_return))" ] || fail "DRC20 custody mismatch after unlock"
+    info "Collateral route round trip delivered with exact allowance and custody changes."
+
+    protocol_collected_after="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
+    expected_protocol_collected="$((protocol_collected_before + 3 * protocol_fee_per_dispatch))"
+    [ "$protocol_collected_after" = "$expected_protocol_collected" ] || fail "three-route protocol fee mismatch"
+
     # Cleanup agents + env.
     info "Stopping agents..."
     kill_pid "$relayer_pid"
     kill_pid "$validator_pid"
+    kill_pid "$dusk_validator_pid"
     CURRENT_RELAYER_PID=""
     CURRENT_VALIDATOR_PID=""
+    CURRENT_DUSK_VALIDATOR_PID=""
+    CURRENT_DUSK_VALIDATOR_LOG=""
+    if [ -n "$dusk_signer_key_file" ]; then
+        rm -f "$dusk_signer_key_file" 2>/dev/null || true
+    fi
+    rm -f "$relayer_cfg" 2>/dev/null || true
+    if [ -n "$validator_cfg" ]; then
+        rm -f "$validator_cfg" 2>/dev/null || true
+    fi
+    if [ -n "$dusk_validator_cfg" ]; then
+        rm -f "$dusk_validator_cfg" 2>/dev/null || true
+    fi
 
     info "Stopping environment..."
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true

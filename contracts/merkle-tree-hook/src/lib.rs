@@ -14,10 +14,12 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::used_underscore_binding)]
 
 /// Hyperlane MerkleTreeHook contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [events::Initialized, events::InsertedIntoTree])]
 mod merkle_tree_hook {
     extern crate alloc;
 
@@ -37,6 +39,12 @@ mod merkle_tree_hook {
     pub struct MerkleTreeHook {
         /// The incremental Merkle tree.
         tree: IncrementalMerkle,
+        /// Message IDs in insertion order, used by finalized indexers.
+        inserted_message_ids: Vec<H256>,
+        /// Block height for each insertion, parallel to `inserted_message_ids`.
+        inserted_block_heights: Vec<u64>,
+        /// Merkle root after each insertion, parallel to `inserted_message_ids`.
+        inserted_roots: Vec<H256>,
         /// The Mailbox contract that is allowed to trigger post_dispatch.
         mailbox: ContractId,
     }
@@ -46,6 +54,9 @@ mod merkle_tree_hook {
         pub const fn new() -> Self {
             Self {
                 tree: IncrementalMerkle::new(),
+                inserted_message_ids: Vec::new(),
+                inserted_block_heights: Vec::new(),
+                inserted_roots: Vec::new(),
                 mailbox: ZERO_CONTRACT,
             }
         }
@@ -57,6 +68,15 @@ mod merkle_tree_hook {
                 "MerkleTreeHook: already initialized"
             );
             self.mailbox = mailbox;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_MERKLE_TREE_HOOK,
+                    owner: ZERO_CONTRACT.to_bytes(),
+                    mailbox: mailbox.to_bytes(),
+                    local_domain: 0,
+                },
+            );
         }
 
         // =================================================================
@@ -78,6 +98,9 @@ mod merkle_tree_hook {
             let index = self.tree.count;
 
             self.tree.insert(id);
+            self.inserted_message_ids.push(id);
+            self.inserted_block_heights.push(abi::block_height());
+            self.inserted_roots.push(self.tree.root());
 
             abi::emit(
                 events::InsertedIntoTree::TOPIC,
@@ -112,6 +135,52 @@ mod merkle_tree_hook {
         /// Returns the number of leaves inserted.
         pub fn count(&self) -> u32 {
             self.tree.count
+        }
+
+        /// Storage/agent ABI version for deployment compatibility checks.
+        #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
+        /// Returns the message ID inserted at `index`.
+        pub fn message_id_at(&self, index: u32) -> H256 {
+            self.inserted_message_ids
+                .get(index as usize)
+                .copied()
+                .expect("MerkleTreeHook: insertion index out of bounds")
+        }
+
+        /// Returns a bounded consecutive page of inserted message IDs.
+        pub fn message_ids(&self, start: u32, limit: u32) -> Vec<H256> {
+            const MAX_PAGE_SIZE: usize = 256;
+            let start = start as usize;
+            assert!(
+                start <= self.inserted_message_ids.len(),
+                "MerkleTreeHook: insertion index out of bounds"
+            );
+            let limit = usize::try_from(limit).expect("MerkleTreeHook: page size overflow");
+            assert!(limit <= MAX_PAGE_SIZE, "MerkleTreeHook: page too large");
+            let end = start
+                .saturating_add(limit)
+                .min(self.inserted_message_ids.len());
+            self.inserted_message_ids[start..end].to_vec()
+        }
+
+        /// Returns the block height at which `index` was inserted.
+        pub fn inserted_block_height(&self, index: u32) -> u64 {
+            self.inserted_block_heights
+                .get(index as usize)
+                .copied()
+                .expect("MerkleTreeHook: insertion index out of bounds")
+        }
+
+        /// Returns the Merkle root immediately after insertion `index`.
+        pub fn root_at(&self, index: u32) -> H256 {
+            self.inserted_roots
+                .get(index as usize)
+                .copied()
+                .expect("MerkleTreeHook: insertion index out of bounds")
         }
 
         /// Returns the full incremental Merkle tree state (branch + count).

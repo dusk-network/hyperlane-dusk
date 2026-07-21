@@ -24,6 +24,7 @@ use crate::H256;
 const MIN_LEN: usize = 64;
 
 /// Encode a token message body (EVM-compatible uint256 amount).
+#[must_use]
 pub fn encode(recipient: H256, amount: u64) -> Vec<u8> {
     let mut buf = Vec::with_capacity(MIN_LEN);
     buf.extend_from_slice(&recipient);
@@ -35,6 +36,7 @@ pub fn encode(recipient: H256, amount: u64) -> Vec<u8> {
 }
 
 /// Encode a token message body with metadata.
+#[must_use]
 pub fn encode_with_metadata(recipient: H256, amount: u64, metadata: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(MIN_LEN + metadata.len());
     buf.extend_from_slice(&recipient);
@@ -55,7 +57,11 @@ pub struct TokenMessage<'a> {
     pub metadata: &'a [u8],
 }
 
-/// Decode a token message body. Returns `None` if the body is too short.
+/// Decode a token message body.
+///
+/// Returns `None` if the body is too short or the uint256 amount does not fit
+/// in Dusk's `u64` token representation.
+#[must_use]
 pub fn decode(body: &[u8]) -> Option<TokenMessage<'_>> {
     if body.len() < MIN_LEN {
         return None;
@@ -63,6 +69,11 @@ pub fn decode(body: &[u8]) -> Option<TokenMessage<'_>> {
 
     let mut recipient = [0u8; 32];
     recipient.copy_from_slice(&body[..32]);
+
+    // Reject rather than truncate remote uint256 amounts above u64::MAX.
+    if body[32..56].iter().any(|byte| *byte != 0) {
+        return None;
+    }
 
     // Read last 8 bytes of the 32-byte uint256 amount field as u64.
     let amount = u64::from_be_bytes(body[56..64].try_into().ok()?);
@@ -112,6 +123,14 @@ mod tests {
     fn decode_too_short() {
         assert!(decode(&[0u8; 63]).is_none());
         assert!(decode(&[]).is_none());
+    }
+
+    #[test]
+    fn decode_rejects_amount_above_u64() {
+        let mut encoded = encode([0; 32], 1);
+        encoded[55] = 1;
+
+        assert!(decode(&encoded).is_none());
     }
 
     #[test]

@@ -58,6 +58,11 @@ TOKEN_DECIMALS=18
 INITIAL_SUPPLY="10000000000000000000"       # 10 tokens (10e18)
 BRIDGE_EVM_TO_DUSK="3000000000000000000"    # 3 tokens (3e18)
 BRIDGE_DUSK_TO_EVM="1000000000000000000"    # 1 token (1e18)
+DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
+DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-50000}"
+DUSK_IGP_TOKEN_EXCHANGE_RATE="${DUSK_IGP_TOKEN_EXCHANGE_RATE:-10000000000}"
+DUSK_IGP_GAS_PRICE="${DUSK_IGP_GAS_PRICE:-1}"
+BRIDGE_STATE_FILE="${BRIDGE_STATE_FILE:-/tmp/hyperlane-bridge-state.json}"
 
 # Temp files
 DUSK_DEPLOY_OUTPUT="/tmp/hyperlane-demo-dusk-deploy.json"
@@ -103,25 +108,16 @@ encode_token_message() {
 
 header "Step 0: Checking Prerequisites"
 
-# Check dusk-tx binary
-if [ ! -f "$DUSK_TX" ]; then
-    warn "dusk-tx not found at $DUSK_TX"
-    # Try debug build
-    DUSK_TX="$DUSK_DIR/target/debug/dusk-tx"
-    if [ ! -f "$DUSK_TX" ]; then
-        info "Building dusk-tx..."
-        (cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
-        DUSK_TX="$DUSK_DIR/target/release/dusk-tx"
-    fi
-fi
+# Always let Cargo evaluate freshness. File existence alone can select a CLI
+# that predates the checked-out ABI.
+info "Ensuring dusk-tx is current..."
+(cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
+DUSK_TX="$DUSK_DIR/target/release/dusk-tx"
 ok "dusk-tx binary: $DUSK_TX"
 
-# Check WASMs
-if [ ! -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ]; then
-    warn "Contract WASMs not found"
-    info "Building WASMs (this takes a few minutes)..."
-    (cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
-fi
+# Always let Cargo evaluate every contract artifact for freshness.
+info "Ensuring contract WASMs are current..."
+(cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
 ok "Contract WASMs: $WASM_DIR"
 
 # Check consensus keys
@@ -181,13 +177,22 @@ ok "Anvil connected (block: $BLOCK_NUM)"
 
 header "Step 2: Deploying Hyperlane on EVM (domain=$EVM_DOMAIN)"
 
-if [ "${1:-}" = "--skip-deploy" ] && [ -f "/tmp/hyperlane-demo-evm.json" ]; then
-    info "Skipping EVM deployment (--skip-deploy)"
-    EVM_ISM=$(jq -r '.ism' /tmp/hyperlane-demo-evm.json)
-    EVM_HOOK=$(jq -r '.hook' /tmp/hyperlane-demo-evm.json)
-    EVM_MAILBOX=$(jq -r '.mailbox' /tmp/hyperlane-demo-evm.json)
-    EVM_RECIPIENT=$(jq -r '.recipient' /tmp/hyperlane-demo-evm.json)
-    EVM_TOKEN=$(jq -r '.token' /tmp/hyperlane-demo-evm.json)
+if [ "${1:-}" = "--skip-deploy" ]; then
+    [ -f "$SCRIPT_DIR/.env.bridge" ] \
+        || fail "--skip-deploy requires $SCRIPT_DIR/.env.bridge and the canonical combined deployment state"
+    [ -f "$BRIDGE_STATE_FILE" ] \
+        || fail "--skip-deploy requires the combined deployment state at $BRIDGE_STATE_FILE"
+    info "Validating the complete saved deployment before reuse..."
+    BRIDGE_STATE_FILE="$BRIDGE_STATE_FILE" bash "$SCRIPT_DIR/deploy.sh" --skip-deploy >/dev/null \
+        || fail "Saved deployment failed canonical live validation"
+    jq -e '.dusk_default_ism == "testMock"' "$BRIDGE_STATE_FILE" >/dev/null \
+        || fail "The standalone manual demo requires a saved TestMock deployment"
+    EVM_ISM=$(jq -er '.evm.ism' "$BRIDGE_STATE_FILE")
+    EVM_HOOK=$(jq -er '.evm.hook' "$BRIDGE_STATE_FILE")
+    EVM_MAILBOX=$(jq -er '.evm.mailbox' "$BRIDGE_STATE_FILE")
+    EVM_RECIPIENT=$(jq -er '.evm.recipient' "$BRIDGE_STATE_FILE")
+    EVM_TOKEN=$(jq -er '.evm.token' "$BRIDGE_STATE_FILE")
+    info "Skipping EVM deployment after canonical validation"
 else
     # Deploy from solidity directory
     cd "$SOLIDITY_DIR"
@@ -232,7 +237,7 @@ else
 
     step "Deploying HypERC20 ($TOKEN_SYMBOL, ${TOKEN_DECIMALS} decimals, scale=1)..."
     EVM_TOKEN=$(forge create contracts/token/HypERC20.sol:HypERC20 \
-        --constructor-args "$TOKEN_DECIMALS" 1 "$EVM_MAILBOX" \
+        --constructor-args "$TOKEN_DECIMALS" 1 1 "$EVM_MAILBOX" \
         --rpc-url "$ANVIL_RPC" \
         --private-key "$ANVIL_PRIVATE_KEY" \
         --json 2>/dev/null | jq -r '.deployedTo') || fail "Failed to deploy HypERC20"
@@ -276,7 +281,6 @@ header "Step 3: Deploying Hyperlane on Dusk (domain=$DUSK_DOMAIN)"
 step "Checking Dusk node..."
 DUSK_CHAIN_ID=$(curl -s -X POST \
     -H "Content-Type: application/octet-stream" \
-    -H "rusk-version: 1.0.0-rc.0" \
     "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
     --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
 
@@ -285,16 +289,17 @@ if [ -z "$DUSK_CHAIN_ID" ]; then
 fi
 ok "Dusk node connected"
 
-if [ "${1:-}" = "--skip-deploy" ] && [ -f "$DUSK_DEPLOY_OUTPUT" ]; then
-    info "Skipping Dusk deployment (--skip-deploy)"
+if [ "${1:-}" = "--skip-deploy" ]; then
+    info "Skipping Dusk deployment after canonical validation"
 else
     step "Deploying Hyperlane contracts on Dusk..."
-    "$DUSK_TX" deploy-hyperlane \
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-hyperlane \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --domain "$DUSK_DOMAIN" \
         --wasm-dir "$WASM_DIR" \
+        --default-ism testMock \
+        --igp-domain-config "$EVM_DOMAIN:$DUSK_IGP_GAS_OVERHEAD:$DUSK_IGP_TOKEN_EXCHANGE_RATE:$DUSK_IGP_GAS_PRICE" \
         --deploy-warp-drc20 \
         --warp-name "$TOKEN_NAME" \
         --warp-symbol "$TOKEN_SYMBOL" \
@@ -303,23 +308,60 @@ else
     ok "Dusk contracts deployed"
 fi
 
-# Parse Dusk deployment output
-DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_OUTPUT")
-DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_OUTPUT")
-DUSK_ISM=$(jq -r '.contracts.ism_multisig // .contracts.test_mock // empty' "$DUSK_DEPLOY_OUTPUT")
-DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_OUTPUT")
-DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_OUTPUT")
+if [ "${1:-}" = "--skip-deploy" ]; then
+    DUSK_MAILBOX=$(jq -er '.dusk.mailbox' "$BRIDGE_STATE_FILE")
+    DUSK_MERKLE=$(jq -er '.dusk.merkle_tree_hook' "$BRIDGE_STATE_FILE")
+    DUSK_ISM=$(jq -er '.dusk.default_ism' "$BRIDGE_STATE_FILE")
+    DUSK_WARP=$(jq -er '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")
+    DUSK_PROTOCOL_FEE=$(jq -er '.dusk.protocol_fee' "$BRIDGE_STATE_FILE")
+    DUSK_AGGREGATION_HOOK=$(jq -er '.dusk.aggregation_hook' "$BRIDGE_STATE_FILE")
+    DUSK_TEST_RECIPIENT=$(jq -er '.dusk.test_recipient' "$BRIDGE_STATE_FILE")
+else
+    DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_ISM=$(jq -r '.contracts.ism_multisig // .contracts.test_mock // empty' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_PROTOCOL_FEE=$(jq -r '.contracts.protocol_fee' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_OUTPUT")
+fi
 
 echo ""
 ok "Dusk contracts deployed:"
 info "  Mailbox:         $DUSK_MAILBOX"
 info "  MerkleTreeHook:  $DUSK_MERKLE"
 info "  WarpDrc20:       $DUSK_WARP"
+info "  ProtocolFee:     $DUSK_PROTOCOL_FEE"
+info "  AggregationHook: $DUSK_AGGREGATION_HOOK"
 info "  TestRecipient:   $DUSK_TEST_RECIPIENT"
 
 # ── Step 4: Enroll Remote Routers & Register Account ─────────────────────────
 
 header "Step 4: Enrolling Remote Routers & Registering Account"
+
+DISPATCH_CREDIT_JSON=$("$DUSK_TX" query \
+    --rues-url "$DUSK_RUES_URL" \
+    --contract "$DUSK_MAILBOX" \
+    --method fee_credit \
+    --return-type u64 \
+    --arg-bytes32 "$DUSK_WARP" 2>/dev/null) \
+    || fail "Failed to query WarpDrc20 dispatch fee credit"
+CURRENT_DISPATCH_CREDIT=$(jq -er '.value | tonumber' <<<"$DISPATCH_CREDIT_JSON") \
+    || fail "WarpDrc20 returned malformed dispatch fee credit"
+if [ "$CURRENT_DISPATCH_CREDIT" -lt "$DUSK_DISPATCH_FEE_CREDIT" ]; then
+    DISPATCH_CREDIT_DEFICIT=$((DUSK_DISPATCH_FEE_CREDIT - CURRENT_DISPATCH_CREDIT))
+    step "Dusk: Funding WarpDrc20 dispatch fee deficit ($DISPATCH_CREDIT_DEFICIT LUX)..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
+        --rues-url "$DUSK_RUES_URL" \
+        --keys "$CONSENSUS_KEYS" \
+        --mailbox "$DUSK_MAILBOX" \
+        --payer "$DUSK_WARP" \
+        --amount "$DISPATCH_CREDIT_DEFICIT" \
+        >/dev/null || fail "Failed to fund WarpDrc20 dispatch fee deficit"
+    ok "Dusk: WarpDrc20 dispatch credit brought to target"
+else
+    ok "Dusk: WarpDrc20 dispatch credit already satisfies target"
+fi
 
 # EVM side: enroll Dusk WarpDrc20 as remote router for the Dusk domain
 EVM_TOKEN_PAD32="0x$(pad_evm_address "$EVM_TOKEN")"
@@ -336,10 +378,9 @@ ok "EVM: Remote router enrolled (domain=$DUSK_DOMAIN -> $DUSK_WARP)"
 
 # Dusk side: enroll EVM HypERC20 as remote router for the EVM domain
 step "Dusk: Enrolling EVM HypERC20 as remote router (domain=$EVM_DOMAIN)..."
-"$DUSK_TX" enroll-router \
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" \
     --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_TOKEN")" \
@@ -349,10 +390,9 @@ ok "Dusk: Remote router enrolled (domain=$EVM_DOMAIN -> ${EVM_TOKEN})"
 # Register deployer's BLS key on WarpDrc20 so tokens can be minted to
 # an External account (required for transfer_remote in step 7)
 step "Dusk: Registering deployer BLS key on WarpDrc20..."
-REGISTER_RESULT=$("$DUSK_TX" register-account \
+REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" 2>/dev/null) || fail "Failed to register account on Dusk"
 DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
 ok "Dusk: Account registered (H256: ${DUSK_ACCOUNT_H256:0:16}...)"
@@ -448,10 +488,9 @@ RELAY_MSG_ID=$(echo "$ENCODE_RESULT" | jq -r '.message_id')
 ok "Relay message encoded (ID: ${RELAY_MSG_ID:0:16}...)"
 
 step "Dusk: Processing inbound message (EVM -> Dusk)..."
-PROCESS_RESULT=$("$DUSK_TX" process \
+PROCESS_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" process \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --mailbox "$DUSK_MAILBOX" \
     --message "$RELAY_MSG" 2>/dev/null) || fail "Failed to process message on Dusk"
 ok "Dusk: Message processed!"
@@ -489,10 +528,9 @@ DUSK_NONCE_BEFORE=$(echo "$DUSK_NONCE_BEFORE_JSON" | jq -r '.value // 0')
 
 # Call transfer_remote on WarpDrc20 — burns tokens from the deployer's External
 # account and dispatches a Hyperlane message to the EVM HypERC20.
-"$DUSK_TX" transfer-remote \
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --password "$CONSENSUS_PASSWORD" \
     --warp-contract "$DUSK_WARP" \
     --destination "$EVM_DOMAIN" \
     --recipient "$EVM_RECIPIENT_PAD32" \

@@ -1,0 +1,98 @@
+name: Dusk Proposal Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - feat/dusk-hardening-v2
+
+permissions:
+  contents: read
+
+jobs:
+  proposal-validation:
+    name: Dusk proposal validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout proposed tree
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+      - name: Check proposed diff
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --check "$BASE_SHA...HEAD"
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            git ls-files --others --exclude-standard
+            echo "::error::untracked source paths found"
+            exit 1
+          fi
+
+      - name: Exercise unprivileged proposal guardrails
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          required_scripts=(
+            scripts/fail-closed-self-test.sh
+            scripts/github-review-hygiene.sh
+            scripts/production-readiness-guard.sh
+            scripts/report-hygiene-check.sh
+            scripts/secret-hygiene-check.sh
+          )
+
+          base_script_count=0
+          head_script_count=0
+          for script in "${required_scripts[@]}"; do
+            git cat-file -e "$BASE_SHA:$script" 2>/dev/null && ((base_script_count += 1)) || true
+            [ -f "$script" ] && ((head_script_count += 1)) || true
+          done
+
+          if [ "$base_script_count" -eq 0 ] && [ "$head_script_count" -eq 0 ]; then
+            bootstrap_violation=0
+            while IFS= read -r path; do
+              case "$path" in
+                .github/actionlint.yaml|\
+                .github/workflows/dusk-proposal-validation.yml|\
+                .github/workflows/dusk-review-policy-gate.yml|\
+                .github/workflows/manual-repro-check.yml|\
+                .github/workflows/manual-repro-dispatcher-gate.yml|\
+                CI_REPRO_BOOTSTRAP_DECISIONS.md)
+                  ;;
+                *)
+                  echo "::error file=$path::change falls outside the policy-only bootstrap boundary"
+                  bootstrap_violation=1
+                  ;;
+              esac
+            done < <(git diff --name-only "$BASE_SHA...HEAD")
+            exit "$bootstrap_violation"
+          fi
+
+          if [ "$head_script_count" -ne "${#required_scripts[@]}" ]; then
+            echo "::error::the proposed tree must contain every required review guard script"
+            exit 1
+          fi
+
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
+          for script in "${required_scripts[@]}"; do
+            bash -n "$script"
+          done
+
+          bash scripts/fail-closed-self-test.sh
+          VERIFY_LATEST_REPRO_ARCHIVE=0 bash scripts/report-hygiene-check.sh
+          bash scripts/secret-hygiene-check.sh
