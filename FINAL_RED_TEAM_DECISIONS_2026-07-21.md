@@ -21,6 +21,14 @@ silently relabeled as having run those tests.
   `repository_dispatch`, which loads the default-branch workflow; the status
   job no longer accepts a writer-selected workflow ref or the source-read
   credential as a fallback.
+- **Required-check provenance:** a check name attached to the proposed SHA is
+  not sufficient authority. Readiness resolves each candidate check to its
+  GitHub Actions workflow run and requires the exact workflow path, expected
+  event type, repository, PR number, proposed head SHA, base SHA/ref, and the
+  `github-actions` app before considering it. Only `SUCCESS` is accepted;
+  `NEUTRAL`, `SKIPPED`, missing run metadata, and lookalike workflows fail
+  closed. The manual dispatcher is deliberately bound to `pull_request`, while
+  the trusted review/readiness gates remain `pull_request_target`.
 - **Bootstrap scope:** the first guard introduction permits one explicit
   six-file bootstrap set. An empty computed worklist is no longer treated as
   proof that arbitrary changes are safe.

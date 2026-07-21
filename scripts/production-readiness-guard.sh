@@ -128,14 +128,24 @@ status_rollup() {
     local repo="$1"
     local number="$2"
     local head_sha
+    local base_sha
+    local base_ref
     local raw
+    local enriched=""
     local err_file
+    local record
+    local details_url
+    local run_id
+    local run_meta
+    local merged
 
     head_sha="$(pr_head_sha "$repo" "$number")"
+    base_sha="$(gh api "repos/$repo/pulls/$number" --jq .base.sha)"
+    base_ref="$(gh api "repos/$repo/pulls/$number" --jq .base.ref)"
     err_file="/tmp/hyperlane-readiness-check-runs.$$.err"
     if ! raw="$(gh api --paginate \
         "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
-        --jq '.check_runs[] | {name, status: (.status | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase), detailsUrl: .html_url}' \
+        --jq '.check_runs[] | {id, name, headSha: .head_sha, appSlug: .app.slug, status: (.status | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase), detailsUrl: .html_url}' \
         2>"$err_file")"; then
         printf '[]\n'
         sed 's/^/  gh: /' "$err_file" >&2
@@ -144,7 +154,57 @@ status_rollup() {
     fi
     rm -f "$err_file"
 
-    if ! printf '%s\n' "$raw" | jq -s '.'; then
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        details_url="$(printf '%s\n' "$record" | jq -r '.detailsUrl // ""')"
+        run_id="$(printf '%s\n' "$details_url" | sed -nE 's#^.*/actions/runs/([0-9]+)(/.*)?$#\1#p')"
+        run_meta='{}'
+        if [ -n "$run_id" ]; then
+            run_meta="$(gh api "repos/$repo/actions/runs/$run_id" --jq '{workflowPath: .path, event: .event, runHeadSha: .head_sha, runRepo: .repository.full_name, pullRequests: (.pull_requests // [])}' 2>/dev/null || printf '{}')"
+        fi
+        merged="$(jq -cn --argjson check "$record" --argjson run "$run_meta" '$check + $run')"
+        enriched="${enriched}${merged}"$'\n'
+    done <<<"$raw"
+
+    if ! printf '%s' "$enriched" | jq -s \
+        --arg repo "$repo" \
+        --argjson number "$number" \
+        --arg base_sha "$base_sha" \
+        --arg base_ref "$base_ref" \
+        --arg head "$head_sha" '
+        def expected_path:
+            if .name == "Dusk proposal validation" then ".github/workflows/dusk-proposal-validation.yml"
+            elif .name == "Dusk review policy gate" then ".github/workflows/dusk-review-policy-gate.yml"
+            elif .name == "Production readiness guard" then ".github/workflows/production-readiness-gate.yml"
+            elif .name == "Dusk agent validation" then ".github/workflows/dusk-agent-gate.yml"
+            elif .name == "Manual repro dispatcher gate" then ".github/workflows/manual-repro-dispatcher-gate.yml"
+            else null end;
+        def expected_event:
+            if .name == "Dusk proposal validation"
+                or .name == "Dusk agent validation"
+                or .name == "Manual repro dispatcher gate"
+            then "pull_request" else "pull_request_target" end;
+        map(. + {
+            trusted: (
+                expected_path != null
+                and .headSha == $head
+                and .appSlug == "github-actions"
+                and .workflowPath == expected_path
+                and .event == expected_event
+                and .runRepo == $repo
+                and any(.pullRequests[]?;
+                    .number == $number
+                    and .head.sha == $head
+                    and .base.sha == $base_sha
+                    and .base.ref == $base_ref
+                )
+            )
+        })
+        | map(select(.trusted))
+        | sort_by(.name, (.id // 0))
+        | group_by(.name)
+        | map(max_by(.id // 0))
+    '; then
         printf '[]\n'
     fi
 }
@@ -201,11 +261,7 @@ count_failed_checks() {
             .[]
             | select(.name as $name | $required_names | index($name) != null)
             | select(.status == "COMPLETED")
-            | select(
-                .conclusion != "SUCCESS"
-                and .conclusion != "NEUTRAL"
-                and .conclusion != "SKIPPED"
-            )
+            | select(.conclusion != "SUCCESS")
             | select(
                 ($run_id == "")
                 or (((.detailsUrl // "") | contains("/actions/runs/" + $run_id + "/")) | not)

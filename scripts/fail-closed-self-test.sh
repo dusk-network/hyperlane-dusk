@@ -402,6 +402,12 @@ case "$*" in
     "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .head.sha")
         printf '1111111111111111111111111111111111111111\n'
         ;;
+    "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .base.sha")
+        printf '2222222222222222222222222222222222222222\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .base.ref")
+        printf 'main\n'
+        ;;
     "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq if "*)
         printf 'OPEN\n'
         ;;
@@ -409,13 +415,29 @@ case "$*" in
         printf '[]\n'
         ;;
     "api --paginate repos/dusk-network/hyperlane-dusk/commits/1111111111111111111111111111111111111111/check-runs?per_page=100 --jq "*)
-        printf '%s\n' '{"name":"Dusk proposal validation","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/first"}'
+        printf '%s\n' '{"id":101,"name":"Dusk proposal validation","headSha":"1111111111111111111111111111111111111111","appSlug":"github-actions","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/dusk-network/hyperlane-dusk/actions/runs/101/job/1"}'
         if [ "${GH_MOCK_MISSING_EXACT:-0}" = "1" ]; then
-            printf '%s\n' '{"name":"Production readiness guard / lookalike","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/lookalike"}'
+            printf '%s\n' '{"id":102,"name":"Production readiness guard / lookalike","headSha":"1111111111111111111111111111111111111111","appSlug":"github-actions","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/dusk-network/hyperlane-dusk/actions/runs/102/job/1"}'
         else
             # This record represents a required context only present on the
             # second paginated response.
-            printf '%s\n' '{"name":"Production readiness guard","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/second-page"}'
+            conclusion="SUCCESS"
+            [ "${GH_MOCK_SKIPPED:-0}" = "1" ] && conclusion="SKIPPED"
+            name="Production readiness guard"
+            [ "${GH_MOCK_MANUAL_DISPATCHER:-0}" = "1" ] && name="Manual repro dispatcher gate"
+            printf '%s\n' "{\"id\":102,\"name\":\"$name\",\"headSha\":\"1111111111111111111111111111111111111111\",\"appSlug\":\"github-actions\",\"status\":\"COMPLETED\",\"conclusion\":\"$conclusion\",\"detailsUrl\":\"https://github.com/dusk-network/hyperlane-dusk/actions/runs/102/job/1\"}"
+        fi
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/actions/runs/101 --jq "*)
+        path='.github/workflows/dusk-proposal-validation.yml'
+        [ "${GH_MOCK_WRONG_WORKFLOW:-0}" = "1" ] && path='.github/workflows/unrelated.yml'
+        printf '{"workflowPath":"%s","event":"pull_request","runHeadSha":"1111111111111111111111111111111111111111","runRepo":"dusk-network/hyperlane-dusk","pullRequests":[{"number":1,"head":{"sha":"1111111111111111111111111111111111111111"},"base":{"sha":"2222222222222222222222222222222222222222","ref":"main"}}]}\n' "$path"
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/actions/runs/102 --jq "*)
+        if [ "${GH_MOCK_MANUAL_DISPATCHER:-0}" = "1" ]; then
+            printf '%s\n' '{"workflowPath":".github/workflows/manual-repro-dispatcher-gate.yml","event":"pull_request","runHeadSha":"1111111111111111111111111111111111111111","runRepo":"dusk-network/hyperlane-dusk","pullRequests":[{"number":1,"head":{"sha":"1111111111111111111111111111111111111111"},"base":{"sha":"2222222222222222222222222222222222222222","ref":"main"}}]}'
+        else
+            printf '%s\n' '{"workflowPath":".github/workflows/production-readiness-gate.yml","event":"pull_request_target","runHeadSha":"2222222222222222222222222222222222222222","runRepo":"dusk-network/hyperlane-dusk","pullRequests":[{"number":1,"head":{"sha":"1111111111111111111111111111111111111111"},"base":{"sha":"2222222222222222222222222222222222222222","ref":"main"}}]}'
         fi
         ;;
     *)
@@ -432,11 +454,33 @@ expect_pass \
         READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 \
     bash scripts/production-readiness-guard.sh
 
+expect_pass \
+    production-readiness-accepts-manual-dispatcher-pull-request-provenance \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 \
+        DUSK_REQUIRED_STATUS_CONTEXTS='Manual repro dispatcher gate' \
+        GH_MOCK_MANUAL_DISPATCHER=1 \
+    bash scripts/production-readiness-guard.sh
+
 expect_fail \
     production-readiness-rejects-lookalike-check-name \
     'missing required status checks: Production readiness guard' \
     env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
         READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_MISSING_EXACT=1 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-rejects-skipped-required-check \
+    'has 1 failed status checks' \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_SKIPPED=1 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-rejects-wrong-workflow-provenance \
+    'missing required status checks: Dusk proposal validation' \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_WRONG_WORKFLOW=1 \
     bash scripts/production-readiness-guard.sh
 
 expect_fail \

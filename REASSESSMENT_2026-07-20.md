@@ -12,6 +12,13 @@ contract changes identified by the first reassessment pass.
 
 ## Final status addendum — 2026-07-21
 
+The final readiness hardening binds required check names to their originating
+GitHub Actions workflow run and exact PR/head/base identity. This closes the
+same-name/check-conclusion spoofing gap: only a completed `SUCCESS` from the
+expected workflow path and event is accepted. The fail-closed self-test covers
+lookalike names, skipped conclusions, wrong workflow provenance, and the manual
+dispatcher's `pull_request` event.
+
 The final base covered-tree anchor is
 `aaad04937483897ffc0fcc77cfcedbc53bfee326`; the focused withdrawal stack was
 validated at `db040e3f1eab4ba012a12a6be92c8f86268a993f`; and the synchronized
