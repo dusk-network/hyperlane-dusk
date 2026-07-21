@@ -93,6 +93,11 @@ for script in \
     [ -n "$generator_line" ] && [ -n "$ownership_line" ] && [ "$generator_line" -lt "$ownership_line" ] \
         || fail "$script claims cleanup ownership before generator success"
 done
+withdraw_chain_id_line="$(rg -n -F 'dusk_chain_id_hex="$(jq -er' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+withdraw_call_line="$(rg -n -F '"$DUSK_TX" withdraw-dispatch' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+[ -n "$withdraw_chain_id_line" ] && [ -n "$withdraw_call_line" ] \
+    && [ "$withdraw_chain_id_line" -lt "$withdraw_call_line" ] \
+    || fail "live withdrawal does not load its expected Dusk chain ID before use"
 rg -q -F 'require_merged=0' scripts/production-readiness-guard.sh \
     || fail "pre-merge readiness still requires an already merged PR"
 rg -q -F 'require_approved=0' scripts/production-readiness-guard.sh \

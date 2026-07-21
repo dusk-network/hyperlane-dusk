@@ -243,7 +243,7 @@ run_case() {
     local state="$BRIDGE_STATE_FILE"
     local evm_token evm_native_token evm_collateral_token
     local dusk_mailbox dusk_warp dusk_warp_native dusk_warp_collateral dusk_protocol_fee
-    local account_h256 evm_domain dusk_domain
+    local account_h256 evm_domain dusk_domain dusk_chain_id_hex dusk_chain_id
     evm_token="$(jq -r '.evm.token' "$state")"
     evm_native_token="$(jq -r '.evm.native_token' "$state")"
     evm_collateral_token="$(jq -r '.evm.collateral_token' "$state")"
@@ -255,6 +255,9 @@ run_case() {
     account_h256="$(jq -r '.account_h256' "$state")"
     evm_domain="$(jq -r '.evm_domain' "$state")"
     dusk_domain="$(jq -r '.dusk_domain' "$state")"
+    dusk_chain_id_hex="$(jq -er '.dusk_chain_id | strings | select(test("^[0-9A-Fa-f]{2}$"))' "$state")" \
+      || fail "deployment state has an invalid Dusk chain ID"
+    dusk_chain_id=$((16#$dusk_chain_id_hex))
 
     # Exercise the stacked withdrawal ABI on live Rusk before using the same
     # route for message delivery. The route owner withdraws one LUX from only
