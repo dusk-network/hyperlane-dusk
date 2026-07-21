@@ -1147,7 +1147,18 @@ fn test_recipient_ism_override() {
 
 /// Session with production hooks: ProtocolFee as required_hook, IGP as default_hook.
 fn session_with_hooks() -> TestSession {
-    session_with_hooks_fee_and_igp_config(1000, 10000, Vec::new())
+    session_with_hooks_fee_and_igp_config(
+        1000,
+        10000,
+        vec![(
+            REMOTE_DOMAIN,
+            DomainGasConfig {
+                gas_overhead: 0,
+                token_exchange_rate: 10_000_000_000,
+                gas_price: 1,
+            },
+        )],
+    )
 }
 
 /// Session with production hooks, including IGP with pre-configured gas configs.
@@ -1913,7 +1924,7 @@ fn test_igp_init() {
         .direct_call::<_, u32>(IGP_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 
     let total: u64 = session
         .direct_call::<_, u64>(IGP_ID, "total_gas_payments", &())
@@ -1959,14 +1970,36 @@ fn test_fee_contract_admin_paths_accept_owner_and_reject_non_owner() {
 fn test_igp_quote_no_config() {
     let mut session = session_with_hooks();
 
-    // No gas config set for domain 42 → should return 0
+    // An active IGP must never silently price an unknown destination at zero.
     let metadata = 100_000u64.to_le_bytes().to_vec();
     let encoded = message::encode(VERSION, 0, LOCAL_DOMAIN, [0u8; 32], 42, [0u8; 32], &[]);
-    let quote: u64 = session
-        .direct_call::<_, u64>(IGP_ID, "quote_dispatch", &(metadata, encoded))
-        .expect("quote_dispatch should succeed")
-        .data;
-    assert_eq!(quote, 0);
+    let result = session.direct_call::<_, u64>(IGP_ID, "quote_dispatch", &(metadata, encoded));
+    assert_contract_panic(result, "IGP: destination is not configured");
+}
+
+#[test]
+fn test_igp_rejects_zero_pricing_inputs() {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let result = session.deploy(
+        IGP_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                MAILBOX_ID,
+                *OWNER_ID,
+                *OWNER_ID,
+                vec![(
+                    REMOTE_DOMAIN,
+                    DomainGasConfig {
+                        gas_overhead: 50_000,
+                        token_exchange_rate: 0,
+                        gas_price: 1,
+                    },
+                )],
+            ))
+            .contract_id(IGP_ID),
+    );
+    assert_deploy_panic(result, "IGP: token exchange rate cannot be zero");
 }
 
 #[test]
@@ -2736,6 +2769,97 @@ fn test_warp_routes_reject_zero_mailbox_at_initialization() {
             .contract_id(WARP_DRC20_COLLATERAL_ID),
     );
     assert_deploy_panic(collateral, "WarpCollateral: mailbox cannot be zero");
+}
+
+#[test]
+fn test_mailbox_rejects_zero_dependencies_at_initialization() {
+    let zero = ContractId::from_bytes([0u8; 32]);
+
+    for (default_ism, default_hook, required_hook, expected) in [
+        (
+            zero,
+            TEST_MOCK_ID,
+            MERKLE_TREE_HOOK_ID,
+            "Mailbox: default ISM cannot be zero",
+        ),
+        (
+            TEST_MOCK_ID,
+            zero,
+            MERKLE_TREE_HOOK_ID,
+            "Mailbox: default hook cannot be zero",
+        ),
+        (
+            TEST_MOCK_ID,
+            TEST_MOCK_ID,
+            zero,
+            "Mailbox: required hook cannot be zero",
+        ),
+    ] {
+        let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+        let result = session.deploy(
+            MAILBOX_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    LOCAL_DOMAIN,
+                    *OWNER_ID,
+                    default_ism,
+                    default_hook,
+                    required_hook,
+                ))
+                .contract_id(MAILBOX_ID),
+        );
+        assert_deploy_panic(result, expected);
+    }
+}
+
+#[test]
+fn test_warp_routes_reject_zero_router_at_initialization() {
+    let zero_router = [0u8; 32];
+
+    let mut synthetic_session =
+        TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let synthetic = synthetic_session.deploy(
+        WARP_DRC20_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                MAILBOX_ID,
+                *OWNER_ID,
+                alloc::string::String::from("Token"),
+                alloc::string::String::from("TOK"),
+                18u8,
+                vec![(REMOTE_DOMAIN, zero_router)],
+            ))
+            .contract_id(WARP_DRC20_ID),
+    );
+    assert_deploy_panic(synthetic, "WarpDrc20: router cannot be zero");
+
+    let mut native_session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let native = native_session.deploy(
+        WARP_NATIVE_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(MAILBOX_ID, *OWNER_ID, vec![(REMOTE_DOMAIN, zero_router)]))
+            .contract_id(WARP_NATIVE_ID),
+    );
+    assert_deploy_panic(native, "WarpNative: router cannot be zero");
+
+    let mut collateral_session =
+        TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let collateral = collateral_session.deploy(
+        WARP_DRC20_COLLATERAL_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                TEST_MOCK_ID,
+                MAILBOX_ID,
+                *OWNER_ID,
+                vec![(REMOTE_DOMAIN, zero_router)],
+            ))
+            .contract_id(WARP_DRC20_COLLATERAL_ID),
+    );
+    assert_deploy_panic(collateral, "WarpCollateral: router cannot be zero");
 }
 
 #[test]
@@ -3718,6 +3842,38 @@ fn test_warp_collateral_init_with_enrolled_routers() {
         .expect("enrolled_router should succeed")
         .data;
     assert_eq!(router, remote_router);
+}
+
+#[test]
+fn test_warp_routes_reject_zero_router_enrollment() {
+    let zero_router = [0u8; 32];
+
+    let (mut synthetic, _) = session_with_warp_drc20_flow();
+    let result = synthetic.call_public::<_, ()>(
+        &OWNER_SK,
+        WARP_DRC20_ID,
+        "enroll_remote_router",
+        &(42u32, zero_router),
+    );
+    assert_contract_panic(result, "WarpDrc20: router cannot be zero");
+
+    let (mut native, _) = session_with_warp_native_flow();
+    let result = native.call_public::<_, ()>(
+        &OWNER_SK,
+        WARP_NATIVE_ID,
+        "enroll_remote_router",
+        &(42u32, zero_router),
+    );
+    assert_contract_panic(result, "WarpNative: router cannot be zero");
+
+    let (mut collateral, _) = session_with_warp_collateral_flow();
+    let result = collateral.call_public::<_, ()>(
+        &OWNER_SK,
+        WARP_DRC20_COLLATERAL_ID,
+        "enroll_remote_router",
+        &(42u32, zero_router),
+    );
+    assert_contract_panic(result, "WarpCollateral: router cannot be zero");
 }
 
 #[test]

@@ -112,6 +112,7 @@ mod igp {
             self.owner = Some(owner);
             self.beneficiary = beneficiary;
             for (domain, config) in initial_configs {
+                Self::validate_domain_gas_config(config);
                 self.domain_gas_configs.insert(domain, config);
                 abi::emit(
                     events::DomainGasConfigSet::TOPIC,
@@ -218,7 +219,7 @@ mod igp {
         /// Returns the persisted state layout version expected by deployment tooling.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            1
+            2
         }
 
         // =================================================================
@@ -230,21 +231,20 @@ mod igp {
         /// Formula: `(adjusted_gas * gas_price * exchange_rate) / 1e10`
         /// where `adjusted_gas = gas_limit + gas_overhead`.
         pub fn quote_gas_payment(&self, destination: u32, gas_limit: u64) -> u64 {
-            let config = self.domain_gas_configs.get(&destination);
-
-            match config {
-                Some(config) => {
-                    let adjusted_gas = u128::from(gas_limit) + u128::from(config.gas_overhead);
-                    let cost = adjusted_gas
-                        .checked_mul(u128::from(config.gas_price))
-                        .expect("IGP: gas price overflow")
-                        .checked_mul(u128::from(config.token_exchange_rate))
-                        .expect("IGP: exchange rate overflow")
-                        / TOKEN_EXCHANGE_RATE_SCALE;
-                    u64::try_from(cost).expect("IGP: fee exceeds u64")
-                }
-                None => 0,
-            }
+            let config = self
+                .domain_gas_configs
+                .get(&destination)
+                .expect("IGP: destination is not configured");
+            let adjusted_gas = u128::from(gas_limit) + u128::from(config.gas_overhead);
+            let cost = adjusted_gas
+                .checked_mul(u128::from(config.gas_price))
+                .expect("IGP: gas price overflow")
+                .checked_mul(u128::from(config.token_exchange_rate))
+                .expect("IGP: exchange rate overflow")
+                / TOKEN_EXCHANGE_RATE_SCALE;
+            let payment = u64::try_from(cost).expect("IGP: fee exceeds u64");
+            assert!(payment > 0, "IGP: configured payment rounds to zero");
+            payment
         }
 
         // =================================================================
@@ -332,6 +332,7 @@ mod igp {
         /// Set the gas configuration for a single domain. Owner only.
         pub fn set_domain_gas_config(&mut self, domain: u32, config: DomainGasConfig) {
             self.only_owner();
+            Self::validate_domain_gas_config(config);
             self.domain_gas_configs.insert(domain, config);
             abi::emit(
                 events::DomainGasConfigSet::TOPIC,
@@ -343,6 +344,7 @@ mod igp {
         pub fn set_domain_gas_configs(&mut self, configs: Vec<(u32, DomainGasConfig)>) {
             self.only_owner();
             for (domain, config) in configs {
+                Self::validate_domain_gas_config(config);
                 self.domain_gas_configs.insert(domain, config);
                 abi::emit(
                     events::DomainGasConfigSet::TOPIC,
@@ -390,6 +392,14 @@ mod igp {
             assert!(
                 caller::effective_caller() == owner,
                 "IGP: caller is not the owner"
+            );
+        }
+
+        fn validate_domain_gas_config(config: DomainGasConfig) {
+            assert!(config.gas_price > 0, "IGP: gas price cannot be zero");
+            assert!(
+                config.token_exchange_rate > 0,
+                "IGP: token exchange rate cannot be zero"
             );
         }
     }

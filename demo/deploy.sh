@@ -17,7 +17,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BRIDGE_STATE_OVERRIDE="${BRIDGE_STATE_FILE:-}"
 source "$SCRIPT_DIR/.env.bridge"
+if [ -n "$BRIDGE_STATE_OVERRIDE" ]; then
+    BRIDGE_STATE_FILE="$BRIDGE_STATE_OVERRIDE"
+fi
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +57,9 @@ DUSK_DEFAULT_ISM="${DUSK_DEFAULT_ISM:-}"
 MULTISIG_VALIDATORS="${MULTISIG_VALIDATORS:-$ANVIL_DEPLOYER}"
 MULTISIG_THRESHOLD="${MULTISIG_THRESHOLD:-1}"
 DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
+DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-50000}"
+DUSK_IGP_TOKEN_EXCHANGE_RATE="${DUSK_IGP_TOKEN_EXCHANGE_RATE:-10000000000}"
+DUSK_IGP_GAS_PRICE="${DUSK_IGP_GAS_PRICE:-1}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -196,6 +203,27 @@ query_dusk_bytes32() {
         || fail "Saved $label returned a malformed bytes32 value"
 }
 
+query_dusk_domain_gas_config() {
+    local contract="$1"
+    local domain="$2"
+    local label="$3"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method domain_gas_config \
+        --return-type domain-gas-config \
+        --arg-u32 "$domain" 2>/dev/null) \
+        || fail "Saved $label has no live gas configuration for domain $domain"
+    jq -ce '.value | {
+        gas_overhead: (.gas_overhead | tonumber),
+        token_exchange_rate: (.token_exchange_rate | tonumber),
+        gas_price: (.gas_price | tonumber)
+    }' <<<"$response" \
+        || fail "Saved $label returned a malformed domain gas configuration"
+}
+
 validate_saved_deployment() {
     local saved_evm_chain_id saved_dusk_chain_id saved_dusk_ism
     local evm_mailbox evm_token evm_native_token evm_collateral_token evm_ism evm_hook
@@ -204,6 +232,7 @@ validate_saved_deployment() {
     local dusk_merkle dusk_warp dusk_warp_native dusk_warp_collateral
     local dusk_validator_announce dusk_igp dusk_protocol_fee dusk_aggregation_hook
     local dusk_test_recipient expected_default_ism live_default_ism
+    local saved_igp_config saved_igp_domain live_igp_config
 
     jq -e 'type == "object" and (.evm | type == "object") and (.dusk | type == "object")' \
         "$BRIDGE_STATE_FILE" >/dev/null \
@@ -243,6 +272,16 @@ validate_saved_deployment() {
     dusk_protocol_fee="$(jq -er '.dusk.protocol_fee' "$BRIDGE_STATE_FILE")"
     dusk_aggregation_hook="$(jq -er '.dusk.aggregation_hook' "$BRIDGE_STATE_FILE")"
     dusk_test_recipient="$(jq -er '.dusk.test_recipient' "$BRIDGE_STATE_FILE")"
+    saved_igp_config="$(jq -ce '.dusk.igp_domain_config | {
+        gas_overhead: (.gas_overhead | tonumber),
+        token_exchange_rate: (.token_exchange_rate | tonumber),
+        gas_price: (.gas_price | tonumber)
+    }' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks a valid Dusk IGP domain configuration; redeploy"
+    saved_igp_domain="$(jq -er '.dusk.igp_domain_config.domain | tonumber' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the Dusk IGP destination domain; redeploy"
+    [ "$saved_igp_domain" = "$EVM_DOMAIN" ] \
+        || fail "Saved Dusk IGP destination $saved_igp_domain does not match EVM domain $EVM_DOMAIN"
 
     validate_evm_contract "$evm_mailbox" "EVM Mailbox"
     validate_evm_contract "$evm_token" "EVM warp token"
@@ -279,13 +318,16 @@ validate_saved_deployment() {
     validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"
     validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route"
     validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"
-    validate_dusk_state_version "$dusk_igp" "Dusk IGP"
+    validate_dusk_state_version "$dusk_igp" "Dusk IGP" 2
     validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"
     validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"
     validate_dusk_state_version "$dusk_test_recipient" "Dusk test recipient"
     validate_dusk_query "$dusk_warp_collateral" mailbox bytes32 "Dusk collateral warp route"
     validate_dusk_query "$dusk_validator_announce" local_domain u32 "Dusk ValidatorAnnounce"
     validate_dusk_query "$dusk_igp" hook_type u8 "Dusk IGP"
+    live_igp_config="$(query_dusk_domain_gas_config "$dusk_igp" "$saved_igp_domain" "Dusk IGP")"
+    [ "$live_igp_config" = "$saved_igp_config" ] \
+        || fail "Running Dusk IGP configuration does not match saved deployment policy; redeploy"
     validate_dusk_query "$dusk_protocol_fee" hook_type u8 "Dusk ProtocolFee"
     validate_dusk_query "$dusk_aggregation_hook" hook_type u8 "Dusk AggregationHook"
     validate_dusk_query "$dusk_test_recipient" handled_count u32 "Dusk test recipient"
@@ -305,26 +347,17 @@ if [ "$SKIP_DEPLOY" = true ] && [ -f "$BRIDGE_STATE_FILE" ]; then
     exit 0
 fi
 
+if [ "$SKIP_DEPLOY" = true ]; then
+    fail "--skip-deploy requires the combined deployment state at $BRIDGE_STATE_FILE; per-chain artifacts are not a trusted reuse boundary"
+fi
+
 # ── Deploy on EVM ────────────────────────────────────────────────────────────
 
 header "Deploy Hyperlane on EVM (domain=$EVM_DOMAIN)"
 
 EVM_DEPLOY_FILE="/tmp/hyperlane-demo-evm.json"
 
-if [ "$SKIP_DEPLOY" = true ] && [ -f "$EVM_DEPLOY_FILE" ]; then
-    info "Skipping EVM deployment (--skip-deploy)"
-    EVM_ISM=$(jq -r '.ism' "$EVM_DEPLOY_FILE")
-    EVM_HOOK=$(jq -r '.hook' "$EVM_DEPLOY_FILE")
-    EVM_MERKLE_TREE_HOOK=$(jq -r '.merkle_tree_hook // empty' "$EVM_DEPLOY_FILE")
-    EVM_VALIDATOR_ANNOUNCE=$(jq -r '.validator_announce // empty' "$EVM_DEPLOY_FILE")
-    EVM_IGP=$(jq -r '.igp // empty' "$EVM_DEPLOY_FILE")
-    EVM_MAILBOX=$(jq -r '.mailbox' "$EVM_DEPLOY_FILE")
-    EVM_RECIPIENT=$(jq -r '.recipient' "$EVM_DEPLOY_FILE")
-    EVM_TOKEN=$(jq -r '.token' "$EVM_DEPLOY_FILE")
-    EVM_NATIVE_TOKEN=$(jq -r '.native_token' "$EVM_DEPLOY_FILE")
-    EVM_COLLATERAL_TOKEN=$(jq -r '.collateral_token' "$EVM_DEPLOY_FILE")
-else
-    cd "$SOLIDITY_DIR"
+cd "$SOLIDITY_DIR"
 
     # Pre-compile so forge create doesn't mix compiler output with JSON
     step "Compiling Solidity contracts..."
@@ -466,7 +499,6 @@ else
     "collateral_token": "$EVM_COLLATERAL_TOKEN"
 }
 EVMJSON
-fi
 
 # ── Deploy on Dusk ───────────────────────────────────────────────────────────
 
@@ -474,11 +506,8 @@ header "Deploy Hyperlane on Dusk (domain=$DUSK_DOMAIN)"
 
 DUSK_DEPLOY_FILE="/tmp/hyperlane-demo-dusk-deploy.json"
 
-if [ "$SKIP_DEPLOY" = true ] && [ -f "$DUSK_DEPLOY_FILE" ]; then
-    info "Skipping Dusk deployment (--skip-deploy)"
-else
-    step "Deploying Hyperlane contracts on Dusk..."
-    DUSK_DEPLOY_CMD=(
+step "Deploying Hyperlane contracts on Dusk..."
+DUSK_DEPLOY_CMD=(
         "$DUSK_TX" deploy-hyperlane
         --rues-url "$DUSK_RUES_URL"
         --keys "$CONSENSUS_KEYS"
@@ -491,21 +520,21 @@ else
         --warp-symbol "$TOKEN_SYMBOL"
         --warp-decimals "$TOKEN_DECIMALS"
         --default-ism "$DUSK_DEFAULT_ISM"
-    )
-    if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
-        DUSK_DEPLOY_CMD+=(
+        --igp-domain-config "$EVM_DOMAIN:$DUSK_IGP_GAS_OVERHEAD:$DUSK_IGP_TOKEN_EXCHANGE_RATE:$DUSK_IGP_GAS_PRICE"
+)
+if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
+    DUSK_DEPLOY_CMD+=(
             --multisig-validators "$MULTISIG_VALIDATORS"
             --multisig-threshold "$MULTISIG_THRESHOLD"
-        )
-    fi
-
-    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "${DUSK_DEPLOY_CMD[@]}" > "$DUSK_DEPLOY_FILE" || {
-            # Error JSON goes to stdout (captured in deploy file) — show it
-            err=$(jq -r '.error // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null || true)
-            fail "Dusk deployment failed${err:+: $err}"
-        }
-    ok "Dusk contracts deployed"
+    )
 fi
+
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "${DUSK_DEPLOY_CMD[@]}" > "$DUSK_DEPLOY_FILE" || {
+        # Error JSON goes to stdout (captured in deploy file) — show it
+        err=$(jq -r '.error // empty' "$DUSK_DEPLOY_FILE" 2>/dev/null || true)
+        fail "Dusk deployment failed${err:+: $err}"
+    }
+ok "Dusk contracts deployed"
 
 # Parse deployment output
 DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_FILE")
@@ -520,23 +549,6 @@ DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral' "$DUSK_DEPLOY_FILE")
 DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_FILE")
-
-if [ "$SKIP_DEPLOY" = true ]; then
-    validate_dusk_state_version "$DUSK_MAILBOX" "Dusk Mailbox" 2
-    validate_dusk_state_version "$DUSK_TEST_MOCK" "Dusk TestMock"
-    if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
-        validate_dusk_state_version "$DUSK_ISM_MULTISIG" "Dusk multisig ISM"
-    fi
-    validate_dusk_state_version "$DUSK_MERKLE" "Dusk MerkleTreeHook"
-    validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route" 2
-    validate_dusk_state_version "$DUSK_WARP_NATIVE" "Dusk native warp route"
-    validate_dusk_state_version "$DUSK_WARP_COLLATERAL" "Dusk collateral warp route"
-    validate_dusk_state_version "$DUSK_VALIDATOR_ANNOUNCE" "Dusk ValidatorAnnounce"
-    validate_dusk_state_version "$DUSK_IGP" "Dusk IGP"
-    validate_dusk_state_version "$DUSK_PROTOCOL_FEE" "Dusk ProtocolFee"
-    validate_dusk_state_version "$DUSK_AGGREGATION_HOOK" "Dusk AggregationHook"
-    validate_dusk_state_version "$DUSK_TEST_RECIPIENT" "Dusk test recipient"
-fi
 
 if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
     DUSK_DEFAULT_ISM_ID="$DUSK_ISM_MULTISIG"
@@ -709,6 +721,12 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         "merkle_tree_hook": "$DUSK_MERKLE",
         "validator_announce": "$DUSK_VALIDATOR_ANNOUNCE",
         "igp": "$DUSK_IGP",
+        "igp_domain_config": {
+            "domain": $EVM_DOMAIN,
+            "gas_overhead": $DUSK_IGP_GAS_OVERHEAD,
+            "token_exchange_rate": $DUSK_IGP_TOKEN_EXCHANGE_RATE,
+            "gas_price": $DUSK_IGP_GAS_PRICE
+        },
         "protocol_fee": "$DUSK_PROTOCOL_FEE",
         "aggregation_hook": "$DUSK_AGGREGATION_HOOK",
         "test_recipient": "$DUSK_TEST_RECIPIENT"

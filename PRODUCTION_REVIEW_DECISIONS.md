@@ -266,17 +266,19 @@ Decision:
 Current implementation:
 
 - Every deployed Dusk contract exposes an explicit `state_version()`.
-  MerkleTreeHook, TestMock, MessageIdMultisigISM, ValidatorAnnounce, IGP,
+  MerkleTreeHook, TestMock, MessageIdMultisigISM, ValidatorAnnounce,
   ProtocolFee, AggregationHook, WarpNative, WarpDrc20Collateral, and
   TestRecipient require version 1. WarpDrc20 requires version 2 after adding
-  aggregate pending synthetic supply capacity. On this stacked withdrawal PR,
-  Mailbox requires version 2 so a base-PR Mailbox that reports version 1 but
-  lacks `withdraw_dispatch_credit` cannot be reused.
+  aggregate pending synthetic supply capacity. Mailbox requires version 2 on
+  this stacked withdrawal PR so an instance without
+  `withdraw_dispatch_credit` cannot be reused. IGP requires version 2 because
+  unknown destinations and zero pricing now fail closed.
 - Existing serialized instances are not treated as compatible. Both demo
   `--skip-deploy` reuse boundaries validate the complete contract-version
   matrix and fail closed when any version is absent or unexpected. Semantic
-  policy checks, including the live Mailbox default ISM, remain additional
-  requirements; a legacy liveness query is never accepted as compatibility.
+  policy checks, including the live Mailbox default ISM and persisted IGP
+  destination pricing, remain additional requirements; a legacy liveness query
+  is never accepted as compatibility.
 - The compatible contract set and Rust agent must be deployed from the pinned
   cross-repository heads recorded in the review documents.
 

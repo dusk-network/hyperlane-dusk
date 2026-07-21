@@ -59,6 +59,10 @@ INITIAL_SUPPLY="10000000000000000000"       # 10 tokens (10e18)
 BRIDGE_EVM_TO_DUSK="3000000000000000000"    # 3 tokens (3e18)
 BRIDGE_DUSK_TO_EVM="1000000000000000000"    # 1 token (1e18)
 DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
+DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-50000}"
+DUSK_IGP_TOKEN_EXCHANGE_RATE="${DUSK_IGP_TOKEN_EXCHANGE_RATE:-10000000000}"
+DUSK_IGP_GAS_PRICE="${DUSK_IGP_GAS_PRICE:-1}"
+BRIDGE_STATE_FILE="${BRIDGE_STATE_FILE:-/tmp/hyperlane-bridge-state.json}"
 
 # Temp files
 DUSK_DEPLOY_OUTPUT="/tmp/hyperlane-demo-dusk-deploy.json"
@@ -173,13 +177,22 @@ ok "Anvil connected (block: $BLOCK_NUM)"
 
 header "Step 2: Deploying Hyperlane on EVM (domain=$EVM_DOMAIN)"
 
-if [ "${1:-}" = "--skip-deploy" ] && [ -f "/tmp/hyperlane-demo-evm.json" ]; then
-    info "Skipping EVM deployment (--skip-deploy)"
-    EVM_ISM=$(jq -r '.ism' /tmp/hyperlane-demo-evm.json)
-    EVM_HOOK=$(jq -r '.hook' /tmp/hyperlane-demo-evm.json)
-    EVM_MAILBOX=$(jq -r '.mailbox' /tmp/hyperlane-demo-evm.json)
-    EVM_RECIPIENT=$(jq -r '.recipient' /tmp/hyperlane-demo-evm.json)
-    EVM_TOKEN=$(jq -r '.token' /tmp/hyperlane-demo-evm.json)
+if [ "${1:-}" = "--skip-deploy" ]; then
+    [ -f "$SCRIPT_DIR/.env.bridge" ] \
+        || fail "--skip-deploy requires $SCRIPT_DIR/.env.bridge and the canonical combined deployment state"
+    [ -f "$BRIDGE_STATE_FILE" ] \
+        || fail "--skip-deploy requires the combined deployment state at $BRIDGE_STATE_FILE"
+    info "Validating the complete saved deployment before reuse..."
+    BRIDGE_STATE_FILE="$BRIDGE_STATE_FILE" bash "$SCRIPT_DIR/deploy.sh" --skip-deploy >/dev/null \
+        || fail "Saved deployment failed canonical live validation"
+    jq -e '.dusk_default_ism == "testMock"' "$BRIDGE_STATE_FILE" >/dev/null \
+        || fail "The standalone manual demo requires a saved TestMock deployment"
+    EVM_ISM=$(jq -er '.evm.ism' "$BRIDGE_STATE_FILE")
+    EVM_HOOK=$(jq -er '.evm.hook' "$BRIDGE_STATE_FILE")
+    EVM_MAILBOX=$(jq -er '.evm.mailbox' "$BRIDGE_STATE_FILE")
+    EVM_RECIPIENT=$(jq -er '.evm.recipient' "$BRIDGE_STATE_FILE")
+    EVM_TOKEN=$(jq -er '.evm.token' "$BRIDGE_STATE_FILE")
+    info "Skipping EVM deployment after canonical validation"
 else
     # Deploy from solidity directory
     cd "$SOLIDITY_DIR"
@@ -276,8 +289,8 @@ if [ -z "$DUSK_CHAIN_ID" ]; then
 fi
 ok "Dusk node connected"
 
-if [ "${1:-}" = "--skip-deploy" ] && [ -f "$DUSK_DEPLOY_OUTPUT" ]; then
-    info "Skipping Dusk deployment (--skip-deploy)"
+if [ "${1:-}" = "--skip-deploy" ]; then
+    info "Skipping Dusk deployment after canonical validation"
 else
     step "Deploying Hyperlane contracts on Dusk..."
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-hyperlane \
@@ -286,6 +299,7 @@ else
         --domain "$DUSK_DOMAIN" \
         --wasm-dir "$WASM_DIR" \
         --default-ism testMock \
+        --igp-domain-config "$EVM_DOMAIN:$DUSK_IGP_GAS_OVERHEAD:$DUSK_IGP_TOKEN_EXCHANGE_RATE:$DUSK_IGP_GAS_PRICE" \
         --deploy-warp-drc20 \
         --warp-name "$TOKEN_NAME" \
         --warp-symbol "$TOKEN_SYMBOL" \
@@ -294,28 +308,22 @@ else
     ok "Dusk contracts deployed"
 fi
 
-# Parse Dusk deployment output
-DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_OUTPUT")
-DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_OUTPUT")
-DUSK_ISM=$(jq -r '.contracts.ism_multisig // .contracts.test_mock // empty' "$DUSK_DEPLOY_OUTPUT")
-DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_OUTPUT")
-DUSK_PROTOCOL_FEE=$(jq -r '.contracts.protocol_fee' "$DUSK_DEPLOY_OUTPUT")
-DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_OUTPUT")
-DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_OUTPUT")
-
 if [ "${1:-}" = "--skip-deploy" ]; then
-    DUSK_MERKLE_VERSION=$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
-        --contract "$DUSK_MERKLE" --method state_version --return-type u32 \
-        2>/dev/null | jq -er '.value | tonumber') \
-        || fail "Saved MerkleTreeHook predates state version 1; redeploy"
-    [ "$DUSK_MERKLE_VERSION" = 1 ] \
-        || fail "Saved MerkleTreeHook has unsupported state version $DUSK_MERKLE_VERSION"
-    DUSK_WARP_VERSION=$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
-        --contract "$DUSK_WARP" --method state_version --return-type u32 \
-        2>/dev/null | jq -er '.value | tonumber') \
-        || fail "Saved WarpDrc20 predates state version 2; redeploy"
-    [ "$DUSK_WARP_VERSION" = 2 ] \
-        || fail "Saved WarpDrc20 has unsupported state version $DUSK_WARP_VERSION"
+    DUSK_MAILBOX=$(jq -er '.dusk.mailbox' "$BRIDGE_STATE_FILE")
+    DUSK_MERKLE=$(jq -er '.dusk.merkle_tree_hook' "$BRIDGE_STATE_FILE")
+    DUSK_ISM=$(jq -er '.dusk.default_ism' "$BRIDGE_STATE_FILE")
+    DUSK_WARP=$(jq -er '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")
+    DUSK_PROTOCOL_FEE=$(jq -er '.dusk.protocol_fee' "$BRIDGE_STATE_FILE")
+    DUSK_AGGREGATION_HOOK=$(jq -er '.dusk.aggregation_hook' "$BRIDGE_STATE_FILE")
+    DUSK_TEST_RECIPIENT=$(jq -er '.dusk.test_recipient' "$BRIDGE_STATE_FILE")
+else
+    DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_ISM=$(jq -r '.contracts.ism_multisig // .contracts.test_mock // empty' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_PROTOCOL_FEE=$(jq -r '.contracts.protocol_fee' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_OUTPUT")
+    DUSK_TEST_RECIPIENT=$(jq -r '.contracts.test_recipient' "$DUSK_DEPLOY_OUTPUT")
 fi
 
 echo ""

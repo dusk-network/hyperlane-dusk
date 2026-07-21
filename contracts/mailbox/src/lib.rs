@@ -136,6 +136,18 @@ mod mailbox {
         ) {
             assert!(self.owner.is_none(), "Mailbox: already initialized");
             assert!(owner != [0u8; 32], "Mailbox: owner cannot be zero");
+            assert!(
+                default_ism != ZERO_CONTRACT,
+                "Mailbox: default ISM cannot be zero"
+            );
+            assert!(
+                default_hook != ZERO_CONTRACT,
+                "Mailbox: default hook cannot be zero"
+            );
+            assert!(
+                required_hook != ZERO_CONTRACT,
+                "Mailbox: required hook cannot be zero"
+            );
             self.local_domain = local_domain;
             self.owner = Some(owner);
             self.default_ism = default_ism;

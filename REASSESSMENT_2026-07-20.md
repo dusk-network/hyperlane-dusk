@@ -140,10 +140,11 @@ deployment topology.
 
 Saved-deployment reuse now treats the Dusk topology as one compatibility unit.
 Every deployed contract exposes a compatibility version; both reuse boundaries
-validate the complete matrix (WarpDrc20 and the withdrawal-capable Mailbox at
-version 2, all other current contracts at version 1) before generating agent
-configuration. The live Mailbox
-default-ISM check remains a separate policy-binding requirement. Consequently,
+validate the complete matrix (WarpDrc20, the withdrawal-capable Mailbox, and
+IGP at version 2; all other current contracts at version 1) before generating
+agent configuration. The live Mailbox default-ISM and exact IGP
+destination-pricing checks remain separate policy-binding requirements.
+Consequently,
 legacy contracts that merely retain an old liveness query cannot be accepted as
 compatible with the current escrow, accounting, or validator-policy semantics.
 

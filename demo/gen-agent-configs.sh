@@ -55,6 +55,16 @@ fi
 STATE_FILE="$BRIDGE_STATE_FILE"
 [ -f "$STATE_FILE" ] || fail "State file not found at $STATE_FILE (run: bash demo/deploy.sh)"
 
+# A saved manifest is not sufficient authority for live agent configuration:
+# Mailbox policy and chain state can change after the file is written. Reuse
+# the canonical, fail-closed deployment validator before reading any signer
+# material or writing configuration. Validation-only mode remains hermetic for
+# the repository's fixture tests and never emits operational config.
+if [ "${AGENT_CONFIG_VALIDATE_ONLY:-0}" != "1" ]; then
+    BRIDGE_STATE_FILE="$STATE_FILE" bash "$SCRIPT_DIR/deploy.sh" --skip-deploy >/dev/null \
+        || fail "Live deployment validation failed; refusing to generate agent configuration"
+fi
+
 # ── Extract Deployment State ────────────────────────────────────────────────
 
 EVM_MAILBOX="$(jq -r '.evm.mailbox' "$STATE_FILE")"
