@@ -28,7 +28,7 @@ use hyperlane_dusk_types::drc20::{
     BalanceOf as Drc20BalanceOf,
 };
 use hyperlane_dusk_types::{
-    message, DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256, VERSION,
+    events, message, DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256, VERSION,
 };
 
 mod test_session;
@@ -72,6 +72,9 @@ const AGGREGATION_HOOK_BYTECODE: &[u8] = include_bytes!(
 );
 const TEST_MOCK_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_test_mock.wasm"
+);
+const REENTRANT_HOOK_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_reentrant_hook.wasm"
 );
 const TEST_RECIPIENT_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_test_recipient.wasm"
@@ -128,6 +131,7 @@ const IGP_ID: ContractId = ContractId::from_bytes([15; 32]);
 const ISM_MULTISIG_ID: ContractId = ContractId::from_bytes([16; 32]);
 const AGGREGATION_HOOK_ID: ContractId = ContractId::from_bytes([19; 32]);
 const VALIDATOR_ANNOUNCE_ID: ContractId = ContractId::from_bytes([20; 32]);
+const REENTRANT_HOOK_ID: ContractId = ContractId::from_bytes([24; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
@@ -468,17 +472,17 @@ fn sample_encoded_message(recipient: ContractId) -> Vec<u8> {
 fn test_mailbox_init() {
     let mut s = HyperlaneSession::new();
 
-    for (contract, label) in [
-        (MAILBOX_ID, "Mailbox"),
-        (TEST_MOCK_ID, "TestMock"),
-        (TEST_RECIPIENT_ID, "TestRecipient"),
+    for (contract, label, expected) in [
+        (MAILBOX_ID, "Mailbox", 2),
+        (TEST_MOCK_ID, "TestMock", 1),
+        (TEST_RECIPIENT_ID, "TestRecipient", 1),
     ] {
         let version = s
             .session
             .direct_call::<_, u32>(contract, "state_version", &())
             .unwrap_or_else(|_| panic!("{label} state_version should succeed"))
             .data;
-        assert_eq!(version, 1, "unexpected {label} state version");
+        assert_eq!(version, expected, "unexpected {label} state version");
     }
 
     assert_eq!(s.mailbox_local_domain(), LOCAL_DOMAIN);
@@ -917,6 +921,94 @@ fn test_dispatch_via_recipient_proxy() {
     let msg = message::decode(&encoded).expect("decode should succeed");
     assert_eq!(msg.sender, TEST_RECIPIENT_ID.to_bytes());
     assert_eq!(msg.body, body);
+}
+
+#[test]
+fn test_dispatch_rejects_quote_hook_reentrancy_without_corrupting_nonce_order() {
+    let mut s = HyperlaneSession::new();
+    s.session
+        .deploy(
+            REENTRANT_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(REENTRANT_HOOK_ID),
+        )
+        .expect("Deploying ReentrantHook should succeed");
+
+    let destination = REMOTE_DOMAIN;
+    let recipient = [0xD5u8; 32];
+    let body = b"outer dispatch survives rejected reentry".to_vec();
+    let receipt = s
+        .session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "dispatch",
+            &(
+                destination,
+                recipient,
+                body.clone(),
+                Vec::<u8>::new(),
+                REENTRANT_HOOK_ID,
+            ),
+        )
+        .expect("outer dispatch should succeed");
+
+    assert!(
+        s.session
+            .direct_call::<_, bool>(REENTRANT_HOOK_ID, "attempted", &())
+            .expect("attempted query should succeed")
+            .data
+    );
+    assert!(
+        !s.session
+            .direct_call::<_, bool>(REENTRANT_HOOK_ID, "nested_succeeded", &())
+            .expect("nested_succeeded query should succeed")
+            .data,
+        "nested dispatch must be rejected"
+    );
+    assert_eq!(
+        s.session
+            .direct_call::<_, u32>(REENTRANT_HOOK_ID, "post_dispatch_count", &())
+            .expect("post_dispatch_count query should succeed")
+            .data,
+        1
+    );
+
+    assert_eq!(s.mailbox_nonce(), 1);
+    let encoded = s.mailbox_dispatched_message(0);
+    let decoded = message::decode(&encoded).expect("stored message should decode");
+    assert_eq!(decoded.nonce, 0);
+    assert_eq!(decoded.destination, destination);
+    assert_eq!(decoded.recipient, recipient);
+    assert_eq!(decoded.body, body);
+    assert_eq!(receipt.data, message::id(&encoded));
+    assert_eq!(s.mailbox_latest_dispatched_id(), receipt.data);
+
+    let dispatch_topics: Vec<&str> = receipt
+        .events
+        .iter()
+        .filter(|event| {
+            event.source == MAILBOX_ID
+                && (event.topic == events::Dispatch::TOPIC
+                    || event.topic == events::DispatchId::TOPIC)
+        })
+        .map(|event| event.topic.as_str())
+        .collect();
+    assert_eq!(
+        dispatch_topics,
+        vec![events::Dispatch::TOPIC, events::DispatchId::TOPIC]
+    );
+
+    let control_body = b"guard cleared for later dispatch".to_vec();
+    s.mailbox_dispatch_via_tx(&OWNER_SK, destination, recipient, control_body.clone())
+        .expect("later legitimate dispatch should succeed");
+    assert_eq!(s.mailbox_nonce(), 2);
+    let control = message::decode(&s.mailbox_dispatched_message(1))
+        .expect("later stored message should decode");
+    assert_eq!(control.nonce, 1);
+    assert_eq!(control.body, control_body);
 }
 
 // =============================================================================

@@ -9,6 +9,7 @@ members = [
     "contracts/validator-announce",
     "contracts/test-recipient",
     "contracts/test-mock",
+    "contracts/reentrant-hook",
     "contracts/protocol-fee",
     "contracts/igp",
     "contracts/warp-drc20",

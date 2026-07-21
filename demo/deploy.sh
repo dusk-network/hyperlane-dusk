@@ -493,7 +493,7 @@ validate_saved_deployment() {
         [ "$live_evm_value" = "${ANVIL_DEPLOYER,,}" ] \
             || fail "Running EVM IGP $method differs from the deployment policy; redeploy"
     done
-    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox"
+    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 2
     [ "$(query_dusk_u32 "$dusk_mailbox" local_domain "Dusk Mailbox local domain")" = "$DUSK_DOMAIN" ] \
         || fail "Running Dusk Mailbox local domain differs from the saved deployment; redeploy"
     validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"

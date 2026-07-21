@@ -190,12 +190,13 @@ Decision:
 
 Current implementation:
 
-- Every deployed Dusk contract exposes an explicit `state_version()`. Mailbox,
+- Every deployed Dusk contract exposes an explicit `state_version()`.
   MerkleTreeHook, TestMock, MessageIdMultisigISM, ValidatorAnnounce,
   ProtocolFee, AggregationHook, WarpNative, WarpDrc20Collateral, and
-  TestRecipient require version 1. WarpDrc20 requires version 2 after adding
-  aggregate pending synthetic supply capacity. IGP requires version 2 because
-  unknown destinations and zero pricing now fail closed.
+  TestRecipient require version 1. Mailbox requires version 2 for its dispatch
+  reentrancy guard. WarpDrc20 requires version 2 after adding aggregate pending
+  synthetic supply capacity. IGP requires version 2 because unknown
+  destinations and zero pricing now fail closed.
 - Existing serialized instances are not treated as compatible. Both demo
   `--skip-deploy` reuse boundaries validate the complete contract-version
   matrix and fail closed when any version is absent or unexpected. Semantic

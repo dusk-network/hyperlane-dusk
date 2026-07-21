@@ -7,6 +7,36 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
+Sections below the newest candidate section are retained as chronological
+regression history. Any older heading containing “Final” or “Current” applies
+only to the commit named in that section and is not release evidence for a
+newer candidate.
+
+## 2026-07-21 Mailbox Reentrancy Remediation Candidate
+
+An independent GPT-5.6 xhigh red-team found that a caller-selected hook could
+reenter `Mailbox.dispatch` from `quote_dispatch` before the outer call reserved
+its nonce. On the vulnerable pinned Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`, the new adversarial VM test failed
+because the nested dispatch succeeded. Mailbox now holds an explicit guard
+across hook quotes, post-dispatch callbacks, and hook payments. Base Mailbox
+state version advances to 2; the stacked withdrawal Mailbox advances to 3.
+
+The focused regression passes after the fix and proves nested dispatch
+rejection, one-to-one nonce/message storage, singular ordered
+Dispatch/DispatchId events, successful completion of the outer dispatch, and
+a later legitimate dispatch after guard release. Full clean-layout static and
+live E2E anchors remain pending and will replace this candidate paragraph
+before handoff; all evidence below predates the reentrancy fix.
+
+The same review found that the proposed `pull_request_target` policy wrapper
+passed the proposed checkout to trusted scripts that subsequently executed
+head-controlled shell files. No configured secret was exposed in the observed
+runs, but the boundary was unsafe for future token provisioning. The target
+workflow now checks out only the trusted base, inspects the exact PR commit as
+Git data, and waits for the unprivileged proposal check. It does not execute
+any proposed-tree command.
+
 ## 2026-07-21 Escrow, Dispatch Credit, and Agent Reassessment
 
 The frozen base code anchor is

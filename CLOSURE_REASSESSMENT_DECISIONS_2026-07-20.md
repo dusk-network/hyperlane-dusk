@@ -67,6 +67,17 @@ under two policy roles. The deployed topology remains:
 - required hook: AggregationHook;
 - aggregation children: MerkleTreeHook followed by ProtocolFee.
 
+### Dispatch remains non-reentrant across hook callbacks
+
+Pinned Piecrust supports same-contract recursion and reuses the active contract
+instance. Rusk restricts selected nested stake mutations; it does not impose a
+general contract reentrancy ban. Mailbox therefore holds a persisted dispatch
+guard from before the first hook quote until every post-dispatch and payment
+callback has completed. Nested dispatch is rejected while the outer dispatch
+continues if the hostile hook handles that rejection. We deliberately keep the
+existing quote, custody, event, and callback order rather than moving partial
+dispatch effects ahead of fee validation.
+
 ### IGP configurations must be executable over their declared input domain
 
 An explicit zero gas limit is invalid, and Dusk IGP quotes are capped at
@@ -94,13 +105,15 @@ account keys. Its fresh-deployment matrix is:
 | WarpDrc20 | 3 | canonical principal ABI and stored account-key layout |
 | WarpDrc20Collateral | 2 | canonical wrapped-token call ABI |
 | IGP | 2 | fail-closed pricing domain introduced earlier |
+| Mailbox | 2 | dispatch reentrancy guard |
 | Other deployed contracts | 1 | unchanged serialized layout |
 
 The withdrawal stack is a distinct API/semantic deployment set and advances
 the three route versions once more: WarpDrc20 `4`, WarpDrc20Collateral `3`, and
-WarpNative `2`. Mixed base/stack route deployments are rejected. No in-place
-state migration is claimed; this reassessment requires a fresh deterministic
-deployment.
+WarpNative `2`. Its Mailbox version advances from `2` to `3` because the
+beneficiary-withdrawal layout is combined with the guard. Mixed base/stack
+deployments are rejected. No in-place state migration is claimed; this
+reassessment requires a fresh deterministic deployment.
 
 ## Transaction boundary
 
@@ -161,11 +174,15 @@ Dusk signer boundary.
 ## Review-policy decision
 
 The default-branch `pull_request_target` workflow is the trusted policy
-harness. It checks out the proposed head for inspection, then separately checks
-out the trusted base and executes the base copies of the fail-closed and review
-hygiene scripts against the proposed tree. A PR cannot certify deletion or
-weakening of its own guard. Required check evaluation paginates all check runs,
-matches exact configured names, and treats a lookalike name as missing.
+harness. It checks out only the trusted base, fetches the exact proposed commit
+into Git's object database, and treats every proposed path as data: it performs
+`git diff --check`, verifies that required guard paths are regular blobs, and
+waits for the exact unprivileged `Dusk proposal validation` check on that head.
+It never checks out or executes a proposed-tree script. Candidate contract and
+script execution remains confined to the read-only-token `pull_request`
+workflow, so adding a future read token to a trusted workflow cannot expose it
+to head-controlled shell code. Required check evaluation paginates all check
+runs, matches exact configured names, and treats a lookalike name as missing.
 
 That trusted workflow cannot execute for the implementation PR until dispatcher
 PR #3 installs it on the default branch. During this explicit bootstrap,
@@ -175,7 +192,9 @@ fail-closed self-tests, report hygiene, and secret hygiene on PRs targeting
 check and the readiness guard. Proposal validation is machine evidence, not a
 trusted-policy or production substitute: production mode still requires the
 default-branch `Dusk review policy gate`, and branch protection must switch to
-that trusted context once PR #3 lands.
+that trusted context once PR #3 lands. Human review remains authoritative for
+changes to the proposal tests themselves; the target-context gate guarantees
+the execution boundary, not that arbitrary proposed policy text is correct.
 
 Hosted report hygiene scans tracked report content but does not claim to verify
 the existence of the developer-machine repro archive path. The local gate keeps

@@ -119,8 +119,10 @@ validator-policy changes form one serialized and semantic compatibility set. An
 existing deployment cannot be upgraded in place by swapping WASM. WarpDrc20 is
 state version 2 because its aggregate synthetic reserve follows an earlier
 versioned layout. IGP is version 2 because an active default hook now rejects
-unknown destinations and zero-valued pricing instead of silently quoting zero;
-every other deployed contract in the current topology is state version 1.
+unknown destinations and zero-valued pricing instead of silently quoting zero.
+Mailbox is version 2 because the dispatch state now includes a reentrancy
+guard; every other deployed contract in the current topology is state version
+1.
 These are operational compatibility probes, not migration
 mechanisms. Both demo reuse boundaries validate the complete matrix and fail
 closed when any exact expected version is absent. Live semantic checks include
