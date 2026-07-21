@@ -1,7 +1,7 @@
 # Dusk Hyperlane Test Report
 
 Date: 2026-05-11
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
@@ -85,7 +85,7 @@ coherent multisig policy queries, bounded Merkle/IGP pages, strict simulation
 response parsing, exact-hash preservation for ambiguous propagation and
 confirmation, full saved-topology validation, generated-agent policy binding,
 and fail-closed strict branch-protection checks. The repository-level
- fail-closed self-test also passed in the primary clean worktree.
+fail-closed self-test also passed in the primary clean worktree.
 
 ## 2026-07-20 Post-Deep-Review Contract Validation
 
