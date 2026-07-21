@@ -52,6 +52,11 @@ TestMock/MessageIdMultisig bidirectional E2E are validated separately because
 the IGP pricing policy and deployment interface changed after the earlier live
 runs.
 
+The premerge readiness freshness anchors therefore advance to Dusk code anchor
+`d32c0f56c66d93be203cc44e3f48a0a7257216f0` and upstream-synchronized
+monorepo code/CI anchor `23df1ec7c0211b0178079f12a4a5b4057463a363`.
+Documentation-only descendants do not invalidate those covered trees.
+
 ## 2026-07-20 Final Base-PR Compatibility Validation
 
 The base implementation commit
