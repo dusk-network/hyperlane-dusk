@@ -28,33 +28,29 @@ saved_version_checks=(
     'validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"'
     'validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route"'
     'validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"'
-    'validate_dusk_state_version "$dusk_igp" "Dusk IGP"'
+    'validate_dusk_state_version "$dusk_igp" "Dusk IGP" 2'
     'validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"'
     'validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"'
     'validate_dusk_state_version "$dusk_test_recipient" "Dusk test recipient"'
-)
-post_parse_version_checks=(
-    'validate_dusk_state_version "$DUSK_MAILBOX" "Dusk Mailbox"'
-    'validate_dusk_state_version "$DUSK_TEST_MOCK" "Dusk TestMock"'
-    'validate_dusk_state_version "$DUSK_ISM_MULTISIG" "Dusk multisig ISM"'
-    'validate_dusk_state_version "$DUSK_MERKLE" "Dusk MerkleTreeHook"'
-    'validate_dusk_state_version "$DUSK_WARP" "Dusk synthetic warp route" 2'
-    'validate_dusk_state_version "$DUSK_WARP_NATIVE" "Dusk native warp route"'
-    'validate_dusk_state_version "$DUSK_WARP_COLLATERAL" "Dusk collateral warp route"'
-    'validate_dusk_state_version "$DUSK_VALIDATOR_ANNOUNCE" "Dusk ValidatorAnnounce"'
-    'validate_dusk_state_version "$DUSK_IGP" "Dusk IGP"'
-    'validate_dusk_state_version "$DUSK_PROTOCOL_FEE" "Dusk ProtocolFee"'
-    'validate_dusk_state_version "$DUSK_AGGREGATION_HOOK" "Dusk AggregationHook"'
-    'validate_dusk_state_version "$DUSK_TEST_RECIPIENT" "Dusk test recipient"'
 )
 for check in "${saved_version_checks[@]}"; do
     rg -q -F "$check" demo/deploy.sh \
         || fail "saved-deployment validation omits required contract state version: $check"
 done
-for check in "${post_parse_version_checks[@]}"; do
-    rg -q -F "$check" demo/deploy.sh \
-        || fail "post-parse deployment validation omits required contract state version: $check"
-done
+
+rg -q -F 'live_igp_config="$(query_dusk_domain_gas_config' demo/deploy.sh \
+    || fail "saved-deployment validation omits live IGP pricing"
+rg -q -F 'per-chain artifacts are not a trusted reuse boundary' demo/deploy.sh \
+    || fail "--skip-deploy can fall back to per-chain artifacts"
+rg -q -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/demo.sh \
+    || fail "standalone demo does not delegate warm validation"
+rg -q -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh \
+    || fail "agent config generation does not delegate live validation"
+
+validator_line="$(rg -n -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
+secret_write_line="$(rg -n -F "printf '0x%s\\n'" demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
+[ -n "$validator_line" ] && [ -n "$secret_write_line" ] && [ "$validator_line" -lt "$secret_write_line" ] \
+    || fail "agent config live validation must precede signer material writes"
 
 workdir="$(mktemp -d -t hyperlane-fail-closed-test.XXXXXX)"
 untracked_probe=""

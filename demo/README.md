@@ -338,6 +338,7 @@ bash demo/demo.sh --skip-deploy
 ```bash
 # Deploy the full local route matrix on Dusk
 dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc20 \
+    --igp-domain-config 31338:50000:10000000000:1 \
     --deploy-warp-native --warp-collateral-token warp-drc20
 
 # Pre-fund value-backed Mailbox dispatch fees for a route
@@ -369,10 +370,14 @@ dusk-tx transfer-remote --warp-contract <native-route-hex> --destination 31338 \
 dusk-tx encode-message --nonce 0 --origin 31338 --sender <hex> \
     --destination 4242 --recipient <hex> --body <hex>
 
-# Process an inbound message
-dusk-tx process --mailbox <hex> --message <hex>
+# Process an inbound message (multisig deployments require relayer metadata)
+dusk-tx process --mailbox <hex> --message <hex> --metadata <hex>
 
 # Dispatch a message via TestRecipient
 dusk-tx dispatch --mailbox <hex> --test-recipient <hex> \
     --destination 31338 --recipient <hex> --body "Hello!"
 ```
+
+`--metadata` may be omitted only when the selected ISM accepts empty metadata,
+such as the explicit local `TestMock` deployment. MessageIdMultisig processing
+requires checkpoint and signature metadata.

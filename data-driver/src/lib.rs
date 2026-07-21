@@ -53,6 +53,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "dispatched_block_height"
             | "processed_at_index"
             | "processed_block_height_at_index"
+            | "message_id_at"
+            | "inserted_block_height"
+            | "root_at"
             | "gas_payment_at" => json_to_rkyv::<(u32,)>(json),
             "message_ids" | "gas_payments" => json_to_rkyv::<(u32, u32)>(json),
             "recipient_ism" | "fee_credit" => json_to_rkyv::<(H256,)>(json),
@@ -118,6 +121,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "dispatched_block_height"
             | "processed_at_index"
             | "processed_block_height_at_index"
+            | "message_id_at"
+            | "inserted_block_height"
+            | "root_at"
             | "gas_payment_at" => rkyv_to_json::<(u32,)>(rkyv),
             "message_ids" | "gas_payments" => rkyv_to_json::<(u32, u32)>(rkyv),
             "recipient_ism" | "fee_credit" => rkyv_to_json::<(H256,)>(rkyv),
@@ -150,6 +156,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "claimable_fees"
             | "fee_credit"
             | "dispatched_block_height"
+            | "inserted_block_height"
             | "processed_block_height_at_index"
             | "pending_total" => rkyv_to_json_u64(rkyv),
             // u8 outputs
@@ -157,7 +164,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             // bool outputs
             "delivered" | "is_registered" => rkyv_to_json::<bool>(rkyv),
             // H256 outputs
-            "latest_dispatched_id" | "processed_at_index" => rkyv_to_json::<MessageId>(rkyv),
+            "latest_dispatched_id" | "processed_at_index" | "message_id_at" | "root_at" => {
+                rkyv_to_json::<MessageId>(rkyv)
+            }
             // ContractId (= H256) outputs
             "default_ism"
             | "default_hook"
@@ -324,7 +333,10 @@ mod tests {
         let index_json = to_json((3u32,)).unwrap().to_string();
         for name in [
             "dispatched_block_height",
+            "inserted_block_height",
+            "message_id_at",
             "processed_block_height_at_index",
+            "root_at",
             "gas_payment_at",
         ] {
             let encoded = driver
@@ -351,6 +363,7 @@ mod tests {
             "claimable_fees",
             "fee_credit",
             "dispatched_block_height",
+            "inserted_block_height",
             "processed_block_height_at_index",
             "pending_total",
         ] {
@@ -364,6 +377,14 @@ mod tests {
         driver
             .decode_output_fn("state_version", &u32_output)
             .expect("state-version output should decode");
+
+        let h256_json = to_json([5u8; 32]).unwrap().to_string();
+        let h256_output = json_to_rkyv::<[u8; 32]>(&h256_json).unwrap();
+        for name in ["message_id_at", "root_at"] {
+            driver
+                .decode_output_fn(name, &h256_output)
+                .expect("Merkle provenance output should decode");
+        }
 
         let record = GasPaymentRecord {
             message_id: [1u8; 32],

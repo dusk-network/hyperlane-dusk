@@ -118,6 +118,7 @@ mod warp_native {
             self.mailbox = mailbox;
             self.owner = Some(owner);
             for (domain, router) in enrolled_routers {
+                assert!(router != [0u8; 32], "WarpNative: router cannot be zero");
                 self.enrolled_routers.insert(domain, router);
                 abi::emit(
                     events::RemoteRouterEnrolled::TOPIC,
@@ -362,6 +363,7 @@ mod warp_native {
         /// Enroll a remote router for a domain. Owner only.
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
+            assert!(router != [0u8; 32], "WarpNative: router cannot be zero");
             self.enrolled_routers.insert(domain, router);
             abi::emit(
                 events::RemoteRouterEnrolled::TOPIC,

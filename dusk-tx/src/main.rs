@@ -135,6 +135,14 @@ enum Command {
         /// Mailbox default ISM. Must be selected explicitly; `testMock` is test-only.
         #[arg(long)]
         default_ism: String,
+        /// Initial IGP pricing, repeated as DOMAIN:GAS_OVERHEAD:TOKEN_EXCHANGE_RATE:GAS_PRICE.
+        /// At least one destination is required because IGP is the active default hook.
+        #[arg(
+            long = "igp-domain-config",
+            value_name = "DOMAIN:GAS_OVERHEAD:TOKEN_EXCHANGE_RATE:GAS_PRICE",
+            required = true
+        )]
+        igp_domain_configs: Vec<String>,
         /// Comma-separated list of Ethereum validator addresses for `messageIdMultisig`.
         /// Example: `0xabc...,0xdef...`
         #[arg(long, default_value = "")]
@@ -242,6 +250,9 @@ enum Command {
         /// Raw encoded Hyperlane message (hex).
         #[arg(long)]
         message: String,
+        /// ISM metadata (hex). Empty metadata is valid for TestMock only.
+        #[arg(long, default_value = "")]
+        metadata: String,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         #[arg(long, default_value = "2000")]
@@ -446,6 +457,7 @@ async fn main() {
             warp_symbol,
             warp_decimals,
             default_ism,
+            igp_domain_configs,
             multisig_validators,
             multisig_threshold,
         } => {
@@ -466,6 +478,7 @@ async fn main() {
                 &warp_symbol,
                 warp_decimals,
                 &default_ism,
+                &igp_domain_configs,
                 &multisig_validators,
                 multisig_threshold,
             )
@@ -552,6 +565,7 @@ async fn main() {
             secret_key,
             mailbox,
             message,
+            metadata,
             secret_key_stdin,
             gas_limit,
             gas_price,
@@ -564,6 +578,7 @@ async fn main() {
                 secret_key_stdin,
                 &mailbox,
                 &message,
+                &metadata,
                 gas_limit,
                 gas_price,
             )
@@ -802,9 +817,9 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirmation_error_with_hash, next_moonlight_nonce, read_secret_key_hex,
-        resolve_keys_password, submission_error_with_hash, wait_for_transaction_with,
-        MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
+        confirmation_error_with_hash, next_moonlight_nonce, parse_igp_domain_configs,
+        read_secret_key_hex, resolve_keys_password, submission_error_with_hash,
+        wait_for_transaction_with, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::TransactionStatus;
     use std::collections::VecDeque;
@@ -813,6 +828,30 @@ mod tests {
     use std::time::Duration;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn igp_domain_configs_are_explicit_unique_and_nonzero_priced() {
+        let values = vec![
+            "31338:50000:10000000000:1".to_string(),
+            "1:100000:20000000000:2".to_string(),
+        ];
+        let configs = parse_igp_domain_configs(&values).unwrap();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].0, 1);
+        assert_eq!(configs[1].0, 31338);
+
+        for invalid in [
+            Vec::<String>::new(),
+            vec!["31338:0:0:1".to_string()],
+            vec!["31338:0:10000000000:0".to_string()],
+            vec![
+                "31338:0:10000000000:1".to_string(),
+                "31338:1:10000000000:2".to_string(),
+            ],
+        ] {
+            assert!(parse_igp_domain_configs(&invalid).is_err());
+        }
+    }
 
     #[test]
     fn secret_key_stdin_is_bounded() {
@@ -1276,9 +1315,11 @@ async fn cmd_deploy_hyperlane(
     warp_symbol: &str,
     warp_decimals: u8,
     default_ism: &str,
+    igp_domain_config_args: &[String],
     multisig_validators: &str,
     multisig_threshold: u8,
 ) -> Result<(), String> {
+    let igp_domain_configs = parse_igp_domain_configs(igp_domain_config_args)?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let client = RuesClient::new(rues_url)?;
 
@@ -1727,7 +1768,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         mailbox_id,
         owner_h256,
         owner_h256,
-        Vec::<(u32, DomainGasConfig)>::new(),
+        igp_domain_configs.clone(),
     ));
     deploy_one(
         &client, &sk, &pk, igp_bytes, igp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id,
@@ -1843,6 +1884,12 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         "success": true,
         "domain": domain,
         "chain_id": chain_id,
+        "igp_domain_configs": igp_domain_configs.iter().map(|(destination, config)| json!({
+            "domain": destination,
+            "gas_overhead": config.gas_overhead,
+            "token_exchange_rate": config.token_exchange_rate,
+            "gas_price": config.gas_price,
+        })).collect::<Vec<_>>(),
         "contracts": contracts,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -1867,6 +1914,48 @@ fn parse_default_ism(s: &str) -> Result<DefaultIsm, String> {
     Err(format!(
         "Invalid --default-ism '{s}'. Options: testMock, messageIdMultisig"
     ))
+}
+
+fn parse_igp_domain_configs(values: &[String]) -> Result<Vec<(u32, DomainGasConfig)>, String> {
+    if values.is_empty() {
+        return Err("At least one --igp-domain-config is required".into());
+    }
+
+    let mut configs = Vec::with_capacity(values.len());
+    for value in values {
+        let parts = value.split(':').collect::<Vec<_>>();
+        if parts.len() != 4 {
+            return Err(format!(
+                "Invalid --igp-domain-config '{value}': expected DOMAIN:GAS_OVERHEAD:TOKEN_EXCHANGE_RATE:GAS_PRICE"
+            ));
+        }
+        let parse = |raw: &str, field: &str| {
+            raw.parse::<u64>()
+                .map_err(|e| format!("Invalid {field} in --igp-domain-config '{value}': {e}"))
+        };
+        let domain_u64 = parse(parts[0], "domain")?;
+        let domain = u32::try_from(domain_u64)
+            .map_err(|_| format!("IGP domain {domain_u64} exceeds u32"))?;
+        let config = DomainGasConfig {
+            gas_overhead: parse(parts[1], "gas overhead")?,
+            token_exchange_rate: parse(parts[2], "token exchange rate")?,
+            gas_price: parse(parts[3], "gas price")?,
+        };
+        if config.token_exchange_rate == 0 {
+            return Err(format!("IGP domain {domain} token exchange rate cannot be zero"));
+        }
+        if config.gas_price == 0 {
+            return Err(format!("IGP domain {domain} gas price cannot be zero"));
+        }
+        configs.push((domain, config));
+    }
+    configs.sort_by_key(|(domain, _)| *domain);
+    for adjacent in configs.windows(2) {
+        if adjacent[0].0 == adjacent[1].0 {
+            return Err(format!("Duplicate IGP domain config: {}", adjacent[0].0));
+        }
+    }
+    Ok(configs)
 }
 
 fn parse_eth_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
@@ -2145,9 +2234,26 @@ async fn cmd_query(
             let output = json!({ "success": true, "value": result });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
+        "domain-gas-config" => {
+            let domain = arg_u32.ok_or_else(|| {
+                "--return-type domain-gas-config requires --arg-u32 <domain>".to_string()
+            })?;
+            let result: DomainGasConfig = client
+                .contract_query(&contract_id, method, &domain)
+                .await?;
+            let output = json!({
+                "success": true,
+                "value": {
+                    "gas_overhead": result.gas_overhead,
+                    "token_exchange_rate": result.token_exchange_rate,
+                    "gas_price": result.gas_price,
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
         _ => {
             return Err(format!(
-            "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, bytes, string"
+            "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, bytes, string, domain-gas-config"
         ))
         }
     }
@@ -2227,6 +2333,7 @@ async fn cmd_process(
     secret_key_stdin: bool,
     mailbox_hex: &str,
     message_hex: &str,
+    metadata_hex: &str,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -2238,13 +2345,15 @@ async fn cmd_process(
     let message_hex = message_hex.strip_prefix("0x").unwrap_or(message_hex);
     let encoded_message =
         hex::decode(message_hex).map_err(|e| format!("Invalid message hex: {e}"))?;
+    let metadata_hex = metadata_hex.strip_prefix("0x").unwrap_or(metadata_hex);
+    let metadata =
+        hex::decode(metadata_hex).map_err(|e| format!("Invalid metadata hex: {e}"))?;
 
     // Compute message ID for output
     let message_id = hyperlane_dusk_types::message::id(&encoded_message);
 
     // Serialize args: (metadata: Vec<u8>, encoded_message: Vec<u8>)
-    let empty_metadata: Vec<u8> = Vec::new();
-    let process_args = rkyv_serialize(&(empty_metadata, encoded_message));
+    let process_args = rkyv_serialize(&(metadata, encoded_message));
 
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
