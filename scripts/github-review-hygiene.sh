@@ -13,15 +13,25 @@ cd "$ROOT"
 DUSK_REPO="${DUSK_REPO:-dusk-network/hyperlane-dusk}"
 MONOREPO_REPO="${MONOREPO_REPO:-dusk-network/hyperlane-monorepo}"
 MONOREPO_DIR="${MONOREPO_DIR:-$ROOT/../hyperlane-monorepo}"
-DUSK_PRS="${DUSK_PRS:-1 3}"
+DUSK_PRS="${DUSK_PRS:-1 3 10}"
 MONOREPO_PRS="${MONOREPO_PRS:-1}"
-DUSK_ISSUES="${DUSK_ISSUES:-2 4 5 6 7 8 9}"
+DUSK_ISSUES="${DUSK_ISSUES:-2 4 5 7 8 9}"
 EXPORT_DIR="${EXPORT_DIR:-}"
 KEEP_EXPORT="${KEEP_EXPORT:-1}"
 STALE_REVIEW_PATTERNS="${STALE_REVIEW_PATTERNS:-356239661c5121e79e81930fd2b18995bf375b11|78b0cfd19b59705c49639cd8200baa2404344d2c|c0036501b26cc98fb64259807e4cbca929487aec|d192269aedee625be4355a34a6ec5672c4141ec8|10721dcb645adc0d7fc8b4952362e57355c2c67e|bb2fbd685e1bccd0c468de9bbd3f2bb49bbac1d4|0cc3732046181576cd57a536bce585c079c776c2|519478c418498d3520aee650e76292ff2aad1e64|7a00aed51e1a39ec6fd58a5fb8added3a0350f37|e2d5db3f01bb2bc0ef5a0d4eda560cc34ee21862|0aca118ce9cae9ae86c7757f207f49d76face371|06dbf75e5f880ec74d29d59e44c4059298a49685|06dbf75e2d67b0bbc5aa450066bfb5743f79bdd2|1778574482|1778576530|1778577847|28d07e01d1bbc0cf59575a811cde55e844a2abb7|2dcc3409c38107caf2b1e67c913a265fba51df7e|d25d18155dd28ffdee30793b416e6956dd4c4799|25771131928|25771131956|25771131995|25771347654|25771347630|25771347609|75694299679|75694299650|75694300152|75694938855|75694938818|75694949161|25802657899|25802657910|75796678440|75796678527|54e56fa139343df5250ac01b1589ae7052cbedeb|ahead/behind .31 0|ahead/behind .32 0|Dusk PR #1 head is now .889a00bb11d589d268ee928d0855e3724dfab0fe|Companion Dusk PR #1 head is now .889a00bb11d589d268ee928d0855e3724dfab0fe|runtime commit|Dusk runtime commit|repeatable cargo clippy|only adds evidence-doc updates|evidence-doc updates only|17 0}"
 REVIEWER_ROUTING_URL="${REVIEWER_ROUTING_URL:-https://github.com/dusk-network/hyperlane-dusk/blob/feat/dusk-hardening-v2/REVIEWERS.md}"
-LATEST_REPRO_ARCHIVE_PATH="${LATEST_REPRO_ARCHIVE_PATH:-/home/hein_/projects/hyperlane/.codex-backups/hyperlane-clean-repro-current-head-1778751867.tgz}"
-LATEST_REPRO_ARCHIVE_SHA256="${LATEST_REPRO_ARCHIVE_SHA256:-9e08ce22389f4a209d3d1ed79aa90de8d5384ce77ca7c142019c3264b799b7e7}"
+CURRENT_BASE_CODE="${CURRENT_BASE_CODE:-876848ecc6c671995fad3ae7b22843e68a3ce8ca}"
+CURRENT_STACK_CODE="${CURRENT_STACK_CODE:-b28d575527421d2a67245921ce561c88f554c099}"
+CURRENT_MONOREPO_RUNTIME="${CURRENT_MONOREPO_RUNTIME:-af957a9fc814fa7533aadf997104863306eed645}"
+CURRENT_MONOREPO_COVERED_PIN="${CURRENT_MONOREPO_COVERED_PIN:-b4c46ce9bdade2590018facaa51255d497a80db2}"
+CURRENT_HYPERLANE_UPSTREAM_BASE="${CURRENT_HYPERLANE_UPSTREAM_BASE:-669d966ad71582fe3c9d96b5ed1b8ea3724e07fe}"
+CURRENT_RUSK_REF="${CURRENT_RUSK_REF:-5c6a0bab11c61fb4c81275afdeceb97fb942d85e}"
+CURRENT_BASE_REPRO_SHA256="${CURRENT_BASE_REPRO_SHA256:-b4d3864dfb178adc283e8a3cc6f137c4c9580525b4bd1ffb07d7ef9a0bdbdedd}"
+CURRENT_STACK_REPRO_SHA256="${CURRENT_STACK_REPRO_SHA256:-314ff8b12204be6dcf9055ce9917013d47e6c93d4adfca88b6e53c55e0434ec6}"
+CURRENT_TESTMOCK_RUN="${CURRENT_TESTMOCK_RUN:-1784629402}"
+CURRENT_TESTMOCK_SHA256="${CURRENT_TESTMOCK_SHA256:-c155747f8d49beb16e8cf005c3bca77eff62b3d3fe0c3e86fa4737a8ca3b0540}"
+CURRENT_MULTISIG_RUN="${CURRENT_MULTISIG_RUN:-1784628130}"
+CURRENT_MULTISIG_SHA256="${CURRENT_MULTISIG_SHA256:-d6d9100b3f306662000d5d865d849f492bf1810f88c245a53fda998843898df6}"
 AGENT_PLACEHOLDER_PATTERN="${AGENT_PLACEHOLDER_PATTERN:-todo!|unimplemented!|panic!|expect\(}"
 AGENT_PLACEHOLDER_SCAN_ONLY=0
 DISPATCHER_COMMENT_SCAN_ONLY_FILE=""
@@ -91,8 +101,8 @@ Exports reviewer-facing GitHub text and checks it for:
   - stale "current/latest" evidence wording in active comments
   - JSON-escaped PR/issue/comment body rendering
   - historical status snapshots that are not marked superseded
-  - missing reviewer-facing links and review-gate handoff text
-  - stale make review-gates descriptions that omit archive/dispatcher coverage
+  - missing exact immutable validation anchors and decision links
+  - missing explicit separation of pre-merge checks from production authority
   - stale monorepo queued-check status after inherited Depot workflow guards
   - source/artifact secret hygiene regressions
 
@@ -128,17 +138,11 @@ Environment:
                          Extended regex for Dusk agent runtime
                          panic/placeholder scans.
                          Default: $AGENT_PLACEHOLDER_PATTERN
-  REVIEWER_ROUTING_URL   Advisory reviewer routing URL expected in active
-                         PR/issue bodies.
+  REVIEWER_ROUTING_URL   Advisory reviewer routing URL expected in the
+                         workflow dispatcher PR body.
                          Default: $REVIEWER_ROUTING_URL
-  LATEST_REPRO_ARCHIVE_PATH
-                         Durable latest-repro archive path expected in active
-                         reviewer-facing text.
-                         Default: $LATEST_REPRO_ARCHIVE_PATH
-  LATEST_REPRO_ARCHIVE_SHA256
-                         Durable latest-repro archive hash expected in active
-                         reviewer-facing text.
-                         Default: $LATEST_REPRO_ARCHIVE_SHA256
+  CURRENT_*              Immutable source, runtime, Rusk, repro, and E2E
+                         anchors expected on the relevant review surfaces.
 EOF
 }
 
@@ -380,6 +384,12 @@ check_pr_head_claims \
     3 \
     "Workflow dispatcher PR #3 live head is .?[0-9a-f]{40}|Manual workflow dispatcher PR #3 head: .?[0-9a-f]{40}|Manual workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow dispatcher PR #3: .?[0-9a-f]{40}|Workflow PR #3 head: .?[0-9a-f]{40}"
 
+check_pr_head_claims \
+    "Dusk withdrawal PR #10" \
+    "$DUSK_REPO" \
+    10 \
+    "Stacked withdrawal PR #10 head: .?[0-9a-f]{40}|Withdrawal PR #10 head: .?[0-9a-f]{40}|PR #10 head: .?[0-9a-f]{40}"
+
 active_review_text="$EXPORT_DIR/active-review-text.txt"
 for file in "$EXPORT_DIR"/*-body.txt; do
     printf 'FILE=%s\n' "$file" >>"$active_review_text"
@@ -443,205 +453,98 @@ if rg_to_file "$stale_active_hits" "stale active review wording" -n -e "$stale_a
 fi
 rm -f "$stale_active_hits"
 
-stale_review_gates_description='make review-gates` runs the lightweight non-E2E gate bundle: preservation audit, Dependabot vulnerable-range comparison, GitHub review-hygiene export/scan, and fresh live gate status'
-stale_review_gates_hits="$EXPORT_DIR/stale-review-gates-description.txt"
-if rg_to_file "$stale_review_gates_hits" "stale review-gates description" -n -F "$stale_review_gates_description" "$active_review_text"; then
-    cat "$stale_review_gates_hits" >&2
-    fail "stale make review-gates description found; archive hygiene coverage is missing"
-fi
-rm -f "$stale_review_gates_hits"
+require_literal() {
+    local file="$1"
+    local value="$2"
+    local label="$3"
 
-rg -q -F 'make dispatcher-merge-order-smoke' "$active_review_text" \
-    || fail "active reviewer-facing text is missing dispatcher merge-order smoke handoff text"
-rg -q -F 'monorepoCoveredPathDelta' "$active_review_text" \
-    || fail "active reviewer-facing text is missing monorepo clean-layout repro delta handoff text"
-rg -q -F "$LATEST_REPRO_ARCHIVE_PATH" "$active_review_text" \
-    || fail "active reviewer-facing text is missing latest durable repro archive path"
-rg -q -F "$LATEST_REPRO_ARCHIVE_SHA256" "$active_review_text" \
-    || fail "active reviewer-facing text is missing latest durable repro archive hash"
+    [ -f "$file" ] || fail "missing exported review surface: $file"
+    rg -q -F "$value" "$file" || fail "$file is missing $label: $value"
+}
 
-post_rebase_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433528683'
-post_rebase_e2e_archive_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4433564278'
-dependency_remediated_e2e_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4434118389'
-latest_repro_comment='https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4449591043'
-current_gate_refresh_text='head and gate refresh:'
-ci_provisioning_runbook='https://github.com/dusk-network/hyperlane-dusk/issues/8#issuecomment-4435830841'
-for file in \
-    "$EXPORT_DIR/dusk-pr-1-body.txt" \
-    "$EXPORT_DIR/monorepo-pr-1-body.txt" \
-    "$EXPORT_DIR/dusk-issue-2-body.txt"; do
-    rg -q -F "$current_gate_refresh_text" "$file" \
-        || fail "$file is missing current gate refresh handoff text"
-    rg -q -F "$latest_repro_comment" "$file" \
-        || fail "$file is missing latest clean-layout repro evidence link"
-    rg -q -F '1778751867' "$file" \
-        || fail "$file is missing latest clean-layout repro run id"
-    rg -q -F '2dd0d227cf0c33033cd9206151c1cbca6cddfffb' "$file" \
-        || fail "$file is missing latest clean-layout Dusk source ref"
-    rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$file" \
-        || fail "$file is missing latest clean-layout clean-Rusk ref"
-    if rg_to_file "$EXPORT_DIR/stale-repro-body.txt" "stale checkout-v6 wording" \
-        -n -F 'Latest checkout-v6 clean-layout' "$file"; then
-        cat "$EXPORT_DIR/stale-repro-body.txt" >&2
-        fail "$file contains stale latest checkout-v6 wording"
-    fi
-    if rg_to_file "$EXPORT_DIR/stale-repro-body.txt" "stale clean-layout repro body evidence" \
-        -n -e '1778607202|4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253|1f9e49fd9f0ba84ea93e472ddbd31fddd9a04cc3|1778683232|9050143c1ef12f76d117ee97effa79da8df3e334' "$file"; then
-        cat "$EXPORT_DIR/stale-repro-body.txt" >&2
-        fail "$file contains stale clean-layout repro body evidence"
-    fi
-    rg -q -F "$post_rebase_e2e_comment" "$file" \
-        || fail "$file is missing post-rebase E2E evidence link"
-    rg -q -F "$post_rebase_e2e_archive_comment" "$file" \
-        || fail "$file is missing post-rebase E2E archive link"
-    rg -q -F "$dependency_remediated_e2e_comment" "$file" \
-        || fail "$file is missing dependency-remediated E2E evidence link"
-    rg -q -F "$REVIEWER_ROUTING_URL" "$file" \
-        || fail "$file is missing advisory reviewer routing link"
-    rg -q -F 'make gate-status-fresh' "$file" \
-        || fail "$file is missing make gate-status-fresh handoff text"
-    rg -q -F 'make dependency-alert-status' "$file" \
-        || fail "$file is missing make dependency-alert-status handoff text"
-    rg -q -F 'make completion-audit-status' "$file" \
-        || fail "$file is missing make completion-audit-status handoff text"
-    rg -q -F 'make review-gates' "$file" \
-        || fail "$file is missing make review-gates handoff text"
-    rg -q -F 'archive hygiene self-tests' "$file" \
-        || fail "$file is missing make review-gates archive hygiene self-test handoff text"
-    rg -q -F 'extracted evidence archive hygiene scans' "$file" \
-        || fail "$file is missing make review-gates extracted archive hygiene handoff text"
-    rg -q -F 'make production-readiness-guard' "$file" \
-        || fail "$file is missing make production-readiness-guard handoff text"
-    rg -q -F 'required status-check policy enabled' "$file" \
-        || fail "$file is missing required status-check policy handoff text"
-    rg -q -F 'latest clean-layout repro path delta' "$file" \
-        || fail "$file is missing latest clean-layout repro path delta handoff text"
+base_pr_body="$EXPORT_DIR/dusk-pr-1-body.txt"
+stack_pr_body="$EXPORT_DIR/dusk-pr-10-body.txt"
+monorepo_pr_body="$EXPORT_DIR/monorepo-pr-1-body.txt"
+issue_2_comments="$EXPORT_DIR/dusk-issue-2-comments.txt"
+
+for value in \
+    "$CURRENT_BASE_CODE" \
+    "$CURRENT_STACK_CODE" \
+    "$CURRENT_MONOREPO_RUNTIME" \
+    "$CURRENT_MONOREPO_COVERED_PIN" \
+    "$CURRENT_HYPERLANE_UPSTREAM_BASE" \
+    "$CURRENT_RUSK_REF" \
+    "$CURRENT_BASE_REPRO_SHA256" \
+    "$CURRENT_STACK_REPRO_SHA256" \
+    "$CURRENT_TESTMOCK_RUN" \
+    "$CURRENT_TESTMOCK_SHA256" \
+    "$CURRENT_MULTISIG_RUN" \
+    "$CURRENT_MULTISIG_SHA256"; do
+    require_literal "$base_pr_body" "$value" "current reassessment evidence"
 done
-rm -f "$EXPORT_DIR/stale-repro-body.txt"
+require_literal "$base_pr_body" 'CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md' 'decision record link'
 
-if [ -f "$EXPORT_DIR/dusk-issue-2-body.txt" ]; then
-    rg -q -F 'Latest clean-layout repro run `1778751867` tested Dusk `2dd0d227cf0c33033cd9206151c1cbca6cddfffb` and monorepo `3b7d9f64d7d9465eaa868770d970243d98bc53c6`' \
-        "$EXPORT_DIR/dusk-issue-2-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-2-body.txt is missing current monorepo clean-layout repro handoff text"
-fi
+for value in \
+    "$CURRENT_BASE_CODE" \
+    "$CURRENT_STACK_CODE" \
+    "$CURRENT_MONOREPO_RUNTIME" \
+    "$CURRENT_MONOREPO_COVERED_PIN" \
+    "$CURRENT_RUSK_REF" \
+    "$CURRENT_STACK_REPRO_SHA256" \
+    "$CURRENT_TESTMOCK_RUN" \
+    "$CURRENT_TESTMOCK_SHA256" \
+    "$CURRENT_MULTISIG_RUN" \
+    "$CURRENT_MULTISIG_SHA256"; do
+    require_literal "$stack_pr_body" "$value" "current withdrawal evidence"
+done
+require_literal "$stack_pr_body" 'CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md' 'decision record link'
 
-for file in \
-    "$EXPORT_DIR/dusk-pr-1-body.txt" \
-    "$EXPORT_DIR/dusk-issue-2-body.txt" \
-    "$EXPORT_DIR/dusk-issue-8-body.txt"; do
-    if [ -f "$file" ]; then
-        rg -q -F 'actionlint .github/workflows/manual-repro-check.yml .github/workflows/manual-repro-dispatcher-gate.yml .github/workflows/dusk-review-policy-gate.yml' "$file" \
-            || fail "$file is missing full dispatcher workflow actionlint handoff text"
-        rg -q -F 'DUSK_STATUS_READ_TOKEN' "$file" \
-            || fail "$file is missing DUSK_STATUS_READ_TOKEN status-visibility handoff text"
-        rg -q -F 'repoStatusSecretVisible' "$file" \
-            || fail "$file is missing repoStatusSecretVisible gate-status handoff text"
+for value in \
+    "$CURRENT_BASE_CODE" \
+    "$CURRENT_STACK_CODE" \
+    "$CURRENT_MONOREPO_RUNTIME" \
+    "$CURRENT_MONOREPO_COVERED_PIN" \
+    "$CURRENT_HYPERLANE_UPSTREAM_BASE" \
+    "$CURRENT_RUSK_REF"; do
+    require_literal "$monorepo_pr_body" "$value" "current agent compatibility evidence"
+done
+require_literal "$monorepo_pr_body" 'docs/dusk-companion-compatibility.md' 'cross-repository compatibility manifest'
+
+for value in \
+    "$CURRENT_BASE_CODE" \
+    "$CURRENT_STACK_CODE" \
+    "$CURRENT_MONOREPO_RUNTIME" \
+    "$CURRENT_MONOREPO_COVERED_PIN" \
+    "$CURRENT_HYPERLANE_UPSTREAM_BASE" \
+    "$CURRENT_RUSK_REF" \
+    "$CURRENT_BASE_REPRO_SHA256" \
+    "$CURRENT_STACK_REPRO_SHA256" \
+    "$CURRENT_TESTMOCK_RUN" \
+    "$CURRENT_TESTMOCK_SHA256" \
+    "$CURRENT_MULTISIG_RUN" \
+    "$CURRENT_MULTISIG_SHA256"; do
+    require_literal "$issue_2_comments" "$value" "current consolidated handoff evidence"
+done
+require_literal "$issue_2_comments" 'Current gate handoff after the 2026-07-21 escrow, dispatch-credit, and agent reassessment' 'current consolidated handoff marker'
+
+for file in "$base_pr_body" "$stack_pr_body" "$monorepo_pr_body" "$issue_2_comments"; do
+    if ! rg -qi 'not (a )?production (authorization|deployment approval)|green pre-merge result is not production authorization' "$file"; then
+        fail "$file is missing the pre-merge versus production-authority disclaimer"
     fi
 done
 
 if [ -f "$EXPORT_DIR/dusk-pr-3-body.txt" ]; then
-    rg -q -F "$REVIEWER_ROUTING_URL" "$EXPORT_DIR/dusk-pr-3-body.txt" \
-        || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing advisory reviewer routing link"
-    rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/actions/runs/25818963712/job/75854858513' \
-        "$EXPORT_DIR/dusk-pr-3-body.txt" \
-        || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing current dispatcher gate run link"
-    rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/actions/runs/25818963747/job/75854858574' \
-        "$EXPORT_DIR/dusk-pr-3-body.txt" \
-        || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing current review policy gate run link"
-    rg -q -F '.github/workflows/dusk-review-policy-gate.yml' \
-        "$EXPORT_DIR/dusk-pr-3-body.txt" \
-        || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing shared review-policy workflow scope text"
-    rg -q -F "$ci_provisioning_runbook" "$EXPORT_DIR/dusk-pr-3-body.txt" \
-        || fail "$EXPORT_DIR/dusk-pr-3-body.txt is missing CI provisioning runbook link"
+    require_literal "$EXPORT_DIR/dusk-pr-3-body.txt" "$REVIEWER_ROUTING_URL" 'advisory reviewer routing link'
+    require_literal "$EXPORT_DIR/dusk-pr-3-body.txt" '.github/workflows/manual-repro-dispatcher-gate.yml' 'dispatcher self-check workflow scope'
+    require_literal "$EXPORT_DIR/dusk-pr-3-body.txt" '.github/workflows/dusk-review-policy-gate.yml' 'shared review-policy workflow scope'
+    require_literal "$EXPORT_DIR/dusk-pr-3-body.txt" 'Manual repro dispatcher gate' 'dispatcher gate evidence'
+    require_literal "$EXPORT_DIR/dusk-pr-3-body.txt" 'Dusk review policy gate' 'review policy evidence'
 fi
 
 if [ -f "$EXPORT_DIR/dusk-pr-3-comments.txt" ]; then
-    rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-pr-3-comments.txt" \
-        || fail "$EXPORT_DIR/dusk-pr-3-comments.txt is missing latest clean-layout repro evidence link"
     check_stale_dispatcher_comments "$EXPORT_DIR/dusk-pr-3-comments.txt" "$EXPORT_DIR/stale-pr-3-comments.txt"
 fi
 rm -f "$EXPORT_DIR/stale-pr-3-comments.txt"
-
-if [ -f "$EXPORT_DIR/dusk-issue-8-body.txt" ]; then
-    rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-8-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout repro evidence link"
-    rg -q -F '2dd0d227cf0c33033cd9206151c1cbca6cddfffb' "$EXPORT_DIR/dusk-issue-8-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout Dusk source ref"
-    rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$EXPORT_DIR/dusk-issue-8-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing latest clean-layout clean-Rusk ref"
-    rg -q -F 'required status-check policy enabled' "$EXPORT_DIR/dusk-issue-8-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-8-body.txt is missing required status-check policy text"
-    if rg_to_file "$EXPORT_DIR/stale-issue-8-body.txt" "stale issue 8 repro body evidence" \
-        -n -e '4433179148|836ee7d8d8e95152b3daaeebbc3fb56b0cc8e253' \
-        "$EXPORT_DIR/dusk-issue-8-body.txt"; then
-        cat "$EXPORT_DIR/stale-issue-8-body.txt" >&2
-        fail "$EXPORT_DIR/dusk-issue-8-body.txt contains stale clean-layout repro body evidence"
-    fi
-    if rg_to_file "$EXPORT_DIR/stale-issue-8-body.txt" "stale issue 8 tested-ref text" \
-        -n -F 'That run tested Dusk source ref `ef8ee43cd99569299b9744b498ac1bbac69950bc`' \
-        "$EXPORT_DIR/dusk-issue-8-body.txt"; then
-        cat "$EXPORT_DIR/stale-issue-8-body.txt" >&2
-        fail "$EXPORT_DIR/dusk-issue-8-body.txt contains stale latest-repro tested-ref text"
-    fi
-fi
-rm -f "$EXPORT_DIR/stale-issue-8-body.txt"
-
-if [ -f "$EXPORT_DIR/dusk-issue-7-body.txt" ]; then
-    rg -q -F "$latest_repro_comment" "$EXPORT_DIR/dusk-issue-7-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing latest clean-layout repro evidence link"
-    rg -q -F "$dependency_remediated_e2e_comment" "$EXPORT_DIR/dusk-issue-7-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing dependency-remediated E2E evidence link"
-    rg -q -F 'PRODUCTION_SIGNER_POLICY.md' "$EXPORT_DIR/dusk-issue-7-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-7-body.txt is missing production signer policy link text"
-    if rg_to_file "$EXPORT_DIR/stale-issue-7-body.txt" "stale issue 7 custody evidence" \
-        -n -e '4430201984|4430343619' \
-        "$EXPORT_DIR/dusk-issue-7-body.txt"; then
-        cat "$EXPORT_DIR/stale-issue-7-body.txt" >&2
-        fail "$EXPORT_DIR/dusk-issue-7-body.txt contains stale signer custody evidence links"
-    fi
-fi
-rm -f "$EXPORT_DIR/stale-issue-7-body.txt"
-
-for issue in 4 5 6; do
-    file="$EXPORT_DIR/dusk-issue-$issue-body.txt"
-    if [ -f "$file" ]; then
-        rg -q -F "$latest_repro_comment" "$file" \
-            || fail "$file is missing latest clean-layout repro evidence link"
-        rg -q -F 'SECURITY_REVIEW.md' "$file" \
-            || fail "$file is missing security review link text"
-        rg -q -F 'PRODUCTION_REVIEW_DECISIONS.md' "$file" \
-            || fail "$file is missing production decision record link text"
-    fi
-done
-
-for issue in 4 5 6 7 8 9; do
-    file="$EXPORT_DIR/dusk-issue-$issue-body.txt"
-    if [ -f "$file" ]; then
-        rg -q -F 'Current gate handoff:' "$file" \
-            || fail "$file is missing current gate handoff section"
-        rg -q -F 'currentGateRefreshHandoff' "$file" \
-            || fail "$file is missing currentGateRefreshHandoff text"
-        rg -q -F 'make review-gates' "$file" \
-            || fail "$file is missing make review-gates handoff text"
-        rg -q -F 'make production-readiness-guard' "$file" \
-            || fail "$file is missing production-readiness guard handoff text"
-    fi
-done
-
-if [ -f "$EXPORT_DIR/dusk-issue-9-body.txt" ]; then
-    rg -q -F '1778541618' "$EXPORT_DIR/dusk-issue-9-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak run id"
-    rg -q -F '7282 seconds' "$EXPORT_DIR/dusk-issue-9-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak duration"
-    rg -q -F '280 total completed transfers' "$EXPORT_DIR/dusk-issue-9-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak transfer count"
-    rg -q -F 'c0c64db4659500d077bb253ad13acba0e347d3fc' "$EXPORT_DIR/dusk-issue-9-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing clean Rusk ref"
-    rg -q -F 'https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4430670295' \
-        "$EXPORT_DIR/dusk-issue-9-body.txt" \
-        || fail "$EXPORT_DIR/dusk-issue-9-body.txt is missing soak archive evidence link"
-fi
-
 if rg_to_file "$EXPORT_DIR/pre-rebase-only-e2e-wording.txt" "pre-rebase-only E2E wording" \
     -n \
     -e 'clean-Rusk E2E evidence remains recorded for pre-rebase monorepo' \
