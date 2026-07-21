@@ -12,21 +12,24 @@ production-review gates and useful follow-up test areas are listed at the end.
 The frozen base code anchor is
 `876848ecc6c671995fad3ae7b22843e68a3ce8ca`; the frozen combined withdrawal
 stack anchor is `b28d575527421d2a67245921ce561c88f554c099`. Both were tested against
-Rusk `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` and monorepo checkout
-`bf11813b0ba9f065e1517eb22ab56c8f6264250b` (Dusk agent implementation
-anchor `af957a9fc814fa7533aadf997104863306eed645`).
+Rusk `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. The final static gates used
+monorepo checkout `b4c46ce9bdade2590018facaa51255d497a80db2`; the live E2E used its
+runtime-identical parent `bf11813b0ba9f065e1517eb22ab56c8f6264250b` because `b4c46ce` changes
+only documentation and the exact companion checkout string in CI. The Dusk
+agent implementation anchor in both is
+`af957a9fc814fa7533aadf997104863306eed645`.
 
 The exact base gate passed 12 WASM builds, contract/type clippy, 29 type tests,
 108 VM tests, 17 `dusk-tx` tests, 5 data-driver tests, the standalone operator,
 secret hygiene, and the full agent compile boundary. Durable log:
-`/tmp/hyperlane-base-repro-876848e-bf11813-20260721.log`, SHA-256
-`182691cb5ef5c864c3fc657cd4bd87134d7a1cc71f6f14a4513d5e2095b8a364`.
+`/tmp/hyperlane-base-repro-876848e-b4c46ce-20260721.log`, SHA-256
+`b4d3864dfb178adc283e8a3cc6f137c4c9580525b4bd1ffb07d7ef9a0bdbdedd`.
 
 The exact combined stack gate passed the same build and lint surfaces plus 114
 VM tests, 19 `dusk-tx` tests, 7 data-driver tests, release data-driver WASM,
 secret hygiene, and the full agent compile boundary. Durable log:
-`/tmp/hyperlane-reassessment-repro-b28d575-bf11813-20260721.log`, SHA-256
-`c0a47f43340d35369725bd3f215d120a62e0aab0a7558cb37fa2e24b023cbf62`.
+`/tmp/hyperlane-reassessment-repro-b28d575-b4c46ce-20260721.log`, SHA-256
+`314ff8b12204be6dcf9055ce9917013d47e6c93d4adfca88b6e53c55e0434ec6`.
 
 Live E2E first exposed and fixed three harness defects instead of treating a
 successful happy path as sufficient evidence: warm reuse expected the wrong
