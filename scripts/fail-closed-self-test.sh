@@ -40,6 +40,16 @@ done
 
 rg -q -F 'live_igp_config="$(query_dusk_domain_gas_config' demo/deploy.sh \
     || fail "saved-deployment validation omits live IGP pricing"
+saved_hook_type_checks=(
+    'query_dusk_u8 "$dusk_merkle" hook_type "Dusk MerkleTreeHook hook type")" = "3"'
+    'query_dusk_u8 "$dusk_aggregation_hook" hook_type "Dusk AggregationHook hook type")" = "2"'
+    'query_dusk_u8 "$dusk_igp" hook_type "Dusk IGP hook type")" = "4"'
+    'query_dusk_u8 "$dusk_protocol_fee" hook_type "Dusk ProtocolFee hook type")" = "6"'
+)
+for check in "${saved_hook_type_checks[@]}"; do
+    rg -q -F "$check" demo/deploy.sh \
+        || fail "saved-deployment validation has a missing or incorrect hook type check: $check"
+done
 rg -q -F 'per-chain artifacts are not a trusted reuse boundary' demo/deploy.sh \
     || fail "--skip-deploy can fall back to per-chain artifacts"
 rg -q -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/demo.sh \

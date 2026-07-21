@@ -546,7 +546,7 @@ validate_saved_deployment() {
         || fail "Running Dusk ProtocolFee has the wrong hook type; redeploy"
     [ "$(query_dusk_u8 "$dusk_aggregation_hook" hook_type "Dusk AggregationHook hook type")" = "2" ] \
         || fail "Running Dusk AggregationHook has the wrong hook type; redeploy"
-    [ "$(query_dusk_u8 "$dusk_merkle" hook_type "Dusk MerkleTreeHook hook type")" = "1" ] \
+    [ "$(query_dusk_u8 "$dusk_merkle" hook_type "Dusk MerkleTreeHook hook type")" = "3" ] \
         || fail "Running Dusk MerkleTreeHook has the wrong hook type; redeploy"
     validate_dusk_query "$dusk_test_recipient" handled_count u32 "Dusk test recipient"
     for route in "$dusk_warp" "$dusk_warp_native" "$dusk_warp_collateral"; do
