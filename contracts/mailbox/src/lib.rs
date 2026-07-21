@@ -47,7 +47,7 @@ mod mailbox {
     use alloc::vec::Vec;
 
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
-    use dusk_core::transfer::{ContractToContract, TRANSFER_CONTRACT};
+    use dusk_core::transfer::{ContractToContract, ReceiveFromContract, TRANSFER_CONTRACT};
 
     use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
@@ -211,6 +211,40 @@ mod mailbox {
             abi::emit(
                 events::DispatchFeeFunded::TOPIC,
                 events::DispatchFeeFunded { payer, amount },
+            );
+        }
+
+        /// Accept native DUSK sent by a contract and credit that exact contract.
+        ///
+        /// The transfer contract supplies the declared source; requiring an
+        /// authentic nested transfer callback prevents a root caller from
+        /// forging it. Warp routes use this callback to contribute each user's
+        /// dispatch quote immediately before dispatch.
+        pub fn receive_dispatch_funding(&mut self, transfer: ReceiveFromContract) {
+            assert!(
+                caller::authentic_transfer_callback(transfer.contract, transfer.contract),
+                "Mailbox: unauthenticated dispatch funding"
+            );
+            assert!(
+                transfer.contract != TRANSFER_CONTRACT,
+                "Mailbox: invalid dispatch funding source"
+            );
+            assert!(
+                transfer.data.is_empty(),
+                "Mailbox: unexpected dispatch funding data"
+            );
+            assert!(transfer.value > 0, "Mailbox: funding amount is zero");
+            let payer = transfer.contract.to_bytes();
+            let credit = self.fee_credits.entry(payer).or_insert(0);
+            *credit = credit
+                .checked_add(transfer.value)
+                .expect("Mailbox: fee credit overflow");
+            abi::emit(
+                events::DispatchFeeFunded::TOPIC,
+                events::DispatchFeeFunded {
+                    payer,
+                    amount: transfer.value,
+                },
             );
         }
 
@@ -516,6 +550,54 @@ mod mailbox {
             metadata: Vec<u8>,
             hook: ContractId,
         ) -> u64 {
+            self.quote_dispatch_for_sender(
+                Self::resolve_sender(),
+                destination,
+                recipient,
+                body,
+                metadata,
+                hook,
+            )
+        }
+
+        /// Compute a dispatch quote for the immediate calling contract.
+        ///
+        /// Unlike [`Self::quote_dispatch`], this is safe to call through a
+        /// top-level read-only route query: the route itself is the immediate
+        /// caller even when no Moonlight transaction origin exists.
+        pub fn quote_dispatch_for_contract(
+            &self,
+            destination: u32,
+            recipient: H256,
+            body: Vec<u8>,
+            metadata: Vec<u8>,
+            hook: ContractId,
+        ) -> u64 {
+            let contract = abi::caller().expect("Mailbox: contract quote caller unavailable");
+            assert!(
+                contract != TRANSFER_CONTRACT,
+                "Mailbox: contract quote requires contract caller"
+            );
+            self.quote_dispatch_for_sender(
+                contract.to_bytes(),
+                destination,
+                recipient,
+                body,
+                metadata,
+                hook,
+            )
+        }
+
+        /// Compute a quote for a resolved sender.
+        fn quote_dispatch_for_sender(
+            &self,
+            sender: H256,
+            destination: u32,
+            recipient: H256,
+            body: Vec<u8>,
+            metadata: Vec<u8>,
+            hook: ContractId,
+        ) -> u64 {
             let hook = if hook == ZERO_CONTRACT {
                 self.default_hook
             } else {
@@ -526,7 +608,6 @@ mod mailbox {
                 "Mailbox: selected hook cannot equal required hook"
             );
 
-            let sender = Self::resolve_sender();
             let encoded = message::encode(
                 VERSION,
                 self.nonce,

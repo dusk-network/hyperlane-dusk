@@ -16,6 +16,7 @@ SIGNOFF_ISSUES="${SIGNOFF_ISSUES:-4 5 6 7 8 9}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DUSK_REPRO_COVERED_PATHS="${DUSK_REPRO_COVERED_PATHS:-contracts types data-driver dusk-tx e2e wasm-bindings demo tests Cargo.toml Cargo.lock Makefile rust-toolchain.toml scripts/local-repro-check.sh .github/workflows/manual-repro-check.yml}"
 LATEST_REPRO_DUSK_REF="${LATEST_REPRO_DUSK_REF:-876848ecc6c671995fad3ae7b22843e68a3ce8ca}"
+PROPOSED_DUSK_REF="${PROPOSED_DUSK_REF:-HEAD}"
 MONOREPO_REPRO_COVERED_PATHS="${MONOREPO_REPRO_COVERED_PATHS:-rust/main/chains/hyperlane-dusk rust/main/Cargo.toml rust/main/Cargo.lock rust/main/hyperlane-base/Cargo.toml rust/main/hyperlane-base/src/settings/chains.rs rust/main/hyperlane-base/src/settings/parser rust/main/hyperlane-base/src/settings/signers.rs rust/main/hyperlane-base/src/contract_sync/cursors/mod.rs rust/main/hyperlane-core/src/chain.rs rust/main/agents/validator/src/reorg_reporter.rs rust/main/lander/src/adapter/chains/factory.rs .github/workflows/dusk-agent-gate.yml .github/workflows/dusk-review-policy-gate.yml .github/workflows/rust-docker.yml .github/workflows/monorepo-docker.yml .github/workflows/rust.yml .github/workflows/test.yml .github/workflows/rebalancer-e2e-test.yml}"
 LATEST_REPRO_MONOREPO_REF="${LATEST_REPRO_MONOREPO_REF:-c35f86405cf8cd83927860aca8b5c38b042ee198}"
 MIN_STATUS_CHECKS="${MIN_STATUS_CHECKS:-2}"
@@ -42,6 +43,7 @@ UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN="${UPSTREAM_SUBMISSION_INTERNAL_BLOCK
 REQUIRED_SECRET_NAME="${REQUIRED_SECRET_NAME:-DUSK_ORG_READ_TOKEN}"
 STATUS_SECRET_NAME="${STATUS_SECRET_NAME:-DUSK_STATUS_READ_TOKEN}"
 REQUIRED_RUNNER_LABEL="${REQUIRED_RUNNER_LABEL:-dusk-hyperlane}"
+REPRO_ENVIRONMENT="${REPRO_ENVIRONMENT:-dusk-hyperlane-repro}"
 STATUS_CHECK_WAIT_SECONDS="${STATUS_CHECK_WAIT_SECONDS:-60}"
 STATUS_CHECK_POLL_SECONDS="${STATUS_CHECK_POLL_SECONDS:-5}"
 READINESS_MODE="${READINESS_MODE:-production}"
@@ -404,6 +406,8 @@ check_ci_visibility() {
     local org_runner_has_label
     local repo_secrets_json
     local repo_secrets_count
+    local environment_secrets_json
+    local environment_secrets_count
     local required_secret_visible
     local status_secret_visible
 
@@ -466,31 +470,6 @@ check_ci_visibility() {
             ;;
     esac
 
-    check_required_secret() {
-        local repo="$1"
-        local label="$2"
-        local err_file="$3"
-        local secrets_json
-        local secrets_count
-        local required_secret_visible
-
-        if secrets_json="$(gh api "repos/$repo/actions/secrets" 2>"$err_file")"; then
-            secrets_count="$(printf '%s\n' "$secrets_json" | jq .total_count)"
-            required_secret_visible="$(printf '%s\n' "$secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
-            printf '%sSecretsVisible: %s\n' "$label" "$secrets_count"
-            printf '%sRequiredSecretVisible: %s\n' "$label" "$required_secret_visible"
-            if [ "$required_secret_visible" != "true" ]; then
-                add_blocker "$label Actions secret $REQUIRED_SECRET_NAME is not visible"
-            fi
-        else
-            printf '%sSecretsVisible: unknown\n' "$label"
-            printf '%sRequiredSecretVisible: unknown\n' "$label"
-            sed 's/^/  /' "$err_file"
-            add_blocker "$label Actions secret visibility is unknown"
-        fi
-        rm -f "$err_file"
-    }
-
     if repo_secrets_json="$(gh api "repos/$DUSK_REPO/actions/secrets" 2>/tmp/hyperlane-readiness-secrets.$$.err)"; then
         repo_secrets_count="$(printf '%s\n' "$repo_secrets_json" | jq .total_count)"
         required_secret_visible="$(printf '%s\n' "$repo_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
@@ -498,8 +477,8 @@ check_ci_visibility() {
         printf 'repoSecretsVisible: %s\n' "$repo_secrets_count"
         printf 'repoRequiredSecretVisible: %s\n' "$required_secret_visible"
         printf 'repoStatusSecretVisible: %s\n' "$status_secret_visible"
-        if [ "$required_secret_visible" != "true" ]; then
-            add_blocker "repo-level Actions secret $REQUIRED_SECRET_NAME is not visible"
+        if [ "$required_secret_visible" = "true" ]; then
+            add_blocker "source-read secret $REQUIRED_SECRET_NAME must not be stored at repository scope"
         fi
     else
         echo "repoSecretsVisible: unknown"
@@ -510,7 +489,23 @@ check_ci_visibility() {
     fi
     rm -f /tmp/hyperlane-readiness-secrets.$$.err
 
-    check_required_secret "$MONOREPO_REPO" "monorepoRepo" "/tmp/hyperlane-readiness-monorepo-secrets.$$.err"
+    if environment_secrets_json="$(gh api "repos/$DUSK_REPO/environments/$REPRO_ENVIRONMENT/secrets" 2>/tmp/hyperlane-readiness-environment-secrets.$$.err)"; then
+        environment_secrets_count="$(printf '%s\n' "$environment_secrets_json" | jq .total_count)"
+        required_secret_visible="$(printf '%s\n' "$environment_secrets_json" | jq --arg name "$REQUIRED_SECRET_NAME" '[.secrets[]?.name] | index($name) != null')"
+        printf 'reproEnvironment: %s\n' "$REPRO_ENVIRONMENT"
+        printf 'reproEnvironmentSecretsVisible: %s\n' "$environment_secrets_count"
+        printf 'reproEnvironmentRequiredSecretVisible: %s\n' "$required_secret_visible"
+        if [ "$required_secret_visible" != "true" ]; then
+            add_blocker "environment $REPRO_ENVIRONMENT secret $REQUIRED_SECRET_NAME is not visible"
+        fi
+    else
+        printf 'reproEnvironment: %s\n' "$REPRO_ENVIRONMENT"
+        echo "reproEnvironmentSecretsVisible: unknown"
+        echo "reproEnvironmentRequiredSecretVisible: unknown"
+        sed 's/^/  /' /tmp/hyperlane-readiness-environment-secrets.$$.err
+        add_blocker "environment $REPRO_ENVIRONMENT Actions secret visibility is unknown"
+    fi
+    rm -f /tmp/hyperlane-readiness-environment-secrets.$$.err
 }
 
 check_dependency_alerts() {
@@ -532,18 +527,24 @@ check_dependency_alerts() {
 }
 
 check_dusk_repro_delta() {
-    if git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/null 2>&1; then
-        local covered_delta
-        covered_delta="$(git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF"..HEAD -- $DUSK_REPRO_COVERED_PATHS)"
-        if [ -n "$covered_delta" ]; then
-            echo "coveredPathDelta: present"
-            printf '%s\n' "$covered_delta" | sed 's/^/  /'
-            add_blocker "runtime/test covered paths changed since latest clean-layout repro"
-        else
-            echo "coveredPathDelta: none"
-        fi
-    else
+    if ! git -C "$ROOT" rev-parse --verify "$LATEST_REPRO_DUSK_REF^{commit}" >/dev/null 2>&1; then
         add_blocker "latest clean-layout repro ref $LATEST_REPRO_DUSK_REF is unavailable"
+        return 0
+    fi
+    if ! git -C "$ROOT" rev-parse --verify "$PROPOSED_DUSK_REF^{commit}" >/dev/null 2>&1; then
+        add_blocker "proposed Dusk ref $PROPOSED_DUSK_REF is unavailable"
+        return 0
+    fi
+
+    local covered_delta
+    covered_delta="$(git -C "$ROOT" diff --name-only "$LATEST_REPRO_DUSK_REF".."$PROPOSED_DUSK_REF" -- $DUSK_REPRO_COVERED_PATHS)"
+    printf 'proposedDuskRef: %s\n' "$(git -C "$ROOT" rev-parse "$PROPOSED_DUSK_REF^{commit}")"
+    if [ -n "$covered_delta" ]; then
+        echo "coveredPathDelta: present"
+        printf '%s\n' "$covered_delta" | sed 's/^/  /'
+        add_blocker "runtime/test covered paths changed since latest clean-layout repro"
+    else
+        echo "coveredPathDelta: none"
     fi
 }
 

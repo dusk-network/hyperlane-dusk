@@ -43,6 +43,7 @@ mod warp_drc20 {
     use alloc::vec::Vec;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
+    use dusk_core::transfer::{ContractToContract, TRANSFER_CONTRACT};
 
     use dusk_bytes::Serializable;
 
@@ -327,27 +328,35 @@ mod warp_drc20 {
                 recipient != [0u8; 32],
                 "WarpDrc20: recipient cannot be zero"
             );
-            let sender = drc20::sender_account();
-
-            // Burn tokens from sender
-            self.burn(sender, amount);
-
             // Look up enrolled router
-            let router = self
+            let router = *self
                 .enrolled_routers
                 .get(&destination)
                 .expect("WarpDrc20: no router enrolled for destination");
 
             // Encode token message body
             let body = token_message::encode(recipient, amount);
+            let credit_before = self.dispatch_credit();
+            let dispatch_fee = self.quote_dispatch(destination, router, body.clone());
+            self.collect_and_forward_dispatch_fee(dispatch_fee);
+
+            // Burn tokens from sender only after the fee contribution is
+            // authenticated. Any later failure rolls the whole call back.
+            let sender = drc20::sender_account();
+            self.burn(sender, amount);
 
             // Dispatch via Mailbox
             let message_id: MessageId = abi::call(
                 self.mailbox,
                 "dispatch",
-                &(destination, *router, body, Vec::<u8>::new(), self.hook),
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
             )
             .expect("WarpDrc20: dispatch failed");
+            assert_eq!(
+                self.dispatch_credit(),
+                credit_before,
+                "WarpDrc20: dispatch must consume only caller-funded credit"
+            );
 
             abi::emit(
                 events::SentTransferRemote::TOPIC,
@@ -359,6 +368,24 @@ mod warp_drc20 {
             );
 
             message_id
+        }
+
+        /// Quote the native-DUSK fee that must accompany `transfer_remote`.
+        pub fn quote_transfer_remote(&self, destination: u32, recipient: H256, amount: u64) -> u64 {
+            assert!(amount > 0, "WarpDrc20: amount must be > 0");
+            assert!(
+                recipient != [0u8; 32],
+                "WarpDrc20: recipient cannot be zero"
+            );
+            let router = self
+                .enrolled_routers
+                .get(&destination)
+                .expect("WarpDrc20: no router enrolled for destination");
+            self.quote_dispatch(
+                destination,
+                *router,
+                token_message::encode(recipient, amount),
+            )
         }
 
         // =================================================================
@@ -516,6 +543,44 @@ mod warp_drc20 {
         // =================================================================
         // Internal helpers
         // =================================================================
+
+        /// Query the route's current Mailbox credit.
+        fn dispatch_credit(&self) -> u64 {
+            abi::call(self.mailbox, "fee_credit", &(abi::self_id().to_bytes(),))
+                .expect("WarpDrc20: fee credit query failed")
+        }
+
+        /// Quote dispatch with this route as the encoded sender.
+        fn quote_dispatch(&self, destination: u32, router: H256, body: Vec<u8>) -> u64 {
+            abi::call(
+                self.mailbox,
+                "quote_dispatch_for_contract",
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
+            )
+            .expect("WarpDrc20: dispatch quote failed")
+        }
+
+        /// Claim the caller's exact Moonlight deposit and forward it to Mailbox.
+        fn collect_and_forward_dispatch_fee(&self, fee: u64) {
+            if fee == 0 {
+                return;
+            }
+            let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &fee)
+                .expect("WarpDrc20: dispatch fee deposit failed");
+            self.forward_dispatch_fee(fee);
+        }
+
+        /// Transfer collected DUSK to Mailbox, which credits this route.
+        fn forward_dispatch_fee(&self, fee: u64) {
+            let transfer = ContractToContract {
+                contract: self.mailbox,
+                value: fee,
+                fn_name: String::from("receive_dispatch_funding"),
+                data: Vec::new(),
+            };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_contract", &transfer)
+                .expect("WarpDrc20: dispatch fee forwarding failed");
+        }
 
         /// Mint and clear a pending balance to an authenticated account.
         fn claim_pending_to(&mut self, recipient: H256, account: Account) {

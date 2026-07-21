@@ -95,6 +95,37 @@ rg -q -F 'require_approved=1' scripts/production-readiness-guard.sh \
     || fail "production readiness no longer requires approved PRs"
 rg -q -F 'WORKFLOW_REQUIRED_STATUS_CONTEXTS="${WORKFLOW_REQUIRED_STATUS_CONTEXTS:-Dusk review policy gate|Manual repro dispatcher gate}"' scripts/production-readiness-guard.sh \
     || fail "workflow dispatcher readiness uses the wrong required status contexts"
+rg -q -F 'PROPOSED_DUSK_REF="${PROPOSED_DUSK_REF:-HEAD}"' scripts/production-readiness-guard.sh \
+    || fail "production readiness does not bind repro delta checks to an explicit proposed ref"
+rg -q -F '"pull/$CURRENT_PR_NUMBER/head"' .github/workflows/production-readiness-gate.yml \
+    || fail "trusted production readiness does not fetch the exact pull-request head as inert data"
+rg -q -F 'repository_dispatch:' .github/workflows/production-readiness-gate.yml \
+    || fail "manual production readiness is not anchored to the default-branch workflow"
+if rg -q -F 'workflow_dispatch:' .github/workflows/production-readiness-gate.yml; then
+    fail "production readiness permits a writer-selected workflow ref to access status credentials"
+fi
+rg -q -F 'bash scripts/report-hygiene-check.sh' .github/workflows/dusk-proposal-validation.yml \
+    || fail "proposal validation resolves report hygiene through mutable Makefile indirection"
+rg -q -F 'bash scripts/secret-hygiene-check.sh' .github/workflows/dusk-proposal-validation.yml \
+    || fail "proposal validation resolves secret hygiene through mutable Makefile indirection"
+for locked_policy_path in \
+    '.github/actionlint.yaml' \
+    '.github/workflows/manual-repro-check.yml' \
+    '.github/workflows/manual-repro-dispatcher-gate.yml'; do
+    rg -q -F "$locked_policy_path" .github/workflows/dusk-review-policy-gate.yml \
+        || fail "trusted review policy does not lock $locked_policy_path"
+done
+for proposal_identity_field in \
+    'pr.number === prNumber' \
+    'pr.head?.sha === headSha' \
+    'pr.base?.sha === baseSha' \
+    'pr.base?.ref === baseRef'; do
+    rg -q -F "$proposal_identity_field" .github/workflows/dusk-review-policy-gate.yml \
+        || fail "trusted review policy omits proposal identity field: $proposal_identity_field"
+done
+if rg -q -F 'workflow_dispatch:' .github/workflows/dusk-review-policy-gate.yml; then
+    fail "trusted review policy permits a manual run to spoof its required PR context"
+fi
 
 validator_line="$(rg -n -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
 secret_write_line="$(rg -n -F "printf '0x%s\\n'" demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
@@ -195,7 +226,7 @@ case "$*" in
     "api repos/dusk-network/hyperlane-dusk/actions/secrets")
         printf '{"total_count":0,"secrets":[]}\n'
         ;;
-    "api repos/dusk-network/hyperlane-monorepo/actions/secrets")
+    "api repos/dusk-network/hyperlane-dusk/environments/dusk-hyperlane-repro/secrets")
         printf '{"total_count":0,"secrets":[]}\n'
         ;;
     *)
@@ -220,7 +251,7 @@ expect_fail \
 
 expect_fail \
     production-readiness-missing-ci-secret \
-    'repo-level Actions secret DUSK_ORG_READ_TOKEN is not visible' \
+    'environment dusk-hyperlane-repro secret DUSK_ORG_READ_TOKEN is not visible' \
     env PATH="$workdir/ci-visibility-mock-bin:$PATH" CI_VISIBILITY_GATE_ONLY=1 \
     bash scripts/production-readiness-guard.sh
 
@@ -476,6 +507,14 @@ expect_fail \
     'runtime/test covered paths changed since latest clean-layout repro' \
     env REPRO_DELTA_GATE_ONLY=1 \
         LATEST_REPRO_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
+        DUSK_REPRO_COVERED_PATHS=tests/tests/integration.rs \
+    bash scripts/production-readiness-guard.sh
+
+expect_pass \
+    production-readiness-uses-explicit-proposed-ref \
+    env REPRO_DELTA_GATE_ONLY=1 \
+        LATEST_REPRO_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
+        PROPOSED_DUSK_REF=77fdeae8b6813fdbfb26d03593125a57c0bb458c \
         DUSK_REPRO_COVERED_PATHS=tests/tests/integration.rs \
     bash scripts/production-readiness-guard.sh
 

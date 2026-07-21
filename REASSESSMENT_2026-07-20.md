@@ -90,11 +90,18 @@ their combined exact payment from Mailbox, and forwards each child quote. The
 default hook is IGP, so every deployed demo dispatch exercises both the
 required aggregation and gas-payment path.
 
-The demo pre-funds each deployed warp route's Mailbox credit. Credits are an
-explicit prepayment model. Base PR #1 intentionally stops at beneficiary-keyed
-sponsorship; stacked PR #10 adds beneficiary-authorized Moonlight withdrawal
-and owner-only proxies for each route's own contract-keyed credit, without a
-funder reclaim right or Mailbox-owner global drain.
+The demo ensures each deployed warp route's Mailbox credit satisfies a minimum
+ready balance. That balance is an operational reserve, not a public subsidy:
+each synthetic, collateral, or native route call quotes its own dispatch,
+collects that native-DUSK fee from the caller, forwards it through an
+authenticated transfer callback, and proves the route's pre-existing credit is
+unchanged afterward. Native calls deposit the bridge amount plus the fee; token
+routes deposit the fee only. Permissionless sponsorship may still leave a route
+above the readiness minimum. Base PR #1 intentionally stops at
+beneficiary-keyed sponsorship; stacked PR #10 adds
+beneficiary-authorized Moonlight withdrawal and owner-only proxies for each
+route's own contract-keyed credit, without a funder reclaim right or
+Mailbox-owner global drain.
 
 ### Current DRC20 compatibility
 

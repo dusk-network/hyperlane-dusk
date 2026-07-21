@@ -47,7 +47,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "pending_total"
             | "state_version"
             | "validators_and_threshold"
-            | "get_announced_validators" => json_to_rkyv::<()>(json),
+            | "announced_validator_count" => json_to_rkyv::<()>(json),
             // Mailbox queries with args
             "delivered" | "delivered_at" => json_to_rkyv::<(MessageId,)>(json),
             "dispatched_message"
@@ -58,7 +58,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "inserted_block_height"
             | "root_at"
             | "gas_payment_at" => json_to_rkyv::<(u32,)>(json),
-            "message_ids" | "gas_payments" => json_to_rkyv::<(u32, u32)>(json),
+            "message_ids" | "gas_payments" | "get_announced_validators" => {
+                json_to_rkyv::<(u32, u32)>(json)
+            }
             "recipient_ism" | "fee_credit" => json_to_rkyv::<(H256,)>(json),
             "get_announced_storage_locations_for_validator" => json_to_rkyv::<(EthAddress,)>(json),
             "get_announced_storage_locations" => json_to_rkyv::<(Vec<EthAddress>,)>(json),
@@ -68,8 +70,11 @@ impl ConvertibleContract for HyperlaneDataDriver {
             // Hook contracts use (metadata, message), while Mailbox uses
             // (destination, recipient, body, metadata, hook). The explorer
             // selects a driver by function name, so support both ABI shapes.
-            "quote_dispatch" => json_to_rkyv::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(json)
-                .or_else(|_| json_to_rkyv::<(Vec<u8>, Vec<u8>)>(json)),
+            "quote_dispatch" | "quote_dispatch_for_contract" => {
+                json_to_rkyv::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(json)
+                    .or_else(|_| json_to_rkyv::<(Vec<u8>, Vec<u8>)>(json))
+            }
+            "quote_transfer_remote" => json_to_rkyv::<(u32, H256, u64)>(json),
             "quote_gas_payment" => json_to_rkyv::<(u32, u64)>(json),
             "domain_gas_config" => json_to_rkyv::<(u32,)>(json),
             // Warp route queries
@@ -105,7 +110,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "pending_total"
             | "state_version"
             | "validators_and_threshold"
-            | "get_announced_validators"
+            | "announced_validator_count"
             | "hook_type"
             | "total_gas_payments"
             | "collected_fees"
@@ -129,12 +134,17 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "inserted_block_height"
             | "root_at"
             | "gas_payment_at" => rkyv_to_json::<(u32,)>(rkyv),
-            "message_ids" | "gas_payments" => rkyv_to_json::<(u32, u32)>(rkyv),
+            "message_ids" | "gas_payments" | "get_announced_validators" => {
+                rkyv_to_json::<(u32, u32)>(rkyv)
+            }
             "recipient_ism" | "fee_credit" => rkyv_to_json::<(H256,)>(rkyv),
             "get_announced_storage_locations_for_validator" => rkyv_to_json::<(EthAddress,)>(rkyv),
             "get_announced_storage_locations" => rkyv_to_json::<(Vec<EthAddress>,)>(rkyv),
-            "quote_dispatch" => rkyv_to_json::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
-                .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv)),
+            "quote_dispatch" | "quote_dispatch_for_contract" => {
+                rkyv_to_json::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
+                    .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv))
+            }
+            "quote_transfer_remote" => rkyv_to_json::<(u32, H256, u64)>(rkyv),
             "quote_gas_payment" => rkyv_to_json::<(u32, u64)>(rkyv),
             "domain_gas_config" | "enrolled_router" => rkyv_to_json::<(u32,)>(rkyv),
             "is_registered" | "pending_balance" => rkyv_to_json::<(H256,)>(rkyv),
@@ -147,8 +157,12 @@ impl ConvertibleContract for HyperlaneDataDriver {
     fn decode_output_fn(&self, fn_name: &str, rkyv: &[u8]) -> Result<JsonValue, Error> {
         match fn_name {
             // u32 outputs
-            "local_domain" | "nonce" | "processed_count" | "gas_payment_count"
-            | "state_version" => rkyv_to_json::<u32>(rkyv),
+            "local_domain"
+            | "nonce"
+            | "processed_count"
+            | "gas_payment_count"
+            | "state_version"
+            | "announced_validator_count" => rkyv_to_json::<u32>(rkyv),
             // u64 outputs
             "delivered_at"
             | "protocol_fee"
@@ -200,7 +214,10 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "get_announced_storage_locations_for_validator" => rkyv_to_json::<Vec<String>>(rkyv),
             "get_announced_storage_locations" => rkyv_to_json::<Vec<Vec<String>>>(rkyv),
             // u64 from quote_dispatch / quote_gas_payment
-            "quote_dispatch" | "quote_gas_payment" => rkyv_to_json_u64(rkyv),
+            "quote_dispatch"
+            | "quote_dispatch_for_contract"
+            | "quote_gas_payment"
+            | "quote_transfer_remote" => rkyv_to_json_u64(rkyv),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
         }
     }
@@ -452,12 +469,20 @@ mod tests {
         let driver = HyperlaneDataDriver;
         let validator = EthAddress([7u8; 20]);
 
-        let no_args = driver
-            .encode_input_fn("get_announced_validators", "null")
+        let page_json = to_json((0u32, 2u32)).unwrap().to_string();
+        let page = driver
+            .encode_input_fn("get_announced_validators", &page_json)
             .expect("validator registry query should encode");
         driver
-            .decode_input_fn("get_announced_validators", &no_args)
+            .decode_input_fn("get_announced_validators", &page)
             .expect("validator registry query should decode");
+
+        let count = driver
+            .encode_input_fn("announced_validator_count", "null")
+            .expect("validator registry count should encode");
+        driver
+            .decode_input_fn("announced_validator_count", &count)
+            .expect("validator registry count should decode");
 
         let one_json = to_json((validator,)).unwrap().to_string();
         let one = driver

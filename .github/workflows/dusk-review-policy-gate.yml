@@ -6,7 +6,6 @@ on:
   pull_request_target:
     branches:
       - main
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -86,24 +85,30 @@ jobs:
             fi
           done
 
-          # The implementation bootstrap adds this trusted workflow. Once it
-          # exists on the base, ordinary PRs may not replace it.
-          path=.github/workflows/production-readiness-gate.yml
-          if git cat-file -e "$BASE_SHA:$path" 2>/dev/null; then
-            if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
-              echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
-              exit 1
-            fi
-          else
-            mode="$(git ls-tree "$HEAD_SHA" -- "$path" | awk '{print $1}')"
-            case "$mode" in
-              100644|100755) ;;
-              *)
-                echo "::error::$path must be introduced as a regular file"
+          # Lock the remaining executable CI policy and its lint configuration.
+          # A path absent from both revisions is simply not part of this
+          # bootstrap yet; first publication must still be a regular file.
+          for path in \
+            .github/actionlint.yaml \
+            .github/workflows/manual-repro-check.yml \
+            .github/workflows/manual-repro-dispatcher-gate.yml \
+            .github/workflows/production-readiness-gate.yml; do
+            if git cat-file -e "$BASE_SHA:$path" 2>/dev/null; then
+              if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+                echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
                 exit 1
-                ;;
-            esac
-          fi
+              fi
+            elif git cat-file -e "$HEAD_SHA:$path" 2>/dev/null; then
+              mode="$(git ls-tree "$HEAD_SHA" -- "$path" | awk '{print $1}')"
+              case "$mode" in
+                100644|100755) ;;
+                *)
+                  echo "::error::$path must be introduced as a regular file"
+                  exit 1
+                  ;;
+              esac
+            fi
+          done
 
       - name: Require unprivileged proposal validation
         if: github.event_name == 'pull_request_target'
@@ -111,7 +116,11 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const headSha = context.payload.pull_request.head.sha;
+            const pullRequest = context.payload.pull_request;
+            const prNumber = pullRequest.number;
+            const headSha = pullRequest.head.sha;
+            const baseSha = pullRequest.base.sha;
+            const baseRef = pullRequest.base.ref;
             const expectedName = 'Dusk proposal validation';
             const workflowId = 'dusk-proposal-validation.yml';
             for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -123,14 +132,23 @@ jobs:
                 event: 'pull_request',
                 per_page: 100,
               });
-              const proposal = data.workflow_runs.find(
+              const matchingRuns = data.workflow_runs.filter(
                 (run) => run.head_sha === headSha &&
-                  run.event === 'pull_request',
+                  run.event === 'pull_request' &&
+                  run.pull_requests?.some((pr) =>
+                    pr.number === prNumber &&
+                    pr.head?.sha === headSha &&
+                    pr.base?.sha === baseSha &&
+                    pr.base?.ref === baseRef
+                  ),
               );
+              const proposal = matchingRuns.sort(
+                (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
+              )[0];
               if (proposal?.status === 'completed') {
                 if (proposal.conclusion !== 'success') {
                   core.setFailed(
-                    `${expectedName} (${workflowId}) concluded ${proposal.conclusion} for ${headSha}: ${proposal.html_url}`,
+                    `${expectedName} (${workflowId}) concluded ${proposal.conclusion} for PR #${prNumber} ${baseSha}...${headSha}: ${proposal.html_url}`,
                   );
                 }
                 return;
@@ -138,5 +156,5 @@ jobs:
               await new Promise((resolve) => setTimeout(resolve, 15000));
             }
             core.setFailed(
-              `Timed out waiting for ${expectedName} (${workflowId}) on proposed commit ${headSha}`,
+              `Timed out waiting for ${expectedName} (${workflowId}) on PR #${prNumber} ${baseSha}...${headSha}`,
             );
