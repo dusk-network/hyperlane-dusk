@@ -319,8 +319,10 @@ jq -n \
         dusk_default_ism:"testMock"
     }' >"$agent_state"
 
+cp demo/gen-agent-configs.sh "$workdir/gen-agent-configs.sh"
+chmod +x "$workdir/gen-agent-configs.sh"
 env AGENT_CONFIG_VALIDATE_ONLY=1 BRIDGE_STATE_FILE="$agent_state" \
-    bash demo/gen-agent-configs.sh --ism testMock --run-id validation >/dev/null \
+    bash "$workdir/gen-agent-configs.sh" --ism testMock --run-id validation >/dev/null \
     || fail "matching saved agent policy should validate"
 
 expect_fail \
