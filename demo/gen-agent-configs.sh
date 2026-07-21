@@ -35,7 +35,7 @@ fi
 # ── Args ────────────────────────────────────────────────────────────────────
 
 ISM="testMock"
-RUN_ID="$(date +%s)"
+RUN_ID=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -54,6 +54,43 @@ fi
 
 STATE_FILE="$BRIDGE_STATE_FILE"
 [ -f "$STATE_FILE" ] || fail "State file not found at $STATE_FILE (run: bash demo/deploy.sh)"
+
+# Reserve one exclusive invocation directory before consuming deployment
+# state. The validated snapshot, signer, configs, databases, and checkpoints
+# all share this ownership boundary; a same-second or caller-chosen collision
+# fails instead of reusing another run's paths.
+if [ -n "$RUN_ID" ]; then
+    [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || fail "Invalid --run-id '$RUN_ID'"
+    RUN_DIR="/tmp/hyperlane-agent-${ISM}-${RUN_ID}"
+    mkdir "$RUN_DIR" || fail "Agent run directory already exists: $RUN_DIR"
+else
+    RUN_DIR="$(mktemp -d -t "hyperlane-agent-${ISM}.XXXXXXXX")" \
+        || fail "Cannot reserve an agent run directory"
+    RUN_ID="${RUN_DIR##*.}"
+fi
+printf 'pid=%s\nism=%s\n' "$$" "$ISM" > "$RUN_DIR/.hyperlane-owner"
+
+GENERATION_COMMITTED=0
+cleanup_uncommitted_generation() {
+    if [ "$GENERATION_COMMITTED" -eq 0 ]; then
+        rm -rf -- "$RUN_DIR" 2>/dev/null || true
+    fi
+}
+trap cleanup_uncommitted_generation EXIT
+
+STATE_SNAPSHOT="$RUN_DIR/deployment.json"
+source_hash_before="$(sha256sum "$STATE_FILE" | awk '{print $1}')" \
+    || fail "Cannot hash deployment state before snapshot"
+cp -- "$STATE_FILE" "$RUN_DIR/deployment.json.pending" \
+    || fail "Cannot snapshot deployment state"
+source_hash_after="$(sha256sum "$STATE_FILE" | awk '{print $1}')" \
+    || fail "Cannot hash deployment state after snapshot"
+snapshot_hash="$(sha256sum "$RUN_DIR/deployment.json.pending" | awk '{print $1}')" \
+    || fail "Cannot hash deployment snapshot"
+[ "$source_hash_before" = "$source_hash_after" ] && [ "$source_hash_after" = "$snapshot_hash" ] \
+    || fail "Deployment state changed while it was being snapshotted"
+mv -- "$RUN_DIR/deployment.json.pending" "$STATE_SNAPSHOT"
+STATE_FILE="$STATE_SNAPSHOT"
 
 # A saved manifest is not sufficient authority for live agent configuration:
 # Mailbox policy and chain state can change after the file is written. Reuse
@@ -112,6 +149,8 @@ if [ "${AGENT_CONFIG_VALIDATE_ONLY:-0}" = "1" ]; then
         --arg default_ism "$DUSK_DEFAULT_ISM_ID" \
         --argjson chain_id "$DUSK_CHAIN_ID" \
         '{valid: true, ism: $ism, defaultIsm: $default_ism, chainId: $chain_id}'
+    rm -rf -- "$RUN_DIR"
+    GENERATION_COMMITTED=1
     exit 0
 fi
 
@@ -153,21 +192,13 @@ PY
 
 # ── Output Paths ────────────────────────────────────────────────────────────
 
-RELAYER_DB="/tmp/hyperlane-db-relayer-${ISM}-${RUN_ID}"
-VALIDATOR_DB="/tmp/hyperlane-db-validator-anvil-${ISM}-${RUN_ID}"
-CHECKPOINT_DIR="/tmp/hyperlane-checkpoints-anvil-${ISM}-${RUN_ID}"
+RELAYER_DB="$RUN_DIR/db-relayer"
+VALIDATOR_DB="$RUN_DIR/db-validator-anvil"
+CHECKPOINT_DIR="$RUN_DIR/checkpoints-anvil"
 
-RELAYER_CONFIG="/tmp/hyperlane-relayer-${ISM}-${RUN_ID}.json"
-VALIDATOR_CONFIG="/tmp/hyperlane-validator-anvil-${ISM}-${RUN_ID}.json"
-DUSK_SIGNER_KEY_FILE="/tmp/hyperlane-dusk-signer-${ISM}-${RUN_ID}.key"
-
-GENERATION_COMMITTED=0
-cleanup_uncommitted_generation() {
-    if [ "$GENERATION_COMMITTED" -eq 0 ]; then
-        rm -f "$DUSK_SIGNER_KEY_FILE" "$RELAYER_CONFIG" "$VALIDATOR_CONFIG" 2>/dev/null || true
-    fi
-}
-trap cleanup_uncommitted_generation EXIT
+RELAYER_CONFIG="$RUN_DIR/relayer.json"
+VALIDATOR_CONFIG="$RUN_DIR/validator-anvil.json"
+DUSK_SIGNER_KEY_FILE="$RUN_DIR/dusk-signer.key"
 
 printf '0x%s\n' "$DUSK_SECRET_KEY_HEX" > "$DUSK_SIGNER_KEY_FILE"
 
@@ -257,14 +288,18 @@ if [ "$ISM" = "messageIdMultisig" ]; then
       --arg relayer "$RELAYER_CONFIG" \
       --arg validator "$VALIDATOR_CONFIG" \
       --arg dusk_signer_key_file "$DUSK_SIGNER_KEY_FILE" \
+      --arg run_dir "$RUN_DIR" \
+      --arg deployment_snapshot "$STATE_SNAPSHOT" \
       --arg run_id "$RUN_ID" \
-      '{run_id: $run_id, relayer: $relayer, validator: $validator, duskSignerKeyFile: $dusk_signer_key_file}')"
+      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, validator: $validator, duskSignerKeyFile: $dusk_signer_key_file}')"
 else
     output_json="$(jq -n \
       --arg relayer "$RELAYER_CONFIG" \
       --arg dusk_signer_key_file "$DUSK_SIGNER_KEY_FILE" \
+      --arg run_dir "$RUN_DIR" \
+      --arg deployment_snapshot "$STATE_SNAPSHOT" \
       --arg run_id "$RUN_ID" \
-      '{run_id: $run_id, relayer: $relayer, duskSignerKeyFile: $dusk_signer_key_file}')"
+      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, duskSignerKeyFile: $dusk_signer_key_file}')"
 fi
 
 printf '%s\n' "$output_json"

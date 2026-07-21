@@ -25,6 +25,7 @@ BAD_DUSK_RPC="${BAD_DUSK_RPC:-http://127.0.0.1:18080}"
 CURRENT_RELAYER_PID=""
 GENERATED_DUSK_SIGNER_KEY_FILES=()
 GENERATED_AGENT_CONFIG_FILES=()
+GENERATED_AGENT_RUN_DIRS=()
 
 require_tools() {
     command -v jq >/dev/null 2>&1 || fail "jq not found"
@@ -60,6 +61,9 @@ cleanup() {
     fi
     if [ "${#GENERATED_AGENT_CONFIG_FILES[@]}" -gt 0 ]; then
         rm -f "${GENERATED_AGENT_CONFIG_FILES[@]}" 2>/dev/null || true
+    fi
+    if [ "${#GENERATED_AGENT_RUN_DIRS[@]}" -gt 0 ]; then
+        rm -rf -- "${GENERATED_AGENT_RUN_DIRS[@]}" 2>/dev/null || true
     fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
@@ -166,8 +170,10 @@ bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism testMock >"$deploy_log" 2>&1 || 
     fail "deploy.sh failed (log: $deploy_log)"
 }
 
-expected_relayer_cfg="/tmp/hyperlane-relayer-testMock-${run_id}.json"
-expected_dusk_signer_key_file="/tmp/hyperlane-dusk-signer-testMock-${run_id}.key"
+expected_run_dir="/tmp/hyperlane-agent-testMock-${run_id}"
+expected_relayer_cfg="$expected_run_dir/relayer.json"
+expected_dusk_signer_key_file="$expected_run_dir/dusk-signer.key"
+GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")
 GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
 GENERATED_DUSK_SIGNER_KEY_FILES+=("$expected_dusk_signer_key_file")
 cfg_json="$(bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism testMock --run-id "$run_id")"
@@ -176,18 +182,18 @@ generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile /
 [ "$relayer_cfg" = "$expected_relayer_cfg" ] || fail "generator returned an unexpected relayer config path"
 [ "$generated_dusk_signer_key_file" = "$expected_dusk_signer_key_file" ] \
     || fail "generator returned an unexpected Dusk signer path"
-bad_rpc_relayer_cfg="/tmp/hyperlane-relayer-bad-destination-rpc-testMock-${run_id}.json"
-healthy_relayer_cfg="/tmp/hyperlane-relayer-healthy-destination-rpc-testMock-${run_id}.json"
+bad_rpc_relayer_cfg="$expected_run_dir/relayer-bad-destination-rpc.json"
+healthy_relayer_cfg="$expected_run_dir/relayer-healthy-destination-rpc.json"
 GENERATED_AGENT_CONFIG_FILES+=("$bad_rpc_relayer_cfg" "$healthy_relayer_cfg")
 
 jq \
   --arg rpc "$BAD_DUSK_RPC" \
-  --arg db "/tmp/hyperlane-db-relayer-bad-destination-rpc-testMock-${run_id}" \
+  --arg db "$expected_run_dir/db-relayer-bad-destination-rpc" \
   '.db = $db | .chains.dusk.rpcUrls[0].http = $rpc' \
   "$relayer_cfg" > "$bad_rpc_relayer_cfg"
 
 jq \
-  --arg db "/tmp/hyperlane-db-relayer-healthy-destination-rpc-testMock-${run_id}" \
+  --arg db "$expected_run_dir/db-relayer-healthy-destination-rpc" \
   '.db = $db' \
   "$relayer_cfg" > "$healthy_relayer_cfg"
 

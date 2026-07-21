@@ -32,6 +32,7 @@ CI_VISIBILITY_GATE_ONLY="${CI_VISIBILITY_GATE_ONLY:-0}"
 BRANCH_PROTECTION_GATE_ONLY="${BRANCH_PROTECTION_GATE_ONLY:-0}"
 DEPENDENCY_ALERT_GATE_ONLY="${DEPENDENCY_ALERT_GATE_ONLY:-0}"
 REPRO_DELTA_GATE_ONLY="${REPRO_DELTA_GATE_ONLY:-0}"
+STATUS_CHECK_GATE_ONLY="${STATUS_CHECK_GATE_ONLY:-0}"
 DEPENDENCY_ALERT_STATUS_SCRIPT="${DEPENDENCY_ALERT_STATUS_SCRIPT:-$ROOT/scripts/dependency-alert-status.sh}"
 UPSTREAM_SUBMISSION_SEARCH_JSON="${UPSTREAM_SUBMISSION_SEARCH_JSON:-}"
 UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN="${UPSTREAM_SUBMISSION_INTERNAL_BLOCKERS_OPEN:-0}"
@@ -127,7 +128,10 @@ status_rollup() {
 
     head_sha="$(pr_head_sha "$repo" "$number")"
     err_file="/tmp/hyperlane-readiness-check-runs.$$.err"
-    if ! raw="$(gh api "repos/$repo/commits/$head_sha/check-runs?per_page=100" 2>"$err_file")"; then
+    if ! raw="$(gh api --paginate \
+        "repos/$repo/commits/$head_sha/check-runs?per_page=100" \
+        --jq '.check_runs[] | {name, status: (.status | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase), detailsUrl: .html_url}' \
+        2>"$err_file")"; then
         printf '[]\n'
         sed 's/^/  gh: /' "$err_file" >&2
         rm -f "$err_file"
@@ -135,22 +139,21 @@ status_rollup() {
     fi
     rm -f "$err_file"
 
-    if ! printf '%s\n' "$raw" | jq '[.check_runs[] | {
-            name,
-            status: (.status | ascii_upcase),
-            conclusion: ((.conclusion // "") | ascii_upcase),
-            detailsUrl: .html_url
-        }]'; then
+    if ! printf '%s\n' "$raw" | jq -s '.'; then
         printf '[]\n'
     fi
 }
 
 count_non_completed_checks() {
+    local required_contexts="$1"
     local current_run_id="${GITHUB_RUN_ID:-}"
 
-    jq --arg run_id "$current_run_id" '
+    jq --arg run_id "$current_run_id" --arg required "$required_contexts" '
+        ($required | split("|") | map(select(length > 0))) as $required_names
+        |
         [
             .[]
+            | select(.name as $name | $required_names | index($name) != null)
             | select(.status != "COMPLETED")
             | select(
                 ($run_id == "")
@@ -162,19 +165,36 @@ count_non_completed_checks() {
 }
 
 count_relevant_checks() {
-    # The running readiness job is itself one of the configured required
-    # checks, so include it when proving that the expected contexts exist.
-    # count_non_completed_checks and count_failed_checks still exclude this
-    # run to avoid the job waiting on, or failing because of, itself.
-    jq 'length'
+    local required_contexts="$1"
+    jq --arg required "$required_contexts" '
+        ($required | split("|") | map(select(length > 0))) as $required_names
+        | [.[] | select(.name as $name | $required_names | index($name) != null)]
+        | length
+    '
+}
+
+missing_required_checks() {
+    local required_contexts="$1"
+    jq -r --arg required "$required_contexts" '
+        ($required | split("|") | map(select(length > 0))) as $required_names
+        | ([.[].name] | unique) as $present
+        | [$required_names[] as $required_name
+            | select($present | index($required_name) == null)
+            | $required_name]
+        | join("|")
+    '
 }
 
 count_failed_checks() {
+    local required_contexts="$1"
     local current_run_id="${GITHUB_RUN_ID:-}"
 
-    jq --arg run_id "$current_run_id" '
+    jq --arg run_id "$current_run_id" --arg required "$required_contexts" '
+        ($required | split("|") | map(select(length > 0))) as $required_names
+        |
         [
             .[]
+            | select(.name as $name | $required_names | index($name) != null)
             | select(.status == "COMPLETED")
             | select(
                 .conclusion != "SUCCESS"
@@ -194,6 +214,7 @@ wait_for_status_checks() {
     local label="$1"
     local repo="$2"
     local number="$3"
+    local required_contexts="$4"
     local elapsed=0
     local rollup
     local status_count
@@ -201,17 +222,18 @@ wait_for_status_checks() {
 
     while true; do
         rollup="$(status_rollup "$repo" "$number")"
-        status_count="$(printf '%s\n' "$rollup" | count_relevant_checks)"
-        non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
+        status_count="$(printf '%s\n' "$rollup" | count_relevant_checks "$required_contexts")"
+        non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks "$required_contexts")"
+        missing="$(printf '%s\n' "$rollup" | missing_required_checks "$required_contexts")"
 
-        if { [ "$status_count" -ge "$MIN_STATUS_CHECKS" ] && [ "$non_completed_count" -eq 0 ]; } ||
+        if { [ -z "$missing" ] && [ "$non_completed_count" -eq 0 ]; } ||
             [ "$elapsed" -ge "$STATUS_CHECK_WAIT_SECONDS" ]; then
             printf '%s\n' "$rollup"
             return 0
         fi
 
-        printf '%sStatusChecksWaiting: %s/%s, nonCompleted: %s\n' \
-            "$label" "$status_count" "$MIN_STATUS_CHECKS" "$non_completed_count" >&2
+        printf '%sStatusChecksWaiting: matched=%s, missing=%s, nonCompleted=%s\n' \
+            "$label" "$status_count" "${missing:-none}" "$non_completed_count" >&2
         sleep "$STATUS_CHECK_POLL_SECONDS"
         elapsed=$((elapsed + STATUS_CHECK_POLL_SECONDS))
     done
@@ -229,19 +251,23 @@ check_pr() {
     local rollup
     local require_merged="${4:-1}"
     local require_approved="${5:-1}"
+    local required_contexts="$6"
+    local missing
 
     state="$(pr_state "$repo" "$number")"
     review_decision="$(pr_review_decision "$repo" "$number")"
-    rollup="$(wait_for_status_checks "$label" "$repo" "$number")"
-    status_count="$(printf '%s\n' "$rollup" | count_relevant_checks)"
-    non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks)"
-    failed_count="$(printf '%s\n' "$rollup" | count_failed_checks)"
+    rollup="$(wait_for_status_checks "$label" "$repo" "$number" "$required_contexts")"
+    status_count="$(printf '%s\n' "$rollup" | count_relevant_checks "$required_contexts")"
+    non_completed_count="$(printf '%s\n' "$rollup" | count_non_completed_checks "$required_contexts")"
+    failed_count="$(printf '%s\n' "$rollup" | count_failed_checks "$required_contexts")"
+    missing="$(printf '%s\n' "$rollup" | missing_required_checks "$required_contexts")"
 
     printf '%sState: %s\n' "$label" "$state"
     printf '%sReviewDecision: %s\n' "$label" "${review_decision:-none}"
     printf '%sStatusChecks: %s\n' "$label" "$status_count"
     printf '%sNonCompletedStatusChecks: %s\n' "$label" "$non_completed_count"
     printf '%sFailedStatusChecks: %s\n' "$label" "$failed_count"
+    printf '%sMissingRequiredStatusChecks: %s\n' "$label" "${missing:-none}"
 
     if [ "$require_merged" = "1" ] && [ "$state" != "MERGED" ]; then
         add_blocker "$label PR #$number is $state, not MERGED"
@@ -251,8 +277,8 @@ check_pr() {
         add_blocker "$label PR #$number reviewDecision is ${review_decision:-empty}, not APPROVED"
     fi
 
-    if [ "$status_count" -lt "$MIN_STATUS_CHECKS" ]; then
-        add_blocker "$label PR #$number has $status_count status checks; expected at least $MIN_STATUS_CHECKS"
+    if [ -n "$missing" ]; then
+        add_blocker "$label PR #$number is missing required status checks: $missing"
     fi
 
     if [ "$non_completed_count" -gt 0 ]; then
@@ -583,20 +609,26 @@ if [ "$REPRO_DELTA_GATE_ONLY" = "1" ]; then
     print_summary_and_exit
 fi
 
+if [ "$STATUS_CHECK_GATE_ONLY" = "1" ]; then
+    section "Required PR Status Checks"
+    check_pr "dusk" "$DUSK_REPO" "$CURRENT_PR_NUMBER" 0 0 "$DUSK_REQUIRED_STATUS_CONTEXTS"
+    print_summary_and_exit
+fi
+
 section "Internal PRs"
 printf 'readinessMode: %s\n' "$READINESS_MODE"
 if [ "$READINESS_MODE" = "premerge" ]; then
     # Branch protection owns approval and merge-state enforcement for the PR
     # that is currently producing this required check. Requiring this PR to be
     # merged here would make the required check impossible to satisfy.
-    check_pr "dusk" "$DUSK_REPO" "$CURRENT_PR_NUMBER" 0 0
+    check_pr "dusk" "$DUSK_REPO" "$CURRENT_PR_NUMBER" 0 0 "$DUSK_REQUIRED_STATUS_CONTEXTS"
 else
-    check_pr "dusk" "$DUSK_REPO" 1
+    check_pr "dusk" "$DUSK_REPO" 1 1 1 "$DUSK_REQUIRED_STATUS_CONTEXTS"
 fi
-check_pr "monorepo" "$MONOREPO_REPO" 1
+check_pr "monorepo" "$MONOREPO_REPO" 1 1 1 "$MONOREPO_REQUIRED_STATUS_CONTEXTS"
 
 if gh pr view "$WORKFLOW_PR_NUMBER" --repo "$DUSK_REPO" --json state >/dev/null 2>&1; then
-    check_pr "workflowDispatcher" "$DUSK_REPO" "$WORKFLOW_PR_NUMBER"
+    check_pr "workflowDispatcher" "$DUSK_REPO" "$WORKFLOW_PR_NUMBER" 1 1 "$DUSK_REQUIRED_STATUS_CONTEXTS"
 else
     add_blocker "workflow dispatcher PR #$WORKFLOW_PR_NUMBER is missing or inaccessible"
 fi

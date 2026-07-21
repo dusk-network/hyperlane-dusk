@@ -1,5 +1,11 @@
 # Deep review remediation decisions — 2026-07-20
 
+> **Historical record.** Items C33, C38, C42, their version matrix, and the
+> static-simulation decision are superseded by
+> `CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md`. In particular, replayable
+> remote simulation is now refused and canonical DRC20 compatibility advances
+> the route versions.
+
 This record documents the decisions made after the deep reviews of Dusk PR #1,
 beginning at `193811ee6ae5b62cdd4a29890357e00e3e911a8d` and refreshed after the
 2026-07-20 upstream/Rusk reassessment. It records intended behavior, not just

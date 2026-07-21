@@ -81,7 +81,7 @@ enum Command {
         /// Gas price in LUX.
         #[arg(long, default_value = "2000")]
         gas_price: u64,
-        /// Execute against an ephemeral Rusk session without propagation.
+        /// Reserved until Rusk supports a non-replayable simulation envelope.
         #[arg(long)]
         simulate_only: bool,
     },
@@ -161,7 +161,8 @@ enum Command {
         /// Method name.
         #[arg(long)]
         method: String,
-        /// Return type: u8, u32, u64, bool, bytes32, bytes, string.
+        /// Return type: u8, u32, u64, bool, bytes32, option-bytes32,
+        /// contract-id-list, bytes, string, or domain-gas-config.
         #[arg(long, name = "return-type", default_value = "u32")]
         return_type: String,
         /// Optional u32 argument.
@@ -1228,6 +1229,12 @@ async fn cmd_call(
             "Call arguments exceed the {MAX_CALL_ARGS_BYTES}-byte helper transport limit"
         ));
     }
+    if simulate_only {
+        return Err(
+            "Safe simulation is unavailable: current Rusk simulation accepts an ordinary replayable signed transaction. Refusing before signer access"
+                .into(),
+        );
+    }
     let client = RuesClient::new(rues_url)?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
@@ -1249,24 +1256,6 @@ async fn cmd_call(
 
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
-    if simulate_only {
-        let simulation = client.simulate_tx(&tx_bytes).await?;
-        if let Some(error) = simulation.error {
-            return Err(format!(
-                "Transaction {tx_id} simulation rejected contract execution: {error}"
-            ));
-        }
-        let output = json!({
-            "success": true,
-            "simulated": true,
-            "contract": contract_hex,
-            "fn_name": fn_name,
-            "gas_spent": simulation.gas_spent,
-            "tx_id": tx_id,
-        });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        return Ok(());
-    }
     propagate_and_wait(&client, &tx_id, &tx_bytes).await?;
 
     let output = json!({
@@ -1421,7 +1410,7 @@ async fn cmd_deploy_hyperlane(
                 &token.to_bytes(),
                 "balance_of",
                 &Drc20BalanceOf {
-                    account: Drc20Account::External(pk),
+                    account: Drc20Account::moonlight(&pk),
                 },
             )
             .await
@@ -1942,7 +1931,9 @@ fn parse_igp_domain_configs(values: &[String]) -> Result<Vec<(u32, DomainGasConf
             gas_price: parse(parts[3], "gas price")?,
         };
         if config.token_exchange_rate == 0 {
-            return Err(format!("IGP domain {domain} token exchange rate cannot be zero"));
+            return Err(format!(
+                "IGP domain {domain} token exchange rate cannot be zero"
+            ));
         }
         if config.gas_price == 0 {
             return Err(format!("IGP domain {domain} gas price cannot be zero"));
@@ -2209,6 +2200,25 @@ async fn cmd_query(
             let output = json!({ "success": true, "value": hex::encode(result) });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
+        "option-bytes32" => {
+            let result: Option<[u8; 32]> = client.contract_query(&contract_id, method, &()).await?;
+            let output = json!({
+                "success": true,
+                "value": result.map(hex::encode),
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
+        "contract-id-list" => {
+            let result: Vec<ContractId> = client.contract_query(&contract_id, method, &()).await?;
+            let output = json!({
+                "success": true,
+                "value": result
+                    .iter()
+                    .map(|id| hex::encode(id.to_bytes()))
+                    .collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
         "bytes" => {
             let result: Vec<u8> = if let Some(val) = arg_u32 {
                 client.contract_query(&contract_id, method, &val).await?
@@ -2238,9 +2248,8 @@ async fn cmd_query(
             let domain = arg_u32.ok_or_else(|| {
                 "--return-type domain-gas-config requires --arg-u32 <domain>".to_string()
             })?;
-            let result: DomainGasConfig = client
-                .contract_query(&contract_id, method, &domain)
-                .await?;
+            let result: DomainGasConfig =
+                client.contract_query(&contract_id, method, &domain).await?;
             let output = json!({
                 "success": true,
                 "value": {
@@ -2253,8 +2262,8 @@ async fn cmd_query(
         }
         _ => {
             return Err(format!(
-            "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, bytes, string, domain-gas-config"
-        ))
+                "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, option-bytes32, contract-id-list, bytes, string, domain-gas-config"
+            ));
         }
     }
 
@@ -2346,8 +2355,7 @@ async fn cmd_process(
     let encoded_message =
         hex::decode(message_hex).map_err(|e| format!("Invalid message hex: {e}"))?;
     let metadata_hex = metadata_hex.strip_prefix("0x").unwrap_or(metadata_hex);
-    let metadata =
-        hex::decode(metadata_hex).map_err(|e| format!("Invalid metadata hex: {e}"))?;
+    let metadata = hex::decode(metadata_hex).map_err(|e| format!("Invalid metadata hex: {e}"))?;
 
     // Compute message ID for output
     let message_id = hyperlane_dusk_types::message::id(&encoded_message);
@@ -2549,7 +2557,7 @@ async fn cmd_drc20_approve(
     let spender = ContractId::from_bytes(parse_bytes32(spender_hex)?);
     let args = rkyv_serialize(&Drc20ApproveCall {
         spender: Drc20Account::Contract(spender),
-        value: amount,
+        amount,
     });
     let chain_id = client.query_chain_id().await?;
     let (nonce, _) = client.query_account(&pk).await?;
@@ -2592,7 +2600,7 @@ async fn cmd_drc20_balance(
         Drc20Account::Contract(ContractId::from_bytes(parse_bytes32(contract_hex)?))
     } else {
         let (_, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-        Drc20Account::External(pk)
+        Drc20Account::moonlight(&pk)
     };
     let client = RuesClient::new(rues_url)?;
     let token = parse_bytes32(token_hex)?;

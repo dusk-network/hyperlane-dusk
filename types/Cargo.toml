@@ -17,3 +17,11 @@ serde = { workspace = true, optional = true }
 serde = ["dep:serde", "dep:dusk-bytes"]
 drc20 = ["dep:dusk-core"]
 abi = ["drc20", "dep:dusk-bytes", "dep:dusk-forge", "dusk-core/abi-dlmalloc"]
+
+[dev-dependencies]
+canonical-dusk-contract-standards = { package = "dusk-contract-standards", git = "https://github.com/dusk-network/contracts", rev = "bc1b00ee0af059975e158b7b580b4d0c0f1bdf9f" }
+canonical-dusk-core = { package = "dusk-core", version = "=1.6.0" }
+
+[[test]]
+name = "drc20_abi"
+required-features = ["drc20"]

@@ -49,6 +49,8 @@ mod igp {
 
     /// Scale factor for token exchange rates (1e10).
     const TOKEN_EXCHANGE_RATE_SCALE: u128 = 10_000_000_000;
+    /// Maximum destination gas limit accepted by this u64-priced route.
+    const MAX_GAS_LIMIT: u64 = 1_000_000_000;
 
     /// InterchainGasPaymaster contract state.
     pub struct InterchainGasPaymaster {
@@ -104,10 +106,7 @@ mod igp {
             assert!(self.owner.is_none(), "IGP: already initialized");
             assert!(owner != [0u8; 32], "IGP: owner cannot be zero");
             assert!(mailbox != ZERO_CONTRACT, "IGP: mailbox cannot be zero");
-            assert!(
-                beneficiary != [0u8; 32],
-                "IGP: beneficiary cannot be zero"
-            );
+            assert!(beneficiary != [0u8; 32], "IGP: beneficiary cannot be zero");
             self.mailbox = mailbox;
             self.owner = Some(owner);
             self.beneficiary = beneficiary;
@@ -177,10 +176,7 @@ mod igp {
                 .pending_payment
                 .take()
                 .expect("IGP: no payment pending");
-            assert!(
-                transfer.value == record.payment,
-                "IGP: incorrect payment"
-            );
+            assert!(transfer.value == record.payment, "IGP: incorrect payment");
 
             self.total_gas_payments = self
                 .total_gas_payments
@@ -231,6 +227,11 @@ mod igp {
         /// Formula: `(adjusted_gas * gas_price * exchange_rate) / 1e10`
         /// where `adjusted_gas = gas_limit + gas_overhead`.
         pub fn quote_gas_payment(&self, destination: u32, gas_limit: u64) -> u64 {
+            assert!(gas_limit > 0, "IGP: gas limit cannot be zero");
+            assert!(
+                gas_limit <= MAX_GAS_LIMIT,
+                "IGP: gas limit exceeds supported maximum"
+            );
             let config = self
                 .domain_gas_configs
                 .get(&destination)
@@ -320,7 +321,10 @@ mod igp {
             let amount = self.claimable_fees;
             assert!(amount > 0, "IGP: no fees to claim");
             self.claimable_fees = 0;
-            let transfer = ContractToAccount { account, value: amount };
+            let transfer = ContractToAccount {
+                account,
+                value: amount,
+            };
             let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
                 .expect("IGP: claim transfer failed");
         }
@@ -356,10 +360,7 @@ mod igp {
         /// Set the beneficiary. Owner only.
         pub fn set_beneficiary(&mut self, beneficiary: H256) {
             self.only_owner();
-            assert!(
-                beneficiary != [0u8; 32],
-                "IGP: beneficiary cannot be zero"
-            );
+            assert!(beneficiary != [0u8; 32], "IGP: beneficiary cannot be zero");
             self.beneficiary = beneficiary;
             abi::emit(
                 events::BeneficiarySet::TOPIC,
@@ -400,6 +401,26 @@ mod igp {
             assert!(
                 config.token_exchange_rate > 0,
                 "IGP: token exchange rate cannot be zero"
+            );
+            // A dispatch gas limit must be nonzero and bounded. Prove that
+            // every valid input from 1 through MAX_GAS_LIMIT is executable when the config is
+            // accepted, rather than storing a configuration that later
+            // overflows or rounds its smallest quote to zero.
+            let minimum = (1u128 + u128::from(config.gas_overhead))
+                .checked_mul(u128::from(config.gas_price))
+                .and_then(|value| value.checked_mul(u128::from(config.token_exchange_rate)))
+                .expect("IGP: configured quote arithmetic overflows")
+                / TOKEN_EXCHANGE_RATE_SCALE;
+            assert!(minimum > 0, "IGP: configured payment rounds to zero");
+
+            let maximum = (u128::from(MAX_GAS_LIMIT) + u128::from(config.gas_overhead))
+                .checked_mul(u128::from(config.gas_price))
+                .and_then(|value| value.checked_mul(u128::from(config.token_exchange_rate)))
+                .expect("IGP: configured quote arithmetic overflows")
+                / TOKEN_EXCHANGE_RATE_SCALE;
+            assert!(
+                u64::try_from(maximum).is_ok(),
+                "IGP: configured quote exceeds u64"
             );
         }
     }

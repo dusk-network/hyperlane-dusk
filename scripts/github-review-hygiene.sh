@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT"
 
 DUSK_REPO="${DUSK_REPO:-dusk-network/hyperlane-dusk}"

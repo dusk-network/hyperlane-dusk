@@ -1,5 +1,11 @@
 # Hyperlane Dusk Reassessment — 2026-07-20
 
+> **Superseded for the reopened candidate.** The independent closure red-team
+> invalidated the “final” heads and evidence below. Current decisions and the
+> replacement-evidence rule are in
+> `CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md`. The historical references in
+> this file remain useful only for regression comparison.
+
 This pass re-evaluated the port against current Hyperlane, Rusk, Forge, and the
 current Dusk DRC20 contract surface. It also implemented and validated the
 contract changes identified by the first reassessment pass.

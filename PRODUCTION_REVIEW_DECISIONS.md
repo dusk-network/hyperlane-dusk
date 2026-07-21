@@ -1,5 +1,10 @@
 # Production Review Decisions
 
+> The reopened candidate and its replacement-evidence requirements are defined
+> in `CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md`. Head-specific evidence and
+> older version numbers below are historical until this document is refreshed
+> after the new frozen heads pass validation.
+
 This file is the reviewer-facing decision record for the Dusk Hyperlane
 revival. It should be updated when reviewers accept a recommendation or request
 a different implementation.

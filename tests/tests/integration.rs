@@ -21,6 +21,7 @@ use dusk_core::transfer::ReceiveFromContract;
 use dusk_vm::{CallReceipt, Error as VMError};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use secp256k1::{Message as SecpMessage, Secp256k1, SecretKey as SecpSecretKey};
 
 use hyperlane_dusk_types::drc20::{
     Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
@@ -83,6 +84,36 @@ const IGP_BYTECODE: &[u8] =
 const ISM_MULTISIG_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_ism_multisig.wasm"
 );
+const VALIDATOR_ANNOUNCE_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_validator_announce.wasm"
+);
+const CANONICAL_DRC20_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/canonical_drc20_roles_pausable.wasm"
+);
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
+#[archive_attr(derive(bytecheck::CheckBytes))]
+struct CanonicalDrc20InitBalance {
+    account: Drc20Account,
+    amount: u64,
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
+#[archive_attr(derive(bytecheck::CheckBytes))]
+struct CanonicalDrc20TokenInit {
+    name: alloc::string::String,
+    symbol: alloc::string::String,
+    decimals: u8,
+    initial_balances: Vec<CanonicalDrc20InitBalance>,
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
+#[archive_attr(derive(bytecheck::CheckBytes))]
+struct CanonicalDrc20ExampleInit {
+    admin: Drc20Account,
+    token: CanonicalDrc20TokenInit,
+    cap: u64,
+}
 
 // =============================================================================
 // Contract IDs (fixed for deterministic tests)
@@ -96,6 +127,7 @@ const PROTOCOL_FEE_ID: ContractId = ContractId::from_bytes([14; 32]);
 const IGP_ID: ContractId = ContractId::from_bytes([15; 32]);
 const ISM_MULTISIG_ID: ContractId = ContractId::from_bytes([16; 32]);
 const AGGREGATION_HOOK_ID: ContractId = ContractId::from_bytes([19; 32]);
+const VALIDATOR_ANNOUNCE_ID: ContractId = ContractId::from_bytes([20; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
@@ -480,6 +512,25 @@ fn test_mailbox_double_init_panics() {
 }
 
 #[test]
+fn test_mailbox_rejects_duplicate_required_hook_configuration() {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let result = session.deploy(
+        MAILBOX_BYTECODE,
+        dusk_vm::ContractData::builder()
+            .owner(DEPLOYER)
+            .init_arg(&(
+                LOCAL_DOMAIN,
+                *OWNER_ID,
+                TEST_MOCK_ID,
+                MERKLE_TREE_HOOK_ID,
+                MERKLE_TREE_HOOK_ID,
+            ))
+            .contract_id(MAILBOX_ID),
+    );
+    assert_deploy_panic(result, "Mailbox: default and required hooks must differ");
+}
+
+#[test]
 fn test_mailbox_admin_accepts_owner_and_rejects_non_owner() {
     let mut s = HyperlaneSession::new();
 
@@ -500,6 +551,22 @@ fn test_mailbox_admin_accepts_owner_and_rejects_non_owner() {
         &(TEST_MOCK_ID,),
     );
     assert_contract_panic(result, "Mailbox: caller is not the owner");
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "set_default_hook",
+        &(MERKLE_TREE_HOOK_ID,),
+    );
+    assert_contract_panic(result, "Mailbox: default and required hooks must differ");
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "set_required_hook",
+        &(TEST_RECIPIENT_ID,),
+    );
+    assert_contract_panic(result, "Mailbox: default and required hooks must differ");
 }
 
 // =============================================================================
@@ -902,6 +969,121 @@ fn test_mock_quote_dispatch_zero() {
         .data;
 
     assert_eq!(quote, 0);
+}
+
+// =============================================================================
+// Tests: ValidatorAnnounce bounded query surface
+// =============================================================================
+
+fn session_with_validator_announce() -> TestSession {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    session
+        .deploy(
+            VALIDATOR_ANNOUNCE_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(LOCAL_DOMAIN, MAILBOX_ID))
+                .contract_id(VALIDATOR_ANNOUNCE_ID),
+        )
+        .expect("Deploying ValidatorAnnounce should succeed");
+    session
+}
+
+fn validator_announcement(location: &str) -> (EthAddress, Vec<u8>) {
+    let secp = Secp256k1::new();
+    let secret =
+        SecpSecretKey::from_byte_array([7u8; 32]).expect("validator test secret should be valid");
+    let public = secp256k1::PublicKey::from_secret_key(&secp, &secret).serialize_uncompressed();
+    let public_hash = message::keccak256(&public[1..]);
+    let mut address = [0u8; 20];
+    address.copy_from_slice(&public_hash[12..]);
+
+    let digest = hyperlane_dusk_types::checkpoint::announcement_digest(
+        LOCAL_DOMAIN,
+        &MAILBOX_ID.to_bytes(),
+        location,
+    );
+    let signature = secp.sign_ecdsa_recoverable(SecpMessage::from_digest(digest), &secret);
+    let (recovery_id, compact) = signature.serialize_compact();
+    let mut encoded = vec![0u8; 65];
+    encoded[..64].copy_from_slice(&compact);
+    encoded[64] = i32::from(recovery_id) as u8 + 27;
+    (EthAddress(address), encoded)
+}
+
+#[test]
+fn test_validator_announce_rejects_oversized_location_before_storage() {
+    let mut session = session_with_validator_announce();
+    let result = session.call_public::<_, bool>(
+        &OWNER_SK,
+        VALIDATOR_ANNOUNCE_ID,
+        "announce",
+        &(EthAddress([0x11; 20]), "x".repeat(1_025), vec![0u8; 65]),
+    );
+    assert_contract_panic(result, "ValidatorAnnounce: storage location too long");
+}
+
+#[test]
+fn test_validator_announce_rejects_unbounded_legacy_batch_query() {
+    let mut session = session_with_validator_announce();
+    let result = session.direct_call::<_, Vec<Vec<alloc::string::String>>>(
+        VALIDATOR_ANNOUNCE_ID,
+        "get_announced_storage_locations",
+        &(vec![
+            EthAddress([1; 20]),
+            EthAddress([2; 20]),
+            EthAddress([3; 20]),
+        ],),
+    );
+    assert_contract_panic(result, "ValidatorAnnounce: query batch too large");
+}
+
+#[test]
+fn test_validator_announce_bounds_signed_location_history() {
+    let mut session = session_with_validator_announce();
+    let mut expected = Vec::new();
+    let mut validator = EthAddress([0u8; 20]);
+
+    for index in 0..16 {
+        let location = alloc::format!("s3://validator/checkpoints/{index}");
+        let (signed_validator, signature) = validator_announcement(&location);
+        validator = signed_validator;
+        session
+            .call_public::<_, bool>(
+                &OWNER_SK,
+                VALIDATOR_ANNOUNCE_ID,
+                "announce",
+                &(validator, location.clone(), signature),
+            )
+            .expect("a valid bounded validator announcement should succeed");
+        expected.push(location);
+    }
+
+    let locations = session
+        .direct_call::<_, Vec<alloc::string::String>>(
+            VALIDATOR_ANNOUNCE_ID,
+            "get_announced_storage_locations_for_validator",
+            &(validator,),
+        )
+        .expect("the per-validator bounded query should succeed")
+        .data;
+    assert_eq!(locations, expected);
+
+    let overflow_location = alloc::string::String::from("s3://validator/checkpoints/16");
+    let (_, overflow_signature) = validator_announcement(&overflow_location);
+    let result = session.call_public::<_, bool>(
+        &OWNER_SK,
+        VALIDATOR_ANNOUNCE_ID,
+        "announce",
+        &(validator, overflow_location, overflow_signature),
+    );
+    assert_contract_panic(result, "ValidatorAnnounce: location limit reached");
+
+    let validators = session
+        .direct_call::<_, Vec<EthAddress>>(VALIDATOR_ANNOUNCE_ID, "get_announced_validators", &())
+        .expect("validator registry query should succeed")
+        .data;
+    assert_eq!(validators, vec![validator]);
 }
 
 // =============================================================================
@@ -1639,6 +1821,76 @@ fn test_igp_rejects_zero_pricing_inputs() {
 }
 
 #[test]
+fn test_igp_rejects_pricing_outside_executable_quote_domain() {
+    for (config, expected) in [
+        (
+            DomainGasConfig {
+                gas_overhead: 0,
+                token_exchange_rate: 1,
+                gas_price: 1,
+            },
+            "IGP: configured payment rounds to zero",
+        ),
+        (
+            DomainGasConfig {
+                gas_overhead: 0,
+                token_exchange_rate: 10_000_000_000,
+                gas_price: u64::MAX,
+            },
+            "IGP: configured quote exceeds u64",
+        ),
+        (
+            DomainGasConfig {
+                gas_overhead: u64::MAX,
+                token_exchange_rate: u64::MAX,
+                gas_price: u64::MAX,
+            },
+            "IGP: configured quote arithmetic overflows",
+        ),
+    ] {
+        let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+        let result = session.deploy(
+            IGP_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    *OWNER_ID,
+                    vec![(REMOTE_DOMAIN, config)],
+                ))
+                .contract_id(IGP_ID),
+        );
+        assert_deploy_panic(result, expected);
+    }
+}
+
+#[test]
+fn test_mailbox_rejects_required_hook_as_selected_hook() {
+    let mut session = session_with_hooks();
+    let result = session.call_public::<_, MessageId>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "dispatch",
+        &(
+            REMOTE_DOMAIN,
+            [0xBBu8; 32],
+            b"duplicate required hook".to_vec(),
+            100_000u64.to_le_bytes().to_vec(),
+            AGGREGATION_HOOK_ID,
+        ),
+    );
+    assert_contract_panic(result, "Mailbox: selected hook cannot equal required hook");
+    assert_eq!(
+        session
+            .direct_call::<_, u32>(MERKLE_TREE_HOOK_ID, "count", &())
+            .expect("count should succeed")
+            .data,
+        0
+    );
+}
+
+#[test]
 fn test_igp_quote_with_config() {
     // Deploy IGP with initial gas config for REMOTE_DOMAIN
     let mut session = session_with_hooks_and_igp_config(vec![(
@@ -1752,6 +2004,60 @@ fn test_igp_records_payment_on_dispatch() {
 }
 
 #[test]
+fn test_igp_rejects_explicit_zero_gas_limit() {
+    let mut session = session_with_hooks_and_igp_config(vec![(
+        REMOTE_DOMAIN,
+        DomainGasConfig {
+            gas_overhead: 50_000,
+            token_exchange_rate: 10_000_000_000,
+            gas_price: 1,
+        },
+    )]);
+    let encoded = message::encode(
+        VERSION,
+        0,
+        LOCAL_DOMAIN,
+        [0xAA; 32],
+        REMOTE_DOMAIN,
+        [0xBB; 32],
+        b"zero gas",
+    );
+    let result = session.direct_call::<_, u64>(
+        IGP_ID,
+        "quote_dispatch",
+        &(0u64.to_le_bytes().to_vec(), encoded),
+    );
+    assert_contract_panic(result, "IGP: gas limit cannot be zero");
+}
+
+#[test]
+fn test_igp_rejects_gas_limit_above_supported_domain() {
+    let mut session = session_with_hooks_and_igp_config(vec![(
+        REMOTE_DOMAIN,
+        DomainGasConfig {
+            gas_overhead: 50_000,
+            token_exchange_rate: 10_000_000_000,
+            gas_price: 1,
+        },
+    )]);
+    let encoded = message::encode(
+        VERSION,
+        0,
+        LOCAL_DOMAIN,
+        [0xAA; 32],
+        REMOTE_DOMAIN,
+        [0xBB; 32],
+        b"oversized gas",
+    );
+    let result = session.direct_call::<_, u64>(
+        IGP_ID,
+        "quote_dispatch",
+        &(1_000_000_001u64.to_le_bytes().to_vec(), encoded),
+    );
+    assert_contract_panic(result, "IGP: gas limit exceeds supported maximum");
+}
+
+#[test]
 fn test_igp_rejects_unbacked_direct_post_dispatch() {
     let mut s = HyperlaneSession::new();
 
@@ -1837,6 +2143,13 @@ fn warp_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u6
     session
         .direct_call::<_, u64>(WARP_DRC20_ID, "balance_of", &Drc20BalanceOf { account })
         .expect("balance_of should succeed")
+        .data
+}
+
+fn canonical_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u64 {
+    session
+        .direct_call::<_, u64>(WARP_DRC20_ID, "balance_of", &Drc20BalanceOf { account })
+        .expect("canonical DRC20 balance_of should succeed")
         .data
 }
 
@@ -1944,7 +2257,7 @@ fn test_warp_drc20_init() {
             .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        2
+        3
     );
 }
 
@@ -2135,7 +2448,7 @@ fn test_warp_collateral_init() {
         .direct_call::<_, u32>(WARP_DRC20_COLLATERAL_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(state_version, 1);
+    assert_eq!(state_version, 2);
 }
 
 #[test]
@@ -2340,8 +2653,7 @@ fn test_mailbox_rejects_zero_dependencies_at_initialization() {
 fn test_warp_routes_reject_zero_router_at_initialization() {
     let zero_router = [0u8; 32];
 
-    let mut synthetic_session =
-        TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let mut synthetic_session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
     let synthetic = synthetic_session.deploy(
         WARP_DRC20_BYTECODE,
         dusk_vm::ContractData::builder()
@@ -2368,8 +2680,7 @@ fn test_warp_routes_reject_zero_router_at_initialization() {
     );
     assert_deploy_panic(native, "WarpNative: router cannot be zero");
 
-    let mut collateral_session =
-        TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    let mut collateral_session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
     let collateral = collateral_session.deploy(
         WARP_DRC20_COLLATERAL_BYTECODE,
         dusk_vm::ContractData::builder()
@@ -2894,7 +3205,7 @@ fn test_warp_drc20_handle_mints_to_registered_external_account() {
         &token_body,
     );
 
-    // Process — should mint to Account::External(OWNER_PK)
+    // Process — should mint to the canonical Moonlight principal.
     session
         .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
         .expect("process should succeed");
@@ -2945,7 +3256,7 @@ fn test_warp_drc20_unregistered_external_claims_pending() {
         .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "claim_pending", &())
         .expect("authenticated external account should claim its pending tokens");
     assert_eq!(
-        warp_drc20_balance_of(&mut session, Drc20Account::External(*OWNER_PK)),
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&OWNER_PK)),
         mint_amount
     );
     assert_eq!(
@@ -3340,6 +3651,164 @@ fn session_with_warp_collateral_flow() -> (TestSession, H256) {
         .expect("Deploying Mailbox should succeed");
 
     (session, remote_router)
+}
+
+/// Deploy the exact upstream Dusk contract-standards DRC20 example at
+/// `bc1b00ee0af059975e158b7b580b4d0c0f1bdf9f` as collateral.
+fn session_with_canonical_drc20_collateral(initial_token_balance: u64) -> (TestSession, H256) {
+    let remote_router: H256 = [0xCC; 32];
+    let owner = Drc20Account::moonlight(&OWNER_PK);
+
+    let mut session = TestSession::instantiate(vec![
+        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
+        (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
+    ]);
+
+    session
+        .deploy(
+            TEST_MOCK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_MOCK_ID),
+        )
+        .expect("Deploying TestMock should succeed");
+    session
+        .deploy(
+            MERKLE_TREE_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(MERKLE_TREE_HOOK_ID),
+        )
+        .expect("Deploying MerkleTreeHook should succeed");
+    session
+        .deploy(
+            CANONICAL_DRC20_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&CanonicalDrc20ExampleInit {
+                    admin: owner,
+                    token: CanonicalDrc20TokenInit {
+                        name: alloc::string::String::from("Canonical Dusk Token"),
+                        symbol: alloc::string::String::from("CDRC20"),
+                        decimals: 9,
+                        initial_balances: vec![CanonicalDrc20InitBalance {
+                            account: owner,
+                            amount: initial_token_balance,
+                        }],
+                    },
+                    cap: 0,
+                })
+                .contract_id(WARP_DRC20_ID),
+        )
+        .expect("Deploying the pinned canonical DRC20 should succeed");
+    session
+        .deploy(
+            WARP_DRC20_COLLATERAL_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    WARP_DRC20_ID,
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    vec![(REMOTE_DOMAIN, remote_router)],
+                ))
+                .contract_id(WARP_DRC20_COLLATERAL_ID),
+        )
+        .expect("Deploying WarpDrc20Collateral should succeed");
+    session
+        .deploy(
+            MAILBOX_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    LOCAL_DOMAIN,
+                    *OWNER_ID,
+                    TEST_MOCK_ID,
+                    TEST_MOCK_ID,
+                    MERKLE_TREE_HOOK_ID,
+                ))
+                .contract_id(MAILBOX_ID),
+        )
+        .expect("Deploying Mailbox should succeed");
+
+    (session, remote_router)
+}
+
+#[test]
+fn test_warp_collateral_round_trip_with_pinned_canonical_drc20() {
+    let initial = 5_000_000u64;
+    let outbound = 3_000_000u64;
+    let inbound = 1_250_000u64;
+    let owner = Drc20Account::moonlight(&OWNER_PK);
+    let custody = Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID);
+    let (mut session, remote_router) = session_with_canonical_drc20_collateral(initial);
+
+    assert_eq!(canonical_drc20_balance_of(&mut session, owner), initial);
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender: custody,
+                amount: outbound,
+            },
+        )
+        .expect("the pinned canonical DRC20 approve ABI should succeed");
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xAB; 32], outbound),
+        )
+        .expect("the route should take exact custody and dispatch");
+
+    assert_eq!(
+        canonical_drc20_balance_of(&mut session, owner),
+        initial - outbound
+    );
+    assert_eq!(canonical_drc20_balance_of(&mut session, custody), outbound);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(
+                WARP_DRC20_ID,
+                "allowance",
+                &Drc20Allowance {
+                    owner,
+                    spender: custody,
+                },
+            )
+            .expect("canonical allowance query should succeed")
+            .data,
+        0
+    );
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_COLLATERAL_ID, "register_account", &())
+        .expect("the inbound Moonlight recipient should register");
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_COLLATERAL_ID.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(*OWNER_ID, inbound),
+    );
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+        .expect("inbound delivery should release canonical DRC20 custody");
+
+    assert_eq!(
+        canonical_drc20_balance_of(&mut session, owner),
+        initial - outbound + inbound
+    );
+    assert_eq!(
+        canonical_drc20_balance_of(&mut session, custody),
+        outbound - inbound
+    );
 }
 
 #[test]
@@ -4022,7 +4491,7 @@ fn session_with_warp_collateral_funded_flow() -> (TestSession, H256) {
             "approve",
             &Drc20ApproveCall {
                 spender: Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
-                value: fund_amount,
+                amount: fund_amount,
             },
         )
         .expect("collateral route approval should succeed");
@@ -4046,7 +4515,7 @@ fn test_warp_collateral_transfer_remote_uses_current_drc20_allowance_and_custody
     session
         .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
         .expect("underlying token account registration should succeed");
-    let owner = Drc20Account::External(*OWNER_PK);
+    let owner = Drc20Account::moonlight(&OWNER_PK);
     let token_body = hyperlane_dusk_types::token_message::encode(*OWNER_ID, amount);
     let encoded = message::encode(
         VERSION,
@@ -4067,10 +4536,7 @@ fn test_warp_collateral_transfer_remote_uses_current_drc20_allowance_and_custody
             &OWNER_SK,
             WARP_DRC20_ID,
             "approve",
-            &Drc20ApproveCall {
-                spender,
-                value: amount,
-            },
+            &Drc20ApproveCall { spender, amount },
         )
         .expect("current DRC20 approve ABI should succeed");
     let allowance = session
@@ -4135,7 +4601,7 @@ fn test_warp_collateral_handle_resolves_registered_external() {
         &token_body,
     );
 
-    // Process — collateral resolves to Account::External(OWNER_PK)
+    // Process — collateral resolves to the canonical Moonlight principal.
     // and transfers DRC20 tokens from its own balance
     session
         .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
@@ -4242,7 +4708,7 @@ fn test_warp_collateral_claim_pending_transfers_after_registration() {
         0
     );
 
-    let external_balance = warp_drc20_balance_of(&mut session, Drc20Account::External(*OWNER_PK));
+    let external_balance = warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&OWNER_PK));
     assert_eq!(external_balance, unlock_amount);
 
     let contract_balance_after = warp_drc20_balance_of(

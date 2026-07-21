@@ -1177,6 +1177,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "dusk-contract-standards"
+version = "0.1.0"
+source = "git+https://github.com/dusk-network/contracts?rev=bc1b00ee0af059975e158b7b580b4d0c0f1bdf9f#bc1b00ee0af059975e158b7b580b4d0c0f1bdf9f"
+dependencies = [
+ "bytecheck",
+ "dusk-core 1.6.0",
+ "rkyv",
+]
+
+[[package]]
+name = "dusk-core"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb7053f16922b6cce10036bda331f5dd373a64ff66972604c2fc3bca594d2158"
+dependencies = [
+ "blake2b_simd",
+ "bls12_381-bls",
+ "bytecheck",
+ "dusk-bls12_381",
+ "dusk-bytes",
+ "dusk-jubjub",
+ "dusk-poseidon",
+ "ff",
+ "jubjub-schnorr",
+ "phoenix-circuits",
+ "phoenix-core",
+ "piecrust-uplink 0.20.0",
+ "poseidon-merkle",
+ "rand 0.8.6",
+ "rkyv",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "dusk-core"
 version = "1.7.1"
 dependencies = [
@@ -1198,7 +1232,7 @@ dependencies = [
  "jubjub-schnorr",
  "phoenix-circuits",
  "phoenix-core",
- "piecrust-uplink",
+ "piecrust-uplink 0.21.0",
  "poseidon-merkle",
  "rand 0.8.6",
  "rkyv",
@@ -1320,7 +1354,7 @@ dependencies = [
  "clap",
  "constant_time_eq",
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "hex",
  "hyperlane-dusk-types",
  "pbkdf2",
@@ -1342,7 +1376,7 @@ dependencies = [
  "bytecheck",
  "c-kzg",
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-poseidon",
  "lru",
  "piecrust",
@@ -1977,7 +2011,7 @@ dependencies = [
 name = "hyperlane-dusk-aggregation-hook"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2000,7 +2034,7 @@ dependencies = [
  "blake3",
  "constant_time_eq",
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "ff",
  "hex",
  "hyperlane-dusk-types",
@@ -2019,7 +2053,7 @@ dependencies = [
 name = "hyperlane-dusk-igp"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2032,13 +2066,14 @@ dependencies = [
  "bytecheck",
  "constant_time_eq",
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-vm",
  "ff",
  "hyperlane-dusk-types",
  "rand 0.8.6",
  "rkyv",
  "rusk-prover",
+ "secp256k1",
  "time-core",
  "wasmtime",
 ]
@@ -2047,7 +2082,7 @@ dependencies = [
 name = "hyperlane-dusk-ism-multisig"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2057,7 +2092,7 @@ name = "hyperlane-dusk-mailbox"
 version = "0.1.0"
 dependencies = [
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2066,7 +2101,7 @@ dependencies = [
 name = "hyperlane-dusk-merkle-tree-hook"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2075,7 +2110,7 @@ dependencies = [
 name = "hyperlane-dusk-protocol-fee"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2084,7 +2119,7 @@ dependencies = [
 name = "hyperlane-dusk-test-mock"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2093,7 +2128,7 @@ dependencies = [
 name = "hyperlane-dusk-test-recipient"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2104,7 +2139,9 @@ version = "0.1.0"
 dependencies = [
  "bytecheck",
  "dusk-bytes",
- "dusk-core",
+ "dusk-contract-standards",
+ "dusk-core 1.6.0",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "rkyv",
  "serde",
@@ -2114,7 +2151,7 @@ dependencies = [
 name = "hyperlane-dusk-validator-announce"
 version = "0.1.0"
 dependencies = [
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2125,7 +2162,7 @@ version = "0.1.0"
 dependencies = [
  "bytecheck",
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
  "rkyv",
@@ -2137,7 +2174,7 @@ version = "0.1.0"
 dependencies = [
  "bytecheck",
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
  "rkyv",
@@ -2148,7 +2185,7 @@ name = "hyperlane-dusk-warp-native"
 version = "0.1.0"
 dependencies = [
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-forge",
  "hyperlane-dusk-types",
 ]
@@ -2815,12 +2852,23 @@ dependencies = [
  "hex",
  "indexmap",
  "memmap2",
- "piecrust-uplink",
+ "piecrust-uplink 0.21.0",
  "rand 0.8.6",
  "rkyv",
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "piecrust-uplink"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df8d2d3f5deb052f61c65d01d892c4babe604cd884cdd2fcef7f6da4392b476"
+dependencies = [
+ "bytecheck",
+ "hex",
+ "rkyv",
 ]
 
 [[package]]
@@ -3317,7 +3365,7 @@ name = "rusk-prover"
 version = "1.7.0"
 dependencies = [
  "dusk-bytes",
- "dusk-core",
+ "dusk-core 1.7.1",
  "dusk-plonk",
  "once_cell",
  "rand 0.8.6",
