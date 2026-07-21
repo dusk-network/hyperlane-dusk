@@ -176,6 +176,23 @@ three PRs and all production-only sign-off, protection, dependency, runner, and
 secret gates. A green pre-merge check therefore means machine validation is
 green, not that production is authorized.
 
+Reviewer-facing hygiene distinguishes moving review heads from immutable test
+anchors. Any text that claims a current PR head is checked against GitHub at
+runtime. Contract, agent, Rusk, repro-log, and E2E evidence is instead pinned to
+the exact code and content hashes that were tested; a later documentation or
+policy commit does not relabel unrerun evidence as head-tested. The active base,
+dispatcher, withdrawal, and monorepo PR bodies must expose the evidence relevant
+to their own scope, and the consolidated issue #2 handoff must expose the full
+cross-repository set. Historical decision issues are scanned for stale or secret
+material but are not forced to duplicate a moving handoff on every commit.
+
+The review gate therefore rejects stale head claims, known superseded evidence,
+missing immutable anchors, missing decision/compatibility links, and any review
+surface that omits the pre-merge-versus-production disclaimer. It deliberately
+does not require a machine-local `/tmp` archive path, one historical Actions run
+URL, or copied boilerplate in every decision issue: those were properties of an
+old run, not protocol safety invariants.
+
 ## Companion agent decisions
 
 The monorepo PR must follow these boundaries before new evidence is accepted:

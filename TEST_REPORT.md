@@ -67,6 +67,15 @@ three linked PRs without requiring prior approval or merge. Branch protection
 owns those decisions. Manual production mode still requires every linked PR to
 be approved and merged and retains all production-only gates.
 
+The reviewer-facing hygiene gate was also re-based on this reassessment. It
+checks live moving-head claims dynamically, while the base, withdrawal, agent,
+Rusk, static-repro, and two live-E2E anchors above remain immutable evidence.
+It now includes PR #10 directly and requires the authoritative decision record,
+the monorepo compatibility manifest, and an explicit statement that pre-merge
+green is not production approval. Obsolete requirements for one old local
+archive path, historical run URLs, and duplicated handoff boilerplate were
+removed because they did not establish validity of the current candidate.
+
 ## 2026-07-21 Final Combined Static and Isolated E2E Validation
 
 The final covered implementation set was the Dusk base anchor
