@@ -20,6 +20,12 @@ It also requires the proposal-validation and trusted-policy workflow files to
 be byte-for-byte unchanged from the base. This prevents a PR from weakening a
 policy workflow and then using that replacement to certify itself.
 
+The implementation bootstrap introduces `production-readiness-gate.yml` as a
+trusted `pull_request_target` workflow because it may receive status-read
+secrets. The bootstrap gate requires it to be a regular file; after it exists
+on the base, the trusted policy locks it byte-for-byte as well. It checks out
+only the base commit and never executes proposed readiness scripts.
+
 The first merge is necessarily a bootstrap because `main` does not yet contain
 the trusted workflow. It must be a focused workflow-policy PR, pass actionlint
 and its unprivileged checks, and receive owner review. Later changes to either
@@ -60,7 +66,8 @@ Rusk source, build output, and other workspace residue do not cross runs.
 
 ## Pinned validation tooling
 
-The actionlint container is pinned to the immutable digest for upstream
+The official checkout and GitHub-script actions are pinned to immutable commit
+SHAs. The actionlint container is pinned to the immutable digest for upstream
 `rhysd/actionlint:1.7.12`:
 
 `sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667`
