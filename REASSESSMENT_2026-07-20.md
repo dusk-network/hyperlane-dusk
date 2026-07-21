@@ -4,42 +4,41 @@ This pass re-evaluated the port against current Hyperlane, Rusk, Forge, and the
 current Dusk DRC20 contract surface. It also implemented and validated the
 contract changes identified by the first reassessment pass.
 
-## Final implementation addendum — 2026-07-21
+## Final status addendum — 2026-07-21
 
-The final independently reproducible implementation set is:
+The final base covered-tree anchor is
+`aaad04937483897ffc0fcc77cfcedbc53bfee326`; the focused withdrawal stack was
+validated at `db040e3f1eab4ba012a12a6be92c8f86268a993f`; and the synchronized
+agent/E2E checkout was
+`356cf22a592d1d657519b9cfd5f6af9148096972` on upstream
+`669d966ad71582fe3c9d96b5ed1b8ea3724e07fe`. The base clean gate passed 12
+WASMs, clippy, 29 type tests, 99 VM tests, 17 CLI tests, 5 data-driver tests,
+the standalone operator compile, and secret hygiene. Its durable log is
+`/tmp/hyperlane-dusk-base-repro-aaad049.log` (SHA-256
+`95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`).
 
-- Dusk base contracts/tooling:
-  `4d8f5da013d56e5d3fa036ab924de6a6729b5f4f`;
-- stacked dispatch-credit withdrawal:
-  `183b56a875e5c2962ef621937258b8e497baef2a`;
-- Dusk Hyperlane agent integration:
-  `37e24eed2c7ad7aed63e3fa033d1fe8a28355ec0`; and
-- current clean Rusk:
-  `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`.
+The final live E2E was run only after fixing the harness to `exec` agent
+binaries, ensuring that a stopped case cannot leave an orphaned relayer in the
+next case. TestMock run `1784607919` and MessageIdMultisig run `1784608531`
+each withdrew exactly one LUX from WarpDrc20's contract-keyed dispatch credit,
+used the remaining credit, and delivered synthetic, native, and collateral
+routes in both directions with exact custody, allowance, and protocol-fee
+assertions. The multisig case used a real validator and signed checkpoint
+metadata. The combined harness log SHA-256 is
+`d796c471d024fbb3fce75fccddf01dfcaac426be45a25eb77de6c101e23948e7`;
+all retained harness, deploy, warm-validation, relayer, and validator logs
+passed the runtime secret scan. Earlier synchronization and E2E references
+below are historical and are superseded by this addendum where they differ.
 
-The final contract gate passed 12 WASMs, contract clippy, 29 type tests, 100 VM
-tests, 7 data-driver tests, 18 CLI tests, the release driver and standalone E2E
-builds, and secret hygiene. The agent gate passed 19 Dusk-chain tests, 7 Dusk
-base/config tests, warning-free Dusk clippy, package formatting, and checks of
-the Dusk chain, base, validator, relayer, scraper, and lander packages.
-
-The main design decisions did not change during remediation: pending warp
-liabilities stay reserved without a route-admin drain; dispatch credit belongs
-to the effective payer rather than its sponsor or the Mailbox owner; direct
-Moonlight payers may withdraw to a validated Moonlight key; and route contracts
-expose only an owner-gated proxy over their own contract-keyed credit. Final
-hardening added aggregate pending-supply accounting, bounded history queries,
-atomic multisig reads, real Rusk transaction simulation, and exact-hash
-reconciliation whenever propagation or confirmation is outcome-unknown.
-
-Fresh-state live runs then passed with Dusk harness code
-`137ce09e19ffd30a36027ba417ebf1992521613f`: TestMock run `1784592169` and
-MessageIdMultisig run `1784592942`. Each run withdrew one LUX from the live
-WarpDrc20 contract-keyed dispatch credit, asserted the exact decrement, and
-then used the remaining credit while delivering synthetic, native, and
-collateral routes in both directions. The relayer executed the real Rusk
-process-simulation path for all EVM-to-Dusk deliveries; the multisig run also
-produced and consumed signed validator checkpoints.
+The dispatch-credit decisions are intentionally narrow. Permissionless funding
+is sponsorship for the beneficiary/effective payer and gives the sponsor no
+withdrawal or dispatch authority. Only that beneficiary may spend the credit.
+A Moonlight beneficiary may withdraw to a semantically valid Moonlight key,
+while production warp routes expose an owner-only proxy over that route's own
+contract-keyed credit. There is no Mailbox-owner global drain, funder reclaim,
+expiry, reassignment, or contract payout callback without a safe recipient ABI.
+Pending native/collateral liabilities reserve live custody and pending
+synthetic liabilities reserve aggregate `u64` supply capacity.
 
 ## Synchronized references
 
@@ -92,10 +91,11 @@ default hook is IGP, so every deployed demo dispatch exercises both the
 required aggregation and gas-payment path.
 
 The demo pre-funds each deployed warp route's Mailbox credit. Credits are an
-explicit prepayment model. Permissionless funding does not confer withdrawal
+explicit prepayment model. Base PR #1 intentionally stops at beneficiary-keyed
+sponsorship. Permissionless funding does not confer withdrawal
 rights: the effective payer owns the credit. Moonlight payers may withdraw to
-an explicit, semantically valid Moonlight key, and each production warp route exposes an
-owner-only proxy for its own contract-keyed credit. There is no Mailbox-owner
+an explicit, semantically valid Moonlight key, and each production warp route
+exposes an owner-only proxy for its own contract-keyed credit. There is no Mailbox-owner
 global drain. Contract-recipient payouts remain deferred until a callback ABI
 is specified.
 
@@ -157,17 +157,17 @@ checkout guard.
 ## Verification
 
 - Final clean-layout static gate at
-  `d32c0f56c66d93be203cc44e3f48a0a7257216f0`, against exact Rusk
+  `aaad04937483897ffc0fcc77cfcedbc53bfee326`, against exact Rusk
   `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`, passed with durable log
-  `/tmp/hyperlane-dusk-base-repro-d32c0f5.log` (SHA-256
-  `1d006300471c538a0becaf4311c79f97835166ffe6a1f4552ebd580527bf6169`).
+  `/tmp/hyperlane-dusk-base-repro-aaad049.log` (SHA-256
+  `95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`).
 - All 12 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
 - The final combined-stack gate at
-  `54587f9267a6f26d2a7127288f9587d877ee3b62` passed 29 type tests, 105 VM
+  `db040e3f1eab4ba012a12a6be92c8f86268a993f` passed 29 type tests, 105 VM
   tests, 19 `dusk-tx` tests, and 7 data-driver tests. Its durable log is
-  `/tmp/hyperlane-dusk-withdrawal-repro-54587f9.log` (SHA-256
-  `df5d8272b47a341473660b547a77e69c1959928cb552c0b812db52f49cb5ecdb`).
+  `/tmp/hyperlane-dusk-withdrawal-repro-db040e3.log` (SHA-256
+  `7bc6c75a802bc7a67c5a50c3d83189931edbb9780bf72fd4602224be46939f20`).
 - The VM set includes payer-isolated Mailbox withdrawal, multi-payer solvency,
   withdrawal rollback after transfer failure, and owner-gated withdrawal for
   all three production warp routes.

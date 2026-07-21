@@ -7,52 +7,46 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
-## 2026-07-21 Final Combined Static Gate
+## 2026-07-21 Final Combined Static and Isolated E2E Validation
 
-The stacked withdrawal implementation at
-`54587f9267a6f26d2a7127288f9587d877ee3b62`, based on remediated contract
-implementation `d32c0f56c66d93be203cc44e3f48a0a7257216f0`, was reproduced in a detached
-clean layout against Rusk
-`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
+The final covered implementation set was the Dusk base anchor
+`aaad04937483897ffc0fcc77cfcedbc53bfee326`, stacked withdrawal anchor
+`db040e3f1eab4ba012a12a6be92c8f86268a993f`, agent checkout
+`356cf22a592d1d657519b9cfd5f6af9148096972`, and Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`.
 
-The gate passed:
+The detached combined-stack gate passed all 12 contract WASM builds,
+contract/type clippy, 29 type tests, 105 VM tests, 19 `dusk-tx` tests, 7
+data-driver tests and the release data-driver WASM build, the standalone E2E
+operator compile, and tracked-source secret hygiene. Durable log:
+`/tmp/hyperlane-dusk-withdrawal-repro-db040e3.log`, SHA-256
+`7bc6c75a802bc7a67c5a50c3d83189931edbb9780bf72fd4602224be46939f20`.
 
-- all 12 contract WASM builds and production contract/type clippy;
-- 29 type tests and 105 VM integration tests;
-- 7 data-driver tests and its release WASM build;
-- 19 `dusk-tx` tests;
-- the standalone E2E host build; and
-- tracked-source secret hygiene.
+The final isolated live run used TestMock run `1784607919` and
+MessageIdMultisig run `1784608531`. Each case withdrew exactly one LUX from
+WarpDrc20's contract-keyed dispatch credit, asserted the exact decrement, used
+the remaining credit, and delivered synthetic, native, and collateral routes
+in both directions. The checks covered exact custody, allowance, and protocol
+fee changes plus real Rusk process simulation; the multisig case also produced
+and consumed a real validator checkpoint and metadata. Combined harness log:
+`/tmp/hyperlane-final-e2e-db040e3-356cf22.log`, SHA-256
+`d796c471d024fbb3fce75fccddf01dfcaac426be45a25eb77de6c101e23948e7`.
 
-The durable local log is
-`/tmp/hyperlane-dusk-withdrawal-repro-54587f9.log`, SHA256
-`df5d8272b47a341473660b547a77e69c1959928cb552c0b812db52f49cb5ecdb`.
+The harness now starts agents with `exec`, so tracked PIDs identify the actual
+relayer and validator rather than intermediate shells. After TestMock stopped,
+its relayer log remained exactly 725460 bytes with SHA-256
+`d508261c53e493a3a750fdea11e3cb22627d72cee7910a9bdcafbbe9d3c1f442`
+throughout the multisig case, proving there was no cross-case agent survivor.
+The multisig relayer and validator log hashes were respectively
+`05dfb3218b97542ba314030317979c14e51a287b60d87f83be0c3af75dc00893`
+and `2f26cf5334b9272d9d1846cdfbbd93182153bb95b66935e24be8a39860842341`.
+All retained harness, deploy, warm-validation, relayer, and validator logs
+passed the runtime secret scan. Earlier live runs are superseded because they
+did not prove process isolation even where their protocol assertions passed.
+
 The stack requires Mailbox, WarpDrc20, and IGP compatibility version 2; every
 other deployed contract remains version 1. It preserves the base branch's
 single combined-manifest reuse authority and exact saved/live IGP policy check.
-
-### Earlier live E2E evidence (superseded)
-
-That harness passed from clean state with agent implementation
-`37e24eed2c7ad7aed63e3fa033d1fe8a28355ec0` in both topologies:
-
-- TestMock run `1784592169` delivered synthetic, native, and collateral routes
-  in both directions, asserted exact custody/allowance changes, confirmed the
-  live withdrawal, and observed successful Rusk process simulation. Harness
-  log SHA256:
-  `1cac650a1ba192eb314984c5003169ee4767b4f840ee6f71ecf0a304efcaf190`.
-- MessageIdMultisig run `1784592942` repeated that matrix through a real
-  validator, signed checkpoints, threshold metadata, and successful Rusk
-  process simulation. Harness log SHA256:
-  `802d61c3df233ab25dcfbebc58d8b6facf2f5282fbb86c4981e738a9e643363c`.
-
-The associated relayer logs are
-`/tmp/hyperlane-relayer-testMock-1784592169.log` (SHA256
-`e6a96a464a9497fb39b759fe2037cddbb5cbfac66bd4630a971871eb14557e7c`) and
-`/tmp/hyperlane-relayer-messageIdMultisig-1784592942.log` (SHA256
-`e098460937f2c151b10e3d1ba703169d7af31253b14c25e6dad18cdba06d479a`).
-The multisig validator log SHA256 is
-`e8e108a242221d2f0f4ba9ad011d30a41de0dfdb64cfd0621b0cc93d1abc073c`.
 
 ## 2026-07-21 Final Deep-Review Remediation Validation
 
@@ -100,7 +94,7 @@ the IGP pricing policy and deployment interface changed after the earlier live
 runs.
 
 The premerge readiness freshness anchors therefore advance to Dusk code anchor
-`d32c0f56c66d93be203cc44e3f48a0a7257216f0` and upstream-synchronized
+`aaad04937483897ffc0fcc77cfcedbc53bfee326` and upstream-synchronized
 monorepo code/CI anchor `23df1ec7c0211b0178079f12a4a5b4057463a363`.
 Documentation-only descendants do not invalidate those covered trees.
 
