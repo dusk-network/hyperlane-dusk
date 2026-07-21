@@ -235,6 +235,13 @@ bash demo/bridge.sh to-evm 2
 bash demo/bridge.sh help
 ```
 
+Every Dusk write prints its locally computed transaction hash before the first
+propagation attempt, and `bridge.sh` preserves and prints the completed hash.
+If the command is interrupted after that line or reports an unknown outcome,
+do not repeat the operation: reconcile that exact hash against Rusk first.
+This local demo does not provide a durable transaction journal and must not be
+treated as a production transaction orchestrator.
+
 ### Configuration
 
 All settings are in `demo/.env.bridge`. Key overrides:

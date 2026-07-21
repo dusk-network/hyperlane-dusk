@@ -41,6 +41,10 @@ silently relabeled as having run those tests.
 - **Transaction reconciliation:** transport/server failures remain retryable;
   deterministic HTTP-client and successful-response schema incompatibilities
   terminate immediately while preserving the exact transaction hash.
+- **Operator-visible transaction identity:** `dusk-tx` emits the locally
+  computed hash before its first propagation attempt. The local bridge demo no
+  longer discards the helper JSON; it prints completed Dusk hashes and carries
+  exact-hash reconciliation instructions through ordinary error paths.
 - **Escrow parity:** synthetic, collateral, and native routes support
   capability-authenticated claims for contract-shaped recipients. The native
   route transfers through a fixed `receive_native_pending` callback, and root
@@ -130,6 +134,10 @@ silently relabeled as having run those tests.
 - Administrators retain the owner bypass (`enforce_admins=false`). That makes
   emergency owner merging possible; it does not turn a bypassed PR into an
   approved or production-validated change.
+- The local bridge demo is intentionally not a durable transaction
+  orchestrator. It exposes the prepared hash before propagation and forbids a
+  blind retry, but a production operator still needs an atomic on-disk journal
+  and exact-hash reconciliation of unfinished entries.
 
 ## Evidence policy
 

@@ -2398,6 +2398,13 @@ async fn propagate_and_wait(
     tx_id: &str,
     tx_bytes: &[u8],
 ) -> Result<(), String> {
+    // Emit the locally computed reconciliation identity before the first
+    // remote write. This gives an interrupted operator a concrete hash to
+    // reconcile before deciding whether a non-idempotent operation may be
+    // retried.
+    eprintln!(
+        "  Prepared TX {tx_id}; reconcile this exact hash before retrying if submission is interrupted"
+    );
     client
         .propagate_tx(tx_bytes)
         .await
