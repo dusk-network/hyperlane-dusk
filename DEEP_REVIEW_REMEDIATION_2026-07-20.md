@@ -41,10 +41,10 @@ security boundaries deliberately.
 | C30: fabricated/unfinalized Merkle provenance | Persist hook-owned message IDs, insertion heights, and post-insertion roots. Agents index the hook's exact archive event and expose only consensus-finalized insertions/checkpoints; Mailbox dispatches are not treated as proof that a configured Merkle hook ran. |
 | C31: ambiguous agent success and identifiers | Require explicit `err: null` for transaction success, require a height query to return the requested height, reject non-canonical H512 padding for Dusk transaction IDs, and bound/open signer key files once before reading. Malformed observations fail closed. |
 | C32: cross-repository ABI drift | Pin the agent gate to an exact companion Dusk commit and record the compatible contract/agent heads. Branch-name checkouts remain available only as an explicit manual override. |
-| C33: changed contract storage layout | Require fresh deployment of MerkleTreeHook, WarpDrc20, and WarpNative. MerkleTreeHook and WarpNative expose `state_version() == 1`; WarpDrc20 exposes version 2 after adding its aggregate pending-supply reserve. `--skip-deploy` probes the exact per-contract ABI so older serialized state is rejected rather than reused. No in-place migration is claimed. |
+| C33: changed contract storage or required ABI | Require a fresh, mutually compatible deployment of the complete Dusk topology. Every deployed contract exposes an explicit compatibility version: WarpDrc20 is version 2 after adding its aggregate pending-supply reserve, and Mailbox is version 2 on this stacked PR because dispatch-credit withdrawal is a required ABI; all other current contracts are version 1. Both `--skip-deploy` reuse boundaries require the complete version matrix, so pre-version, pre-reserve, pre-withdrawal, or pre-atomic-policy instances are rejected rather than accepted through an older liveness ABI. No in-place migration is claimed. |
 | C34: aggregate synthetic claim capacity | Treat every accepted unminted synthetic transfer as a liability against the `u64` supply domain. `pending_total` reserves that capacity before either a direct mint or another pending entry; claiming releases the reserve in the same transaction that mints. |
 | C35: validation evidence must preserve its decision boundary | The primary repro bundle compiles/tests every changed host crate, rejects dirty custom-layout sources instead of silently testing `HEAD`, and requires the exact stale-review diagnostic. Branch-policy checks retain and enforce `strict == true`. |
-| C36: restored topology and agent policy binding | Saved-state reuse queries every persisted EVM/Dusk contract, verifies the exact WarpDrc20 storage version, and binds generated agent mode and Moonlight chain ID to the validated bridge-state manifest and live Mailbox default ISM. |
+| C36: restored topology and agent policy binding | Saved-state reuse validates every persisted EVM contract and the exact state version of every persisted Dusk contract, then binds generated agent mode and Moonlight chain ID to the validated bridge-state manifest and live Mailbox default ISM. The post-parse reuse boundary repeats the complete Dusk version matrix before configuration is generated. |
 | C37: split and serial agent reads | Add atomic `validators_and_threshold` and bounded `message_ids`/`gas_payments` query ABIs. The agent consumes coherent validator policy and pages lifetime history in 256-record requests instead of issuing one RPC per record. |
 | C38: static Dusk dry run | Use Rusk's `/on/transactions/simulate` endpoint through `dusk-tx call --simulate-only`. Relayer preparation now executes the exact signed Mailbox payload in an ephemeral session, requires both simulation response fields, and rejects deterministic contract failures before propagation. |
 | C39: helper transport and ambiguous submission | Cap serialized helper arguments below the per-argument operating-system boundary, reject malformed public arguments before signer access, and preserve the exact hash across outcome-unknown propagation and confirmation timeout. Every mutating helper path uses the same submit/reconcile boundary; the agent reconciles that hash before reporting a transaction outcome. |
@@ -105,13 +105,17 @@ dispatch semantics that depends on the current quote.
 
 ## Deployment compatibility
 
-The added pending-liability and Merkle-history fields change serialized contract
-state. MerkleTreeHook, WarpDrc20, and WarpNative must be freshly deployed as one
-compatible set; an existing deployment cannot be upgraded in place by swapping
-WASM. MerkleTreeHook and WarpNative remain at state version 1; WarpDrc20 is
-version 2 because its aggregate synthetic reserve changes serialized state.
-These are operational compatibility probes, not migration mechanisms. The
-demo's reuse path fails closed when the exact expected version is absent.
+The pending-liability, Merkle-history, fee-accounting, ownership, and atomic
+validator-policy changes form one serialized and semantic compatibility set. An
+existing deployment cannot be upgraded in place by swapping WASM. WarpDrc20 is
+compatibility version 2 because its aggregate synthetic reserve follows an
+earlier versioned layout. Mailbox is version 2 on this stacked PR because the
+withdrawal ABI is required even though it adds no persisted field. Every other
+deployed contract in the current topology is version 1. These are operational
+compatibility probes, not migration
+mechanisms. Both demo reuse boundaries validate the complete matrix and fail
+closed when any exact expected version is absent. Live semantic checks such as
+Mailbox default-ISM binding are retained in addition to the version checks.
 
 ## Transaction boundary
 

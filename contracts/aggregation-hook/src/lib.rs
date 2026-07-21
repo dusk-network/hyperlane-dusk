@@ -161,6 +161,12 @@ mod aggregation_hook {
             2
         }
 
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
         /// Return the configured Mailbox.
         pub fn mailbox(&self) -> ContractId {
             self.mailbox

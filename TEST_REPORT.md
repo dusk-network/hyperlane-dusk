@@ -2820,6 +2820,44 @@ The exact pre-rebase head remains recoverable at
 `backup/feat-dispatch-credit-withdrawal-pre-6832b15`; no history was discarded
 while updating the stacked PR.
 
+## 2026-07-21 Complete Deployment-Compatibility Gate
+
+An independent post-implementation red-team identified that the saved-state
+reuse paths still treated legacy liveness queries as sufficient for contracts
+whose persisted layout or security semantics had changed. The systemic fix was
+frozen at `f3fba994e4274717b48ec6e4cc6d885278990352` and reproduced from a
+detached, clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` with:
+
+```bash
+RUSK_DIR=/tmp/hyperlane-rusk-5c6a0b-20260720 \
+  bash scripts/local-repro-check.sh
+```
+
+Durable local log:
+`/tmp/hyperlane-dusk-base-repro-f3fba99.log` (SHA-256
+`a5c0bb52a31158b62a3a20cde39e75c7e20b86754a57abdf901e7dd4ba98231a`).
+
+Result:
+
+- all 12 contract WASMs built and the targeted wasm clippy surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 95 passed, 0 failed;
+- `dusk-tx`: 16 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 5 passed, 0 failed;
+- the standalone E2E operator binary compiled; and
+- secret-hygiene checks passed.
+
+The added VM coverage queries the version entry point on Mailbox, TestMock,
+TestRecipient, MessageIdMultisigISM, ProtocolFee, AggregationHook, IGP, and
+WarpDrc20Collateral. Build coverage includes ValidatorAnnounce and the three
+already-versioned route/hook contracts. The fail-closed self-test separately
+asserts that both base-PR deployment-reuse boundaries contain the complete
+12-contract version matrix: WarpDrc20 version 2 and version 1 for every other
+base contract. The stacked withdrawal gate below raises Mailbox to compatibility
+version 2. Existing kind and policy probes remain in addition to those version
+checks.
+
 ## Remaining Work Before Production Readiness
 
 - Continue expanding negative/security coverage; current coverage includes

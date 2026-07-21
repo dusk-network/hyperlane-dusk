@@ -428,12 +428,6 @@ mod mailbox {
         // Queries
         // =================================================================
 
-        /// Public ABI version used by saved-deployment compatibility checks.
-        #[allow(clippy::unused_self)]
-        pub fn state_version(&self) -> u32 {
-            1
-        }
-
         /// Returns the local domain ID.
         pub fn local_domain(&self) -> u32 {
             self.local_domain
@@ -517,6 +511,15 @@ mod mailbox {
         /// Returns the owner identity.
         pub fn owner(&self) -> Option<H256> {
             self.owner
+        }
+
+        /// Returns the deployment compatibility version expected by tooling.
+        ///
+        /// Version 2 requires the dispatch-credit withdrawal ABI in addition
+        /// to the version-1 persisted state layout.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            2
         }
 
         /// Compute a quote for dispatching a message.

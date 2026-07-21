@@ -265,13 +265,18 @@ Decision:
 
 Current implementation:
 
-- MerkleTreeHook and WarpNative expose `state_version() == 1`; WarpDrc20
-  exposes version 2 after adding aggregate pending synthetic supply capacity.
-- The stacked withdrawal PR also gives Mailbox a public ABI
-  compatibility probe (`state_version() == 1`) so saved deployments lacking
-  `withdraw_dispatch_credit` are rejected instead of reused.
-- Existing serialized instances are not treated as compatible. The demo
-  `--skip-deploy` path probes the version and fails closed when it is absent.
+- Every deployed Dusk contract exposes an explicit `state_version()`.
+  MerkleTreeHook, TestMock, MessageIdMultisigISM, ValidatorAnnounce, IGP,
+  ProtocolFee, AggregationHook, WarpNative, WarpDrc20Collateral, and
+  TestRecipient require version 1. WarpDrc20 requires version 2 after adding
+  aggregate pending synthetic supply capacity. On this stacked withdrawal PR,
+  Mailbox requires version 2 so a base-PR Mailbox that reports version 1 but
+  lacks `withdraw_dispatch_credit` cannot be reused.
+- Existing serialized instances are not treated as compatible. Both demo
+  `--skip-deploy` reuse boundaries validate the complete contract-version
+  matrix and fail closed when any version is absent or unexpected. Semantic
+  policy checks, including the live Mailbox default ISM, remain additional
+  requirements; a legacy liveness query is never accepted as compatibility.
 - The compatible contract set and Rust agent must be deployed from the pinned
   cross-repository heads recorded in the review documents.
 

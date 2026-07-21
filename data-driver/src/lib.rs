@@ -83,6 +83,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "gas_payment_count"
             | "hooks"
             | "pending_total"
+            | "state_version"
             | "validators_and_threshold" => json_to_rkyv::<()>(json),
             // Mailbox queries with args
             "delivered" | "delivered_at" => json_to_rkyv::<(MessageId,)>(json),
@@ -136,6 +137,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "gas_payment_count"
             | "hooks"
             | "pending_total"
+            | "state_version"
             | "validators_and_threshold"
             | "hook_type"
             | "total_gas_payments"
@@ -174,8 +176,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
     fn decode_output_fn(&self, fn_name: &str, rkyv: &[u8]) -> Result<JsonValue, Error> {
         match fn_name {
             // u32 outputs
-            "local_domain" | "nonce" | "state_version" | "processed_count"
-            | "gas_payment_count" => rkyv_to_json::<u32>(rkyv),
+            "local_domain" | "nonce" | "processed_count" | "gas_payment_count"
+            | "state_version" => rkyv_to_json::<u32>(rkyv),
             // u64 outputs
             "delivered_at"
             | "protocol_fee"
@@ -350,6 +352,7 @@ mod tests {
             "gas_payment_count",
             "hooks",
             "pending_total",
+            "state_version",
             "validators_and_threshold",
         ] {
             let encoded = driver
@@ -405,6 +408,12 @@ mod tests {
                 .decode_output_fn(name, &u64_output)
                 .expect("u64 accounting output should decode");
         }
+
+        let u32_json = to_json(1u32).unwrap().to_string();
+        let u32_output = json_to_rkyv::<u32>(&u32_json).unwrap();
+        driver
+            .decode_output_fn("state_version", &u32_output)
+            .expect("state-version output should decode");
 
         let record = GasPaymentRecord {
             message_id: [1u8; 32],

@@ -441,6 +441,20 @@ fn sample_encoded_message(recipient: ContractId) -> Vec<u8> {
 fn test_mailbox_init() {
     let mut s = HyperlaneSession::new();
 
+    for (contract, label) in [
+        (MAILBOX_ID, "Mailbox"),
+        (TEST_MOCK_ID, "TestMock"),
+        (TEST_RECIPIENT_ID, "TestRecipient"),
+    ] {
+        let version = s
+            .session
+            .direct_call::<_, u32>(contract, "state_version", &())
+            .unwrap_or_else(|_| panic!("{label} state_version should succeed"))
+            .data;
+        let expected = if contract == MAILBOX_ID { 2 } else { 1 };
+        assert_eq!(version, expected, "unexpected {label} state version");
+    }
+
     assert_eq!(s.mailbox_local_domain(), LOCAL_DOMAIN);
     assert_eq!(s.mailbox_nonce(), 0);
     assert_eq!(s.mailbox_latest_dispatched_id(), [0u8; 32]);
@@ -747,7 +761,7 @@ fn test_dispatch_via_transaction() {
             .direct_call::<_, u32>(MAILBOX_ID, "state_version", &())
             .expect("Mailbox state_version should succeed")
             .data,
-        1
+        2
     );
     assert_eq!(s.merkle_count(), 0);
     assert_eq!(
@@ -928,6 +942,16 @@ fn session_with_multisig_ism(
         .expect("Deploying MessageIdMultisigISM should succeed");
 
     session
+}
+
+#[test]
+fn test_multisig_ism_state_version() {
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
+    let version = session
+        .direct_call::<_, u32>(ISM_MULTISIG_ID, "state_version", &())
+        .expect("state_version should succeed")
+        .data;
+    assert_eq!(version, 1);
 }
 
 #[test]
@@ -1283,6 +1307,13 @@ fn test_protocol_fee_init() {
         .expect("hook_type should succeed")
         .data;
     assert_eq!(hook_type, 6); // HookType::ProtocolFee
+
+    let version = s
+        .session
+        .direct_call::<_, u32>(PROTOCOL_FEE_ID, "state_version", &())
+        .expect("state_version should succeed")
+        .data;
+    assert_eq!(version, 1);
 }
 
 #[test]
@@ -1365,6 +1396,11 @@ fn test_aggregation_hook_wiring_and_callback_authentication() {
         .expect("hook_type should succeed")
         .data;
     assert_eq!(hook_type, 2);
+    let version = session
+        .direct_call::<_, u32>(AGGREGATION_HOOK_ID, "state_version", &())
+        .expect("state_version should succeed")
+        .data;
+    assert_eq!(version, 1);
     let hooks = session
         .direct_call::<_, Vec<ContractId>>(AGGREGATION_HOOK_ID, "hooks", &())
         .expect("hooks should succeed")
@@ -1872,6 +1908,12 @@ fn test_igp_init() {
         .expect("hook_type should succeed")
         .data;
     assert_eq!(hook_type, 4); // HookType::Igp
+
+    let version = session
+        .direct_call::<_, u32>(IGP_ID, "state_version", &())
+        .expect("state_version should succeed")
+        .data;
+    assert_eq!(version, 1);
 
     let total: u64 = session
         .direct_call::<_, u64>(IGP_ID, "total_gas_payments", &())
@@ -2532,6 +2574,12 @@ fn test_warp_collateral_init() {
         .expect("mailbox should succeed")
         .data;
     assert_eq!(mailbox, MAILBOX_ID);
+
+    let state_version: u32 = session
+        .direct_call::<_, u32>(WARP_DRC20_COLLATERAL_ID, "state_version", &())
+        .expect("state_version should succeed")
+        .data;
+    assert_eq!(state_version, 1);
 }
 
 #[test]
