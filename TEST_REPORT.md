@@ -48,6 +48,15 @@ The stack requires Mailbox, WarpDrc20, and IGP compatibility version 2; every
 other deployed contract remains version 1. It preserves the base branch's
 single combined-manifest reuse authority and exact saved/live IGP policy check.
 
+The synchronized monorepo agent/CI anchor
+`9e386e81851fd02df86d957fb9fce6f15d81df34` pins this exact Dusk covered tree.
+Its local gate passed 19 Dusk agent tests, 7 Dusk base/parser/signer tests,
+package-scoped formatting, warning-free Dusk clippy, integration checks of the
+Dusk chain, base, validator, relayer, scraper, and lander packages, and a stable
+lockfile. Durable log:
+`/tmp/hyperlane-monorepo-agent-gate-9e386e8-20260721.log`, SHA-256
+`583b7019906721c565ff383bdeef97fa2e7e99bb08c089363b5c6bc83282bd5d`.
+
 ## 2026-07-21 Final Deep-Review Remediation Validation
 
 The final canonical deep review of base PR #1 at
@@ -95,7 +104,7 @@ runs.
 
 The premerge readiness freshness anchors therefore advance to Dusk code anchor
 `aaad04937483897ffc0fcc77cfcedbc53bfee326` and upstream-synchronized
-monorepo code/CI anchor `23df1ec7c0211b0178079f12a4a5b4057463a363`.
+monorepo code/CI anchor `9e386e81851fd02df86d957fb9fce6f15d81df34`.
 Documentation-only descendants do not invalidate those covered trees.
 
 ## 2026-07-20 Final Base-PR Compatibility Validation

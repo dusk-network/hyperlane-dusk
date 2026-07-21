@@ -16,6 +16,10 @@ WASMs, clippy, 29 type tests, 99 VM tests, 17 CLI tests, 5 data-driver tests,
 the standalone operator compile, and secret hygiene. Its durable log is
 `/tmp/hyperlane-dusk-base-repro-aaad049.log` (SHA-256
 `95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`).
+The final monorepo code/CI anchor is
+`9e386e81851fd02df86d957fb9fce6f15d81df34`; its exact-pin gate log is
+`/tmp/hyperlane-monorepo-agent-gate-9e386e8-20260721.log` (SHA-256
+`583b7019906721c565ff383bdeef97fa2e7e99bb08c089363b5c6bc83282bd5d`).
 
 The final live E2E was run only after fixing the harness to `exec` agent
 binaries, ensuring that a stopped case cannot leave an orphaned relayer in the
