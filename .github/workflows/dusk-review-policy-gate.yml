@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
 
 jobs:
   review-policy-gate:
@@ -18,94 +19,78 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
+      - name: Checkout trusted base policy
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Lint GitHub Actions workflows
         uses: docker://rhysd/actionlint:1.7.12
 
-      - name: Check worktree and diff hygiene
+      - name: Inspect proposed commit as data
+        if: github.event_name == 'pull_request_target'
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
-            git ls-files --others --exclude-standard
-            echo "::error::untracked source paths found"
+          git fetch --no-tags origin "pull/${PR_NUMBER}/head"
+          fetched_sha="$(git rev-parse FETCH_HEAD)"
+          [ "$fetched_sha" = "$HEAD_SHA" ] || {
+            echo "::error::fetched PR head $fetched_sha differs from event head $HEAD_SHA"
             exit 1
-          fi
+          }
+          git diff --check "$BASE_SHA...$HEAD_SHA"
 
-          base_ref="${GITHUB_BASE_REF:-main}"
-          if git rev-parse --verify "origin/$base_ref" >/dev/null 2>&1; then
-            git diff --check "origin/$base_ref"...HEAD
-          else
-            git diff --check HEAD~1..HEAD
-          fi
-
-      - name: Check review guard scripts
-        shell: bash
-        run: |
-          set -euo pipefail
-          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
-            if [ ! -f "$script" ]; then
-              echo "::error::$script is missing from the proposed tree"
+          for path in \
+            scripts/fail-closed-self-test.sh \
+            scripts/github-review-hygiene.sh \
+            scripts/production-readiness-guard.sh \
+            scripts/report-hygiene-check.sh \
+            scripts/secret-hygiene-check.sh; do
+            mode="$(git ls-tree "$HEAD_SHA" -- "$path" | awk '{print $1}')"
+            case "$mode" in
+              100644|100755) ;;
+              *)
+              echo "::error::$path is not a regular file in proposed commit $HEAD_SHA"
               exit 1
-            fi
+              ;;
+            esac
           done
 
-          if ! command -v rg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ripgrep
-          fi
-
-          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
-            bash -n "$script"
-          done
-
-      - name: Checkout trusted policy harness
-        uses: actions/checkout@v6
+      - name: Require unprivileged proposal validation
+        if: github.event_name == 'pull_request_target'
+        uses: actions/github-script@v8
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
-          path: trusted-policy
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Run trusted policy harness against proposed tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          proposed_root="$GITHUB_WORKSPACE"
-          trusted_root="$GITHUB_WORKSPACE/trusted-policy"
-          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
-            [ -f "$trusted_root/$script" ] || {
-              echo "::error::trusted base is missing $script"
-              exit 1
+          script: |
+            const { owner, repo } = context.repo;
+            const headSha = context.payload.pull_request.head.sha;
+            const expectedName = 'Dusk proposal validation';
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              const { data } = await github.rest.checks.listForRef({
+                owner,
+                repo,
+                ref: headSha,
+                filter: 'latest',
+                per_page: 100,
+              });
+              const proposal = data.check_runs.find(
+                (run) => run.name === expectedName,
+              );
+              if (proposal?.status === 'completed') {
+                if (proposal.conclusion !== 'success') {
+                  core.setFailed(
+                    `${expectedName} concluded ${proposal.conclusion} for ${headSha}`,
+                  );
+                }
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 15000));
             }
-          done
-
-          ROOT_OVERRIDE="$proposed_root" \
-            bash "$trusted_root/scripts/fail-closed-self-test.sh"
-
-          stale_dispatcher_comments="$(mktemp)"
-          cat >"$stale_dispatcher_comments" <<'EOF'
-          COMMENT_ID=1
-          Latest clean-layout repro evidence: https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744
-          ---END---
-          EOF
-
-          stale_scan_log="$(mktemp)"
-          if ROOT_OVERRIDE="$proposed_root" \
-              bash "$trusted_root/scripts/github-review-hygiene.sh" \
-              --dispatcher-comment-scan-only "$stale_dispatcher_comments" \
-              >"$stale_scan_log" 2>&1; then
-            echo "::error::stale dispatcher repro evidence was accepted"
-            exit 1
-          fi
-          if ! rg -Fq 'stale dispatcher clean-layout repro evidence' "$stale_scan_log"; then
-            cat "$stale_scan_log" >&2
-            echo "::error::stale dispatcher negative test failed outside the expected policy branch"
-            exit 1
-          fi
+            core.setFailed(
+              `Timed out waiting for ${expectedName} on proposed commit ${headSha}`,
+            );

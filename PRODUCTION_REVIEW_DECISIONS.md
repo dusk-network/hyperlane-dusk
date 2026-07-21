@@ -273,11 +273,11 @@ Current implementation:
 - Every deployed Dusk contract exposes an explicit `state_version()`.
   MerkleTreeHook, TestMock, MessageIdMultisigISM, ValidatorAnnounce,
   ProtocolFee, AggregationHook, WarpNative, WarpDrc20Collateral, and
-  TestRecipient require version 1. WarpDrc20 requires version 2 after adding
-  aggregate pending synthetic supply capacity. Mailbox requires version 2 on
-  this stacked withdrawal PR so an instance without
-  `withdraw_dispatch_credit` cannot be reused. IGP requires version 2 because
-  unknown destinations and zero pricing now fail closed.
+  TestRecipient require version 1. Mailbox requires version 3 on this stacked
+  PR: version 2 adds the dispatch reentrancy guard, while version 3 also
+  requires the beneficiary withdrawal ABI. WarpDrc20 requires version 2 after
+  adding aggregate pending synthetic supply capacity. IGP requires version 2
+  because unknown destinations and zero pricing now fail closed.
 - Existing serialized instances are not treated as compatible. Both demo
   `--skip-deploy` reuse boundaries validate the complete contract-version
   matrix and fail closed when any version is absent or unexpected. Semantic

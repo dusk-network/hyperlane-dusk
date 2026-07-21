@@ -11,7 +11,7 @@
 WASM_TARGET := wasm32-unknown-unknown
 CONTRACT_FEATURE := contract
 STACK_SIZE := 65536
-CONTRACTS := mailbox merkle-tree-hook aggregation-hook ism-multisig validator-announce test-recipient test-mock protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
+CONTRACTS := mailbox merkle-tree-hook aggregation-hook ism-multisig validator-announce test-recipient test-mock reentrant-hook protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
 CONTRACT_CHECK_PACKAGES := $(addprefix -p hyperlane-dusk-,$(CONTRACTS))
 TARGET_DIR := target/contract
 PRODUCTION_CLIPPY_PACKAGES := \

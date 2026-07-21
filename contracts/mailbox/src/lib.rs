@@ -74,6 +74,8 @@ mod mailbox {
         local_domain: u32,
         /// Monotonically increasing nonce for outbound messages.
         nonce: u32,
+        /// Prevents hook callbacks from recursively entering dispatch.
+        dispatching: bool,
         /// The ID of the most recently dispatched message.
         latest_dispatched_id: MessageId,
         /// The default Interchain Security Module.
@@ -108,6 +110,7 @@ mod mailbox {
             Self {
                 local_domain: 0,
                 nonce: 0,
+                dispatching: false,
                 latest_dispatched_id: [0u8; 32],
                 default_ism: ZERO_CONTRACT,
                 default_hook: ZERO_CONTRACT,
@@ -275,6 +278,8 @@ mod mailbox {
                 hook != self.required_hook,
                 "Mailbox: selected hook cannot equal required hook"
             );
+            assert!(!self.dispatching, "Mailbox: dispatch reentrancy");
+            self.dispatching = true;
 
             // Determine the sender: the contract that called us.
             let sender = Self::resolve_sender();
@@ -371,6 +376,7 @@ mod mailbox {
                 "Mailbox: hook payment failed",
             );
 
+            self.dispatching = false;
             id
         }
 
@@ -535,11 +541,11 @@ mod mailbox {
 
         /// Returns the deployment compatibility version expected by tooling.
         ///
-        /// Version 2 requires the dispatch-credit withdrawal ABI in addition
-        /// to the version-1 persisted state layout.
+        /// Version 3 combines the dispatch reentrancy guard with the
+        /// dispatch-credit withdrawal ABI.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            2
+            3
         }
 
         /// Compute a quote for dispatching a message.

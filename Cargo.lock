@@ -2124,6 +2124,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperlane-dusk-reentrant-hook"
+version = "0.1.0"
+dependencies = [
+ "dusk-core 1.7.1",
+ "dusk-forge",
+ "hyperlane-dusk-types",
+]
+
+[[package]]
 name = "hyperlane-dusk-test-mock"
 version = "0.1.0"
 dependencies = [

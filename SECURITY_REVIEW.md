@@ -18,6 +18,7 @@ All on-chain WASM contracts in `dusk/contracts/`:
 | WarpNative | `contracts/warp-native/src/lib.rs` | Native DUSK warp route (deposit/withdraw) |
 | TestRecipient | `contracts/test-recipient/src/lib.rs` | Test-only handle() |
 | TestMock | `contracts/test-mock/src/lib.rs` | NullISM + NoopHook for testing |
+| ReentrantHook | `contracts/reentrant-hook/src/lib.rs` | Test-only adversarial hook |
 
 Also reviewed: `types/src/token_message.rs`, `types/src/message.rs`, `types/src/merkle.rs`, `demo/deploy.sh`, `demo/bridge.sh`
 
@@ -25,8 +26,15 @@ Also reviewed: `types/src/token_message.rs`, `types/src/message.rs`, `types/src/
 
 Dusk contracts compile to `wasm32-unknown-unknown` and run on the `piecrust` VM inside `rusk`. Key platform properties relevant to security:
 
-- **No EVM-style reentrancy**: Dusk VM executes contract calls synchronously within a single transaction. State is committed only on success. If any sub-call panics, the entire transaction reverts. There is no `call` opcode that returns control to the caller mid-execution.
-- **Cross-contract calls via `abi::call`**: Type-safe, blocking. Panics propagate up the callstack.
+- **Synchronous reentrancy is supported**: Piecrust reuses an active contract
+  instance when a callback calls it again. Rusk's transaction hook restricts
+  specific nested stake mutations, not general same-contract recursion.
+  Contracts must therefore protect state machines that cross an `abi::call`
+  boundary.
+- **Cross-contract calls via `abi::call`**: Type-safe and blocking, but return
+  a result that the caller may handle. An unhandled failure reverts the
+  enclosing transaction; a callback must not be assumed incapable of calling
+  its caller again.
 - **Moonlight transactions**: Public (non-shielded) transactions with BLS key auth. The `deposit` field on a Moonlight TX is the mechanism for transferring DUSK from an account into a contract.
 - **Transfer contract**: System contract that manages account balances. Contracts interact with it for deposits (`"deposit"`), withdrawals (`"contract_to_account"`), and balance queries.
 - **`abi::caller()`**: Returns `Option<ContractId>` - the immediate calling contract. Returns `None` only in `direct_call` test mode.
@@ -192,6 +200,33 @@ fn burn(&mut self, account: Account, amount: u64) {
 **Note**: The balance subtraction in `burn()` remains guarded by
 `assert!(balance >= amount)`. The supply subtraction also uses `checked_sub` so
 a future accounting invariant bug cannot wrap supply downward in release WASM.
+
+### HIGH-5: Mailbox hook quote reentrancy corrupted the dispatch sequence
+
+**File**: `contracts/mailbox/src/lib.rs`, `dispatch()`
+
+**Before**: `dispatch` encoded a message with the current nonce, then called
+the required and caller-selected hooks for quotes before reserving the nonce
+or appending the encoded message. A custom hook could call `dispatch` again
+from `quote_dispatch`. The nested call appended nonce `N` at slot `N`; the
+outer call then appended its already-encoded nonce `N` at slot `N + 1`. The
+agent correctly rejects that mismatch and cannot advance past it, permanently
+wedging later Dusk-origin messages.
+
+**After**: Mailbox sets a persisted dispatch guard before the first external
+quote and clears it only after both hook callbacks and payments succeed. Any
+nested dispatch from quote, post-dispatch, or payment callbacks fails with
+`Mailbox: dispatch reentrancy`. A failed enclosing transaction rolls the guard
+back with the rest of Mailbox state. Base Mailbox state version advances to 2;
+the stacked withdrawal deployment advances to 3 so the withdrawal ABI cannot
+be confused with the guarded base deployment.
+
+**Proof**: `ReentrantHook` attempts the real nested call through pinned
+Piecrust/Rusk. The regression first failed on the vulnerable implementation
+because the nested dispatch succeeded. It now proves that the nested call is
+rejected, the outer call succeeds, nonce and stored-message indexes remain
+one-to-one, Dispatch/DispatchId event order remains singular, and a later
+legitimate dispatch succeeds after the guard is cleared.
 
 ### MEDIUM-1: IGP `quote_gas_payment` used `cost as u64` truncation
 
@@ -389,7 +424,13 @@ This follows checks-effects-interactions and prevents replay. A message ID canno
 
 ### Reentrancy
 
-Dusk VM does not support reentrancy. When contract A calls contract B, contract A's execution is suspended until B returns. B cannot call back into A during the same transaction. This eliminates an entire class of vulnerabilities.
+Dusk contract calls are synchronous but reentrant: contract B can call back
+into active contract A in the same transaction, and Piecrust reuses A's active
+instance. Mailbox therefore holds an explicit dispatch guard across all hook
+quotes, post-dispatch callbacks, and payment callbacks. Other contracts that
+add externally controlled callback boundaries must apply the same analysis;
+transaction rollback is not a substitute for preventing a callback that
+returns successfully after corrupting an invariant.
 
 ### Event surface
 
@@ -520,13 +561,14 @@ documented deviations:
 | `types/src/caller.rs` | Added the shared Moonlight/contract caller and transfer-callback authentication model |
 | `types/src/drc20.rs` | Added the current typed Dusk DRC20 account and call ABI |
 | `types/src/events.rs` | Added operational/admin, account registration, gas config, validator-set, pending-claim, dispatch-credit withdrawal, and WarpDrc20 transfer events |
-| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, ownership, and dispatch-credit custody events; payer-owned credit withdrawal; checked total-fee quotes; checked nonce increment; checked `processed_count` conversion |
+| `contracts/mailbox/src/lib.rs` | Explicit event annotations for dispatch/process, initialization, Mailbox hook/ISM setter, ownership, and dispatch-credit custody events; dispatch reentrancy guard; payer-owned credit withdrawal; checked total-fee quotes; checked nonce increment; checked `processed_count` conversion |
+| `contracts/reentrant-hook/src/lib.rs` | Added a test-only adversarial quote hook that exercises real same-contract recursion |
 | `contracts/merkle-tree-hook/src/lib.rs` | Explicit event annotations for initialization and Merkle insertion events |
 | `contracts/validator-announce/src/lib.rs` | Explicit event annotations for initialization and validator announcement events |
 | `contracts/warp-native/src/lib.rs` | Explicit event annotations for initialization, registration, pending claims, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20/src/lib.rs` | Explicit event annotations for initialization, registration, token transfer/mint/burn, config/ownership, and remote send/receive events |
 | `contracts/warp-drc20-collateral/src/lib.rs` | Explicit event annotations for initialization, registration, config/ownership, and remote send/receive events |
-| `tests/tests/integration.rs` | Current VM suite, including shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, post-debit transfer rollback, real-receipt data-driver decoding, downstream route-withdrawal rejection, native custody, and current-ABI DRC20 allowance/collateral coverage; the authoritative total is recorded with the exact tested head in `TEST_REPORT.md` |
+| `tests/tests/integration.rs` | Current VM suite includes shared authorization, multi-payer fee solvency, fee custody/aggregation and withdrawal, post-debit transfer rollback, real-receipt data-driver decoding, downstream route-withdrawal rejection, native custody, current-ABI DRC20 allowance/collateral coverage, and hostile hook reentrancy; the authoritative total is recorded with the exact tested head in `TEST_REPORT.md` |
 | `data-driver/src/lib.rs` | Withdrawal-event decoding round trip and malformed-payload rejection; warm demo startup always delegates driver freshness to Cargo |
 | `dusk-tx/src/main.rs`, `dusk-tx/src/rues.rs` | Exact-hash execution confirmation with an immediate first query, authoritative absolute deadline, bounded responses, transient observation retry, and transaction-hash preservation across submission and confirmation errors |
 | `tests/tests/test_session.rs` | Added Moonlight calls with deposits and transfer-contract custody queries |

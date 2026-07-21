@@ -7,6 +7,46 @@ This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
 
+Sections below the newest candidate section are retained as chronological
+regression history. Any older heading containing “Final” or “Current” applies
+only to the commit named in that section and is not release evidence for a
+newer candidate.
+
+## 2026-07-21 Mailbox Reentrancy Remediation Candidate
+
+An independent GPT-5.6 xhigh red-team found that a caller-selected hook could
+reenter `Mailbox.dispatch` from `quote_dispatch` before the outer call reserved
+its nonce. On the vulnerable pinned Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`, the new adversarial VM test failed
+because the nested dispatch succeeded. Mailbox now holds an explicit guard
+across hook quotes, post-dispatch callbacks, and hook payments. Base Mailbox
+state version advances to 2; the stacked withdrawal Mailbox advances to 3.
+
+The focused regression passes after the fix and proves nested dispatch
+rejection, one-to-one nonce/message storage, singular ordered
+Dispatch/DispatchId events, successful completion of the outer dispatch, and
+a later legitimate dispatch after guard release.
+
+Base runtime anchor `9058755927473239d59ce702a8074acbae0e0a24` was reproduced
+from a detached clean layout against that frozen Rusk and monorepo
+`6ef326b8a926d262714afd315960b26e441c7b40`. The gate passed all 13 contract
+WASM builds, production-contract clippy, 29 type tests, 109 VM tests, 17
+`dusk-tx` tests, 5 data-driver tests, the standalone E2E operator build,
+tracked-source secret hygiene, and the full Dusk agent/base/validator/relayer/
+scraper/lander compile surface. Durable log:
+`/tmp/hyperlane-base-reentry-9058755.log`, SHA-256
+`16ac8e62d2d8c5952a9363c90f77e15ff756043a102302780f0f9e272a166d62`.
+The combined stack and live E2E anchors remain pending; all evidence below
+predates the reentrancy fix.
+
+The same review found that the proposed `pull_request_target` policy wrapper
+passed the proposed checkout to trusted scripts that subsequently executed
+head-controlled shell files. No configured secret was exposed in the observed
+runs, but the boundary was unsafe for future token provisioning. The target
+workflow now checks out only the trusted base, inspects the exact PR commit as
+Git data, and waits for the unprivileged proposal check. It does not execute
+any proposed-tree command.
+
 ## 2026-07-21 Escrow, Dispatch Credit, and Agent Reassessment
 
 The frozen base code anchor is
@@ -127,9 +167,11 @@ All retained harness, deploy, warm-validation, relayer, and validator logs
 passed the runtime secret scan. Earlier live runs are superseded because they
 did not prove process isolation even where their protocol assertions passed.
 
-The stack requires Mailbox, WarpDrc20, and IGP compatibility version 2; every
-other deployed contract remains version 1. It preserves the base branch's
-single combined-manifest reuse authority and exact saved/live IGP policy check.
+At that historical head, the stack required Mailbox, WarpDrc20, and IGP
+compatibility version 2; every other deployed contract remained version 1.
+The current candidate's version matrix is recorded in the newest section
+above. Both preserve the base branch's single combined-manifest reuse authority
+and exact saved/live IGP policy check.
 
 The synchronized monorepo agent/CI anchor
 `9e386e81851fd02df86d957fb9fce6f15d81df34` pins this exact Dusk covered tree.

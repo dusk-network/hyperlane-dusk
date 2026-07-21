@@ -494,7 +494,7 @@ validate_saved_deployment() {
             || fail "Running EVM IGP $method differs from the deployment policy; redeploy"
     done
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
-    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 2
+    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 3
     [ "$(query_dusk_u32 "$dusk_mailbox" local_domain "Dusk Mailbox local domain")" = "$DUSK_DOMAIN" ] \
         || fail "Running Dusk Mailbox local domain differs from the saved deployment; redeploy"
     validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"

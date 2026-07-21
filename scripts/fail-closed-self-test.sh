@@ -20,7 +20,7 @@ command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 saved_version_checks=(
-    'validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 2'
+    'validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 3'
     'validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"'
     'validate_dusk_state_version "$dusk_ism_multisig" "Dusk multisig ISM"'
     'validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"'
