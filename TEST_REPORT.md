@@ -2892,6 +2892,40 @@ Its validation-only agent-config probe now runs without an ignored
 checkouts and linked Git worktrees. This closes the two clean-runner assumptions
 exposed when the policy workflow began executing the complete self-test.
 
+## 2026-07-21 Final-Head Live Agent Matrix
+
+Fresh live E2E used withdrawal head
+`b16af0c05547a5d8e8687f47895c664b1aa93c00`, companion agent head
+`dbed54abd3`, and Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` in an isolated compatible
+layout. TestMock run `1784597325` and MessageIdMultisig run `1784598195` both
+passed. Before generating agent configuration, each run redeployed fresh state
+and exercised the complete saved-topology validation, including Mailbox
+compatibility version 2 and every other exact contract version.
+
+Both runs:
+
+- confirmed a live one-LUX WarpDrc20 dispatch-credit withdrawal;
+- delivered synthetic, native, and collateral routes in both directions;
+- observed the exact ProtocolFee collection and residual route credit;
+- asserted exact native custody and collateral allowance/custody changes; and
+- observed successful Dusk process simulation before propagation.
+
+The multisig run additionally produced, discovered, and consumed a real signed
+checkpoint at threshold 1. Evidence:
+
+- combined harness log `/tmp/hyperlane-final-e2e-b16af0c-dbed54a.log`, SHA-256
+  `5d59231d77c1cce8fafa42e1527eecd9ba1d41993b18a8fc947a63257933170d`;
+- TestMock relayer log `/tmp/hyperlane-relayer-testMock-1784597325.log`,
+  SHA-256 `0cd06c863fa6d685657fc4f62e02673da77bc8f000c2ae7557f2c0275b20e7e5`;
+- multisig relayer log
+  `/tmp/hyperlane-relayer-messageIdMultisig-1784598195.log`, SHA-256
+  `484a45e3e801b5a4dba1134b4131111b5465571f1ecc2c69cd70d5fe528c1a83`;
+  and
+- multisig validator log
+  `/tmp/hyperlane-validator-messageIdMultisig-1784598195.log`, SHA-256
+  `d0efdc9209129efaa93b70745c0730fda1b690a1e154560ef5ca19baf3490797`.
+
 ## Remaining Work Before Production Readiness
 
 - Continue expanding negative/security coverage; current coverage includes
