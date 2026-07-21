@@ -57,6 +57,12 @@ rg -q -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/demo.sh \
 rg -q -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh \
     || fail "agent config generation does not delegate live validation"
 
+withdrawal_line="$(rg -n -F 'Withdrawing one LUX of WarpDrc20 dispatch credit' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+dusk_validator_start_line="$(rg -n -F 'Starting Dusk-origin validator' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+[ -n "$withdrawal_line" ] && [ -n "$dusk_validator_start_line" ] \
+    && [ "$withdrawal_line" -lt "$dusk_validator_start_line" ] \
+    || fail "live setup withdrawal must precede Dusk-origin validator startup to avoid a signer nonce race"
+
 validator_line="$(rg -n -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
 secret_write_line="$(rg -n -F "printf '0x%s\\n'" demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
 [ -n "$validator_line" ] && [ -n "$secret_write_line" ] && [ "$validator_line" -lt "$secret_write_line" ] \
