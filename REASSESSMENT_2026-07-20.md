@@ -101,13 +101,26 @@ checkout guard.
 
 ## Verification
 
+- Final clean-layout static gate at
+  `d32c0f56c66d93be203cc44e3f48a0a7257216f0`, against exact Rusk
+  `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`, passed with durable log
+  `/tmp/hyperlane-dusk-base-repro-d32c0f5.log` (SHA-256
+  `1d006300471c538a0becaf4311c79f97835166ffe6a1f4552ebd580527bf6169`).
 - All 12 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
-- `cargo test -p hyperlane-dusk-integration-tests`: 82 passed, 0 failed.
+- `hyperlane-dusk-types`: 29 passed, 0 failed.
+- `cargo test -p hyperlane-dusk-integration-tests`: 99 passed, 0 failed.
+- `dusk-tx`: 17 passed, 0 failed.
+- `hyperlane-dusk-data-driver`: 5 passed, 0 failed.
+- The standalone E2E operator binary compiles, and the fail-closed and secret
+  hygiene gates pass.
 - The VM suite covers reachable and rejected admin calls, authenticated and
   spoofed fee callbacks, fee custody/claims, aggregate hook payments, native
-  custody, and current-ABI DRC20 allowance/collateral custody.
-- `dusk-tx`, the Dusk E2E tool, and the data driver pass host compilation.
+  custody, current-ABI DRC20 allowance/collateral custody, explicit IGP pricing,
+  zero-dependency rejection, and zero-router rejection.
+
+### Earlier live E2E evidence
+
 - Fresh live TestMock and MessageIdMultisig agent E2Es both passed against the
   synchronized Hyperlane monorepo and clean current Rusk.
 - Each live case delivered all three route types in both directions:
@@ -127,6 +140,10 @@ shutdown. They executed the Dusk agent tree at
 created `a931f75b3d23d2e15e75f2e064470a1a01289abb`; a covered-path diff between
 those heads is empty, and the Dusk chain plus base, validator, relayer, scraper,
 and lander packages pass `cargo check` at the final head.
+
+Those live runs predate the IGP version-2 pricing and deployment-interface
+change. They remain valid only for their pinned heads; the combined final stack
+must repeat both live modes before merge.
 
 ## Remaining production work
 

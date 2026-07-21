@@ -1,11 +1,56 @@
 # Dusk Hyperlane Test Report
 
 Date: 2026-05-11
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
 production-review gates and useful follow-up test areas are listed at the end.
+
+## 2026-07-21 Final Deep-Review Remediation Validation
+
+The final canonical deep review of base PR #1 at
+`8a2467acd5edba5e08cd6b7954f7c3dc622340b5` identified seven deployment,
+reuse, agent-configuration, data-driver, and manual-process interface gaps.
+All seven, plus the related zero-router enrollment obligation, were remediated
+at code anchor `d32c0f56c66d93be203cc44e3f48a0a7257216f0` and reproduced from a
+detached clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk 1.7.1). The exact command
+was:
+
+```bash
+RUSK_DIR=/tmp/hyperlane-rusk-5c6a0b-20260720 \
+  bash scripts/local-repro-check.sh
+```
+
+Durable local log: `/tmp/hyperlane-dusk-base-repro-d32c0f5.log` (SHA-256
+`1d006300471c538a0becaf4311c79f97835166ffe6a1f4552ebd580527bf6169`).
+
+Result:
+
+- all 12 contract WASMs built and the targeted contract/type WASM clippy
+  surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 99 passed, 0 failed;
+- `dusk-tx`: 17 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 5 passed, 0 failed;
+- the standalone E2E operator binary compiled;
+- the fail-closed self-test passed; and
+- tracked-source secret hygiene passed.
+
+The validated deployment boundary requires one combined manifest, verifies the
+complete live topology before any reuse or signer/config write, and compares
+the persisted IGP destination policy with its live contract query. WarpDrc20
+and IGP are compatibility version 2; every other contract on base PR #1 is
+version 1. Unknown IGP destinations, zero-priced configurations, rounded-zero
+payments, zero Mailbox dependencies, and zero remote routers fail closed.
+Manual `process` metadata and all published Merkle provenance queries are
+available through the operator and data-driver interfaces respectively.
+
+This is the final static base-PR gate. The combined withdrawal stack and fresh
+TestMock/MessageIdMultisig bidirectional E2E are validated separately because
+the IGP pricing policy and deployment interface changed after the earlier live
+runs.
 
 ## 2026-07-20 Final Base-PR Compatibility Validation
 

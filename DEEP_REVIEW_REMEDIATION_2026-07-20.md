@@ -142,3 +142,12 @@ the Dusk CLI/data-driver tests, every contract WASM build, and the VM integratio
 suite pass in a clean layout against the current pinned Rusk source. A later
 review or sync should treat a stale successful run as evidence to refresh, not as
 permission to bypass these boundaries.
+
+The final base implementation anchor
+`d32c0f56c66d93be203cc44e3f48a0a7257216f0` satisfies this static boundary
+against Rusk `5c6a0bab11c61fb4c81275afdeceb97fb942d85e`: 12 WASMs, 29 type tests,
+99 VM tests, 17 operator tests, and 5 data-driver tests passed, together with
+the targeted WASM clippy, E2E operator compile, fail-closed self-test, and
+secret-hygiene gate. The durable log is
+`/tmp/hyperlane-dusk-base-repro-d32c0f5.log` with SHA-256
+`1d006300471c538a0becaf4311c79f97835166ffe6a1f4552ebd580527bf6169`.
