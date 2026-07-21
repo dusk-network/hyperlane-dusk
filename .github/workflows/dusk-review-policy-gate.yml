@@ -1,13 +1,16 @@
 name: Dusk Review Policy Gate
 
 on:
-  pull_request:
+  # Keep privileged policy execution on the trusted default-branch tree. The
+  # proposed commit is fetched as Git data and is never checked out or run here.
+  pull_request_target:
     branches:
       - main
   workflow_dispatch:
 
 permissions:
   contents: read
+  checks: read
 
 jobs:
   review-policy-gate:
@@ -16,58 +19,91 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
+      - name: Checkout trusted base policy
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Lint GitHub Actions workflows
-        uses: docker://rhysd/actionlint:1.7.12
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
-      - name: Check worktree and diff hygiene
+      - name: Inspect proposed commit as data
+        if: github.event_name == 'pull_request_target'
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
-            git ls-files --others --exclude-standard
-            echo "::error::untracked source paths found"
+          git fetch --no-tags origin "pull/${PR_NUMBER}/head"
+          fetched_sha="$(git rev-parse FETCH_HEAD)"
+          [ "$fetched_sha" = "$HEAD_SHA" ] || {
+            echo "::error::fetched PR head $fetched_sha differs from event head $HEAD_SHA"
             exit 1
-          fi
+          }
+          git diff --check "$BASE_SHA...$HEAD_SHA"
 
-          base_ref="${GITHUB_BASE_REF:-main}"
-          if git rev-parse --verify "origin/$base_ref" >/dev/null 2>&1; then
-            git diff --check "origin/$base_ref"...HEAD
-          else
-            git diff --check HEAD~1..HEAD
-          fi
-
-      - name: Check review guard scripts
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f scripts/github-review-hygiene.sh ] || [ ! -f scripts/fail-closed-self-test.sh ]; then
-            echo "Review guard scripts not present in this workflow-only branch; skipping script checks."
-            exit 0
-          fi
-
-          if ! command -v rg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ripgrep
-          fi
-
-          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
-            bash -n "$script"
+          for path in \
+            scripts/fail-closed-self-test.sh \
+            scripts/github-review-hygiene.sh \
+            scripts/production-readiness-guard.sh \
+            scripts/report-hygiene-check.sh \
+            scripts/secret-hygiene-check.sh; do
+            mode="$(git ls-tree "$HEAD_SHA" -- "$path" | awk '{print $1}')"
+            case "$mode" in
+              100644|100755) ;;
+              *)
+                echo "::error::$path is not a regular file in proposed commit $HEAD_SHA"
+                exit 1
+                ;;
+            esac
           done
 
-          stale_dispatcher_comments="$(mktemp)"
-          cat >"$stale_dispatcher_comments" <<'EOF'
-          COMMENT_ID=1
-          Latest clean-layout repro evidence: https://github.com/dusk-network/hyperlane-dusk/issues/2#issuecomment-4443963744
-          ---END---
-          EOF
+          # A proposed PR must not be able to replace either half of the policy
+          # handshake and then certify its replacement. Policy-workflow changes
+          # use a dedicated, owner-supervised bootstrap instead.
+          for path in \
+            .github/workflows/dusk-proposal-validation.yml \
+            .github/workflows/dusk-review-policy-gate.yml; do
+            if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+              echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
+              exit 1
+            fi
+          done
 
-          if bash scripts/github-review-hygiene.sh --dispatcher-comment-scan-only "$stale_dispatcher_comments"; then
-            echo "::error::stale dispatcher repro evidence was accepted"
-            exit 1
-          fi
+      - name: Require unprivileged proposal validation
+        if: github.event_name == 'pull_request_target'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const headSha = context.payload.pull_request.head.sha;
+            const expectedName = 'Dusk proposal validation';
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              const { data } = await github.rest.checks.listForRef({
+                owner,
+                repo,
+                ref: headSha,
+                filter: 'latest',
+                per_page: 100,
+              });
+              const proposal = data.check_runs.find(
+                (run) => run.name === expectedName &&
+                  run.app?.slug === 'github-actions',
+              );
+              if (proposal?.status === 'completed') {
+                if (proposal.conclusion !== 'success') {
+                  core.setFailed(
+                    `${expectedName} concluded ${proposal.conclusion} for ${headSha}`,
+                  );
+                }
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            core.setFailed(
+              `Timed out waiting for ${expectedName} on proposed commit ${headSha}`,
+            );
