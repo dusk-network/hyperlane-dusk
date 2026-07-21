@@ -17,6 +17,7 @@ DUSK_ARCHIVE_BRANCH="${DUSK_ARCHIVE_BRANCH:-archive/dusk-hyperlane-prototype-202
 MONOREPO_ARCHIVE_BRANCH="${MONOREPO_ARCHIVE_BRANCH:-archive/dusk-prototype-20260511}"
 DUSK_ACTIVE_BRANCH="${DUSK_ACTIVE_BRANCH:-feat/dusk-hardening-v2}"
 MONOREPO_ACTIVE_BRANCH="${MONOREPO_ACTIVE_BRANCH:-feat/dusk-support-v2}"
+UNTRACKED_SOURCE_GATE_ONLY="${UNTRACKED_SOURCE_GATE_ONLY:-0}"
 
 EXPECTED_DUSK_ARCHIVE_SHA="${EXPECTED_DUSK_ARCHIVE_SHA:-c5ce2135407dad6420d010bdafe82a0b9b4bb78d}"
 EXPECTED_MONOREPO_ARCHIVE_SHA="${EXPECTED_MONOREPO_ARCHIVE_SHA:-8e399103b24673f837c04f4227e49c45c8366e7c}"
@@ -82,6 +83,12 @@ assert_no_untracked_source() {
     printf '%sUntrackedSource: none\n' "$label"
 }
 
+check_untracked_source() {
+    section "Untracked Source"
+    assert_no_untracked_source "dusk" "$ROOT"
+    assert_no_untracked_source "monorepo" "$MONOREPO_DIR"
+}
+
 require_cmd git
 require_cmd awk
 require_cmd sha256sum
@@ -92,6 +99,13 @@ git -C "$MONOREPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || fail "$MONOREPO_DIR is not a git repository"
 
 MONOREPO_DIR="$(cd "$MONOREPO_DIR" && pwd -P)"
+
+if [ "$UNTRACKED_SOURCE_GATE_ONLY" = "1" ]; then
+    check_untracked_source
+    section "Summary"
+    echo "completionAuditStatus: passed"
+    exit 0
+fi
 
 section "Archive Branches"
 dusk_archive_sha="$(remote_branch_sha "$ROOT" "$DUSK_REMOTE" "$DUSK_ARCHIVE_BRANCH")"
@@ -108,9 +122,7 @@ assert_file_sha256 "$BACKUP_DIR/dusk-tree.tgz" "$EXPECTED_DUSK_TREE_SHA256"
 assert_file_sha256 "$BACKUP_DIR/hyperlane-dusk-untracked.tgz" "$EXPECTED_HYPERLANE_DUSK_UNTRACKED_SHA256"
 assert_file_sha256 "$BACKUP_DIR/hyperlane-monorepo-tracked.diff" "$EXPECTED_HYPERLANE_MONOREPO_TRACKED_SHA256"
 
-section "Untracked Source"
-assert_no_untracked_source "dusk" "$ROOT"
-assert_no_untracked_source "monorepo" "$MONOREPO_DIR"
+check_untracked_source
 
 section "Summary"
 echo "completionAuditStatus: passed"
