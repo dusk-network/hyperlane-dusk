@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Checkout trusted base policy
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
@@ -74,9 +74,28 @@ jobs:
             fi
           done
 
+          # The implementation bootstrap adds this trusted workflow. Once it
+          # exists on the base, ordinary PRs may not replace it.
+          path=.github/workflows/production-readiness-gate.yml
+          if git cat-file -e "$BASE_SHA:$path" 2>/dev/null; then
+            if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+              echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
+              exit 1
+            fi
+          else
+            mode="$(git ls-tree "$HEAD_SHA" -- "$path" | awk '{print $1}')"
+            case "$mode" in
+              100644|100755) ;;
+              *)
+                echo "::error::$path must be introduced as a regular file"
+                exit 1
+                ;;
+            esac
+          fi
+
       - name: Require unprivileged proposal validation
         if: github.event_name == 'pull_request_target'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const { owner, repo } = context.repo;
