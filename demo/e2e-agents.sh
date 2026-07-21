@@ -37,6 +37,7 @@ CURRENT_RELAYER_PID=""
 CURRENT_VALIDATOR_PID=""
 GENERATED_DUSK_SIGNER_KEY_FILES=()
 GENERATED_AGENT_CONFIG_FILES=()
+GENERATED_AGENT_RUN_DIRS=()
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -95,6 +96,9 @@ cleanup() {
     fi
     if [ "${#GENERATED_AGENT_CONFIG_FILES[@]}" -gt 0 ]; then
         rm -f "${GENERATED_AGENT_CONFIG_FILES[@]}" 2>/dev/null || true
+    fi
+    if [ "${#GENERATED_AGENT_RUN_DIRS[@]}" -gt 0 ]; then
+        rm -rf -- "${GENERATED_AGENT_RUN_DIRS[@]}" 2>/dev/null || true
     fi
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true
 }
@@ -179,10 +183,12 @@ run_case() {
     # generator succeeds but JSON parsing fails, the parent EXIT trap still
     # owns every emitted config and signer file.
     local cfg_json relayer_cfg validator_cfg generated_signer_key_file
-    local expected_relayer_cfg expected_validator_cfg
-    expected_relayer_cfg="/tmp/hyperlane-relayer-${ism}-${run_id}.json"
-    expected_validator_cfg="/tmp/hyperlane-validator-anvil-${ism}-${run_id}.json"
-    dusk_signer_key_file="/tmp/hyperlane-dusk-signer-${ism}-${run_id}.key"
+    local expected_relayer_cfg expected_validator_cfg expected_run_dir
+    expected_run_dir="/tmp/hyperlane-agent-${ism}-${run_id}"
+    expected_relayer_cfg="$expected_run_dir/relayer.json"
+    expected_validator_cfg="$expected_run_dir/validator-anvil.json"
+    dusk_signer_key_file="$expected_run_dir/dusk-signer.key"
+    GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")
     GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
     if [ "$ism" = "messageIdMultisig" ]; then
         GENERATED_AGENT_CONFIG_FILES+=("$expected_validator_cfg")

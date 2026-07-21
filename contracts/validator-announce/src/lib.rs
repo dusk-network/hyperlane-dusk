@@ -42,6 +42,14 @@ mod validator_announce {
 
     /// Ethereum Signed Message prefix for 32-byte messages.
     const ETH_SIGNED_MESSAGE_PREFIX: &[u8] = b"\x19Ethereum Signed Message:\n32";
+    /// Bound one location so a validator cannot exhaust query return memory.
+    const MAX_LOCATION_BYTES: usize = 1_024;
+    /// Bound historical locations retained for one validator.
+    const MAX_LOCATIONS_PER_VALIDATOR: usize = 16;
+    /// Bound the registry returned by `get_announced_validators`.
+    const MAX_VALIDATORS: usize = 1_024;
+    /// Legacy batch reads are deliberately small; agents should query one validator at a time.
+    const MAX_QUERY_VALIDATORS: usize = 2;
 
     /// ValidatorAnnounce contract state.
     pub struct ValidatorAnnounce {
@@ -102,6 +110,14 @@ mod validator_announce {
             storage_location: String,
             signature: Vec<u8>,
         ) -> bool {
+            assert!(
+                !storage_location.is_empty(),
+                "ValidatorAnnounce: storage location cannot be empty"
+            );
+            assert!(
+                storage_location.len() <= MAX_LOCATION_BYTES,
+                "ValidatorAnnounce: storage location too long"
+            );
             // Replay protection
             let replay_id = Self::compute_replay_id(&validator, &storage_location);
             assert!(
@@ -120,14 +136,20 @@ mod validator_announce {
 
             // Register validator if first announcement.
             if !self.storage_locations.contains_key(&validator.0) {
+                assert!(
+                    self.validators.len() < MAX_VALIDATORS,
+                    "ValidatorAnnounce: validator limit reached"
+                );
                 self.validators.push(validator);
             }
 
             // Store location.
-            self.storage_locations
-                .entry(validator.0)
-                .or_default()
-                .push(storage_location.clone());
+            let locations = self.storage_locations.entry(validator.0).or_default();
+            assert!(
+                locations.len() < MAX_LOCATIONS_PER_VALIDATOR,
+                "ValidatorAnnounce: location limit reached"
+            );
+            locations.push(storage_location.clone());
 
             abi::emit(
                 events::ValidatorAnnouncement::TOPIC,
@@ -149,6 +171,10 @@ mod validator_announce {
             &self,
             validators: Vec<EthAddress>,
         ) -> Vec<Vec<String>> {
+            assert!(
+                validators.len() <= MAX_QUERY_VALIDATORS,
+                "ValidatorAnnounce: query batch too large"
+            );
             validators
                 .iter()
                 .map(|v| {
@@ -158,6 +184,17 @@ mod validator_announce {
                         .unwrap_or_default()
                 })
                 .collect()
+        }
+
+        /// Return one validator's bounded location history.
+        pub fn get_announced_storage_locations_for_validator(
+            &self,
+            validator: EthAddress,
+        ) -> Vec<String> {
+            self.storage_locations
+                .get(&validator.0)
+                .cloned()
+                .unwrap_or_default()
         }
 
         /// Returns all validators that have announced.

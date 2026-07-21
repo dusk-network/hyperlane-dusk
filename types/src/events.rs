@@ -503,39 +503,43 @@ impl GasPayment {
 // =========================================================================
 
 /// Emitted when `WarpDrc20` balances change.
+#[cfg(feature = "drc20")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Drc20Transfer {
-    /// Source account hash or contract ID. Zero means mint.
-    pub from: H256,
-    /// Destination account hash or contract ID. Zero means burn.
-    pub to: H256,
+    /// Source principal. The zero contract principal means mint.
+    pub from: crate::drc20::Principal,
+    /// Destination principal. The zero contract principal means burn.
+    pub to: crate::drc20::Principal,
     /// Transfer amount.
     pub amount: u64,
 }
 
+#[cfg(feature = "drc20")]
 impl Drc20Transfer {
     /// Event topic.
-    pub const TOPIC: &'static str = "drc20_transfer";
+    pub const TOPIC: &'static str = "drc20/transfer";
 }
 
 /// Emitted when a `WarpDrc20` allowance changes.
+#[cfg(feature = "drc20")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Drc20Approval {
-    /// Token owner account hash or contract ID.
-    pub owner: H256,
-    /// Approved spender account hash or contract ID.
-    pub spender: H256,
+    /// Token owner principal.
+    pub owner: crate::drc20::Principal,
+    /// Approved spender principal.
+    pub spender: crate::drc20::Principal,
     /// New allowance amount.
     pub amount: u64,
 }
 
+#[cfg(feature = "drc20")]
 impl Drc20Approval {
     /// Event topic.
-    pub const TOPIC: &'static str = "drc20_approval";
+    pub const TOPIC: &'static str = "drc20/approval";
 }
 
 /// Emitted when a warp route transfer is sent to a remote chain.

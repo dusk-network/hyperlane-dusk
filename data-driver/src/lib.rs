@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn drc20_contract_account_query_round_trips() {
-        let json = r#"{"account":{"Contract":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]}}"#;
+        let json = r#"{"account":{"kind":"Contract","bytes":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]}}"#;
         let encoded = HyperlaneDataDriver
             .encode_input_fn("balance_of", json)
             .expect("contract-account balance query should encode");

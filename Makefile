@@ -62,11 +62,15 @@ clippy-contracts:
 # Run types crate unit tests
 .PHONY: test-types
 test-types:
-	cargo test -p hyperlane-dusk-types
+	cargo test -p hyperlane-dusk-types --features drc20
 
 # Run integration tests (requires WASMs to be built first)
+.PHONY: canonical-drc20-fixture
+canonical-drc20-fixture:
+	bash scripts/build-canonical-drc20-fixture.sh
+
 .PHONY: test-integration
-test-integration: all
+test-integration: all canonical-drc20-fixture
 	cargo test -p hyperlane-dusk-integration-tests -- --nocapture
 
 # Build data-driver WASM (for explorer integration)
@@ -188,6 +192,8 @@ help:
 	@echo "  clippy-contracts   Lint production contract/type crates for wasm"
 	@echo "  test-types         Run types crate tests"
 	@echo "  test-integration   Run VM integration tests"
+	@echo "  canonical-drc20-fixture"
+	@echo "                     Build the pinned upstream Dusk DRC20 VM fixture"
 	@echo "  data-driver        Build data-driver WASM (for explorer)"
 	@echo "  dusk-tx            Build dusk-tx CLI tool"
 	@echo "  test               Run all tests"

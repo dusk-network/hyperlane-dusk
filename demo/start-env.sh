@@ -178,8 +178,12 @@ ok "jq available"
 header "Starting Rusk (Dusk Node) on port $RUSK_HTTP_PORT"
 
 if port_in_use "$RUSK_HTTP_PORT"; then
-    info "Port $RUSK_HTTP_PORT already in use — assuming Rusk is running"
-    echo "rusk:external" >> "$PID_FILE"
+    info "Port $RUSK_HTTP_PORT is already in use — verifying the configured RUES service"
+    RUES_TEST_URL="${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id"
+    wait_for_url "$RUES_TEST_URL" 5 \
+        || fail "Port $RUSK_HTTP_PORT is occupied, but the configured Rusk RUES endpoint is unhealthy"
+    record_pid "rusk" "external"
+    ok "Using healthy external Rusk service (not owned by this demo)"
 else
     info "Starting Rusk from $RUSK_DIR..."
     RUSK_LOG="/tmp/rusk-dev.log"
@@ -194,7 +198,7 @@ else
     RUSK_PID=$!
     # Some rusk builds may fork; record the actual listening PID if available.
     sleep 1
-    RUSK_LISTEN_PID="$(lsof -ti \":${RUSK_HTTP_PORT}\" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+    RUSK_LISTEN_PID="$(lsof -ti ":${RUSK_HTTP_PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
     if [ -n "$RUSK_LISTEN_PID" ]; then
         record_pid "rusk" "$RUSK_LISTEN_PID"
         info "Rusk starting (PID: $RUSK_LISTEN_PID, log: $RUSK_LOG)"
@@ -209,8 +213,7 @@ else
     if wait_for_url "$RUES_TEST_URL" 60; then
         ok "Rusk is ready"
     else
-        warn "Rusk did not respond within 60s — check $RUSK_LOG"
-        info "Continuing anyway; it may still be starting up..."
+        fail "Rusk did not become ready within 60s — check $RUSK_LOG and run demo/stop-env.sh"
     fi
 fi
 

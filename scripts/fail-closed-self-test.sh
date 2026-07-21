@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT"
 
 fail() {
@@ -24,9 +24,9 @@ saved_version_checks=(
     'validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"'
     'validate_dusk_state_version "$dusk_ism_multisig" "Dusk multisig ISM"'
     'validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"'
-    'validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 2'
-    'validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"'
-    'validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route"'
+    'validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 4'
+    'validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 2'
+    'validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 3'
     'validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"'
     'validate_dusk_state_version "$dusk_igp" "Dusk IGP" 2'
     'validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"'
@@ -80,6 +80,19 @@ expect_fail() {
     fi
 
     info "$label: failed closed as expected"
+}
+
+expect_pass() {
+    local label="$1"
+    shift
+    local log="$workdir/$label.log"
+
+    if ! "$@" >"$log" 2>&1; then
+        cat "$log" >&2
+        fail "$label: expected command to pass"
+    fi
+
+    info "$label: passed as expected"
 }
 
 mkdir -p "$workdir/archive/src" "$workdir/archive/archives"
@@ -298,6 +311,52 @@ expect_fail \
     'dusk default branch does not require branches to be up to date before merging' \
     env PATH="$workdir/branch-protection-strict-mock-bin:$PATH" BRANCH_PROTECTION_GATE_ONLY=1 \
         GH_MOCK_STRICT_MODE=missing \
+    bash scripts/production-readiness-guard.sh
+
+mkdir -p "$workdir/status-check-mock-bin"
+cat >"$workdir/status-check-mock-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$*" in
+    "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq .head.sha")
+        printf '1111111111111111111111111111111111111111\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/pulls/1 --jq if "*)
+        printf 'OPEN\n'
+        ;;
+    "api repos/dusk-network/hyperlane-dusk/pulls/1/reviews?per_page=100")
+        printf '[]\n'
+        ;;
+    "api --paginate repos/dusk-network/hyperlane-dusk/commits/1111111111111111111111111111111111111111/check-runs?per_page=100 --jq "*)
+        printf '%s\n' '{"name":"Dusk review policy gate","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/first"}'
+        if [ "${GH_MOCK_MISSING_EXACT:-0}" = "1" ]; then
+            printf '%s\n' '{"name":"Production readiness guard / lookalike","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/lookalike"}'
+        else
+            # This record represents a required context only present on the
+            # second paginated response.
+            printf '%s\n' '{"name":"Production readiness guard","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/second-page"}'
+        fi
+        ;;
+    *)
+        echo "unexpected gh invocation: $*" >&2
+        exit 1
+        ;;
+esac
+EOF
+chmod +x "$workdir/status-check-mock-bin/gh"
+
+expect_pass \
+    production-readiness-paginates-required-checks \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 \
+    bash scripts/production-readiness-guard.sh
+
+expect_fail \
+    production-readiness-rejects-lookalike-check-name \
+    'missing required status checks: Production readiness guard' \
+    env PATH="$workdir/status-check-mock-bin:$PATH" STATUS_CHECK_GATE_ONLY=1 \
+        READINESS_MODE=premerge STATUS_CHECK_WAIT_SECONDS=0 GH_MOCK_MISSING_EXACT=1 \
     bash scripts/production-readiness-guard.sh
 
 agent_state="$workdir/agent-state.json"

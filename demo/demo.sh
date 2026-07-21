@@ -339,15 +339,29 @@ info "  TestRecipient:   $DUSK_TEST_RECIPIENT"
 
 header "Step 4: Enrolling Remote Routers & Registering Account"
 
-step "Dusk: Funding WarpDrc20 dispatch fees..."
-DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
+DISPATCH_CREDIT_JSON=$("$DUSK_TX" query \
     --rues-url "$DUSK_RUES_URL" \
-    --keys "$CONSENSUS_KEYS" \
-    --mailbox "$DUSK_MAILBOX" \
-    --payer "$DUSK_WARP" \
-    --amount "$DUSK_DISPATCH_FEE_CREDIT" \
-    >/dev/null || fail "Failed to fund WarpDrc20 dispatch fees"
-ok "Dusk: WarpDrc20 dispatch fees funded"
+    --contract "$DUSK_MAILBOX" \
+    --method fee_credit \
+    --return-type u64 \
+    --arg-bytes32 "$DUSK_WARP" 2>/dev/null) \
+    || fail "Failed to query WarpDrc20 dispatch fee credit"
+CURRENT_DISPATCH_CREDIT=$(jq -er '.value | tonumber' <<<"$DISPATCH_CREDIT_JSON") \
+    || fail "WarpDrc20 returned malformed dispatch fee credit"
+if [ "$CURRENT_DISPATCH_CREDIT" -lt "$DUSK_DISPATCH_FEE_CREDIT" ]; then
+    DISPATCH_CREDIT_DEFICIT=$((DUSK_DISPATCH_FEE_CREDIT - CURRENT_DISPATCH_CREDIT))
+    step "Dusk: Funding WarpDrc20 dispatch fee deficit ($DISPATCH_CREDIT_DEFICIT LUX)..."
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
+        --rues-url "$DUSK_RUES_URL" \
+        --keys "$CONSENSUS_KEYS" \
+        --mailbox "$DUSK_MAILBOX" \
+        --payer "$DUSK_WARP" \
+        --amount "$DISPATCH_CREDIT_DEFICIT" \
+        >/dev/null || fail "Failed to fund WarpDrc20 dispatch fee deficit"
+    ok "Dusk: WarpDrc20 dispatch credit brought to target"
+else
+    ok "Dusk: WarpDrc20 dispatch credit already satisfies target"
+fi
 
 # EVM side: enroll Dusk WarpDrc20 as remote router for the Dusk domain
 EVM_TOKEN_PAD32="0x$(pad_evm_address "$EVM_TOKEN")"

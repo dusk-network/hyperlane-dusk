@@ -129,10 +129,7 @@ mod warp_drc20_collateral {
             self.mailbox = mailbox;
             self.owner = Some(owner);
             for (domain, router) in enrolled_routers {
-                assert!(
-                    router != [0u8; 32],
-                    "WarpCollateral: router cannot be zero"
-                );
+                assert!(router != [0u8; 32], "WarpCollateral: router cannot be zero");
                 self.enrolled_routers.insert(domain, router);
                 abi::emit(
                     events::RemoteRouterEnrolled::TOPIC,
@@ -183,7 +180,7 @@ mod warp_drc20_collateral {
             let pk =
                 abi::public_sender().expect("WarpCollateral: claim_pending requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
-            self.claim_pending_to(h, Account::External(pk));
+            self.claim_pending_to(h, Account::moonlight(&pk));
         }
 
         /// Claim pending wrapped DRC20 tokens for the calling contract.
@@ -210,10 +207,10 @@ mod warp_drc20_collateral {
             self.pending_total
         }
 
-        /// Returns the persisted state layout version expected by deployment tooling.
+        /// Deployment compatibility version including dispatch-credit withdrawal.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            1
+            3
         }
 
         // =================================================================
@@ -233,6 +230,7 @@ mod warp_drc20_collateral {
             assert!(amount > 0, "WarpCollateral: amount must be > 0");
             let sender = drc20::sender_account();
             let self_account = Account::Contract(abi::self_id());
+            let custody_before = self.collateral_balance();
 
             // Lock tokens: transfer_from(sender → this contract)
             let _: () = abi::call(
@@ -241,10 +239,16 @@ mod warp_drc20_collateral {
                 &TransferFromCall {
                     owner: sender,
                     to: self_account,
-                    value: amount,
+                    amount,
                 },
             )
             .expect("WarpCollateral: transfer_from failed");
+            let custody_after = self.collateral_balance();
+            assert_eq!(
+                custody_after.checked_sub(custody_before),
+                Some(amount),
+                "WarpCollateral: transfer_from did not deliver exact collateral"
+            );
 
             // Look up enrolled router
             let router = self
@@ -315,8 +319,8 @@ mod warp_drc20_collateral {
                     self.wrapped_token,
                     "transfer",
                     &TransferCall {
-                        to: Account::External(*pk),
-                        value: msg.amount,
+                        to: Account::moonlight(pk),
+                        amount: msg.amount,
                     },
                 )
                 .expect("WarpCollateral: transfer failed");
@@ -385,10 +389,7 @@ mod warp_drc20_collateral {
         /// Enroll a remote router for a domain. Owner only.
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
-            assert!(
-                router != [0u8; 32],
-                "WarpCollateral: router cannot be zero"
-            );
+            assert!(router != [0u8; 32], "WarpCollateral: router cannot be zero");
             self.enrolled_routers.insert(domain, router);
             abi::emit(
                 events::RemoteRouterEnrolled::TOPIC,
@@ -479,7 +480,7 @@ mod warp_drc20_collateral {
                 "transfer",
                 &TransferCall {
                     to: account,
-                    value: amount,
+                    amount,
                 },
             )
             .expect("WarpCollateral: transfer failed");
@@ -491,14 +492,7 @@ mod warp_drc20_collateral {
 
         /// Ensure `amount` can be paid without consuming existing escrow.
         fn assert_unreserved_collateral(&self, amount: u64) {
-            let balance: u64 = abi::call(
-                self.wrapped_token,
-                "balance_of",
-                &BalanceOf {
-                    account: Account::Contract(abi::self_id()),
-                },
-            )
-            .expect("WarpCollateral: balance query failed");
+            let balance = self.collateral_balance();
             let available = balance
                 .checked_sub(self.pending_total)
                 .expect("WarpCollateral: pending liability exceeds custody");
@@ -506,6 +500,18 @@ mod warp_drc20_collateral {
                 available >= amount,
                 "WarpCollateral: insufficient unreserved collateral"
             );
+        }
+
+        /// Query the wrapped token balance owned by this route.
+        fn collateral_balance(&self) -> u64 {
+            abi::call(
+                self.wrapped_token,
+                "balance_of",
+                &BalanceOf {
+                    account: Account::Contract(abi::self_id()),
+                },
+            )
+            .expect("WarpCollateral: balance query failed")
         }
     }
 }

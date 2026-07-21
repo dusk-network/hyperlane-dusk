@@ -58,14 +58,6 @@ mod warp_drc20 {
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
 
-    /// Convert a DRC20 account into an indexable H256.
-    fn account_id(account: Account) -> H256 {
-        match account {
-            Account::External(pk) => message::keccak256(&pk.to_bytes()),
-            Account::Contract(id) => id.to_bytes(),
-        }
-    }
-
     // =====================================================================
     // State
     // =====================================================================
@@ -212,7 +204,7 @@ mod warp_drc20 {
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender().expect("WarpDrc20: claim_pending requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
-            self.claim_pending_to(h, Account::External(pk));
+            self.claim_pending_to(h, Account::moonlight(&pk));
         }
 
         /// Claim pending synthetic tokens for the calling contract.
@@ -239,10 +231,10 @@ mod warp_drc20 {
             self.pending_total
         }
 
-        /// Storage/escrow ABI version for deployment compatibility checks.
+        /// Deployment compatibility version including dispatch-credit withdrawal.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            2
+            4
         }
 
         // =================================================================
@@ -284,23 +276,20 @@ mod warp_drc20 {
 
         /// Transfer tokens from the caller to a recipient.
         pub fn transfer(&mut self, args: TransferCall) {
-            self.do_transfer(drc20::sender_account(), args.to, args.value);
+            self.do_transfer(drc20::sender_account(), args.to, args.amount);
         }
 
         /// Approve a spender to transfer tokens on behalf of the caller.
         pub fn approve(&mut self, args: ApproveCall) {
-            assert!(
-                account_id(args.spender) != [0u8; 32],
-                "WarpDrc20: spender cannot be zero"
-            );
+            assert!(!args.spender.is_zero(), "WarpDrc20: spender cannot be zero");
             let owner = drc20::sender_account();
-            self.set_allowance(owner, args.spender, args.value);
+            self.set_allowance(owner, args.spender, args.amount);
             abi::emit(
                 events::Drc20Approval::TOPIC,
                 events::Drc20Approval {
-                    owner: account_id(owner),
-                    spender: account_id(args.spender),
-                    amount: args.value,
+                    owner,
+                    spender: args.spender,
+                    amount: args.amount,
                 },
             );
         }
@@ -312,11 +301,11 @@ mod warp_drc20 {
                 owner: args.owner,
                 spender,
             });
-            assert!(current >= args.value, "WarpDrc20: allowance too low");
-            if args.value > 0 {
-                self.set_allowance(args.owner, spender, current - args.value);
+            assert!(current >= args.amount, "WarpDrc20: allowance too low");
+            if args.amount > 0 {
+                self.set_allowance(args.owner, spender, current - args.amount);
             }
-            self.do_transfer(args.owner, args.to, args.value);
+            self.do_transfer(args.owner, args.to, args.amount);
         }
 
         // =================================================================
@@ -401,7 +390,7 @@ mod warp_drc20 {
             // external account or contract proves that it owns the key.
             if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
                 self.ensure_mint_capacity(msg.amount);
-                self.mint(Account::External(*pk), msg.amount);
+                self.mint(Account::moonlight(pk), msg.amount);
             } else {
                 self.ensure_mint_capacity(msg.amount);
                 let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
@@ -580,8 +569,8 @@ mod warp_drc20 {
             abi::emit(
                 events::Drc20Transfer::TOPIC,
                 events::Drc20Transfer {
-                    from: account_id(from),
-                    to: account_id(to),
+                    from,
+                    to,
                     amount: value,
                 },
             );
@@ -605,8 +594,8 @@ mod warp_drc20 {
             abi::emit(
                 events::Drc20Transfer::TOPIC,
                 events::Drc20Transfer {
-                    from: ZERO_CONTRACT.to_bytes(),
-                    to: account_id(account),
+                    from: Account::Contract(ZERO_CONTRACT),
+                    to: account,
                     amount,
                 },
             );
@@ -631,8 +620,8 @@ mod warp_drc20 {
             abi::emit(
                 events::Drc20Transfer::TOPIC,
                 events::Drc20Transfer {
-                    from: account_id(account),
-                    to: ZERO_CONTRACT.to_bytes(),
+                    from: account,
+                    to: Account::Contract(ZERO_CONTRACT),
                     amount,
                 },
             );

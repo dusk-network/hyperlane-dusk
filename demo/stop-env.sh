@@ -92,14 +92,7 @@ while IFS=: read -r name type rest; do
             ;;
         external)
             # Service was already running when start-env.sh ran
-            if [ "$name" = "rusk" ]; then
-                # Always kill Rusk — it was started for this demo environment
-                info "Stopping $name (was running before start-env.sh)..."
-                ensure_rusk_stopped
-                ok "Stopped: $name"
-            else
-                info "Skipping $name (was already running externally)"
-            fi
+            info "Skipping $name (was already running externally and is not demo-owned)"
             ;;
         *)
             # PID-based process (format is name:pid)

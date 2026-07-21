@@ -1,7 +1,9 @@
 name: Dusk Review Policy Gate
 
 on:
-  pull_request:
+  # Run the trusted default-branch workflow while examining the proposed
+  # tree. A PR must never be able to certify its own replacement guard.
+  pull_request_target:
     branches:
       - main
   workflow_dispatch:
@@ -19,6 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -46,33 +49,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base_ref="origin/${GITHUB_BASE_REF:-main}"
-          git rev-parse --verify "$base_ref" >/dev/null 2>&1 || {
-            echo "::error::cannot resolve trusted base ref $base_ref"
-            exit 1
-          }
-
-          missing_from_head=0
-          missing_from_base=0
           for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
             if [ ! -f "$script" ]; then
-              missing_from_head=$((missing_from_head + 1))
-              if git cat-file -e "$base_ref:$script" 2>/dev/null; then
-                echo "::error::$script exists on $base_ref but is missing from the proposed tree"
-                exit 1
-              fi
-              missing_from_base=$((missing_from_base + 1))
+              echo "::error::$script is missing from the proposed tree"
+              exit 1
             fi
           done
-
-          if [ "$missing_from_head" -ne 0 ]; then
-            if [ "$missing_from_head" -eq 2 ] && [ "$missing_from_base" -eq 2 ]; then
-              echo "Review guards are absent from both the trusted base and proposed workflow-only tree; no guard removal occurred."
-              exit 0
-            fi
-            echo "::error::review guard set is incomplete"
-            exit 1
-          fi
 
           if ! command -v rg >/dev/null 2>&1; then
             sudo apt-get update
@@ -83,7 +65,29 @@ jobs:
             bash -n "$script"
           done
 
-          bash scripts/fail-closed-self-test.sh
+      - name: Checkout trusted policy harness
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-policy
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run trusted policy harness against proposed tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          proposed_root="$GITHUB_WORKSPACE"
+          trusted_root="$GITHUB_WORKSPACE/trusted-policy"
+          for script in scripts/github-review-hygiene.sh scripts/fail-closed-self-test.sh; do
+            [ -f "$trusted_root/$script" ] || {
+              echo "::error::trusted base is missing $script"
+              exit 1
+            }
+          done
+
+          ROOT_OVERRIDE="$proposed_root" \
+            bash "$trusted_root/scripts/fail-closed-self-test.sh"
 
           stale_dispatcher_comments="$(mktemp)"
           cat >"$stale_dispatcher_comments" <<'EOF'
@@ -93,7 +97,8 @@ jobs:
           EOF
 
           stale_scan_log="$(mktemp)"
-          if bash scripts/github-review-hygiene.sh \
+          if ROOT_OVERRIDE="$proposed_root" \
+              bash "$trusted_root/scripts/github-review-hygiene.sh" \
               --dispatcher-comment-scan-only "$stale_dispatcher_comments" \
               >"$stale_scan_log" 2>&1; then
             echo "::error::stale dispatcher repro evidence was accepted"

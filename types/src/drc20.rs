@@ -1,91 +1,177 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Current Dusk DRC20 account and call types.
+//! DRC20 principal and call ABI.
+//!
+//! The archived layout intentionally matches `dusk-network/contracts`
+//! `bc1b00ee0af059975e158b7b580b4d0c0f1bdf9f` exactly. Keep the compatibility
+//! fixtures in this crate in sync before changing any variant or field.
 
 use core::cmp::Ordering;
 
-#[cfg(feature = "serde")]
 use alloc::vec::Vec;
 use bytecheck::CheckBytes;
-#[cfg(feature = "serde")]
-use dusk_bytes::Serializable;
 use dusk_core::abi::ContractId;
-use dusk_core::signatures::bls::PublicKey;
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// A DRC20 account.
+/// Raw byte length of a Moonlight BLS public key.
+pub const BLS_PUBLIC_KEY_BYTES: usize = 193;
+
+/// Coarse principal kind used by the canonical JSON representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Archive, Serialize, Deserialize)]
+#[archive_attr(derive(CheckBytes))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum PrincipalKind {
+    /// Transparent Moonlight public account.
+    Moonlight,
+    /// Privacy-preserving Phoenix authorization identity.
+    Phoenix,
+    /// Contract account.
+    Contract,
+}
+
+/// A canonical DRC20 principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
-pub enum Account {
-    /// An externally owned Moonlight account.
-    External(PublicKey),
-    /// A contract account.
+pub enum Principal {
+    /// Transparent Moonlight public account, encoded as raw BLS key bytes.
+    Moonlight([u8; BLS_PUBLIC_KEY_BYTES]),
+    /// Phoenix authorization identity, encoded as compressed Schnorr bytes.
+    Phoenix([u8; 32]),
+    /// Dusk contract account.
     Contract(ContractId),
 }
 
-#[cfg(feature = "serde")]
-#[derive(serde::Serialize, serde::Deserialize)]
-enum SerdeAccount {
-    External(Vec<u8>),
-    Contract([u8; 32]),
-}
+/// Backward-compatible local name for the canonical principal type.
+pub type Account = Principal;
 
-#[cfg(feature = "serde")]
-impl serde::Serialize for Account {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
+impl Principal {
+    /// Construct a Moonlight principal from a Dusk BLS public key.
+    #[must_use]
+    pub fn moonlight(public_key: &dusk_core::signatures::bls::PublicKey) -> Self {
+        Self::Moonlight(public_key.to_raw_bytes())
+    }
+
+    /// Return the principal kind.
+    #[must_use]
+    pub const fn kind(&self) -> PrincipalKind {
         match self {
-            Self::External(public_key) => serde::Serialize::serialize(
-                &SerdeAccount::External(public_key.to_bytes().to_vec()),
-                serializer,
-            ),
-            Self::Contract(contract) => serde::Serialize::serialize(
-                &SerdeAccount::Contract(contract.to_bytes()),
-                serializer,
-            ),
+            Self::Moonlight(_) => PrincipalKind::Moonlight,
+            Self::Phoenix(_) => PrincipalKind::Phoenix,
+            Self::Contract(_) => PrincipalKind::Contract,
         }
+    }
+
+    /// Return true for the reserved all-zero principal value.
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Self::Moonlight(bytes) => bytes.iter().all(|byte| *byte == 0),
+            Self::Phoenix(bytes) => bytes.iter().all(|byte| *byte == 0),
+            Self::Contract(contract) => contract.to_bytes().iter().all(|byte| *byte == 0),
+        }
+    }
+
+    /// Stable tagged bytes used for hashing and replay keys.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.push(match self {
+            Self::Moonlight(_) => 0,
+            Self::Phoenix(_) => 1,
+            Self::Contract(_) => 2,
+        });
+        match self {
+            Self::Moonlight(bytes) => out.extend_from_slice(bytes),
+            Self::Phoenix(bytes) => out.extend_from_slice(bytes),
+            Self::Contract(contract) => out.extend_from_slice(&contract.to_bytes()),
+        }
+        out
     }
 }
 
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Account {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        match serde::Deserialize::deserialize(deserializer)? {
-            SerdeAccount::External(bytes) => {
-                let bytes: [u8; 96] = bytes.try_into().map_err(|_| {
-                    serde::de::Error::custom("external DRC20 account must be a 96-byte public key")
-                })?;
-                let public_key = PublicKey::from_bytes(&bytes)
-                    .map_err(|_| serde::de::Error::custom("invalid external DRC20 public key"))?;
-                Ok(Self::External(public_key))
-            }
-            SerdeAccount::Contract(contract) => {
-                Ok(Self::Contract(ContractId::from_bytes(contract)))
-            }
-        }
-    }
-}
-
-impl PartialOrd for Account {
+impl PartialOrd for Principal {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Account {
+impl Ord for Principal {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (Self::External(lhs), Self::External(rhs)) => {
-                lhs.to_raw_bytes().cmp(&rhs.to_raw_bytes())
-            }
+            (Self::Moonlight(lhs), Self::Moonlight(rhs)) => lhs.cmp(rhs),
+            (Self::Phoenix(lhs), Self::Phoenix(rhs)) => lhs.cmp(rhs),
             (Self::Contract(lhs), Self::Contract(rhs)) => lhs.cmp(rhs),
-            (Self::External(_), Self::Contract(_)) => Ordering::Less,
-            (Self::Contract(_), Self::External(_)) => Ordering::Greater,
+            _ => self.kind().cmp(&other.kind()),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for Principal {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("Principal", 2)?;
+        state.serialize_field("kind", &self.kind())?;
+        match self {
+            Self::Moonlight(bytes) => state.serialize_field("bytes", bytes.as_slice())?,
+            Self::Phoenix(bytes) => state.serialize_field("bytes", bytes.as_slice())?,
+            Self::Contract(contract) => {
+                state.serialize_field("bytes", contract.to_bytes().as_slice())?
+            }
+        }
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Principal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct PrincipalJson {
+            kind: PrincipalKind,
+            bytes: Vec<u8>,
+        }
+
+        let principal = <PrincipalJson as serde::Deserialize>::deserialize(deserializer)?;
+        match principal.kind {
+            PrincipalKind::Moonlight => {
+                principal
+                    .bytes
+                    .try_into()
+                    .map(Self::Moonlight)
+                    .map_err(|bytes: Vec<u8>| {
+                        serde::de::Error::invalid_length(
+                            bytes.len(),
+                            &"193 Moonlight public-key bytes",
+                        )
+                    })
+            }
+            PrincipalKind::Phoenix => {
+                principal
+                    .bytes
+                    .try_into()
+                    .map(Self::Phoenix)
+                    .map_err(|bytes: Vec<u8>| {
+                        serde::de::Error::invalid_length(
+                            bytes.len(),
+                            &"32 Phoenix public-key bytes",
+                        )
+                    })
+            }
+            PrincipalKind::Contract => principal
+                .bytes
+                .try_into()
+                .map(|bytes| Self::Contract(ContractId::from_bytes(bytes)))
+                .map_err(|bytes: Vec<u8>| {
+                    serde::de::Error::invalid_length(bytes.len(), &"32 contract-id bytes")
+                }),
         }
     }
 }
@@ -96,7 +182,7 @@ impl Ord for Account {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BalanceOf {
     /// Account to query.
-    pub account: Account,
+    pub account: Principal,
 }
 
 /// Input for `allowance`.
@@ -105,9 +191,9 @@ pub struct BalanceOf {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Allowance {
     /// Token owner.
-    pub owner: Account,
+    pub owner: Principal,
     /// Approved spender.
-    pub spender: Account,
+    pub spender: Principal,
 }
 
 /// Input for `transfer`.
@@ -116,9 +202,9 @@ pub struct Allowance {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransferCall {
     /// Recipient.
-    pub to: Account,
+    pub to: Principal,
     /// Amount to transfer.
-    pub value: u64,
+    pub amount: u64,
 }
 
 /// Input for `approve`.
@@ -127,9 +213,9 @@ pub struct TransferCall {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ApproveCall {
     /// Approved spender.
-    pub spender: Account,
+    pub spender: Principal,
     /// Allowance amount.
-    pub value: u64,
+    pub amount: u64,
 }
 
 /// Input for `transfer_from`.
@@ -138,26 +224,28 @@ pub struct ApproveCall {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransferFromCall {
     /// Account whose allowance is consumed.
-    pub owner: Account,
+    pub owner: Principal,
     /// Recipient.
-    pub to: Account,
+    pub to: Principal,
     /// Amount to transfer.
-    pub value: u64,
+    pub amount: u64,
 }
 
-/// Resolve the transaction or contract caller as a DRC20 account.
+/// Resolve the current DRC20 caller as a canonical principal.
 ///
-/// # Panics
-///
-/// Panics for shielded root calls or malformed nested call frames.
+/// Phoenix callers have no stable runtime principal and are rejected. They
+/// must use an explicitly signed, replay-protected authorization flow.
 #[cfg(feature = "abi")]
 #[must_use]
-pub fn sender_account() -> Account {
+pub fn sender_account() -> Principal {
     use dusk_core::abi;
+    use dusk_core::transfer::TRANSFER_CONTRACT;
 
-    if abi::callstack().len() == 1 {
-        Account::External(abi::public_sender().expect("DRC20: shielded transactions not supported"))
+    let caller = abi::caller();
+    if caller == Some(TRANSFER_CONTRACT) && abi::callstack().len() <= 1 {
+        let public_key = abi::public_sender().expect("DRC20: Moonlight public sender unavailable");
+        Principal::moonlight(&public_key)
     } else {
-        Account::Contract(abi::caller().expect("DRC20: missing caller"))
+        Principal::Contract(caller.expect("DRC20: missing caller"))
     }
 }

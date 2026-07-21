@@ -6,14 +6,12 @@ use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
 use rkyv::validation::validators::DefaultValidator;
 use rkyv::{check_archived_root, Archive, Deserialize, Infallible, Serialize};
-use serde::Deserialize as SerdeDeserialize;
 use serde_json::Value;
 
 const TRANSFER_CONTRACT: &str = "0100000000000000000000000000000000000000000000000000000000000000";
 const MAX_TRANSACTION_STATUS_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CONTRACT_QUERY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
-const MAX_SIMULATION_RESPONSE_BYTES: usize = 64 * 1024;
 
 pub struct RuesClient {
     client: reqwest::Client,
@@ -25,13 +23,6 @@ pub enum TransactionStatus {
     NotFound,
     Executed,
     Failed(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, SerdeDeserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct SimulationResult {
-    pub gas_spent: u64,
-    pub error: Option<String>,
 }
 
 impl RuesClient {
@@ -132,30 +123,6 @@ impl RuesClient {
             return Err(propagation_status_error(status, &body));
         }
         Ok(())
-    }
-
-    /// Execute a transaction against an ephemeral node session without
-    /// propagating or committing it.
-    pub async fn simulate_tx(&self, tx_bytes: &[u8]) -> Result<SimulationResult, String> {
-        let url = format!("{}/on/transactions/simulate", self.base_url);
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/octet-stream")
-            .body(tx_bytes.to_vec())
-            .send()
-            .await
-            .map_err(|error| format!("Simulation request failed: {error}"))?;
-        let status = response.status();
-        let body =
-            read_response_body(response, MAX_SIMULATION_RESPONSE_BYTES, "simulation").await?;
-        if !status.is_success() {
-            return Err(format!(
-                "Simulation request failed ({status}): {}",
-                String::from_utf8_lossy(&body)
-            ));
-        }
-        parse_simulation_response(&body)
     }
 
     /// Query the persisted execution result for an exact transaction hash.
@@ -268,23 +235,7 @@ impl RuesClient {
 
 fn propagation_status_error(status: reqwest::StatusCode, body: &[u8]) -> String {
     let detail = String::from_utf8_lossy(body);
-    if status.is_client_error() {
-        format!("Propagation rejected ({status}): {detail}")
-    } else {
-        format!("Propagation outcome unknown ({status}): {detail}")
-    }
-}
-
-fn parse_simulation_response(body: &[u8]) -> Result<SimulationResult, String> {
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|error| format!("Invalid simulation response: {error}"))?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "Invalid simulation response: expected an object".to_string())?;
-    if !object.contains_key("gas-spent") || !object.contains_key("error") {
-        return Err("Invalid simulation response: missing gas-spent or error field".to_string());
-    }
-    serde_json::from_value(value).map_err(|error| format!("Invalid simulation response: {error}"))
+    format!("Propagation outcome unknown ({status}): {detail}")
 }
 
 async fn read_response_body(
@@ -392,30 +343,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        append_bounded_chunk, parse_simulation_response, parse_transaction_status_response,
-        propagation_status_error, transaction_status_query, TransactionStatus,
-        MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+        append_bounded_chunk, parse_transaction_status_response, propagation_status_error,
+        transaction_status_query, TransactionStatus, MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
     };
 
     #[test]
-    fn simulation_response_requires_explicit_gas_and_error_fields() {
-        let result = parse_simulation_response(br#"{"gas-spent":42,"error":null}"#).unwrap();
-        assert_eq!(result.gas_spent, 42);
-        assert_eq!(result.error, None);
-        assert!(parse_simulation_response(br#"{"gas-spent":42}"#).is_err());
-    }
-
-    #[test]
-    fn propagation_server_failures_remain_outcome_unknown() {
-        assert!(
-            propagation_status_error(reqwest::StatusCode::BAD_REQUEST, b"invalid")
-                .contains("Propagation rejected")
-        );
-        assert!(propagation_status_error(
+    fn every_propagation_non_success_remains_outcome_unknown() {
+        for status in [
+            reqwest::StatusCode::BAD_REQUEST,
+            reqwest::StatusCode::REQUEST_TIMEOUT,
+            reqwest::StatusCode::CONFLICT,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
             reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            b"lost reply"
-        )
-        .contains("Propagation outcome unknown"));
+        ] {
+            assert!(propagation_status_error(status, b"lost reply")
+                .contains("Propagation outcome unknown"));
+        }
     }
 
     #[test]

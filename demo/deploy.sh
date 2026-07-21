@@ -153,6 +153,48 @@ validate_evm_contract() {
         || fail "Saved $label is not deployed on the running EVM chain: $address"
 }
 
+query_evm_address() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local value
+
+    value="$(cast call "$contract" "$method()(address)" --rpc-url "$ANVIL_RPC" 2>/dev/null)" \
+        || fail "Saved $label is not queryable on the running EVM chain: $contract"
+    value="${value,,}"
+    [[ "$value" =~ ^0x[0-9a-f]{40}$ ]] \
+        || fail "Saved $label returned a malformed address"
+    printf '%s\n' "$value"
+}
+
+query_evm_u32() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local value
+
+    value="$(cast call "$contract" "$method()(uint32)" --rpc-url "$ANVIL_RPC" 2>/dev/null)" \
+        || fail "Saved $label is not queryable on the running EVM chain: $contract"
+    value="${value%% *}"
+    [[ "$value" =~ ^[0-9]+$ ]] \
+        || fail "Saved $label returned a malformed uint32"
+    printf '%s\n' "$value"
+}
+
+query_evm_router() {
+    local contract="$1"
+    local domain="$2"
+    local label="$3"
+    local value
+
+    value="$(cast call "$contract" "routers(uint32)(bytes32)" "$domain" --rpc-url "$ANVIL_RPC" 2>/dev/null)" \
+        || fail "Saved $label is not queryable on the running EVM chain: $contract"
+    value="${value,,}"
+    [[ "$value" =~ ^0x[0-9a-f]{64}$ ]] \
+        || fail "Saved $label returned malformed bytes32"
+    printf '%s\n' "$value"
+}
+
 validate_dusk_query() {
     local contract="$1"
     local method="$2"
@@ -203,6 +245,104 @@ query_dusk_bytes32() {
         || fail "Saved $label returned a malformed bytes32 value"
 }
 
+query_dusk_bytes32_u32() {
+    local contract="$1"
+    local method="$2"
+    local argument="$3"
+    local label="$4"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type bytes32 \
+        --arg-u32 "$argument" 2>/dev/null) \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+    jq -er '.value | ascii_downcase' <<<"$response" \
+        || fail "Saved $label returned a malformed bytes32 value"
+}
+
+query_dusk_option_bytes32() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type option-bytes32 2>/dev/null) \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+    jq -er '.value | strings | ascii_downcase' <<<"$response" \
+        || fail "Saved $label returned an empty or malformed owner"
+}
+
+query_dusk_contract_id_list() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type contract-id-list 2>/dev/null) \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+    jq -ce '.value | map(ascii_downcase)' <<<"$response" \
+        || fail "Saved $label returned a malformed contract-id list"
+}
+
+query_dusk_u64() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type u64 2>/dev/null) \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+    jq -er '.value | tonumber' <<<"$response" \
+        || fail "Saved $label returned a malformed u64 value"
+}
+
+query_dusk_u32() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type u32 2>/dev/null) \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+    jq -er '.value | tonumber' <<<"$response" \
+        || fail "Saved $label returned a malformed u32 value"
+}
+
+query_dusk_u8() {
+    local contract="$1"
+    local method="$2"
+    local label="$3"
+    local response
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$contract" \
+        --method "$method" \
+        --return-type u8 2>/dev/null) \
+        || fail "Saved $label is not queryable on the running Dusk chain: $contract"
+    jq -er '.value | tonumber' <<<"$response" \
+        || fail "Saved $label returned a malformed u8 value"
+}
+
 query_dusk_domain_gas_config() {
     local contract="$1"
     local domain="$2"
@@ -232,7 +372,10 @@ validate_saved_deployment() {
     local dusk_merkle dusk_warp dusk_warp_native dusk_warp_collateral
     local dusk_validator_announce dusk_igp dusk_protocol_fee dusk_aggregation_hook
     local dusk_test_recipient expected_default_ism live_default_ism
+    local live_default_hook live_required_hook live_route_value
     local saved_igp_config saved_igp_domain live_igp_config
+    local live_evm_value route expected_router
+    local saved_account_h256 expected_children
 
     jq -e 'type == "object" and (.evm | type == "object") and (.dusk | type == "object")' \
         "$BRIDGE_STATE_FILE" >/dev/null \
@@ -248,6 +391,8 @@ validate_saved_deployment() {
         || fail "Saved Dusk chain ID does not match the running chain"
     saved_dusk_ism="$(jq -er '.dusk_default_ism | strings | select(. == "testMock" or . == "messageIdMultisig")' "$BRIDGE_STATE_FILE")" \
         || fail "Saved deployment lacks a supported dusk_default_ism; redeploy"
+    saved_account_h256="$(jq -er '.account_h256 | strings | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the Dusk owner identity; redeploy"
 
     evm_mailbox="$(jq -er '.evm.mailbox' "$BRIDGE_STATE_FILE")"
     evm_token="$(jq -er '.evm.token' "$BRIDGE_STATE_FILE")"
@@ -293,15 +438,74 @@ validate_saved_deployment() {
     validate_evm_contract "$evm_validator_announce" "EVM ValidatorAnnounce"
     validate_evm_contract "$evm_igp" "EVM IGP"
     validate_evm_contract "$evm_recipient" "EVM test recipient"
+    live_evm_value="$(query_evm_u32 "$evm_mailbox" localDomain "EVM Mailbox local domain")"
+    [ "$live_evm_value" = "$EVM_DOMAIN" ] \
+        || fail "Running EVM Mailbox local domain differs from the saved deployment; redeploy"
+    live_evm_value="$(query_evm_address "$evm_mailbox" defaultIsm "EVM Mailbox default ISM")"
+    [ "$live_evm_value" = "${evm_ism,,}" ] \
+        || fail "Running EVM Mailbox default ISM differs from the saved deployment; redeploy"
+    live_evm_value="$(query_evm_address "$evm_mailbox" defaultHook "EVM Mailbox default hook")"
+    [ "$live_evm_value" = "${evm_hook,,}" ] \
+        || fail "Running EVM Mailbox default hook differs from the saved deployment; redeploy"
+    live_evm_value="$(query_evm_address "$evm_mailbox" requiredHook "EVM Mailbox required hook")"
+    [ "$live_evm_value" = "${evm_merkle,,}" ] \
+        || fail "Running EVM Mailbox required hook differs from the saved deployment; redeploy"
+    live_evm_value="$(query_evm_address "$evm_mailbox" owner "EVM Mailbox owner")"
+    [ "$live_evm_value" = "${ANVIL_DEPLOYER,,}" ] \
+        || fail "Running EVM Mailbox owner differs from the deployment owner; redeploy"
+    for dependency in "$evm_validator_announce:ValidatorAnnounce" "$evm_merkle:MerkleTreeHook"; do
+        IFS=: read -r contract label <<<"$dependency"
+        live_evm_value="$(query_evm_address "$contract" mailbox "EVM $label Mailbox")"
+        [ "$live_evm_value" = "${evm_mailbox,,}" ] \
+            || fail "Running EVM $label is bound to a different Mailbox; redeploy"
+        live_evm_value="$(query_evm_u32 "$contract" localDomain "EVM $label local domain")"
+        [ "$live_evm_value" = "$EVM_DOMAIN" ] \
+            || fail "Running EVM $label local domain differs from the Mailbox; redeploy"
+    done
+    for route in "$evm_token" "$evm_native_token" "$evm_collateral_token"; do
+        live_evm_value="$(query_evm_address "$route" mailbox "EVM warp route Mailbox")"
+        [ "$live_evm_value" = "${evm_mailbox,,}" ] \
+            || fail "Running EVM warp route is bound to a different Mailbox; redeploy"
+        live_evm_value="$(query_evm_u32 "$route" localDomain "EVM warp route local domain")"
+        [ "$live_evm_value" = "$EVM_DOMAIN" ] \
+            || fail "Running EVM warp route local domain differs from the Mailbox; redeploy"
+        live_evm_value="$(query_evm_address "$route" hook "EVM warp route hook")"
+        [ "$live_evm_value" = "${evm_hook,,}" ] \
+            || fail "Running EVM warp route hook differs from the saved deployment; redeploy"
+        live_evm_value="$(query_evm_address "$route" interchainSecurityModule "EVM warp route ISM")"
+        [ "$live_evm_value" = "${evm_ism,,}" ] \
+            || fail "Running EVM warp route ISM differs from the saved deployment; redeploy"
+        live_evm_value="$(query_evm_address "$route" owner "EVM warp route owner")"
+        [ "$live_evm_value" = "${ANVIL_DEPLOYER,,}" ] \
+            || fail "Running EVM warp route owner differs from the deployment owner; redeploy"
+    done
+    for route in \
+        "$evm_token:$dusk_warp" \
+        "$evm_native_token:$dusk_warp_native" \
+        "$evm_collateral_token:$dusk_warp_collateral"; do
+        IFS=: read -r contract expected_router <<<"$route"
+        live_evm_value="$(query_evm_router "$contract" "$DUSK_DOMAIN" "EVM remote router")"
+        [ "$live_evm_value" = "0x${expected_router,,}" ] \
+            || fail "Running EVM warp route has the wrong Dusk router; redeploy"
+    done
+    for method in owner beneficiary; do
+        live_evm_value="$(query_evm_address "$evm_igp" "$method" "EVM IGP $method")"
+        [ "$live_evm_value" = "${ANVIL_DEPLOYER,,}" ] \
+            || fail "Running EVM IGP $method differs from the deployment policy; redeploy"
+    done
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
     validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 2
+    [ "$(query_dusk_u32 "$dusk_mailbox" local_domain "Dusk Mailbox local domain")" = "$DUSK_DOMAIN" ] \
+        || fail "Running Dusk Mailbox local domain differs from the saved deployment; redeploy"
     validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"
-    validate_dusk_query "$dusk_test_mock" module_type u8 "Dusk TestMock"
+    [ "$(query_dusk_u8 "$dusk_test_mock" module_type "Dusk TestMock module type")" = "6" ] \
+        || fail "Running Dusk TestMock has the wrong ISM module type; redeploy"
     if [ "$saved_dusk_ism" = "messageIdMultisig" ]; then
         [ -n "$dusk_ism_multisig" ] \
             || fail "Saved multisig deployment lacks its Dusk ISM contract ID; redeploy"
         validate_dusk_state_version "$dusk_ism_multisig" "Dusk multisig ISM"
-        validate_dusk_query "$dusk_ism_multisig" module_type u8 "Dusk multisig ISM"
+        [ "$(query_dusk_u8 "$dusk_ism_multisig" module_type "Dusk multisig ISM module type")" = "5" ] \
+            || fail "Running Dusk multisig ISM has the wrong module type; redeploy"
         expected_default_ism="$dusk_ism_multisig"
     else
         [ -z "$dusk_ism_multisig" ] \
@@ -313,24 +517,98 @@ validate_saved_deployment() {
     live_default_ism="$(query_dusk_bytes32 "$dusk_mailbox" default_ism "Dusk Mailbox default ISM")"
     [ "$live_default_ism" = "${expected_default_ism,,}" ] \
         || fail "Running Dusk Mailbox default ISM does not match saved deployment policy; redeploy"
+    live_default_hook="$(query_dusk_bytes32 "$dusk_mailbox" default_hook "Dusk Mailbox default hook")"
+    [ "$live_default_hook" = "${dusk_igp,,}" ] \
+        || fail "Running Dusk Mailbox default hook is not the saved IGP; redeploy"
+    live_required_hook="$(query_dusk_bytes32 "$dusk_mailbox" required_hook "Dusk Mailbox required hook")"
+    [ "$live_required_hook" = "${dusk_aggregation_hook,,}" ] \
+        || fail "Running Dusk Mailbox required hook is not the saved aggregation hook; redeploy"
+    live_route_value="$(query_dusk_option_bytes32 "$dusk_mailbox" owner "Dusk Mailbox owner")"
+    [ "$live_route_value" = "$saved_account_h256" ] \
+        || fail "Running Dusk Mailbox owner differs from the saved deployment owner; redeploy"
     validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"
-    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 2
-    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"
-    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route"
+    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 4
+    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 2
+    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 3
     validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"
     validate_dusk_state_version "$dusk_igp" "Dusk IGP" 2
     validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"
     validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"
     validate_dusk_state_version "$dusk_test_recipient" "Dusk test recipient"
     validate_dusk_query "$dusk_warp_collateral" mailbox bytes32 "Dusk collateral warp route"
-    validate_dusk_query "$dusk_validator_announce" local_domain u32 "Dusk ValidatorAnnounce"
-    validate_dusk_query "$dusk_igp" hook_type u8 "Dusk IGP"
+    [ "$(query_dusk_u32 "$dusk_validator_announce" local_domain "Dusk ValidatorAnnounce local domain")" = "$DUSK_DOMAIN" ] \
+        || fail "Running Dusk ValidatorAnnounce local domain differs from the Mailbox; redeploy"
+    [ "$(query_dusk_u8 "$dusk_igp" hook_type "Dusk IGP hook type")" = "4" ] \
+        || fail "Running Dusk IGP has the wrong hook type; redeploy"
     live_igp_config="$(query_dusk_domain_gas_config "$dusk_igp" "$saved_igp_domain" "Dusk IGP")"
     [ "$live_igp_config" = "$saved_igp_config" ] \
         || fail "Running Dusk IGP configuration does not match saved deployment policy; redeploy"
-    validate_dusk_query "$dusk_protocol_fee" hook_type u8 "Dusk ProtocolFee"
-    validate_dusk_query "$dusk_aggregation_hook" hook_type u8 "Dusk AggregationHook"
+    [ "$(query_dusk_u8 "$dusk_protocol_fee" hook_type "Dusk ProtocolFee hook type")" = "6" ] \
+        || fail "Running Dusk ProtocolFee has the wrong hook type; redeploy"
+    [ "$(query_dusk_u8 "$dusk_aggregation_hook" hook_type "Dusk AggregationHook hook type")" = "2" ] \
+        || fail "Running Dusk AggregationHook has the wrong hook type; redeploy"
+    [ "$(query_dusk_u8 "$dusk_merkle" hook_type "Dusk MerkleTreeHook hook type")" = "1" ] \
+        || fail "Running Dusk MerkleTreeHook has the wrong hook type; redeploy"
     validate_dusk_query "$dusk_test_recipient" handled_count u32 "Dusk test recipient"
+    for route in "$dusk_warp" "$dusk_warp_native" "$dusk_warp_collateral"; do
+        live_route_value="$(query_dusk_bytes32 "$route" mailbox "Dusk warp route Mailbox")"
+        [ "$live_route_value" = "${dusk_mailbox,,}" ] \
+            || fail "Running Dusk warp route is bound to a different Mailbox; redeploy"
+        live_route_value="$(query_dusk_bytes32 "$route" hook "Dusk warp route hook")"
+        [ "$live_route_value" = "$(printf '%064d' 0)" ] \
+            || fail "Running Dusk warp route hook differs from the saved zero-override policy; redeploy"
+        live_route_value="$(query_dusk_bytes32 "$route" interchain_security_module "Dusk warp route ISM")"
+        [ "$live_route_value" = "$(printf '%064d' 0)" ] \
+            || fail "Running Dusk warp route ISM differs from the saved zero-override policy; redeploy"
+    done
+    live_route_value="$(query_dusk_bytes32_u32 "$dusk_warp" enrolled_router "$EVM_DOMAIN" "Dusk synthetic remote router")"
+    [ "$live_route_value" = "$(pad_evm_address "$evm_token")" ] \
+        || fail "Running Dusk synthetic route has the wrong EVM router; redeploy"
+    live_route_value="$(query_dusk_bytes32_u32 "$dusk_warp_native" enrolled_router "$EVM_DOMAIN" "Dusk native remote router")"
+    [ "$live_route_value" = "$(pad_evm_address "$evm_native_token")" ] \
+        || fail "Running Dusk native route has the wrong EVM router; redeploy"
+    live_route_value="$(query_dusk_bytes32_u32 "$dusk_warp_collateral" enrolled_router "$EVM_DOMAIN" "Dusk collateral remote router")"
+    [ "$live_route_value" = "$(pad_evm_address "$evm_collateral_token")" ] \
+        || fail "Running Dusk collateral route has the wrong EVM router; redeploy"
+    live_route_value="$(query_dusk_bytes32 "$dusk_warp_collateral" wrapped_token "Dusk collateral wrapped token")"
+    [ "$live_route_value" = "${dusk_warp,,}" ] \
+        || fail "Running Dusk collateral route wraps a different token; redeploy"
+    for route in "$dusk_warp" "$dusk_warp_native" "$dusk_warp_collateral"; do
+        live_route_value="$(query_dusk_option_bytes32 "$route" owner "Dusk warp route owner")"
+        [ "$live_route_value" = "$saved_account_h256" ] \
+            || fail "Running Dusk warp route owner differs from the saved deployment owner; redeploy"
+    done
+    for dependency in \
+        "$dusk_validator_announce:mailbox:$dusk_mailbox:ValidatorAnnounce" \
+        "$dusk_igp:mailbox:$dusk_mailbox:IGP" \
+        "$dusk_aggregation_hook:mailbox:$dusk_mailbox:AggregationHook" \
+        "$dusk_merkle:mailbox:$dusk_aggregation_hook:MerkleTreeHook" \
+        "$dusk_protocol_fee:mailbox:$dusk_aggregation_hook:ProtocolFee"; do
+        IFS=: read -r contract method expected label <<<"$dependency"
+        live_route_value="$(query_dusk_bytes32 "$contract" "$method" "Dusk $label dependency")"
+        [ "$live_route_value" = "${expected,,}" ] \
+            || fail "Running Dusk $label dependency differs from the saved topology; redeploy"
+    done
+    for contract in "$dusk_igp" "$dusk_protocol_fee"; do
+        live_route_value="$(query_dusk_option_bytes32 "$contract" owner "Dusk fee hook owner")"
+        [ "$live_route_value" = "$saved_account_h256" ] \
+            || fail "Running Dusk fee hook owner differs from the saved deployment owner; redeploy"
+        live_route_value="$(query_dusk_bytes32 "$contract" beneficiary "Dusk fee hook beneficiary")"
+        [ "$live_route_value" = "$saved_account_h256" ] \
+            || fail "Running Dusk fee hook beneficiary differs from the saved deployment owner; redeploy"
+    done
+    if [ "$saved_dusk_ism" = "messageIdMultisig" ]; then
+        live_route_value="$(query_dusk_option_bytes32 "$dusk_ism_multisig" owner "Dusk multisig ISM owner")"
+        [ "$live_route_value" = "$saved_account_h256" ] \
+            || fail "Running Dusk multisig ISM owner differs from the saved deployment owner; redeploy"
+    fi
+    [ "$(query_dusk_u64 "$dusk_protocol_fee" protocol_fee "Dusk protocol fee")" = "1000000" ] \
+        || fail "Running Dusk protocol fee differs from the deployment policy; redeploy"
+    [ "$(query_dusk_u64 "$dusk_protocol_fee" max_protocol_fee "Dusk maximum protocol fee")" = "100000000" ] \
+        || fail "Running Dusk maximum protocol fee differs from the deployment policy; redeploy"
+    expected_children="$(jq -cn --arg merkle "${dusk_merkle,,}" --arg fee "${dusk_protocol_fee,,}" '[$merkle, $fee]')"
+    [ "$(query_dusk_contract_id_list "$dusk_aggregation_hook" hooks "Dusk aggregation hook children")" = "$expected_children" ] \
+        || fail "Running Dusk aggregation hook children differ from the saved topology; redeploy"
 }
 
 # ── Check for existing deployment ────────────────────────────────────────────
@@ -574,26 +852,40 @@ info "  TestRecipient:  $DUSK_TEST_RECIPIENT"
 
 header "Fund Dusk Dispatch Fees"
 
-step "Funding WarpDrc20 Mailbox fee credit ($DUSK_DISPATCH_FEE_CREDIT LUX)..."
-DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
-    --rues-url "$DUSK_RUES_URL" \
-    --keys "$CONSENSUS_KEYS" \
-    --mailbox "$DUSK_MAILBOX" \
-    --payer "$DUSK_WARP" \
-    --amount "$DUSK_DISPATCH_FEE_CREDIT" \
-    >/dev/null || fail "Failed to fund WarpDrc20 dispatch fees"
-ok "WarpDrc20 dispatch fees funded"
-for route in "$DUSK_WARP_NATIVE" "$DUSK_WARP_COLLATERAL"; do
-    step "Funding route dispatch fees (${route:0:16}...)..."
+ensure_dispatch_credit() {
+    local route="$1"
+    local label="$2"
+    local response current deficit
+
+    response=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" \
+        --contract "$DUSK_MAILBOX" \
+        --method fee_credit \
+        --return-type u64 \
+        --arg-bytes32 "$route" 2>/dev/null) \
+        || fail "Cannot query $label dispatch fee credit"
+    current=$(jq -er '.value | tonumber' <<<"$response") \
+        || fail "$label returned malformed dispatch fee credit"
+    if [ "$current" -ge "$DUSK_DISPATCH_FEE_CREDIT" ]; then
+        ok "$label dispatch fee credit already satisfies target ($current LUX)"
+        return 0
+    fi
+
+    deficit=$((DUSK_DISPATCH_FEE_CREDIT - current))
+    step "Funding $label dispatch fee deficit ($deficit LUX)..."
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" fund-dispatch \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
         --mailbox "$DUSK_MAILBOX" \
         --payer "$route" \
-        --amount "$DUSK_DISPATCH_FEE_CREDIT" \
-        >/dev/null || fail "Failed to fund route dispatch fees"
-done
-ok "Native and collateral dispatch fees funded"
+        --amount "$deficit" \
+        >/dev/null || fail "Failed to fund $label dispatch fee deficit"
+    ok "$label dispatch fee credit brought to target"
+}
+
+ensure_dispatch_credit "$DUSK_WARP" "WarpDrc20"
+ensure_dispatch_credit "$DUSK_WARP_NATIVE" "WarpNative"
+ensure_dispatch_credit "$DUSK_WARP_COLLATERAL" "WarpCollateral"
 
 # ── Enroll Remote Routers ────────────────────────────────────────────────────
 

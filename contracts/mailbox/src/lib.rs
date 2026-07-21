@@ -148,6 +148,10 @@ mod mailbox {
                 required_hook != ZERO_CONTRACT,
                 "Mailbox: required hook cannot be zero"
             );
+            assert!(
+                default_hook != required_hook,
+                "Mailbox: default and required hooks must differ"
+            );
             self.local_domain = local_domain;
             self.owner = Some(owner);
             self.default_ism = default_ism;
@@ -267,6 +271,10 @@ mod mailbox {
             } else {
                 hook
             };
+            assert!(
+                hook != self.required_hook,
+                "Mailbox: selected hook cannot equal required hook"
+            );
 
             // Determine the sender: the contract that called us.
             let sender = Self::resolve_sender();
@@ -550,6 +558,10 @@ mod mailbox {
             } else {
                 hook
             };
+            assert!(
+                hook != self.required_hook,
+                "Mailbox: selected hook cannot equal required hook"
+            );
 
             let sender = Self::resolve_sender();
             let encoded = message::encode(
@@ -606,6 +618,10 @@ mod mailbox {
         pub fn set_default_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");
+            assert!(
+                hook != self.required_hook,
+                "Mailbox: default and required hooks must differ"
+            );
             self.default_hook = hook;
             abi::emit(
                 events::DefaultHookSet::TOPIC,
@@ -619,6 +635,10 @@ mod mailbox {
         pub fn set_required_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");
+            assert!(
+                hook != self.default_hook,
+                "Mailbox: default and required hooks must differ"
+            );
             self.required_hook = hook;
             abi::emit(
                 events::RequiredHookSet::TOPIC,

@@ -201,10 +201,10 @@ mod warp_native {
             self.pending_total
         }
 
-        /// Storage/escrow ABI version for deployment compatibility checks.
+        /// Deployment compatibility version including dispatch-credit withdrawal.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            1
+            2
         }
 
         // =================================================================

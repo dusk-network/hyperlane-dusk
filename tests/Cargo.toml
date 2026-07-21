@@ -25,6 +25,7 @@ rand = { workspace = true }
 rkyv = { workspace = true, features = ["validation"] }
 rusk-prover = { workspace = true }
 wasmtime = { workspace = true }
+secp256k1 = { version = "0.31.1", features = ["recovery"] }
 
 # Pin to avoid edition2024 issues (no blake2b_simd pin — let cargo resolve
 # both versions needed by crates.io dusk-core and local dusk-core)
