@@ -36,8 +36,51 @@ tracked-source secret hygiene, and the full Dusk agent/base/validator/relayer/
 scraper/lander compile surface. Durable log:
 `/tmp/hyperlane-base-reentry-9058755.log`, SHA-256
 `16ac8e62d2d8c5952a9363c90f77e15ff756043a102302780f0f9e272a166d62`.
-The combined stack and live E2E anchors remain pending; all evidence below
-predates the reentrancy fix.
+The combined withdrawal-stack runtime anchor
+`dc8aba07773993878edd81735d59e66beddd66a3` was then reproduced from the
+same frozen layout and monorepo head. Its uninterrupted gate passed all 13
+contract WASM builds, production-contract clippy, 29 type tests, 115 VM tests,
+19 `dusk-tx` tests, 7 data-driver tests, release data-driver WASM, the
+standalone E2E operator build, tracked-source secret hygiene, and the full Dusk
+agent/base/validator/relayer/scraper/lander compile surface. Durable log:
+`/tmp/hyperlane-stack-repro-dc8aba0-green.log`, SHA-256
+`03de4d4e1597c8136e9a00bbb74e7fbbe290b5b2fa3e8cb8d82e004a31f640fb`.
+
+Fresh live runs used that exact stack runtime, monorepo
+`6ef326b8a926d262714afd315960b26e441c7b40`, and frozen Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. Both runs proved the live
+owner-only one-LUX dispatch-credit withdrawal before using the remaining
+route credit; bidirectional synthetic delivery; protocol-fee collection;
+native DUSK exact lock/release custody; canonical DRC20 exact allowance,
+lock, and release custody; and clean teardown.
+
+- TestMock run `1784638666`: log
+  `/tmp/hyperlane-stack-e2e-testmock-dc8aba0-6ef326b-1784638493.log`, SHA-256
+  `a195ea9f8c7e47e8c27c2e1ad728d83b9af0a23ff2ca79c59b52fd37fe5683bc`.
+- MessageIdMultisig run `1784639741`: log
+  `/tmp/hyperlane-stack-e2e-multisig-dc8aba0-6ef326b-1784639731.log`, SHA-256
+  `9d7a6db2e3599591c8c364d44187a61f9bb7b30b3067c058812fa2480cef85c9`.
+  Fetched checkpoints through index 2 used only validator
+  `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` in both directions.
+
+Post-run audit found no known development private key, no `nonce too low` or
+replacement-underpriced error, no generated signer/config run directory, no
+orphan test agent, and no listener on ports 8080, 8545, 5173, or 5100. Older
+evidence below remains regression history rather than evidence for this
+runtime anchor.
+
+The same exact runtime then passed the sequential fail-closed live suite:
+dirty deterministic redeploy refusal (`1784640786`), delayed validator
+checkpoint (`1784641180`), corrupted checkpoint rejection and restore
+(`1784641743`), unfunded Dusk signer rejection and funded recovery
+(`1784642252`), origin RPC outage and recovery (`1784642708`), destination RPC
+outage and recovery (`1784643165`), concurrent duplicate-relayer stability
+(`1784643621`), and five-message relayer restart/backlog recovery
+(`1784644080`). Aggregate log:
+`/tmp/hyperlane-stack-fault-e2e-dc8aba0-6ef326b.log`, SHA-256
+`6841c405430020027665ba37d282cf63724b32605407e40ab68b2318a7b0378b`.
+Post-suite audit found no known development private key, generated run
+directory, orphan test agent, or listener on the service and metrics ports.
 
 The same review found that the proposed `pull_request_target` policy wrapper
 passed the proposed checkout to trusted scripts that subsequently executed

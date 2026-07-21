@@ -1,9 +1,9 @@
 # Production Review Decisions
 
 > The reopened candidate and its replacement-evidence requirements are defined
-> in `CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md`. Head-specific evidence and
-> older version numbers below are historical until this document is refreshed
-> after the new frozen heads pass validation.
+> in `CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md`. The current runtime anchors
+> and replacement evidence are recorded in the newest `TEST_REPORT.md`
+> section. Older links below remain regression history only.
 
 This file is the reviewer-facing decision record for the Dusk Hyperlane
 revival. It should be updated when reviewers accept a recommendation or request
@@ -142,12 +142,17 @@ Evidence:
   tests.
 - Direct and all three owner-proxied VM withdrawal receipts are asserted below
   the documented 30,000,000-gas CLI default on the pinned current Rusk runtime.
-- Clean-current-Rusk reproduction at implementation anchor
-  `183b56a875e5c2962ef621937258b8e497baef2a`: 12 WASMs, production contract
-  clippy, 29 type tests, 100 VM tests, 7 data-driver tests, 18 `dusk-tx` tests,
-  release data-driver WASM, standalone E2E host build, and tracked-source
-  secret hygiene all pass. The exact log SHA256 is
-  `4b70209aeddd30fe161a71d5b83110d3b7c5a7de9a42d02e6b4e1d1fcb2f2e69`.
+- Clean-current-Rusk reproduction at withdrawal-stack runtime anchor
+  `dc8aba07773993878edd81735d59e66beddd66a3`: 13 WASMs, production contract
+  clippy, 29 type tests, 115 VM tests, 7 data-driver tests, 19 `dusk-tx` tests,
+  release data-driver WASM, standalone E2E host build, secret hygiene, and the
+  full companion-agent compile all pass. The exact log SHA256 is
+  `03de4d4e1597c8136e9a00bbb74e7fbbe290b5b2fa3e8cb8d82e004a31f640fb`.
+- Fresh TestMock and MessageIdMultisig live runs at the same runtime anchor
+  prove owner-only withdrawal followed by successful use of the remaining
+  route credit, bidirectional delivery, protocol fees, and exact native and
+  canonical-DRC20 custody. Their immutable anchors and hashes are in the newest
+  `TEST_REPORT.md` section.
 
 ### Pending Escrow Without Admin Drain
 
@@ -272,12 +277,13 @@ Current implementation:
 
 - Every deployed Dusk contract exposes an explicit `state_version()`.
   MerkleTreeHook, TestMock, MessageIdMultisigISM, ValidatorAnnounce,
-  ProtocolFee, AggregationHook, WarpNative, WarpDrc20Collateral, and
-  TestRecipient require version 1. Mailbox requires version 3 on this stacked
-  PR: version 2 adds the dispatch reentrancy guard, while version 3 also
-  requires the beneficiary withdrawal ABI. WarpDrc20 requires version 2 after
-  adding aggregate pending synthetic supply capacity. IGP requires version 2
-  because unknown destinations and zero pricing now fail closed.
+  ProtocolFee, AggregationHook, and TestRecipient require version 1. On this
+  stacked PR, Mailbox requires version 3, WarpDrc20 version 4,
+  WarpDrc20Collateral version 3, WarpNative version 2, and IGP version 2.
+  These versions jointly cover the dispatch reentrancy guard, beneficiary
+  withdrawal ABI, canonical principal/account-key storage, pending synthetic
+  supply capacity, route withdrawal proxies, canonical collateral ABI, and
+  fail-closed IGP pricing.
 - Existing serialized instances are not treated as compatible. Both demo
   `--skip-deploy` reuse boundaries validate the complete contract-version
   matrix and fail closed when any version is absent or unexpected. Semantic
