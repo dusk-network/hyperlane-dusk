@@ -19,24 +19,40 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::used_underscore_binding)]
 #![allow(clippy::module_name_repetitions)]
 
 /// Hyperlane Mailbox contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::DefaultHookSet,
+    events::DefaultIsmSet,
+    events::Dispatch,
+    events::DispatchFeeFunded,
+    events::DispatchFeePaid,
+    events::DispatchId,
+    events::Initialized,
+    events::OwnershipRenounced,
+    events::OwnershipTransferred,
+    events::Process,
+    events::ProcessId,
+    events::RequiredHookSet,
+])]
 mod mailbox {
     extern crate alloc;
 
     use alloc::collections::BTreeMap;
+    use alloc::string::String;
     use alloc::vec::Vec;
 
-    use dusk_bytes::Serializable;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
-    use dusk_core::transfer::TRANSFER_CONTRACT;
+    use dusk_core::transfer::{ContractToContract, ReceiveFromContract, TRANSFER_CONTRACT};
 
+    use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
-    use hyperlane_dusk_types::{DeliveryRecord, H256, MessageId, VERSION};
+    use hyperlane_dusk_types::{DeliveryRecord, MessageId, H256, VERSION};
 
     // =====================================================================
     // Constants
@@ -55,6 +71,8 @@ mod mailbox {
         local_domain: u32,
         /// Monotonically increasing nonce for outbound messages.
         nonce: u32,
+        /// Prevents hook callbacks from recursively entering dispatch.
+        dispatching: bool,
         /// The ID of the most recently dispatched message.
         latest_dispatched_id: MessageId,
         /// The default Interchain Security Module.
@@ -65,8 +83,10 @@ mod mailbox {
         required_hook: ContractId,
         /// Map of message ID -> delivery record for processed messages.
         delivered: BTreeMap<MessageId, DeliveryRecord>,
-        /// Contract owner (can update ISM/hooks).
-        owner: Option<ContractId>,
+        /// Owner identity (Moonlight account hash or contract ID).
+        owner: Option<H256>,
+        /// Native DUSK fee credits keyed by encoded message sender identity.
+        fee_credits: BTreeMap<H256, u64>,
         /// Encoded messages indexed by nonce (for off-chain agent indexing).
         dispatched_messages: Vec<Vec<u8>>,
         /// Dispatch block heights indexed by nonce (for off-chain agent indexing).
@@ -87,12 +107,14 @@ mod mailbox {
             Self {
                 local_domain: 0,
                 nonce: 0,
+                dispatching: false,
                 latest_dispatched_id: [0u8; 32],
                 default_ism: ZERO_CONTRACT,
                 default_hook: ZERO_CONTRACT,
                 required_hook: ZERO_CONTRACT,
                 delivered: BTreeMap::new(),
                 owner: None,
+                fee_credits: BTreeMap::new(),
                 dispatched_messages: Vec::new(),
                 dispatched_block_heights: Vec::new(),
                 processed_ids: Vec::new(),
@@ -102,27 +124,129 @@ mod mailbox {
 
         /// Initialize the Mailbox with domain and configuration.
         ///
-        /// Must be called once after deployment. Panics if already
-        /// initialized (owner is set).
+        /// Must be called once during deployment. Panics if already
+        /// initialized. The configuration sentinel remains set after ownership
+        /// is renounced, so renunciation cannot reopen initialization even if a
+        /// future runtime permits calling `init` after deployment.
         pub fn init(
             &mut self,
             local_domain: u32,
-            owner: ContractId,
+            owner: H256,
             default_ism: ContractId,
             default_hook: ContractId,
             required_hook: ContractId,
         ) {
-            assert!(self.owner.is_none(), "Mailbox: already initialized");
+            assert!(
+                self.owner.is_none() && self.default_ism == ZERO_CONTRACT,
+                "Mailbox: already initialized"
+            );
+            assert!(owner != [0u8; 32], "Mailbox: owner cannot be zero");
+            assert!(
+                default_ism != ZERO_CONTRACT,
+                "Mailbox: default ISM cannot be zero"
+            );
+            assert!(
+                default_hook != ZERO_CONTRACT,
+                "Mailbox: default hook cannot be zero"
+            );
+            assert!(
+                required_hook != ZERO_CONTRACT,
+                "Mailbox: required hook cannot be zero"
+            );
+            assert!(
+                default_hook != required_hook,
+                "Mailbox: default and required hooks must differ"
+            );
             self.local_domain = local_domain;
             self.owner = Some(owner);
             self.default_ism = default_ism;
             self.default_hook = default_hook;
             self.required_hook = required_hook;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_MAILBOX,
+                    owner,
+                    mailbox: ZERO_CONTRACT.to_bytes(),
+                    local_domain,
+                },
+            );
+            abi::emit(
+                events::DefaultIsmSet::TOPIC,
+                events::DefaultIsmSet {
+                    module: default_ism.to_bytes(),
+                },
+            );
+            abi::emit(
+                events::DefaultHookSet::TOPIC,
+                events::DefaultHookSet {
+                    hook: default_hook.to_bytes(),
+                },
+            );
+            abi::emit(
+                events::RequiredHookSet::TOPIC,
+                events::RequiredHookSet {
+                    hook: required_hook.to_bytes(),
+                },
+            );
         }
 
         // =================================================================
         // Core: dispatch
         // =================================================================
+
+        /// Deposit native DUSK into the dispatch-fee credit for `payer`.
+        ///
+        /// Anyone may fund an identity, but only dispatches whose encoded
+        /// sender equals `payer` can consume the credit.
+        pub fn fund_dispatch(&mut self, payer: H256, amount: u64) {
+            assert!(payer != [0u8; 32], "Mailbox: payer cannot be zero");
+            assert!(amount > 0, "Mailbox: funding amount is zero");
+            let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &amount)
+                .expect("Mailbox: fee deposit failed");
+            let credit = self.fee_credits.entry(payer).or_insert(0);
+            *credit = credit
+                .checked_add(amount)
+                .expect("Mailbox: fee credit overflow");
+            abi::emit(
+                events::DispatchFeeFunded::TOPIC,
+                events::DispatchFeeFunded { payer, amount },
+            );
+        }
+
+        /// Accept native DUSK sent by a contract and credit that exact contract.
+        ///
+        /// The transfer contract supplies the declared source; requiring an
+        /// authentic nested transfer callback prevents a root caller from
+        /// forging it. Warp routes use this callback to contribute each user's
+        /// dispatch quote immediately before dispatch.
+        pub fn receive_dispatch_funding(&mut self, transfer: ReceiveFromContract) {
+            assert!(
+                caller::authentic_transfer_callback(transfer.contract, transfer.contract),
+                "Mailbox: unauthenticated dispatch funding"
+            );
+            assert!(
+                transfer.contract != TRANSFER_CONTRACT,
+                "Mailbox: invalid dispatch funding source"
+            );
+            assert!(
+                transfer.data.is_empty(),
+                "Mailbox: unexpected dispatch funding data"
+            );
+            assert!(transfer.value > 0, "Mailbox: funding amount is zero");
+            let payer = transfer.contract.to_bytes();
+            let credit = self.fee_credits.entry(payer).or_insert(0);
+            *credit = credit
+                .checked_add(transfer.value)
+                .expect("Mailbox: fee credit overflow");
+            abi::emit(
+                events::DispatchFeeFunded::TOPIC,
+                events::DispatchFeeFunded {
+                    payer,
+                    amount: transfer.value,
+                },
+            );
+        }
 
         /// Dispatch a message to a destination chain.
         ///
@@ -144,9 +268,15 @@ mod mailbox {
             } else {
                 hook
             };
+            assert!(
+                hook != self.required_hook,
+                "Mailbox: selected hook cannot equal required hook"
+            );
+            assert!(!self.dispatching, "Mailbox: dispatch reentrancy");
+            self.dispatching = true;
 
             // Determine the sender: the contract that called us.
-            let sender = self.resolve_sender();
+            let sender = Self::resolve_sender();
 
             // Build the packed message.
             let encoded = message::encode(
@@ -160,11 +290,39 @@ mod mailbox {
             );
             let id = message::id(&encoded);
 
+            // Quote and reserve value before mutating dispatch state. Any
+            // later failed hook/payment interaction reverts the whole call.
+            let required_fee = Self::quote_hook(
+                self.required_hook,
+                metadata.clone(),
+                encoded.clone(),
+                "Mailbox: required hook quote failed",
+            );
+            let hook_fee = Self::quote_hook(
+                hook,
+                metadata.clone(),
+                encoded.clone(),
+                "Mailbox: hook quote failed",
+            );
+            let total_fee = required_fee
+                .checked_add(hook_fee)
+                .expect("Mailbox: fee overflow");
+            if total_fee > 0 {
+                let credit = self.fee_credits.get(&sender).copied().unwrap_or(0);
+                assert!(credit >= total_fee, "Mailbox: insufficient fee credit");
+                let remaining = credit - total_fee;
+                if remaining == 0 {
+                    self.fee_credits.remove(&sender);
+                } else {
+                    self.fee_credits.insert(sender, remaining);
+                }
+            }
+
             // Effects
             self.latest_dispatched_id = id;
             self.dispatched_messages.push(encoded.clone());
             self.dispatched_block_heights.push(abi::block_height());
-            self.nonce += 1;
+            self.nonce = self.nonce.checked_add(1).expect("Mailbox: nonce overflow");
 
             // Emit events
             abi::emit(
@@ -180,20 +338,39 @@ mod mailbox {
                 events::DispatchId::TOPIC,
                 events::DispatchId { message_id: id },
             );
+            if total_fee > 0 {
+                abi::emit(
+                    events::DispatchFeePaid::TOPIC,
+                    events::DispatchFeePaid {
+                        payer: sender,
+                        message_id: id,
+                        amount: total_fee,
+                    },
+                );
+            }
 
             // Interactions: call hooks
             // Required hook first
-            let _: () = abi::call(
+            Self::call_hook_with_payment(
                 self.required_hook,
-                "post_dispatch",
-                &(metadata.clone(), encoded.clone()),
-            )
-            .expect("Mailbox: required hook post_dispatch failed");
+                metadata.clone(),
+                encoded.clone(),
+                required_fee,
+                "Mailbox: required hook post_dispatch failed",
+                "Mailbox: required hook payment failed",
+            );
 
             // Default/custom hook
-            let _: () = abi::call(hook, "post_dispatch", &(metadata, encoded))
-                .expect("Mailbox: hook post_dispatch failed");
+            Self::call_hook_with_payment(
+                hook,
+                metadata,
+                encoded,
+                hook_fee,
+                "Mailbox: hook post_dispatch failed",
+                "Mailbox: hook payment failed",
+            );
 
+            self.dispatching = false;
             id
         }
 
@@ -217,13 +394,9 @@ mod mailbox {
         /// ISM) and then calls `handle` on the recipient contract.
         pub fn process(&mut self, metadata: Vec<u8>, encoded_message: Vec<u8>) {
             // Decode and validate the message.
-            let msg = message::decode(&encoded_message)
-                .expect("Mailbox: invalid message encoding");
+            let msg = message::decode(&encoded_message).expect("Mailbox: invalid message encoding");
 
-            assert!(
-                msg.version == VERSION,
-                "Mailbox: bad version"
-            );
+            assert!(msg.version == VERSION, "Mailbox: bad version");
             assert!(
                 msg.destination == self.local_domain,
                 "Mailbox: unexpected destination"
@@ -245,12 +418,7 @@ mod mailbox {
             self.processed_block_heights.push(block_height);
 
             // Mark as delivered BEFORE external calls (checks-effects-interactions).
-            self.delivered.insert(
-                id,
-                DeliveryRecord {
-                    block_height,
-                },
-            );
+            self.delivered.insert(id, DeliveryRecord { block_height });
 
             // Emit events
             abi::emit(
@@ -267,21 +435,13 @@ mod mailbox {
             );
 
             // Verify via ISM
-            let verified: bool = abi::call(
-                ism,
-                "verify",
-                &(metadata, encoded_message),
-            )
-            .expect("Mailbox: ISM call failed");
+            let verified: bool = abi::call(ism, "verify", &(metadata, encoded_message))
+                .expect("Mailbox: ISM call failed");
             assert!(verified, "Mailbox: ISM verification failed");
 
             // Deliver to recipient
-            let _: () = abi::call(
-                recipient_id,
-                "handle",
-                &(msg.origin, msg.sender, msg.body),
-            )
-            .expect("Mailbox: recipient handle failed");
+            let _: () = abi::call(recipient_id, "handle", &(msg.origin, msg.sender, msg.body))
+                .expect("Mailbox: recipient handle failed");
         }
 
         // =================================================================
@@ -312,9 +472,7 @@ mod mailbox {
         ///
         /// Returns 0 if the message hasn't been delivered.
         pub fn delivered_at(&self, id: MessageId) -> u64 {
-            self.delivered
-                .get(&id)
-                .map_or(0, |d| d.block_height)
+            self.delivered.get(&id).map_or(0, |d| d.block_height)
         }
 
         /// Returns the encoded dispatched message at the given nonce.
@@ -347,7 +505,7 @@ mod mailbox {
 
         /// Returns the number of messages that have been processed (delivered).
         pub fn processed_count(&self) -> u32 {
-            self.processed_ids.len() as u32
+            u32::try_from(self.processed_ids.len()).expect("Mailbox: processed count overflow")
         }
 
         /// Returns the default ISM contract ID.
@@ -365,9 +523,20 @@ mod mailbox {
             self.required_hook
         }
 
-        /// Returns the owner contract ID.
-        pub fn owner(&self) -> Option<ContractId> {
+        /// Returns the native DUSK dispatch-fee credit for `payer`.
+        pub fn fee_credit(&self, payer: H256) -> u64 {
+            self.fee_credits.get(&payer).copied().unwrap_or(0)
+        }
+
+        /// Returns the owner identity.
+        pub fn owner(&self) -> Option<H256> {
             self.owner
+        }
+
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            2
         }
 
         /// Compute a quote for dispatching a message.
@@ -381,13 +550,64 @@ mod mailbox {
             metadata: Vec<u8>,
             hook: ContractId,
         ) -> u64 {
+            self.quote_dispatch_for_sender(
+                Self::resolve_sender(),
+                destination,
+                recipient,
+                body,
+                metadata,
+                hook,
+            )
+        }
+
+        /// Compute a dispatch quote for the immediate calling contract.
+        ///
+        /// Unlike [`Self::quote_dispatch`], this is safe to call through a
+        /// top-level read-only route query: the route itself is the immediate
+        /// caller even when no Moonlight transaction origin exists.
+        pub fn quote_dispatch_for_contract(
+            &self,
+            destination: u32,
+            recipient: H256,
+            body: Vec<u8>,
+            metadata: Vec<u8>,
+            hook: ContractId,
+        ) -> u64 {
+            let contract = abi::caller().expect("Mailbox: contract quote caller unavailable");
+            assert!(
+                contract != TRANSFER_CONTRACT,
+                "Mailbox: contract quote requires contract caller"
+            );
+            self.quote_dispatch_for_sender(
+                contract.to_bytes(),
+                destination,
+                recipient,
+                body,
+                metadata,
+                hook,
+            )
+        }
+
+        /// Compute a quote for a resolved sender.
+        fn quote_dispatch_for_sender(
+            &self,
+            sender: H256,
+            destination: u32,
+            recipient: H256,
+            body: Vec<u8>,
+            metadata: Vec<u8>,
+            hook: ContractId,
+        ) -> u64 {
             let hook = if hook == ZERO_CONTRACT {
                 self.default_hook
             } else {
                 hook
             };
+            assert!(
+                hook != self.required_hook,
+                "Mailbox: selected hook cannot equal required hook"
+            );
 
-            let sender = self.resolve_sender();
             let encoded = message::encode(
                 VERSION,
                 self.nonce,
@@ -405,14 +625,12 @@ mod mailbox {
             )
             .expect("Mailbox: required hook quote failed");
 
-            let hook_fee: u64 = abi::call(
-                hook,
-                "quote_dispatch",
-                &(metadata, encoded),
-            )
-            .expect("Mailbox: hook quote failed");
+            let hook_fee: u64 = abi::call(hook, "quote_dispatch", &(metadata, encoded))
+                .expect("Mailbox: hook quote failed");
 
-            required_fee + hook_fee
+            required_fee
+                .checked_add(hook_fee)
+                .expect("Mailbox: fee overflow")
         }
 
         /// Resolve the ISM for a given recipient.
@@ -444,6 +662,10 @@ mod mailbox {
         pub fn set_default_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");
+            assert!(
+                hook != self.required_hook,
+                "Mailbox: default and required hooks must differ"
+            );
             self.default_hook = hook;
             abi::emit(
                 events::DefaultHookSet::TOPIC,
@@ -457,6 +679,10 @@ mod mailbox {
         pub fn set_required_hook(&mut self, hook: ContractId) {
             self.only_owner();
             assert!(hook != ZERO_CONTRACT, "Mailbox: hook cannot be zero");
+            assert!(
+                hook != self.default_hook,
+                "Mailbox: default and required hooks must differ"
+            );
             self.required_hook = hook;
             abi::emit(
                 events::RequiredHookSet::TOPIC,
@@ -467,15 +693,29 @@ mod mailbox {
         }
 
         /// Transfer ownership. Owner only.
-        pub fn transfer_ownership(&mut self, new_owner: ContractId) {
+        pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(new_owner != [0u8; 32], "Mailbox: new owner cannot be zero");
+            let previous_owner = self.owner.expect("Mailbox: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner,
+                    new_owner,
+                },
+            );
         }
 
         /// Renounce ownership. Owner only.
         pub fn renounce_ownership(&mut self) {
             self.only_owner();
+            let previous_owner = self.owner.expect("Mailbox: no owner set");
             self.owner = None;
+            abi::emit(
+                events::OwnershipRenounced::TOPIC,
+                events::OwnershipRenounced { previous_owner },
+            );
         }
 
         // =================================================================
@@ -488,23 +728,45 @@ mod mailbox {
         /// - **Direct Moonlight TX**: the transfer contract is the immediate
         ///   caller; we look up the BLS public key of the transaction origin
         ///   via `abi::public_sender()` and keccak256-hash it to H256.
-        fn resolve_sender(&self) -> H256 {
-            match abi::caller() {
-                Some(id) if id == TRANSFER_CONTRACT => {
-                    // Direct Moonlight transaction — derive sender from
-                    // the BLS public key of the account that signed the TX.
-                    let pk = abi::public_sender()
-                        .expect("Mailbox: shielded transactions not supported");
-                    message::keccak256(&pk.to_bytes())
-                }
-                Some(id) => {
-                    // Inter-contract call — sender is the calling contract.
-                    id.to_bytes()
-                }
-                None => {
-                    panic!("Mailbox: cannot determine sender")
-                }
+        fn resolve_sender() -> H256 {
+            caller::effective_caller()
+        }
+
+        /// Quote one post-dispatch hook.
+        fn quote_hook(
+            hook: ContractId,
+            metadata: Vec<u8>,
+            encoded_message: Vec<u8>,
+            error: &str,
+        ) -> u64 {
+            abi::call(hook, "quote_dispatch", &(metadata, encoded_message)).expect(error)
+        }
+
+        /// Invoke a hook, then transfer its exact quoted DUSK payment through
+        /// the transfer contract. Value-bearing hooks authenticate and record
+        /// the resulting `receive_payment` callback.
+        fn call_hook_with_payment(
+            hook: ContractId,
+            metadata: Vec<u8>,
+            encoded_message: Vec<u8>,
+            fee: u64,
+            post_dispatch_error: &str,
+            payment_error: &str,
+        ) {
+            let _: () = abi::call(hook, "post_dispatch", &(metadata, encoded_message))
+                .expect(post_dispatch_error);
+            if fee == 0 {
+                return;
             }
+
+            let transfer = ContractToContract {
+                contract: hook,
+                value: fee,
+                fn_name: String::from("receive_payment"),
+                data: Vec::new(),
+            };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_contract", &transfer)
+                .expect(payment_error);
         }
 
         /// Resolve the ISM for a recipient.
@@ -525,9 +787,11 @@ mod mailbox {
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller = abi::caller().expect("Mailbox: cannot determine caller");
             let owner = self.owner.expect("Mailbox: no owner set");
-            assert!(caller == owner, "Mailbox: caller is not the owner");
+            assert!(
+                caller::effective_caller() == owner,
+                "Mailbox: caller is not the owner"
+            );
         }
     }
 }

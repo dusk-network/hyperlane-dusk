@@ -91,7 +91,7 @@ pub const ZERO_HASHES: [[u8; 32]; TREE_DEPTH + 1] = [
     [39, 174, 91, 160, 141, 114, 145, 201, 108, 140, 189, 220, 193, 72, 191, 72, 166, 214, 140, 121, 116, 185, 67, 86, 245, 55, 84, 239, 97, 113, 215, 87],
 ];
 
-/// The root of an empty tree (Z_32).
+/// The root of an empty tree (`Z_32`).
 pub const INITIAL_ROOT: [u8; 32] = ZERO_HASHES[TREE_DEPTH];
 
 /// An incremental Merkle tree with depth 32 and keccak256 hashing.
@@ -151,11 +151,11 @@ impl IncrementalMerkle {
         let mut node = [0u8; 32];
         let mut size = self.count as usize;
 
-        for i in 0..TREE_DEPTH {
+        for (i, zero_hash) in ZERO_HASHES.iter().take(TREE_DEPTH).enumerate() {
             if (size & 1) == 1 {
                 node = hash_pair(self.branch[i], node);
             } else {
-                node = hash_pair(node, ZERO_HASHES[i]);
+                node = hash_pair(node, *zero_hash);
             }
             size /= 2;
         }
@@ -172,6 +172,12 @@ impl IncrementalMerkle {
             return None;
         }
         Some((self.root(), self.count - 1))
+    }
+}
+
+impl Default for IncrementalMerkle {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

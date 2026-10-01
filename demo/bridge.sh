@@ -85,7 +85,7 @@ if [ ! -f "$BRIDGE_STATE_FILE" ]; then
     fail "No deployment found at $BRIDGE_STATE_FILE
 
   Deploy first:
-    bash demo/deploy.sh"
+    bash demo/deploy.sh --dusk-ism testMock"
 fi
 
 # Parse state
@@ -209,14 +209,21 @@ cmd_to_dusk() {
 
     # Step 3: Deliver to Dusk
     step "Processing message on Dusk Mailbox..."
-    "$DUSK_TX" process \
+    local dusk_process_result dusk_process_error dusk_process_tx
+    if ! dusk_process_result=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" process \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --mailbox "$DUSK_MAILBOX" \
-        --message "$relay_msg" \
-        2>&1 >/dev/null || fail "Dusk process failed"
+        --message "$relay_msg"); then
+        dusk_process_error=$(echo "$dusk_process_result" | jq -r '.error // empty' 2>/dev/null || true)
+        [ -n "$dusk_process_error" ] && fail "Dusk process failed: $dusk_process_error"
+        fail "Dusk process failed; do not retry until the prepared TX hash printed above is reconciled"
+    fi
+    dusk_process_tx=$(echo "$dusk_process_result" \
+        | jq -er '.tx_id | strings | select(test("^[0-9a-fA-F]{64}$"))') \
+        || fail "Dusk process returned success without a canonical tx_id; stop and reconcile the prepared hash before continuing"
     ok "Message processed on Dusk!"
+    echo -e "  ${DIM}Dusk TX: $dusk_process_tx${NC}"
 
     # Wait for Dusk block (~10s block time)
     step "Waiting for Dusk block confirmation..."
@@ -268,16 +275,23 @@ cmd_to_evm() {
     evm_recipient_pad32=$(pad_evm_address "$ANVIL_DEPLOYER")
 
     step "Calling WarpDrc20.transfer_remote(domain=$EVM_DOMAIN, amount=$amount_wei)..."
-    "$DUSK_TX" transfer-remote \
+    local dusk_transfer_result dusk_transfer_error dusk_transfer_tx
+    if ! dusk_transfer_result=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
-        --password "$CONSENSUS_PASSWORD" \
         --warp-contract "$DUSK_WARP" \
         --destination "$EVM_DOMAIN" \
         --recipient "$evm_recipient_pad32" \
-        --amount "$amount_wei" \
-        2>&1 > /dev/null || fail "Dusk transfer_remote failed"
+        --amount "$amount_wei"); then
+        dusk_transfer_error=$(echo "$dusk_transfer_result" | jq -r '.error // empty' 2>/dev/null || true)
+        [ -n "$dusk_transfer_error" ] && fail "Dusk transfer_remote failed: $dusk_transfer_error"
+        fail "Dusk transfer_remote failed; do not retry until the prepared TX hash printed above is reconciled"
+    fi
+    dusk_transfer_tx=$(echo "$dusk_transfer_result" \
+        | jq -er '.tx_id | strings | select(test("^[0-9a-fA-F]{64}$"))') \
+        || fail "Dusk transfer_remote returned success without a canonical tx_id; stop and reconcile the prepared hash before continuing"
     ok "Burned $amount $TOKEN_SYMBOL on Dusk"
+    echo -e "  ${DIM}Dusk TX: $dusk_transfer_tx${NC}"
 
     # Wait for Dusk block (~10s block time)
     step "Waiting for Dusk block confirmation..."

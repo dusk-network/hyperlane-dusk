@@ -15,10 +15,15 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::used_underscore_binding)]
 
 /// Hyperlane ValidatorAnnounce contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::Initialized,
+    events::ValidatorAnnouncement,
+])]
 mod validator_announce {
     extern crate alloc;
 
@@ -37,6 +42,12 @@ mod validator_announce {
 
     /// Ethereum Signed Message prefix for 32-byte messages.
     const ETH_SIGNED_MESSAGE_PREFIX: &[u8] = b"\x19Ethereum Signed Message:\n32";
+    /// Bound one location so a validator cannot exhaust query return memory.
+    const MAX_LOCATION_BYTES: usize = 1_024;
+    /// Bound historical locations retained for one validator.
+    const MAX_LOCATIONS_PER_VALIDATOR: usize = 16;
+    /// Discovery pages and legacy batch reads are deliberately small.
+    const MAX_QUERY_VALIDATORS: usize = 2;
 
     /// ValidatorAnnounce contract state.
     pub struct ValidatorAnnounce {
@@ -72,6 +83,15 @@ mod validator_announce {
             );
             self.local_domain = local_domain;
             self.mailbox = mailbox;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_VALIDATOR_ANNOUNCE,
+                    owner: ZERO_CONTRACT.to_bytes(),
+                    mailbox: mailbox.to_bytes(),
+                    local_domain,
+                },
+            );
         }
 
         // =================================================================
@@ -88,6 +108,14 @@ mod validator_announce {
             storage_location: String,
             signature: Vec<u8>,
         ) -> bool {
+            assert!(
+                !storage_location.is_empty(),
+                "ValidatorAnnounce: storage location cannot be empty"
+            );
+            assert!(
+                storage_location.len() <= MAX_LOCATION_BYTES,
+                "ValidatorAnnounce: storage location too long"
+            );
             // Replay protection
             let replay_id = Self::compute_replay_id(&validator, &storage_location);
             assert!(
@@ -110,10 +138,12 @@ mod validator_announce {
             }
 
             // Store location.
-            self.storage_locations
-                .entry(validator.0)
-                .or_default()
-                .push(storage_location.clone());
+            let locations = self.storage_locations.entry(validator.0).or_default();
+            assert!(
+                locations.len() < MAX_LOCATIONS_PER_VALIDATOR,
+                "ValidatorAnnounce: location limit reached"
+            );
+            locations.push(storage_location.clone());
 
             abi::emit(
                 events::ValidatorAnnouncement::TOPIC,
@@ -135,6 +165,10 @@ mod validator_announce {
             &self,
             validators: Vec<EthAddress>,
         ) -> Vec<Vec<String>> {
+            assert!(
+                validators.len() <= MAX_QUERY_VALIDATORS,
+                "ValidatorAnnounce: query batch too large"
+            );
             validators
                 .iter()
                 .map(|v| {
@@ -146,9 +180,42 @@ mod validator_announce {
                 .collect()
         }
 
-        /// Returns all validators that have announced.
-        pub fn get_announced_validators(&self) -> Vec<EthAddress> {
-            self.validators.clone()
+        /// Return one validator's bounded location history.
+        pub fn get_announced_storage_locations_for_validator(
+            &self,
+            validator: EthAddress,
+        ) -> Vec<String> {
+            self.storage_locations
+                .get(&validator.0)
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        /// Returns a bounded page of validators that have announced.
+        ///
+        /// A page-based ABI avoids an unbounded query response without creating
+        /// a globally exhaustible validator-enrollment cap. `start` is a
+        /// zero-based index and an index at or beyond the current count returns
+        /// an empty page.
+        pub fn get_announced_validators(&self, start: u32, limit: u32) -> Vec<EthAddress> {
+            assert!(limit > 0, "ValidatorAnnounce: query limit is zero");
+            let limit = usize::try_from(limit).expect("ValidatorAnnounce: invalid query limit");
+            assert!(
+                limit <= MAX_QUERY_VALIDATORS,
+                "ValidatorAnnounce: query batch too large"
+            );
+            let start = usize::try_from(start).expect("ValidatorAnnounce: invalid query start");
+            if start >= self.validators.len() {
+                return Vec::new();
+            }
+            let end = start.saturating_add(limit).min(self.validators.len());
+            self.validators[start..end].to_vec()
+        }
+
+        /// Returns the number of validators available through paginated discovery.
+        pub fn announced_validator_count(&self) -> u32 {
+            u32::try_from(self.validators.len())
+                .expect("ValidatorAnnounce: validator count exceeds ABI range")
         }
 
         /// Returns the Mailbox contract ID.
@@ -159,6 +226,12 @@ mod validator_announce {
         /// Returns the local domain ID.
         pub fn local_domain(&self) -> u32 {
             self.local_domain
+        }
+
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
         }
 
         // =================================================================
@@ -179,8 +252,7 @@ mod validator_announce {
             let domain_hash = keccak256(&domain_preimage);
 
             // Inner hash
-            let mut inner_preimage =
-                Vec::with_capacity(32 + storage_location.len());
+            let mut inner_preimage = Vec::with_capacity(32 + storage_location.len());
             inner_preimage.extend_from_slice(&domain_hash);
             inner_preimage.extend_from_slice(storage_location.as_bytes());
             let inner_hash = keccak256(&inner_preimage);
@@ -193,10 +265,7 @@ mod validator_announce {
         }
 
         /// Compute replay ID for a (validator, location) pair.
-        fn compute_replay_id(
-            validator: &EthAddress,
-            storage_location: &str,
-        ) -> [u8; 32] {
+        fn compute_replay_id(validator: &EthAddress, storage_location: &str) -> [u8; 32] {
             let mut preimage = Vec::with_capacity(20 + storage_location.len());
             preimage.extend_from_slice(&validator.0);
             preimage.extend_from_slice(storage_location.as_bytes());
@@ -211,8 +280,8 @@ mod validator_announce {
         let mut sig_arr = [0u8; 65];
         sig_arr.copy_from_slice(sig);
 
-        let pubkey = abi::secp256k1_recover(*digest, sig_arr)
-            .expect("ValidatorAnnounce: ecrecover failed");
+        let pubkey =
+            abi::secp256k1_recover(*digest, sig_arr).expect("ValidatorAnnounce: ecrecover failed");
 
         let hash = keccak256(&pubkey[1..]);
         let mut addr = [0u8; 20];

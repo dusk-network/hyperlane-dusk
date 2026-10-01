@@ -1,0 +1,160 @@
+name: Dusk Review Policy Gate
+
+on:
+  # Keep privileged policy execution on the trusted default-branch tree. The
+  # proposed commit is fetched as Git data and is never checked out or run here.
+  pull_request_target:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review-policy-gate:
+    name: Dusk review policy gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted base policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
+      - name: Inspect proposed commit as data
+        if: github.event_name == 'pull_request_target'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "pull/${PR_NUMBER}/head"
+          fetched_sha="$(git rev-parse FETCH_HEAD)"
+          [ "$fetched_sha" = "$HEAD_SHA" ] || {
+            echo "::error::fetched PR head $fetched_sha differs from event head $HEAD_SHA"
+            exit 1
+          }
+          git diff --check "$BASE_SHA...$HEAD_SHA"
+
+          for path in \
+            scripts/fail-closed-self-test.sh \
+            scripts/github-review-hygiene.sh \
+            scripts/production-readiness-guard.sh \
+            scripts/report-hygiene-check.sh \
+            scripts/secret-hygiene-check.sh; do
+            mode="$(git ls-tree "$HEAD_SHA" -- "$path" | awk '{print $1}')"
+            case "$mode" in
+              100644|100755) ;;
+              *)
+                echo "::error::$path is not a regular file in proposed commit $HEAD_SHA"
+                exit 1
+                ;;
+            esac
+
+            # The proposal job executes these scripts. Once a script exists on
+            # the trusted base, a PR must not weaken it and its self-tests in
+            # the same proposed tree. First publication is an owner-reviewed
+            # bootstrap; later changes use the same focused bootstrap process
+            # as policy-workflow changes.
+            if git cat-file -e "$BASE_SHA:$path" 2>/dev/null; then
+              if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+                echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
+                exit 1
+              fi
+            fi
+          done
+
+          # A proposed PR must not be able to replace either half of the policy
+          # handshake and then certify its replacement. Policy-workflow changes
+          # use a dedicated, owner-supervised bootstrap instead.
+          for path in \
+            .github/workflows/dusk-proposal-validation.yml \
+            .github/workflows/dusk-review-policy-gate.yml; do
+            if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+              echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
+              exit 1
+            fi
+          done
+
+          # Lock the remaining executable CI policy and its lint configuration.
+          # A path absent from both revisions is simply not part of this
+          # bootstrap yet; first publication must still be a regular file.
+          for path in \
+            .github/actionlint.yaml \
+            .github/workflows/manual-repro-check.yml \
+            .github/workflows/manual-repro-dispatcher-gate.yml \
+            .github/workflows/production-readiness-gate.yml; do
+            if git cat-file -e "$BASE_SHA:$path" 2>/dev/null; then
+              if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+                echo "::error::$path is policy-locked; use the documented owner-supervised bootstrap"
+                exit 1
+              fi
+            elif git cat-file -e "$HEAD_SHA:$path" 2>/dev/null; then
+              mode="$(git ls-tree "$HEAD_SHA" -- "$path" | awk '{print $1}')"
+              case "$mode" in
+                100644|100755) ;;
+                *)
+                  echo "::error::$path must be introduced as a regular file"
+                  exit 1
+                  ;;
+              esac
+            fi
+          done
+
+      - name: Require unprivileged proposal validation
+        if: github.event_name == 'pull_request_target'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pullRequest = context.payload.pull_request;
+            const prNumber = pullRequest.number;
+            const headSha = pullRequest.head.sha;
+            const baseSha = pullRequest.base.sha;
+            const baseRef = pullRequest.base.ref;
+            const expectedName = 'Dusk proposal validation';
+            const workflowId = 'dusk-proposal-validation.yml';
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflowId,
+                head_sha: headSha,
+                event: 'pull_request',
+                per_page: 100,
+              });
+              const matchingRuns = data.workflow_runs.filter(
+                (run) => run.head_sha === headSha &&
+                  run.event === 'pull_request' &&
+                  run.pull_requests?.some((pr) =>
+                    pr.number === prNumber &&
+                    pr.head?.sha === headSha &&
+                    pr.base?.sha === baseSha &&
+                    pr.base?.ref === baseRef
+                  ),
+              );
+              const proposal = matchingRuns.sort(
+                (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
+              )[0];
+              if (proposal?.status === 'completed') {
+                if (proposal.conclusion !== 'success') {
+                  core.setFailed(
+                    `${expectedName} (${workflowId}) concluded ${proposal.conclusion} for PR #${prNumber} ${baseSha}...${headSha}: ${proposal.html_url}`,
+                  );
+                }
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            core.setFailed(
+              `Timed out waiting for ${expectedName} (${workflowId}) on PR #${prNumber} ${baseSha}...${headSha}`,
+            );

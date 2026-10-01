@@ -85,6 +85,12 @@ mod test_mock {
         // Queries
         // =================================================================
 
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
         /// Returns the number of times `verify` was called.
         pub fn verify_count(&self) -> u32 {
             self.verify_count

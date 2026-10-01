@@ -30,12 +30,18 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::used_underscore_binding)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::cast_possible_truncation)]
 
 /// Hyperlane MessageIdMultisigISM contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::Initialized,
+    events::OwnershipTransferred,
+    events::ValidatorsAndThresholdSet,
+])]
 mod ism_multisig {
     extern crate alloc;
 
@@ -43,8 +49,13 @@ mod ism_multisig {
 
     use dusk_core::abi;
 
+    use hyperlane_dusk_types::caller;
+    use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message::{self, keccak256};
-    use hyperlane_dusk_types::EthAddress;
+    use hyperlane_dusk_types::{EthAddress, H256};
+
+    /// Structural upper bound implied by the u8 threshold ABI.
+    const MAX_VALIDATORS: usize = u8::MAX as usize;
 
     // Metadata offsets matching MessageIdMultisigIsmMetadata.sol
     const MERKLE_TREE_HOOK_OFFSET: usize = 0;
@@ -63,7 +74,7 @@ mod ism_multisig {
         /// Number of required signatures.
         threshold: u8,
         /// Contract owner.
-        owner: Option<[u8; 32]>,
+        owner: Option<H256>,
     }
 
     impl MultisigIsm {
@@ -80,14 +91,14 @@ mod ism_multisig {
         ///
         /// Validators must be sorted by address (ascending). The threshold
         /// must be > 0 and <= number of validators.
-        pub fn init(
-            &mut self,
-            owner: [u8; 32],
-            validators: Vec<EthAddress>,
-            threshold: u8,
-        ) {
+        pub fn init(&mut self, owner: H256, validators: Vec<EthAddress>, threshold: u8) {
             assert!(self.owner.is_none(), "MultisigISM: already initialized");
+            assert!(owner != [0u8; 32], "MultisigISM: owner cannot be zero");
             assert!(!validators.is_empty(), "MultisigISM: no validators");
+            assert!(
+                validators.len() <= MAX_VALIDATORS,
+                "MultisigISM: too many validators"
+            );
             assert!(
                 threshold > 0 && threshold as usize <= validators.len(),
                 "MultisigISM: invalid threshold"
@@ -104,6 +115,22 @@ mod ism_multisig {
             self.owner = Some(owner);
             self.validators = validators;
             self.threshold = threshold;
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_ISM_MULTISIG,
+                    owner,
+                    mailbox: [0u8; 32],
+                    local_domain: 0,
+                },
+            );
+            abi::emit(
+                events::ValidatorsAndThresholdSet::TOPIC,
+                events::ValidatorsAndThresholdSet {
+                    validators: self.validators.clone(),
+                    threshold,
+                },
+            );
         }
 
         // =================================================================
@@ -116,12 +143,19 @@ mod ism_multisig {
         #[allow(clippy::unused_self)]
         pub fn verify(&self, metadata: Vec<u8>, encoded_message: Vec<u8>) -> bool {
             assert!(
+                self.threshold > 0 && !self.validators.is_empty(),
+                "MultisigISM: not initialized"
+            );
+            assert!(
                 metadata.len() >= SIGNATURES_OFFSET,
                 "MultisigISM: metadata too short"
             );
+            assert!(
+                (metadata.len() - SIGNATURES_OFFSET).is_multiple_of(SIGNATURE_LENGTH),
+                "MultisigISM: metadata signature length mismatch"
+            );
 
-            let sig_count =
-                (metadata.len() - SIGNATURES_OFFSET) / SIGNATURE_LENGTH;
+            let sig_count = (metadata.len() - SIGNATURES_OFFSET) / SIGNATURE_LENGTH;
             assert!(
                 sig_count >= self.threshold as usize,
                 "MultisigISM: not enough signatures"
@@ -141,8 +175,7 @@ mod ism_multisig {
             let origin = message::origin(&encoded_message);
 
             // Compute the digest that validators signed.
-            let digest =
-                compute_digest(origin, merkle_tree_hook, root, index, &message_id);
+            let digest = compute_digest(origin, merkle_tree_hook, root, index, &message_id);
 
             // Verify threshold signatures using sorted two-pointer matching.
             let mut validator_index = 0usize;
@@ -179,6 +212,12 @@ mod ism_multisig {
             5 // IsmType::MessageIdMultisig
         }
 
+        /// Returns the persisted state layout version expected by deployment tooling.
+        #[allow(clippy::unused_self)]
+        pub fn state_version(&self) -> u32 {
+            1
+        }
+
         // =================================================================
         // Queries
         // =================================================================
@@ -193,19 +232,33 @@ mod ism_multisig {
             self.threshold
         }
 
+        /// Returns one coherent validator configuration snapshot.
+        ///
+        /// Agents must prefer this over separate `validators` and `threshold`
+        /// queries so an owner update cannot be observed half-applied across
+        /// two independent RUES requests.
+        pub fn validators_and_threshold(&self) -> (Vec<EthAddress>, u8) {
+            (self.validators.clone(), self.threshold)
+        }
+
+        /// Returns the owner identity.
+        pub fn owner(&self) -> Option<H256> {
+            self.owner
+        }
+
         // =================================================================
         // Admin
         // =================================================================
 
         /// Update validators and threshold. Owner only.
-        pub fn set_validators_and_threshold(
-            &mut self,
-            validators: Vec<EthAddress>,
-            threshold: u8,
-        ) {
+        pub fn set_validators_and_threshold(&mut self, validators: Vec<EthAddress>, threshold: u8) {
             self.only_owner();
 
             assert!(!validators.is_empty(), "MultisigISM: no validators");
+            assert!(
+                validators.len() <= MAX_VALIDATORS,
+                "MultisigISM: too many validators"
+            );
             assert!(
                 threshold > 0 && threshold as usize <= validators.len(),
                 "MultisigISM: invalid threshold"
@@ -220,14 +273,38 @@ mod ism_multisig {
 
             self.validators = validators;
             self.threshold = threshold;
+            abi::emit(
+                events::ValidatorsAndThresholdSet::TOPIC,
+                events::ValidatorsAndThresholdSet {
+                    validators: self.validators.clone(),
+                    threshold,
+                },
+            );
+        }
+
+        /// Transfer ownership. Owner only.
+        pub fn transfer_ownership(&mut self, new_owner: H256) {
+            self.only_owner();
+            assert!(
+                new_owner != [0u8; 32],
+                "MultisigISM: new owner cannot be zero"
+            );
+            let previous_owner = self.owner.expect("MultisigISM: no owner");
+            self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner,
+                    new_owner,
+                },
+            );
         }
 
         /// Panics if the caller is not the owner.
         fn only_owner(&self) {
-            let caller = abi::caller().expect("MultisigISM: no caller");
             let owner = self.owner.expect("MultisigISM: no owner");
             assert!(
-                caller.to_bytes() == owner,
+                caller::effective_caller() == owner,
                 "MultisigISM: caller is not owner"
             );
         }
@@ -283,8 +360,8 @@ mod ism_multisig {
         sig_arr.copy_from_slice(sig);
 
         // Recover the uncompressed public key (65 bytes: 0x04 || x || y).
-        let pubkey = abi::secp256k1_recover(*digest, sig_arr)
-            .expect("MultisigISM: ecrecover failed");
+        let pubkey =
+            abi::secp256k1_recover(*digest, sig_arr).expect("MultisigISM: ecrecover failed");
 
         // Derive Ethereum address: keccak256(pubkey[1..])[12..32]
         let hash = keccak256(&pubkey[1..]);

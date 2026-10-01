@@ -15,6 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
+RUSK_STATE="${RUSK_STATE:-/tmp/example.state}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -43,11 +44,10 @@ port_in_use() {
 wait_for_url() {
     local url="$1" max_wait="${2:-30}" i=0
     while [ "$i" -lt "$max_wait" ]; do
-        # Rusk RUES endpoints require a POST and a version header.
+        # Rusk RUES endpoints require a POST.
         if [[ "$url" == *"/on/"* ]]; then
             if curl -sf --max-time 2 -X POST \
                 -H "Content-Type: application/octet-stream" \
-                -H "rusk-version: 1.0.0-rc.0" \
                 "$url" >/dev/null 2>&1; then
                 return 0
             fi
@@ -85,8 +85,25 @@ if [ ! -f "$RUSK_BIN" ]; then
 fi
 ok "Rusk binary: $RUSK_BIN"
 
-# Rusk genesis state (gzip file created by 'make prepare-dev')
-RUSK_STATE="/tmp/example.state"
+# Contract dependencies are relative paths (`../../rusk-private`). Refuse a
+# split-brain run where WASMs build from one Rusk checkout and the node runs
+# from another.
+CARGO_RUSK_DIR="$DUSK_DIR/../../rusk-private"
+if [ ! -d "$CARGO_RUSK_DIR/core" ]; then
+    fail "Contract Rusk dependency not found at $CARGO_RUSK_DIR"
+fi
+if [ "$(realpath "$CARGO_RUSK_DIR")" != "$(realpath "$RUSK_DIR")" ]; then
+    fail "Rusk checkout mismatch
+
+  Contract WASMs resolve Rusk from: $(realpath "$CARGO_RUSK_DIR")
+  The node would run Rusk from:      $(realpath "$RUSK_DIR")
+
+  Run the E2E from a compatible layout containing hyperlane/dusk and
+  rusk-private at the same root."
+fi
+ok "Rusk contract dependencies match the node checkout"
+
+# Rusk genesis state archive (created by `rusk recovery state --output ...`)
 if [ ! -e "$RUSK_STATE" ]; then
     fail "Rusk genesis state not found at $RUSK_STATE
 
@@ -96,32 +113,39 @@ if [ ! -e "$RUSK_STATE" ]; then
 fi
 ok "Rusk genesis state: $RUSK_STATE"
 
-# dusk-tx binary
-if [ ! -f "$DUSK_TX" ]; then
-    info "dusk-tx not found, building..."
-    (cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
-fi
+# dusk-tx binary. Always let Cargo check freshness: a merely present release
+# binary can predate the CLI or shared ABI sources and silently deploy an old
+# contract topology.
+info "Ensuring dusk-tx is current..."
+(cd "$DUSK_DIR" && cargo build -p dusk-tx --release) || fail "Failed to build dusk-tx"
 ok "dusk-tx binary: $DUSK_TX"
 
-# Contract WASMs
-if [ ! -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ]; then
-    info "Contract WASMs not found, building..."
-    (cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
-fi
+# Contract WASMs. `make all` delegates freshness to Cargo for every contract;
+# checking only for Mailbox previously allowed stale or incomplete route WASMs
+# to survive between E2E runs.
+info "Ensuring contract WASMs are current..."
+(cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
 ok "Contract WASMs: $WASM_DIR"
 
-# Data-driver WASM (for explorer integration)
+# Data-driver WASM (for explorer integration). Decide whether the explorer is
+# usable before building its artifact, and always let Cargo repair a warm
+# artifact when it is usable.
 DATA_DRIVER_WASM="$DUSK_DIR/target/data-driver/wasm32-unknown-unknown/release/hyperlane_dusk_data_driver.wasm"
-if [ ! -f "$DATA_DRIVER_WASM" ]; then
-    info "Data-driver WASM not found, building..."
-    (cd "$DUSK_DIR" && make data-driver) || fail "Failed to build data-driver"
-fi
-# Copy to explorer assets if explorer exists
-if [ -d "$EXPLORER_DIR/src/lib/assets" ]; then
-    cp "$DATA_DRIVER_WASM" "$EXPLORER_DIR/src/lib/assets/"
-    ok "Data-driver WASM copied to explorer"
+if [ "${SKIP_DUSK_EXPLORER:-false}" = "true" ]; then
+    warn "Skipping data-driver build (SKIP_DUSK_EXPLORER=true)"
+    SKIP_DUSK_EXPLORER=true
+elif ! command -v npm &>/dev/null; then
+    warn "npm not found — Dusk Explorer and data-driver build will be skipped"
+    SKIP_DUSK_EXPLORER=true
+elif [ ! -d "$EXPLORER_DIR/src/lib/assets" ]; then
+    warn "Dusk Explorer assets not found at $EXPLORER_DIR/src/lib/assets — skipping"
+    SKIP_DUSK_EXPLORER=true
 else
-    ok "Data-driver WASM: $DATA_DRIVER_WASM"
+    SKIP_DUSK_EXPLORER=false
+    info "Ensuring data-driver WASM is current..."
+    (cd "$DUSK_DIR" && make data-driver) || fail "Failed to build data-driver"
+    cp "$DATA_DRIVER_WASM" "$EXPLORER_DIR/src/lib/assets/"
+    ok "Current data-driver WASM copied to explorer"
 fi
 
 # Docker
@@ -134,18 +158,6 @@ elif ! command -v docker &>/dev/null; then
 else
     SKIP_OTTERSCAN=false
     ok "Docker available"
-fi
-
-# Node.js / npm
-if [ "${SKIP_DUSK_EXPLORER:-false}" = "true" ]; then
-    warn "Skipping Dusk Explorer (SKIP_DUSK_EXPLORER=true)"
-    SKIP_DUSK_EXPLORER=true
-elif ! command -v npm &>/dev/null; then
-    warn "npm not found — Dusk Explorer will be skipped"
-    SKIP_DUSK_EXPLORER=true
-else
-    SKIP_DUSK_EXPLORER=false
-    ok "npm available"
 fi
 
 # Foundry
@@ -166,8 +178,12 @@ ok "jq available"
 header "Starting Rusk (Dusk Node) on port $RUSK_HTTP_PORT"
 
 if port_in_use "$RUSK_HTTP_PORT"; then
-    info "Port $RUSK_HTTP_PORT already in use — assuming Rusk is running"
-    echo "rusk:external" >> "$PID_FILE"
+    info "Port $RUSK_HTTP_PORT is already in use — verifying the configured RUES service"
+    RUES_TEST_URL="${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id"
+    wait_for_url "$RUES_TEST_URL" 5 \
+        || fail "Port $RUSK_HTTP_PORT is occupied, but the configured Rusk RUES endpoint is unhealthy"
+    record_pid "rusk" "external"
+    ok "Using healthy external Rusk service (not owned by this demo)"
 else
     info "Starting Rusk from $RUSK_DIR..."
     RUSK_LOG="/tmp/rusk-dev.log"
@@ -175,13 +191,14 @@ else
         cd "$RUSK_DIR"
         DUSK_CONSENSUS_KEYS_PASS="$CONSENSUS_PASSWORD" \
             "$RUSK_BIN" -s "$RUSK_STATE" \
+            --consensus-keys-path "$CONSENSUS_KEYS" \
             --http-listen-addr "0.0.0.0:${RUSK_HTTP_PORT}" \
             > "$RUSK_LOG" 2>&1
     ) &
     RUSK_PID=$!
     # Some rusk builds may fork; record the actual listening PID if available.
     sleep 1
-    RUSK_LISTEN_PID="$(lsof -ti \":${RUSK_HTTP_PORT}\" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+    RUSK_LISTEN_PID="$(lsof -ti ":${RUSK_HTTP_PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
     if [ -n "$RUSK_LISTEN_PID" ]; then
         record_pid "rusk" "$RUSK_LISTEN_PID"
         info "Rusk starting (PID: $RUSK_LISTEN_PID, log: $RUSK_LOG)"
@@ -196,8 +213,7 @@ else
     if wait_for_url "$RUES_TEST_URL" 60; then
         ok "Rusk is ready"
     else
-        warn "Rusk did not respond within 60s — check $RUSK_LOG"
-        info "Continuing anyway; it may still be starting up..."
+        fail "Rusk did not become ready within 60s — check $RUSK_LOG and run demo/stop-env.sh"
     fi
 fi
 
@@ -334,7 +350,7 @@ fi
 
 echo ""
 echo -e "${BOLD}Next steps:${NC}"
-echo "  1. Deploy contracts:  bash demo/deploy.sh"
+echo "  1. Deploy contracts:  bash demo/deploy.sh --dusk-ism testMock"
 echo "  2. Check status:      bash demo/bridge.sh status"
 echo "  3. Bridge to Dusk:    bash demo/bridge.sh to-dusk 3"
 echo "  4. Bridge to EVM:     bash demo/bridge.sh to-evm 1"

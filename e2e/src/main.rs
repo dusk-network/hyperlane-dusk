@@ -30,10 +30,6 @@ const MERKLE_TREE_HOOK_WASM: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_merkle_tree_hook.wasm"
 );
-const ISM_MULTISIG_WASM: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_ism_multisig.wasm"
-);
 const VALIDATOR_ANNOUNCE_WASM: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_validator_announce.wasm"
@@ -148,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Hyperlane-Dusk E2E Test ===");
     println!("RUES URL: {rues_url}");
 
-    let client = RuesClient::new(&rues_url);
+    let client = RuesClient::new(&rues_url)?;
 
     // Step 1: Test basic RUES connectivity
     println!("\n--- Step 1: Test RUES connectivity ---");
@@ -231,6 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let local_domain: u32 = 4242; // test domain
     let pk_bytes = pk.to_bytes();
+    let owner_h256 = hyperlane_dusk_types::message::keccak256(&pk_bytes);
 
     // Pre-compute all contract IDs (deterministic from bytecode + deploy_nonce + owner_pk)
     let test_mock_bytecode = std::fs::read(TEST_MOCK_WASM)?;
@@ -276,7 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Deploy Mailbox: init(local_domain, owner, default_ism, default_hook, required_hook)
     let mailbox_init = rkyv_serialize(&(
         local_domain,
-        mailbox_id,            // owner = mailbox itself
+        owner_h256,            // owner = deployer Moonlight account
         test_mock_id,          // default ISM
         test_mock_id,          // default hook (noop)
         merkle_tree_hook_id,   // required hook

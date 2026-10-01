@@ -15,80 +15,49 @@
 #![deny(unused_extern_crates)]
 #![deny(missing_docs)]
 #![deny(clippy::pedantic)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::large_types_passed_by_value)] // Contract ABI takes archived calls by value.
 #![allow(clippy::used_underscore_binding)]
 #![allow(clippy::cast_possible_truncation)]
 
 /// Hyperlane WarpDrc20 synthetic token contract.
-#[dusk_forge::contract]
+#[dusk_forge::contract(events = [
+    events::AccountRegistered,
+    events::Drc20Approval,
+    events::Drc20Transfer,
+    events::HookSet,
+    events::Initialized,
+    events::IsmSet,
+    events::OwnershipTransferred,
+    events::PendingTransferClaimed,
+    events::ReceivedTransferRemote,
+    events::RemoteRouterEnrolled,
+    events::SentTransferRemote,
+])]
 mod warp_drc20 {
     extern crate alloc;
 
     use alloc::collections::BTreeMap;
     use alloc::string::String;
     use alloc::vec::Vec;
-    use core::cmp::Ordering;
-
-    use bytecheck::CheckBytes;
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
-    use rkyv::{Archive, Deserialize, Serialize};
+    use dusk_core::transfer::{ContractToContract, TRANSFER_CONTRACT};
 
     use dusk_bytes::Serializable;
 
+    use hyperlane_dusk_types::caller;
+    use hyperlane_dusk_types::drc20::{
+        self, Account, Allowance, ApproveCall, BalanceOf, TransferCall, TransferFromCall,
+    };
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::token_message;
-    use hyperlane_dusk_types::{H256, MessageId};
+    use hyperlane_dusk_types::{MessageId, H256};
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
-
-    // =====================================================================
-    // Account type (DRC20-compatible)
-    // =====================================================================
-
-    /// A DRC20 account — either an external BLS key or a contract.
-    ///
-    /// This is layout-compatible with the DRC20 reference `Account` type
-    /// so that standard DRC20 callers work seamlessly.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
-    #[archive_attr(derive(CheckBytes))]
-    pub enum Account {
-        /// An externally owned account.
-        External(AccountPublicKey),
-        /// A contract account.
-        Contract(ContractId),
-    }
-
-    impl PartialOrd for Account {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    impl Ord for Account {
-        fn cmp(&self, other: &Self) -> Ordering {
-            match (self, other) {
-                (Account::External(a), Account::External(b)) => {
-                    a.to_raw_bytes().cmp(&b.to_raw_bytes())
-                }
-                (Account::Contract(a), Account::Contract(b)) => a.cmp(b),
-                (Account::External(_), Account::Contract(_)) => Ordering::Less,
-                (Account::Contract(_), Account::External(_)) => Ordering::Greater,
-            }
-        }
-    }
-
-    /// Resolve the caller as an Account.
-    fn sender_account() -> Account {
-        if abi::callstack().len() == 1 {
-            Account::External(
-                abi::public_sender().expect("WarpDrc20: shielded transactions not supported"),
-            )
-        } else {
-            Account::Contract(abi::caller().expect("WarpDrc20: missing caller"))
-        }
-    }
 
     // =====================================================================
     // State
@@ -99,6 +68,8 @@ mod warp_drc20 {
         // -- DRC20 token state --
         /// Token balances per account.
         balances: BTreeMap<Account, u64>,
+        /// Allowances keyed by token owner and approved spender.
+        allowances: BTreeMap<Account, BTreeMap<Account, u64>>,
         /// Total token supply.
         supply: u64,
         /// Token name.
@@ -115,7 +86,7 @@ mod warp_drc20 {
         hook: ContractId,
         /// ISM override (zero = use Mailbox default).
         ism: ContractId,
-        /// Contract owner: keccak256(bls_public_key.to_bytes()).
+        /// Owner identity (Moonlight account hash or contract ID).
         owner: Option<H256>,
         /// Enrolled remote routers per domain.
         enrolled_routers: BTreeMap<u32, H256>,
@@ -126,6 +97,14 @@ mod warp_drc20 {
         /// so that inbound transfers can look up the full key and mint
         /// to their External account.
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
+        /// Inbound synthetic balances waiting for an authenticated recipient.
+        ///
+        /// An unregistered H256 is ambiguous on Dusk: it can be either a
+        /// hashed Moonlight public key or a contract ID. Keep the amount
+        /// unminted until one of those recipient types proves ownership.
+        pending_transfers: BTreeMap<H256, u64>,
+        /// Aggregate not-yet-minted liability reserved for pending claims.
+        pending_total: u64,
     }
 
     impl WarpDrc20 {
@@ -133,6 +112,7 @@ mod warp_drc20 {
         pub const fn new() -> Self {
             Self {
                 balances: BTreeMap::new(),
+                allowances: BTreeMap::new(),
                 supply: 0,
                 name: String::new(),
                 symbol: String::new(),
@@ -143,6 +123,8 @@ mod warp_drc20 {
                 owner: None,
                 enrolled_routers: BTreeMap::new(),
                 registered_accounts: BTreeMap::new(),
+                pending_transfers: BTreeMap::new(),
+                pending_total: 0,
             }
         }
 
@@ -161,14 +143,33 @@ mod warp_drc20 {
             enrolled_routers: Vec<(u32, H256)>,
         ) {
             assert!(self.owner.is_none(), "WarpDrc20: already initialized");
+            assert!(owner != [0u8; 32], "WarpDrc20: owner cannot be zero");
+            assert!(
+                mailbox != ZERO_CONTRACT,
+                "WarpDrc20: mailbox cannot be zero"
+            );
             self.mailbox = mailbox;
             self.owner = Some(owner);
             self.name = name;
             self.symbol = symbol;
             self.decimals = decimals;
             for (domain, router) in enrolled_routers {
+                assert!(router != [0u8; 32], "WarpDrc20: router cannot be zero");
                 self.enrolled_routers.insert(domain, router);
+                abi::emit(
+                    events::RemoteRouterEnrolled::TOPIC,
+                    events::RemoteRouterEnrolled { domain, router },
+                );
             }
+            abi::emit(
+                events::Initialized::TOPIC,
+                events::Initialized {
+                    contract_type: events::CONTRACT_WARP_DRC20,
+                    owner,
+                    mailbox: mailbox.to_bytes(),
+                    local_domain: 0,
+                },
+            );
         }
 
         // =================================================================
@@ -182,15 +183,59 @@ mod warp_drc20 {
         /// Reads the sender from `abi::public_sender()` (Moonlight TX).
         /// Stores `keccak256(pk.to_bytes()) → pk`.
         pub fn register_account(&mut self) {
-            let pk = abi::public_sender()
-                .expect("WarpDrc20: register_account requires Moonlight TX");
+            let pk =
+                abi::public_sender().expect("WarpDrc20: register_account requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
             self.registered_accounts.insert(h, pk);
+            abi::emit(
+                events::AccountRegistered::TOPIC,
+                events::AccountRegistered { account_hash: h },
+            );
         }
 
         /// Check whether an H256 has a registered account.
         pub fn is_registered(&self, h: H256) -> bool {
             self.registered_accounts.contains_key(&h)
+        }
+
+        /// Claim pending synthetic tokens for the calling Moonlight account.
+        ///
+        /// The H256 recipient is derived from the authenticated public sender,
+        /// so an arbitrary account cannot claim another recipient's balance.
+        pub fn claim_pending(&mut self) {
+            let pk = abi::public_sender().expect("WarpDrc20: claim_pending requires Moonlight TX");
+            let h = message::keccak256(&pk.to_bytes());
+            self.claim_pending_to(h, Account::moonlight(&pk));
+        }
+
+        /// Claim pending synthetic tokens for the calling contract.
+        ///
+        /// The pending-recipient key is the immediate caller's `ContractId`
+        /// bytes. The Moonlight transfer contract is rejected as a root
+        /// caller so it cannot be confused with the intended recipient.
+        pub fn claim_pending_contract(&mut self) {
+            let contract = abi::caller().expect("WarpDrc20: contract caller unavailable");
+            assert!(
+                contract != dusk_core::transfer::TRANSFER_CONTRACT,
+                "WarpDrc20: claim_pending_contract requires contract caller"
+            );
+            self.claim_pending_to(contract.to_bytes(), Account::Contract(contract));
+        }
+
+        /// Returns the pending, not-yet-minted balance for an H256 recipient.
+        pub fn pending_balance(&self, h: H256) -> u64 {
+            self.pending_transfers.get(&h).copied().unwrap_or(0)
+        }
+
+        /// Returns the aggregate synthetic liability reserved for claims.
+        pub fn pending_total(&self) -> u64 {
+            self.pending_total
+        }
+
+        /// Storage/escrow ABI version for deployment compatibility checks.
+        #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
+        pub fn state_version(&self) -> u32 {
+            3
         }
 
         // =================================================================
@@ -218,14 +263,50 @@ mod warp_drc20 {
         }
 
         /// Returns the balance of an account.
-        pub fn balance_of(&self, account: Account) -> u64 {
-            self.balances.get(&account).copied().unwrap_or(0)
+        pub fn balance_of(&self, args: BalanceOf) -> u64 {
+            self.balances.get(&args.account).copied().unwrap_or(0)
+        }
+
+        /// Returns the allowance granted by an owner to a spender.
+        pub fn allowance(&self, args: Allowance) -> u64 {
+            self.allowances
+                .get(&args.owner)
+                .and_then(|allowances| allowances.get(&args.spender).copied())
+                .unwrap_or(0)
         }
 
         /// Transfer tokens from the caller to a recipient.
-        pub fn transfer(&mut self, to: Account, value: u64) {
-            let from = sender_account();
-            self.do_transfer(from, to, value);
+        pub fn transfer(&mut self, args: TransferCall) {
+            self.do_transfer(drc20::sender_account(), args.to, args.amount);
+        }
+
+        /// Approve a spender to transfer tokens on behalf of the caller.
+        pub fn approve(&mut self, args: ApproveCall) {
+            assert!(!args.spender.is_zero(), "WarpDrc20: spender cannot be zero");
+            let owner = drc20::sender_account();
+            self.set_allowance(owner, args.spender, args.amount);
+            abi::emit(
+                events::Drc20Approval::TOPIC,
+                events::Drc20Approval {
+                    owner,
+                    spender: args.spender,
+                    amount: args.amount,
+                },
+            );
+        }
+
+        /// Transfer tokens from an owner using the caller's allowance.
+        pub fn transfer_from(&mut self, args: TransferFromCall) {
+            let spender = drc20::sender_account();
+            let current = self.allowance(Allowance {
+                owner: args.owner,
+                spender,
+            });
+            assert!(current >= args.amount, "WarpDrc20: allowance too low");
+            if args.amount > 0 {
+                self.set_allowance(args.owner, spender, current - args.amount);
+            }
+            self.do_transfer(args.owner, args.to, args.amount);
         }
 
         // =================================================================
@@ -243,27 +324,39 @@ mod warp_drc20 {
             amount: u64,
         ) -> MessageId {
             assert!(amount > 0, "WarpDrc20: amount must be > 0");
-            let sender = sender_account();
-
-            // Burn tokens from sender
-            self.burn(sender, amount);
-
+            assert!(
+                recipient != [0u8; 32],
+                "WarpDrc20: recipient cannot be zero"
+            );
             // Look up enrolled router
-            let router = self
+            let router = *self
                 .enrolled_routers
                 .get(&destination)
                 .expect("WarpDrc20: no router enrolled for destination");
 
             // Encode token message body
             let body = token_message::encode(recipient, amount);
+            let credit_before = self.dispatch_credit();
+            let dispatch_fee = self.quote_dispatch(destination, router, body.clone());
+            self.collect_and_forward_dispatch_fee(dispatch_fee);
+
+            // Burn tokens from sender only after the fee contribution is
+            // authenticated. Any later failure rolls the whole call back.
+            let sender = drc20::sender_account();
+            self.burn(sender, amount);
 
             // Dispatch via Mailbox
             let message_id: MessageId = abi::call(
                 self.mailbox,
                 "dispatch",
-                &(destination, *router, body, Vec::<u8>::new(), self.hook),
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
             )
             .expect("WarpDrc20: dispatch failed");
+            assert_eq!(
+                self.dispatch_credit(),
+                credit_before,
+                "WarpDrc20: dispatch must consume only caller-funded credit"
+            );
 
             abi::emit(
                 events::SentTransferRemote::TOPIC,
@@ -275,6 +368,24 @@ mod warp_drc20 {
             );
 
             message_id
+        }
+
+        /// Quote the native-DUSK fee that must accompany `transfer_remote`.
+        pub fn quote_transfer_remote(&self, destination: u32, recipient: H256, amount: u64) -> u64 {
+            assert!(amount > 0, "WarpDrc20: amount must be > 0");
+            assert!(
+                recipient != [0u8; 32],
+                "WarpDrc20: recipient cannot be zero"
+            );
+            let router = self
+                .enrolled_routers
+                .get(&destination)
+                .expect("WarpDrc20: no router enrolled for destination");
+            self.quote_dispatch(
+                destination,
+                *router,
+                token_message::encode(recipient, amount),
+            )
         }
 
         // =================================================================
@@ -296,23 +407,36 @@ mod warp_drc20 {
             // Verify sender is an enrolled router
             let enrolled = self.enrolled_routers.get(&origin);
             assert!(
-                enrolled.is_some() && *enrolled.unwrap() == sender,
+                matches!(enrolled, Some(enrolled_sender) if *enrolled_sender == sender),
                 "WarpDrc20: sender is not enrolled router for origin"
             );
 
             // Decode token message
-            let msg =
-                token_message::decode(&body).expect("WarpDrc20: invalid token message");
+            let msg = token_message::decode(&body).expect("WarpDrc20: invalid token message");
+            assert!(msg.amount > 0, "WarpDrc20: amount must be > 0");
+            assert!(
+                msg.recipient != [0u8; 32],
+                "WarpDrc20: recipient cannot be zero"
+            );
 
-            // Resolve the recipient: if a BLS key is registered for this H256,
-            // mint to the External account; otherwise mint to Contract account.
-            let recipient_account =
-                if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
-                    Account::External(*pk)
-                } else {
-                    Account::Contract(ContractId::from_bytes(msg.recipient))
-                };
-            self.mint(recipient_account, msg.amount);
+            // A registered BLS hash is unambiguously an external account.
+            // An unregistered H256 could also be a contract ID, so do not
+            // fabricate an account type. Keep the value unminted until the
+            // external account or contract proves that it owns the key.
+            if let Some(pk) = self.registered_accounts.get(&msg.recipient) {
+                self.ensure_mint_capacity(msg.amount);
+                self.mint(Account::moonlight(pk), msg.amount);
+            } else {
+                self.ensure_mint_capacity(msg.amount);
+                let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
+                *pending = pending
+                    .checked_add(msg.amount)
+                    .expect("WarpDrc20: pending overflow");
+                self.pending_total = self
+                    .pending_total
+                    .checked_add(msg.amount)
+                    .expect("WarpDrc20: pending total overflow");
+            }
 
             abi::emit(
                 events::ReceivedTransferRemote::TOPIC,
@@ -366,71 +490,229 @@ mod warp_drc20 {
         /// Enroll a remote router for a domain. Owner only.
         pub fn enroll_remote_router(&mut self, domain: u32, router: H256) {
             self.only_owner();
+            assert!(router != [0u8; 32], "WarpDrc20: router cannot be zero");
             self.enrolled_routers.insert(domain, router);
+            abi::emit(
+                events::RemoteRouterEnrolled::TOPIC,
+                events::RemoteRouterEnrolled { domain, router },
+            );
         }
 
         /// Set the hook override. Owner only.
         pub fn set_hook(&mut self, hook: ContractId) {
             self.only_owner();
             self.hook = hook;
+            abi::emit(
+                events::HookSet::TOPIC,
+                events::HookSet {
+                    hook: hook.to_bytes(),
+                },
+            );
         }
 
         /// Set the ISM override. Owner only.
         pub fn set_ism(&mut self, ism: ContractId) {
             self.only_owner();
             self.ism = ism;
+            abi::emit(
+                events::IsmSet::TOPIC,
+                events::IsmSet {
+                    ism: ism.to_bytes(),
+                },
+            );
         }
 
         /// Transfer ownership. Owner only.
         pub fn transfer_ownership(&mut self, new_owner: H256) {
             self.only_owner();
+            assert!(
+                new_owner != [0u8; 32],
+                "WarpDrc20: new owner cannot be zero"
+            );
+            let previous_owner = self.owner.expect("WarpDrc20: no owner set");
             self.owner = Some(new_owner);
+            abi::emit(
+                events::OwnershipTransferred::TOPIC,
+                events::OwnershipTransferred {
+                    previous_owner,
+                    new_owner,
+                },
+            );
         }
 
         // =================================================================
         // Internal helpers
         // =================================================================
 
+        /// Query the route's current Mailbox credit.
+        fn dispatch_credit(&self) -> u64 {
+            abi::call(self.mailbox, "fee_credit", &(abi::self_id().to_bytes(),))
+                .expect("WarpDrc20: fee credit query failed")
+        }
+
+        /// Quote dispatch with this route as the encoded sender.
+        fn quote_dispatch(&self, destination: u32, router: H256, body: Vec<u8>) -> u64 {
+            abi::call(
+                self.mailbox,
+                "quote_dispatch_for_contract",
+                &(destination, router, body, Vec::<u8>::new(), self.hook),
+            )
+            .expect("WarpDrc20: dispatch quote failed")
+        }
+
+        /// Claim the caller's exact Moonlight deposit and forward it to Mailbox.
+        fn collect_and_forward_dispatch_fee(&self, fee: u64) {
+            if fee == 0 {
+                return;
+            }
+            let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &fee)
+                .expect("WarpDrc20: dispatch fee deposit failed");
+            self.forward_dispatch_fee(fee);
+        }
+
+        /// Transfer collected DUSK to Mailbox, which credits this route.
+        fn forward_dispatch_fee(&self, fee: u64) {
+            let transfer = ContractToContract {
+                contract: self.mailbox,
+                value: fee,
+                fn_name: String::from("receive_dispatch_funding"),
+                data: Vec::new(),
+            };
+            let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_contract", &transfer)
+                .expect("WarpDrc20: dispatch fee forwarding failed");
+        }
+
+        /// Mint and clear a pending balance to an authenticated account.
+        fn claim_pending_to(&mut self, recipient: H256, account: Account) {
+            let amount = self.pending_transfers.remove(&recipient).unwrap_or(0);
+            assert!(amount > 0, "WarpDrc20: no pending transfers");
+            self.pending_total = self
+                .pending_total
+                .checked_sub(amount)
+                .expect("WarpDrc20: pending total underflow");
+            self.mint(account, amount);
+            abi::emit(
+                events::PendingTransferClaimed::TOPIC,
+                events::PendingTransferClaimed { recipient, amount },
+            );
+        }
+
+        /// Ensure a direct mint or new pending liability cannot consume the
+        /// supply capacity already promised to pending recipients.
+        fn ensure_mint_capacity(&self, amount: u64) {
+            self.supply
+                .checked_add(self.pending_total)
+                .and_then(|reserved| reserved.checked_add(amount))
+                .expect("WarpDrc20: insufficient supply capacity");
+        }
+
         /// Transfer tokens between accounts.
         fn do_transfer(&mut self, from: Account, to: Account, value: u64) {
             let from_balance = self.balances.get(&from).copied().unwrap_or(0);
-            assert!(
-                from_balance >= value,
-                "WarpDrc20: insufficient balance"
+            assert!(from_balance >= value, "WarpDrc20: insufficient balance");
+            if value > 0 && from != to {
+                let remaining = from_balance - value;
+                if remaining == 0 {
+                    self.balances.remove(&from);
+                } else {
+                    self.balances.insert(from, remaining);
+                }
+                let to_balance = self.balances.get(&to).copied().unwrap_or(0);
+                self.balances.insert(
+                    to,
+                    to_balance
+                        .checked_add(value)
+                        .expect("WarpDrc20: balance overflow"),
+                );
+            }
+            abi::emit(
+                events::Drc20Transfer::TOPIC,
+                events::Drc20Transfer {
+                    from,
+                    to,
+                    amount: value,
+                },
             );
-            *self.balances.entry(from).or_insert(0) -= value;
-            let to_balance = self.balances.entry(to).or_insert(0);
-            *to_balance = to_balance
-                .checked_add(value)
-                .expect("WarpDrc20: balance overflow");
         }
 
         /// Mint tokens to an account.
         fn mint(&mut self, account: Account, amount: u64) {
-            let balance = self.balances.entry(account).or_insert(0);
-            *balance = balance
-                .checked_add(amount)
-                .expect("WarpDrc20: balance overflow");
+            if amount > 0 {
+                let balance = self.balances.get(&account).copied().unwrap_or(0);
+                self.balances.insert(
+                    account,
+                    balance
+                        .checked_add(amount)
+                        .expect("WarpDrc20: balance overflow"),
+                );
+            }
             self.supply = self
                 .supply
                 .checked_add(amount)
                 .expect("WarpDrc20: supply overflow");
+            abi::emit(
+                events::Drc20Transfer::TOPIC,
+                events::Drc20Transfer {
+                    from: Account::Contract(ZERO_CONTRACT),
+                    to: account,
+                    amount,
+                },
+            );
         }
 
         /// Burn tokens from an account.
         fn burn(&mut self, account: Account, amount: u64) {
             let balance = self.balances.get(&account).copied().unwrap_or(0);
             assert!(balance >= amount, "WarpDrc20: insufficient balance to burn");
-            *self.balances.entry(account).or_insert(0) -= amount;
-            self.supply -= amount;
+            if amount > 0 {
+                let remaining = balance - amount;
+                if remaining == 0 {
+                    self.balances.remove(&account);
+                } else {
+                    self.balances.insert(account, remaining);
+                }
+            }
+            self.supply = self
+                .supply
+                .checked_sub(amount)
+                .expect("WarpDrc20: supply underflow");
+            abi::emit(
+                events::Drc20Transfer::TOPIC,
+                events::Drc20Transfer {
+                    from: account,
+                    to: Account::Contract(ZERO_CONTRACT),
+                    amount,
+                },
+            );
         }
 
-        /// Panics if the Moonlight TX sender is not the owner.
+        /// Panics if the resolved admin sender is not the owner.
         fn only_owner(&self) {
-            let sender = abi::public_sender().expect("WarpDrc20: no Moonlight sender");
-            let sender_h = message::keccak256(&sender.to_bytes());
             let owner = self.owner.expect("WarpDrc20: no owner set");
-            assert!(sender_h == owner, "WarpDrc20: caller is not the owner");
+            assert!(
+                caller::effective_caller() == owner,
+                "WarpDrc20: caller is not the owner"
+            );
+        }
+
+        /// Set or clear a sparse allowance entry.
+        fn set_allowance(&mut self, owner: Account, spender: Account, value: u64) {
+            if value == 0 {
+                let remove_owner = if let Some(spenders) = self.allowances.get_mut(&owner) {
+                    spenders.remove(&spender);
+                    spenders.is_empty()
+                } else {
+                    false
+                };
+                if remove_owner {
+                    self.allowances.remove(&owner);
+                }
+            } else {
+                self.allowances
+                    .entry(owner)
+                    .or_default()
+                    .insert(spender, value);
+            }
         }
     }
 }

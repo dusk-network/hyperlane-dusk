@@ -1,0 +1,138 @@
+name: Dusk Hyperlane Manual Repro Check
+run-name: Dusk Hyperlane exact-ref repro dusk=${{ inputs.dusk_ref }} rusk=${{ inputs.rusk_ref }} monorepo=${{ inputs.monorepo_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      dusk_ref:
+        description: "Exact 40-character dusk-network/hyperlane-dusk commit SHA"
+        required: true
+      rusk_ref:
+        description: "Exact 40-character dusk-network/rusk-private commit SHA"
+        required: true
+      monorepo_ref:
+        description: "Exact 40-character dusk-network/hyperlane-monorepo commit SHA"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  local-repro:
+    name: Local repro wrapper
+    runs-on: [self-hosted, linux, dusk-hyperlane, dusk-hyperlane-ephemeral]
+    environment: dusk-hyperlane-repro
+    timeout-minutes: 120
+
+    steps:
+      - name: Validate exact commit inputs
+        shell: bash
+        env:
+          REQUESTED_DUSK_REF: ${{ inputs.dusk_ref }}
+          REQUESTED_RUSK_REF: ${{ inputs.rusk_ref }}
+          REQUESTED_MONOREPO_REF: ${{ inputs.monorepo_ref }}
+        run: |
+          set -euo pipefail
+          for entry in \
+            "dusk_ref:$REQUESTED_DUSK_REF" \
+            "rusk_ref:$REQUESTED_RUSK_REF" \
+            "monorepo_ref:$REQUESTED_MONOREPO_REF"; do
+            name="${entry%%:*}"
+            value="${entry#*:}"
+            if [[ ! "$value" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::$name must be an exact 40-character commit SHA"
+              exit 1
+            fi
+          done
+
+      - name: Checkout Dusk Hyperlane
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.dusk_ref }}
+          path: hyperlane/dusk
+          persist-credentials: false
+
+      - name: Checkout private Rusk dependency
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: dusk-network/rusk-private
+          ref: ${{ inputs.rusk_ref }}
+          path: rusk-private
+          token: ${{ secrets.DUSK_ORG_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Checkout Dusk Hyperlane monorepo fork
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: dusk-network/hyperlane-monorepo
+          ref: ${{ inputs.monorepo_ref }}
+          path: hyperlane/hyperlane-monorepo
+          token: ${{ secrets.DUSK_ORG_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Report resolved checkout heads
+        shell: bash
+        env:
+          REQUESTED_DUSK_REF: ${{ inputs.dusk_ref }}
+          REQUESTED_RUSK_REF: ${{ inputs.rusk_ref }}
+          REQUESTED_MONOREPO_REF: ${{ inputs.monorepo_ref }}
+        run: |
+          set -euo pipefail
+          resolved_dusk_sha="$(git -C hyperlane/dusk rev-parse HEAD)"
+          resolved_rusk_sha="$(git -C rusk-private rev-parse HEAD)"
+          resolved_monorepo_sha="$(git -C hyperlane/hyperlane-monorepo rev-parse HEAD)"
+
+          [ "$resolved_dusk_sha" = "${REQUESTED_DUSK_REF,,}" ]
+          [ "$resolved_rusk_sha" = "${REQUESTED_RUSK_REF,,}" ]
+          [ "$resolved_monorepo_sha" = "${REQUESTED_MONOREPO_REF,,}" ]
+
+          printf 'requested_dusk_ref=%s\n' "$REQUESTED_DUSK_REF"
+          printf 'resolved_dusk_sha=%s\n' "$resolved_dusk_sha"
+          printf 'requested_rusk_ref=%s\n' "$REQUESTED_RUSK_REF"
+          printf 'resolved_rusk_sha=%s\n' "$resolved_rusk_sha"
+          printf 'requested_monorepo_ref=%s\n' "$REQUESTED_MONOREPO_REF"
+          printf 'resolved_monorepo_sha=%s\n' "$resolved_monorepo_sha"
+
+          {
+            echo "## Exact repro inputs"
+            echo
+            echo "| Repository | Requested commit | Resolved commit |"
+            echo "| --- | --- | --- |"
+            # shellcheck disable=SC2016
+            printf '| hyperlane-dusk | `%s` | `%s` |\n' "$REQUESTED_DUSK_REF" "$resolved_dusk_sha"
+            # shellcheck disable=SC2016
+            printf '| rusk-private | `%s` | `%s` |\n' "$REQUESTED_RUSK_REF" "$resolved_rusk_sha"
+            # shellcheck disable=SC2016
+            printf '| hyperlane-monorepo | `%s` | `%s` |\n' "$REQUESTED_MONOREPO_REF" "$resolved_monorepo_sha"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Validate ephemeral runner prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          for command in cargo git make rg rustup; do
+            command -v "$command" >/dev/null || {
+              echo "::error::$command is required on the ephemeral Dusk repro runner"
+              exit 1
+            }
+          done
+
+          toolchain="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' hyperlane/dusk/rust-toolchain.toml)"
+          [ -n "$toolchain" ] || {
+            echo "::error::could not resolve the pinned Rust toolchain"
+            exit 1
+          }
+          rustup run "$toolchain" rustc --version
+          rustup target list --toolchain "$toolchain" --installed | grep -qx wasm32-unknown-unknown || {
+            echo "::error::$toolchain requires the wasm32-unknown-unknown target"
+            exit 1
+          }
+
+      - name: Run local repro check
+        working-directory: hyperlane/dusk
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: always
+        run: |
+          set -euo pipefail
+          make repro-check-agent

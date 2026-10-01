@@ -6,7 +6,7 @@
 //!
 //! Validators sign checkpoints using Ethereum's `eth_sign` personal message
 //! scheme. This module provides the digest computation so it can be verified
-//! both on-chain (by the MultisigISM) and off-chain (for testing).
+//! both on-chain (by the `MultisigISM`) and off-chain (for testing).
 
 use alloc::vec::Vec;
 
@@ -14,7 +14,7 @@ use crate::message::keccak256;
 
 /// Ethereum Signed Message prefix for 32-byte messages.
 ///
-/// This matches `ECDSA.toEthSignedMessageHash()` in OpenZeppelin.
+/// This matches `ECDSA.toEthSignedMessageHash()` in `OpenZeppelin`.
 const ETH_SIGNED_MESSAGE_PREFIX: &[u8] = b"\x19Ethereum Signed Message:\n32";
 
 /// Compute the domain hash for a given origin and merkle tree hook.
@@ -62,7 +62,7 @@ pub fn checkpoint_digest(
 ///
 /// `keccak256("\x19Ethereum Signed Message:\n32" || hash)`
 ///
-/// This matches `ECDSA.toEthSignedMessageHash()` in OpenZeppelin.
+/// This matches `ECDSA.toEthSignedMessageHash()` in `OpenZeppelin`.
 #[must_use]
 pub fn eth_signed_message_hash(hash: &[u8; 32]) -> [u8; 32] {
     let mut preimage = Vec::with_capacity(28 + 32);
