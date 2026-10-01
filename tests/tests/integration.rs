@@ -18,11 +18,13 @@ use dusk_core::abi::{ContractError, ContractId};
 use dusk_core::dusk;
 use dusk_core::signatures::bls::{PublicKey as AccountPublicKey, SecretKey as AccountSecretKey};
 use dusk_core::transfer::ReceiveFromContract;
+use dusk_data_driver::ConvertibleContract;
 use dusk_vm::{CallReceipt, Error as VMError};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use secp256k1::{Message as SecpMessage, Secp256k1, SecretKey as SecpSecretKey};
 
+use hyperlane_dusk_data_driver::HyperlaneDataDriver;
 use hyperlane_dusk_types::drc20::{
     Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
     BalanceOf as Drc20BalanceOf,
@@ -136,6 +138,7 @@ const REENTRANT_HOOK_ID: ContractId = ContractId::from_bytes([24; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
+const WITHDRAW_DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 
 /// Local domain for the Dusk chain in tests.
 const LOCAL_DOMAIN: u32 = 4242;
@@ -163,6 +166,8 @@ static RELAYER_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
 
 static RELAYER_PK: LazyLock<AccountPublicKey> =
     LazyLock::new(|| AccountPublicKey::from(&*RELAYER_SK));
+
+static RELAYER_ID: LazyLock<H256> = LazyLock::new(|| message::keccak256(&RELAYER_PK.to_bytes()));
 
 // =============================================================================
 // Test session wrapper
@@ -474,7 +479,7 @@ fn test_mailbox_init() {
     let mut s = HyperlaneSession::new();
 
     for (contract, label, expected) in [
-        (MAILBOX_ID, "Mailbox", 2),
+        (MAILBOX_ID, "Mailbox", 3),
         (TEST_MOCK_ID, "TestMock", 1),
         (TEST_RECIPIENT_ID, "TestRecipient", 1),
     ] {
@@ -822,6 +827,13 @@ fn test_dispatch_via_transaction() {
     let mut s = HyperlaneSession::new();
 
     assert_eq!(s.mailbox_nonce(), 0);
+    assert_eq!(
+        s.session
+            .direct_call::<_, u32>(MAILBOX_ID, "state_version", &())
+            .expect("Mailbox state_version should succeed")
+            .data,
+        3
+    );
     assert_eq!(s.merkle_count(), 0);
     assert_eq!(
         s.session
@@ -1942,6 +1954,357 @@ fn test_dispatch_rejects_sender_without_native_fee_credit() {
 }
 
 #[test]
+fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
+    let mut s = HyperlaneSession::new();
+    let funded = 4_000_000u64;
+    let partial = 1_500_000u64;
+
+    // Funding is intentionally permissionless. Funding another payer does not
+    // grant the funder authority over that payer's resulting credit.
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, funded),
+            funded,
+        )
+        .expect("third-party dispatch funding should succeed");
+
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded
+    );
+
+    let relayer_nonce_before = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .nonce;
+    let result = s.session.call_public::<_, ()>(
+        &RELAYER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, partial),
+    );
+    assert_contract_panic(result, "Mailbox: insufficient fee credit");
+    let relayer_nonce_after = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .nonce;
+    assert_eq!(
+        relayer_nonce_after,
+        relayer_nonce_before + 1,
+        "a rejected contract call still spends its Moonlight nonce"
+    );
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, 0u64),
+    );
+    assert_contract_panic(result, "Mailbox: withdrawal amount is zero");
+
+    let mut identity_bytes = [0u8; 96];
+    identity_bytes[0] = 0xc0;
+    let invalid_recipient = AccountPublicKey::from_bytes(&identity_bytes)
+        .expect("compressed identity should decode for semantic validation");
+    assert!(!invalid_recipient.is_valid());
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(invalid_recipient, partial),
+    );
+    assert_contract_panic(result, "Mailbox: invalid withdrawal recipient");
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded,
+        "invalid recipient must not debit dispatch credit"
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded,
+        "invalid recipient must not change Mailbox custody"
+    );
+
+    let relayer_balance_before = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .balance;
+    let receipt = s
+        .session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*RELAYER_PK, partial),
+        )
+        .expect("payer should withdraw its own dispatch credit");
+    assert!(
+        receipt.gas_spent < WITHDRAW_DEFAULT_GAS_LIMIT,
+        "direct withdrawal spent {} gas, exceeding the CLI default {}",
+        receipt.gas_spent,
+        WITHDRAW_DEFAULT_GAS_LIMIT
+    );
+    let event = receipt
+        .events
+        .iter()
+        .find(|event| {
+            event.source == MAILBOX_ID && event.topic == events::DispatchFeeWithdrawn::TOPIC
+        })
+        .expect("withdrawal receipt should contain the Mailbox event");
+    let decoded = HyperlaneDataDriver
+        .decode_event(&event.topic, &event.data)
+        .expect("the explorer driver should decode the real VM receipt event");
+    assert_eq!(
+        decoded["payer"],
+        dusk_data_driver::to_json(*OWNER_ID).unwrap()
+    );
+    assert_eq!(
+        decoded["recipient"],
+        dusk_data_driver::to_json(message::keccak256(&RELAYER_PK.to_bytes())).unwrap()
+    );
+    assert_eq!(decoded["amount"].as_u64(), Some(partial));
+    let relayer_balance_after = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("relayer account query should succeed")
+        .balance;
+    assert_eq!(relayer_balance_after, relayer_balance_before + partial);
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded - partial
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded - partial
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*OWNER_PK, funded - partial),
+        )
+        .expect("payer should withdraw the remaining dispatch credit");
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        0
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        0
+    );
+}
+
+#[test]
+fn test_dispatch_credit_withdrawal_rolls_back_after_transfer_failure() {
+    let mut s = HyperlaneSession::new();
+    let funded = 2_000_000u64;
+
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, funded),
+            funded,
+        )
+        .expect("third-party dispatch funding should succeed");
+
+    // Saturate the recipient balance so transfer-contract account crediting
+    // fails after Mailbox has tentatively debited the payer's fee credit.
+    s.session
+        .direct_call::<_, ()>(
+            dusk_core::transfer::TRANSFER_CONTRACT,
+            "add_account_balance",
+            &(*RELAYER_PK, u64::MAX),
+        )
+        .expect("test setup should saturate recipient balance");
+    let recipient_balance = s
+        .session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+    assert_eq!(recipient_balance, u64::MAX);
+
+    let result = s.session.call_public::<_, ()>(
+        &OWNER_SK,
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, funded),
+    );
+    assert_contract_panic_contains(result, "attempt to add with overflow");
+
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded,
+        "failed transfer must roll back the tentative credit debit"
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded,
+        "failed transfer must preserve Mailbox custody"
+    );
+    assert_eq!(
+        s.session
+            .account(&RELAYER_PK)
+            .expect("recipient account query should succeed")
+            .balance,
+        u64::MAX,
+        "failed transfer must preserve recipient balance"
+    );
+
+    // A later caller-sensitive operation must still resolve the Moonlight
+    // caller correctly after the nested transfer panic rolled back.
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, 1u64),
+            1,
+        )
+        .expect("caller context should be restored after rollback");
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("fee_credit should succeed")
+            .data,
+        funded + 1
+    );
+}
+
+#[test]
+fn test_dispatch_credit_withdrawals_preserve_multi_payer_solvency() {
+    let mut s = HyperlaneSession::new();
+    let owner_credit = 4_000_000u64;
+    let relayer_credit = 6_000_000u64;
+    let owner_withdrawal = 1_500_000u64;
+
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, owner_credit),
+            owner_credit,
+        )
+        .expect("owner dispatch funding should succeed");
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*RELAYER_ID, relayer_credit),
+            relayer_credit,
+        )
+        .expect("relayer dispatch funding should succeed");
+
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        owner_credit + relayer_credit
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*OWNER_PK, owner_withdrawal),
+        )
+        .expect("owner withdrawal should succeed");
+
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("owner fee_credit should succeed")
+            .data,
+        owner_credit - owner_withdrawal
+    );
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*RELAYER_ID,))
+            .expect("relayer fee_credit should succeed")
+            .data,
+        relayer_credit,
+        "withdrawing one payer must not change another payer's liability"
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        owner_credit + relayer_credit - owner_withdrawal
+    );
+
+    s.session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*RELAYER_PK, relayer_credit),
+        )
+        .expect("relayer withdrawal should succeed");
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*RELAYER_ID,))
+            .expect("relayer fee_credit should succeed")
+            .data,
+        0
+    );
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .expect("owner fee_credit should succeed")
+            .data,
+        owner_credit - owner_withdrawal
+    );
+    assert_eq!(
+        s.session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        owner_credit - owner_withdrawal,
+        "Mailbox custody must equal the sum of remaining payer liabilities"
+    );
+}
+
+#[test]
 fn test_protocol_fee_rejects_unbacked_direct_post_dispatch() {
     let mut s = HyperlaneSession::new();
 
@@ -2507,6 +2870,110 @@ fn warp_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u6
         .data
 }
 
+fn assert_route_dispatch_credit_withdrawal(
+    mut session: TestSession,
+    route: ContractId,
+    owner_error: &str,
+) {
+    let funded = 3_000_000u64;
+    let withdrawn = 1_000_000u64;
+    let payer = route.to_bytes();
+
+    session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(payer, funded),
+            funded,
+        )
+        .expect("third-party route funding should succeed");
+
+    let result = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        route,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, withdrawn),
+    );
+    assert_contract_panic(result, owner_error);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+            .expect("route fee_credit should succeed")
+            .data,
+        funded
+    );
+
+    let recipient_balance_before = session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+    let receipt = session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            route,
+            "withdraw_dispatch_credit",
+            &(*RELAYER_PK, withdrawn),
+        )
+        .expect("route owner should withdraw the route's dispatch credit");
+    assert!(
+        receipt.gas_spent < WITHDRAW_DEFAULT_GAS_LIMIT,
+        "proxied withdrawal spent {} gas, exceeding the CLI default {}",
+        receipt.gas_spent,
+        WITHDRAW_DEFAULT_GAS_LIMIT
+    );
+    let recipient_balance_after = session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+
+    assert_eq!(
+        recipient_balance_after,
+        recipient_balance_before + withdrawn
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+            .expect("route fee_credit should succeed")
+            .data,
+        funded - withdrawn
+    );
+    assert_eq!(
+        session
+            .contract_balance(&MAILBOX_ID)
+            .expect("Mailbox balance query should succeed"),
+        funded - withdrawn
+    );
+
+    let recipient_balance_before_rejection = session
+        .account(&RELAYER_PK)
+        .expect("recipient account query should succeed")
+        .balance;
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        route,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, funded - withdrawn + 1),
+    );
+    assert_contract_panic_contains(result, "Mailbox: insufficient fee credit");
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+            .expect("route fee_credit should succeed")
+            .data,
+        funded - withdrawn,
+        "downstream Mailbox rejection must preserve route credit"
+    );
+    assert_eq!(
+        session
+            .account(&RELAYER_PK)
+            .expect("recipient account query should succeed")
+            .balance,
+        recipient_balance_before_rejection,
+        "downstream Mailbox rejection must not pay the recipient"
+    );
+}
+
 fn canonical_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u64 {
     session
         .direct_call::<_, u64>(WARP_DRC20_ID, "balance_of", &Drc20BalanceOf { account })
@@ -2618,7 +3085,7 @@ fn test_warp_drc20_init() {
             .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        3
+        4
     );
 }
 
@@ -2683,6 +3150,15 @@ fn test_warp_drc20_admin_accepts_owner_moonlight_sender() {
     assert_eq!(ism, TEST_MOCK_ID);
 }
 
+#[test]
+fn test_warp_drc20_owner_can_withdraw_route_dispatch_credit() {
+    assert_route_dispatch_credit_withdrawal(
+        session_with_warp_drc20(),
+        WARP_DRC20_ID,
+        "WarpDrc20: caller is not the owner",
+    );
+}
+
 // =============================================================================
 // Tests: WarpNative
 // =============================================================================
@@ -2717,7 +3193,7 @@ fn test_warp_native_init() {
             .direct_call::<_, u32>(WARP_NATIVE_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        1
+        2
     );
 }
 
@@ -2809,7 +3285,7 @@ fn test_warp_collateral_init() {
         .direct_call::<_, u32>(WARP_DRC20_COLLATERAL_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(state_version, 2);
+    assert_eq!(state_version, 3);
 }
 
 #[test]
@@ -3731,6 +4207,16 @@ fn test_warp_native_admin_accepts_owner_and_rejects_non_owner() {
 }
 
 #[test]
+fn test_warp_native_owner_can_withdraw_route_dispatch_credit() {
+    let (session, _) = session_with_warp_native_flow();
+    assert_route_dispatch_credit_withdrawal(
+        session,
+        WARP_NATIVE_ID,
+        "WarpNative: caller is not the owner",
+    );
+}
+
+#[test]
 fn test_warp_native_roundtrip_moves_real_dusk() {
     let (mut session, remote_router) = session_with_warp_native_flow();
     let amount = 1_000_000u64;
@@ -4247,6 +4733,16 @@ fn test_warp_collateral_admin_accepts_owner_and_rejects_non_owner() {
         &(MERKLE_TREE_HOOK_ID,),
     );
     assert_contract_panic(result, "WarpCollateral: caller is not the owner");
+}
+
+#[test]
+fn test_warp_collateral_owner_can_withdraw_route_dispatch_credit() {
+    let (session, _) = session_with_warp_collateral_flow();
+    assert_route_dispatch_credit_withdrawal(
+        session,
+        WARP_DRC20_COLLATERAL_ID,
+        "WarpCollateral: caller is not the owner",
+    );
 }
 
 #[test]

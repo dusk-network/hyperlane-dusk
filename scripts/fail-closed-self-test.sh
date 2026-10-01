@@ -20,13 +20,13 @@ command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 saved_version_checks=(
-    'validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 2'
+    'validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 3'
     'validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"'
     'validate_dusk_state_version "$dusk_ism_multisig" "Dusk multisig ISM"'
     'validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"'
-    'validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 3'
-    'validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"'
-    'validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 2'
+    'validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 4'
+    'validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 2'
+    'validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 3'
     'validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"'
     'validate_dusk_state_version "$dusk_igp" "Dusk IGP" 2'
     'validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"'
@@ -93,6 +93,11 @@ for script in \
     [ -n "$generator_line" ] && [ -n "$ownership_line" ] && [ "$generator_line" -lt "$ownership_line" ] \
         || fail "$script claims cleanup ownership before generator success"
 done
+withdraw_chain_id_line="$(rg -n -F 'dusk_chain_id_hex="$(jq -er' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+withdraw_call_line="$(rg -n -F '"$DUSK_TX" withdraw-dispatch' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+[ -n "$withdraw_chain_id_line" ] && [ -n "$withdraw_call_line" ] \
+    && [ "$withdraw_chain_id_line" -lt "$withdraw_call_line" ] \
+    || fail "live withdrawal does not load its expected Dusk chain ID before use"
 rg -q -F 'require_merged=0' scripts/production-readiness-guard.sh \
     || fail "pre-merge readiness still requires an already merged PR"
 rg -q -F 'require_approved=0' scripts/production-readiness-guard.sh \
@@ -134,6 +139,12 @@ done
 if rg -q -F 'workflow_dispatch:' .github/workflows/dusk-review-policy-gate.yml; then
     fail "trusted review policy permits a manual run to spoof its required PR context"
 fi
+
+withdrawal_line="$(rg -n -F 'Withdrawing one LUX of WarpDrc20 dispatch credit' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+dusk_validator_start_line="$(rg -n -F 'Starting Dusk-origin validator' demo/e2e-agents.sh | cut -d: -f1 | head -1)"
+[ -n "$withdrawal_line" ] && [ -n "$dusk_validator_start_line" ] \
+    && [ "$withdrawal_line" -lt "$dusk_validator_start_line" ] \
+    || fail "live setup withdrawal must precede Dusk-origin validator startup to avoid a signer nonce race"
 
 validator_line="$(rg -n -F 'bash "$SCRIPT_DIR/deploy.sh" --skip-deploy' demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"
 secret_write_line="$(rg -n -F "printf '0x%s\\n'" demo/gen-agent-configs.sh | cut -d: -f1 | head -1)"

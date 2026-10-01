@@ -31,7 +31,9 @@ Runs the local reproducibility checks that do not require a live E2E network:
   - make clippy-contracts
   - make test-types (including the canonical DRC20 ABI feature)
   - cargo test -p hyperlane-dusk-integration-tests
+  - cargo test -p hyperlane-dusk-data-driver
   - cargo test -p dusk-tx
+  - make data-driver
   - make secret-hygiene
 
 Options:
@@ -172,11 +174,17 @@ make canonical-drc20-fixture
 info "Running Dusk VM integration tests"
 cargo test -p hyperlane-dusk-integration-tests
 
+info "Running data-driver tests"
+cargo test -p hyperlane-dusk-data-driver
+
 info "Running dusk-tx tests"
 cargo test -p dusk-tx
 
 info "Running data-driver tests"
 cargo test -p hyperlane-dusk-data-driver
+
+info "Building data-driver release WASM"
+make data-driver
 
 info "Checking standalone E2E operator binary"
 cargo check -p hyperlane-dusk-e2e

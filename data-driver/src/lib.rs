@@ -14,9 +14,12 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use dusk_bytes::Serializable;
+use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
 use dusk_data_driver::{
-    json_to_rkyv, rkyv_to_json, rkyv_to_json_u64, ConvertibleContract, Error, JsonValue,
+    from_rkyv, json_to_rkyv, rkyv_to_json, rkyv_to_json_u64, ConvertibleContract, Error, JsonValue,
 };
+use serde::Deserialize;
 
 use hyperlane_dusk_types::drc20::{Allowance, BalanceOf};
 use hyperlane_dusk_types::events;
@@ -28,6 +31,40 @@ use hyperlane_dusk_types::{DomainGasConfig, EthAddress, GasPaymentRecord, Messag
 /// inputs, outputs, and events in a human-readable JSON format.
 #[derive(Default)]
 pub struct HyperlaneDataDriver;
+
+#[derive(Deserialize)]
+struct WithdrawalInputJson {
+    recipient: Vec<u8>,
+    amount: u64,
+}
+
+fn encode_withdrawal_input(json: &str) -> Result<Vec<u8>, Error> {
+    let input: WithdrawalInputJson = serde_json::from_str(json)?;
+    let recipient_bytes: [u8; 96] = input.recipient.try_into().map_err(|bytes: Vec<u8>| {
+        Error::Json(format!(
+            "withdrawal recipient must be 96 bytes, got {}",
+            bytes.len()
+        ))
+    })?;
+    let recipient = AccountPublicKey::from_bytes(&recipient_bytes)
+        .map_err(|error| Error::Json(format!("invalid withdrawal recipient: {error:?}")))?;
+    if !recipient.is_valid() {
+        return Err(Error::Json(
+            "withdrawal recipient is not a valid BLS public key".into(),
+        ));
+    }
+    rkyv::to_bytes::<_, 1024>(&(recipient, input.amount))
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| Error::Rkyv(format!("cannot serialize withdrawal input: {error}")))
+}
+
+fn decode_withdrawal_input(rkyv: &[u8]) -> Result<JsonValue, Error> {
+    let (recipient, amount): (AccountPublicKey, u64) = from_rkyv(rkyv)?;
+    Ok(serde_json::json!({
+        "recipient": recipient.to_bytes().to_vec(),
+        "amount": amount,
+    }))
+}
 
 impl ConvertibleContract for HyperlaneDataDriver {
     fn encode_input_fn(&self, fn_name: &str, json: &str) -> Result<Vec<u8>, Error> {
@@ -64,6 +101,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "recipient_ism" | "fee_credit" => json_to_rkyv::<(H256,)>(json),
             "get_announced_storage_locations_for_validator" => json_to_rkyv::<(EthAddress,)>(json),
             "get_announced_storage_locations" => json_to_rkyv::<(Vec<EthAddress>,)>(json),
+            "withdraw_dispatch_credit" => encode_withdrawal_input(json),
             // Hook queries
             "hook_type" | "total_gas_payments" | "collected_fees" | "protocol_fee"
             | "max_protocol_fee" | "beneficiary" => json_to_rkyv::<()>(json),
@@ -140,6 +178,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "recipient_ism" | "fee_credit" => rkyv_to_json::<(H256,)>(rkyv),
             "get_announced_storage_locations_for_validator" => rkyv_to_json::<(EthAddress,)>(rkyv),
             "get_announced_storage_locations" => rkyv_to_json::<(Vec<EthAddress>,)>(rkyv),
+            "withdraw_dispatch_credit" => decode_withdrawal_input(rkyv),
             "quote_dispatch" | "quote_dispatch_for_contract" => {
                 rkyv_to_json::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
                     .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv))
@@ -247,6 +286,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             events::Dispatch::TOPIC => rkyv_to_json::<events::Dispatch>(rkyv),
             events::DispatchId::TOPIC => rkyv_to_json::<events::DispatchId>(rkyv),
             events::DispatchFeeFunded::TOPIC => rkyv_to_json::<events::DispatchFeeFunded>(rkyv),
+            events::DispatchFeeWithdrawn::TOPIC => {
+                rkyv_to_json::<events::DispatchFeeWithdrawn>(rkyv)
+            }
             events::DispatchFeePaid::TOPIC => rkyv_to_json::<events::DispatchFeePaid>(rkyv),
             events::Process::TOPIC => rkyv_to_json::<events::Process>(rkyv),
             events::ProcessId::TOPIC => rkyv_to_json::<events::ProcessId>(rkyv),
@@ -279,14 +321,20 @@ dusk_data_driver::generate_wasm_entrypoint!(HyperlaneDataDriver);
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
     use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
 
     use super::{ConvertibleContract, HyperlaneDataDriver};
+    use dusk_bytes::Serializable;
+    use dusk_core::signatures::bls::{
+        PublicKey as AccountPublicKey, SecretKey as AccountSecretKey,
+    };
     use dusk_data_driver::{json_to_rkyv, to_json};
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::{EthAddress, GasPaymentRecord};
+    use rand::SeedableRng;
 
     #[test]
     fn owner_output_decodes_optional_owner_state() {
@@ -526,5 +574,54 @@ mod tests {
         driver
             .decode_output_fn("get_announced_storage_locations", &batches)
             .expect("batched location output should decode");
+    }
+
+    #[test]
+    fn dispatch_fee_withdrawn_event_round_trips_through_the_driver() {
+        let payer = [0x11u8; 32];
+        let recipient = [0x22u8; 32];
+        let json = format!(
+            r#"{{"payer":{:?},"recipient":{:?},"amount":42}}"#,
+            payer, recipient
+        );
+        let bytes = json_to_rkyv::<events::DispatchFeeWithdrawn>(&json)
+            .expect("event JSON should serialize");
+
+        let decoded = HyperlaneDataDriver
+            .decode_event(events::DispatchFeeWithdrawn::TOPIC, &bytes)
+            .expect("event bytes should decode");
+        assert_eq!(decoded["amount"].as_u64(), Some(42));
+        assert!(decoded["payer"]
+            .as_array()
+            .expect("payer should be an array")
+            .iter()
+            .all(|value| value.as_u64() == Some(0x11)));
+        assert!(decoded["recipient"]
+            .as_array()
+            .expect("recipient should be an array")
+            .iter()
+            .all(|value| value.as_u64() == Some(0x22)));
+
+        assert!(HyperlaneDataDriver
+            .decode_event(events::DispatchFeeWithdrawn::TOPIC, &[0xff])
+            .is_err());
+    }
+
+    #[test]
+    fn dispatch_credit_withdrawal_input_round_trips_through_the_driver() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x57495448);
+        let recipient = AccountPublicKey::from(&AccountSecretKey::random(&mut rng));
+        let expected = serde_json::json!({
+            "recipient": recipient.to_bytes().to_vec(),
+            "amount": 42u64,
+        });
+        let json = expected.to_string();
+        let bytes = HyperlaneDataDriver
+            .encode_input_fn("withdraw_dispatch_credit", &json)
+            .expect("withdrawal input should encode");
+        let decoded = HyperlaneDataDriver
+            .decode_input_fn("withdraw_dispatch_credit", &bytes)
+            .expect("withdrawal input should decode");
+        assert_eq!(decoded, expected);
     }
 }

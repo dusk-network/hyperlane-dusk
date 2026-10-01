@@ -238,10 +238,10 @@ mod warp_native {
             self.pending_total
         }
 
-        /// Storage/escrow ABI version for deployment compatibility checks.
+        /// Deployment compatibility version including dispatch-credit withdrawal.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            1
+            2
         }
 
         // =================================================================
@@ -467,6 +467,20 @@ mod warp_native {
                     ism: ism.to_bytes(),
                 },
             );
+        }
+
+        /// Withdraw this route's unused Mailbox dispatch-fee credit.
+        ///
+        /// Owner only. The Mailbox sees this route as the payer and sends the
+        /// withdrawn native DUSK to the explicit Moonlight recipient.
+        pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
+            self.only_owner();
+            let _: () = abi::call(
+                self.mailbox,
+                "withdraw_dispatch_credit",
+                &(recipient, amount),
+            )
+            .expect("WarpNative: dispatch credit withdrawal failed");
         }
 
         /// Transfer ownership. Owner only.

@@ -47,6 +47,16 @@ all retained harness, deploy, warm-validation, relayer, and validator logs
 passed the runtime secret scan. Earlier synchronization and E2E references
 below are historical and are superseded by this addendum where they differ.
 
+The dispatch-credit decisions are intentionally narrow. Permissionless funding
+is sponsorship for the beneficiary/effective payer and gives the sponsor no
+withdrawal or dispatch authority. Only that beneficiary may spend the credit.
+A Moonlight beneficiary may withdraw to a semantically valid Moonlight key,
+while production warp routes expose an owner-only proxy over that route's own
+contract-keyed credit. There is no Mailbox-owner global drain, funder reclaim,
+expiry, reassignment, or contract payout callback without a safe recipient ABI.
+Pending native/collateral liabilities reserve live custody and pending
+synthetic liabilities reserve aggregate `u64` supply capacity.
+
 ## Synchronized references
 
 - Hyperlane upstream `main`:
@@ -104,11 +114,28 @@ collects that native-DUSK fee from the caller, forwards it through an
 authenticated transfer callback, and proves the route's pre-existing credit is
 unchanged afterward. Native calls deposit the bridge amount plus the fee; token
 routes deposit the fee only. Permissionless sponsorship may still leave a route
-above the readiness minimum. Base PR #1 intentionally stops at
-beneficiary-keyed sponsorship; stacked PR #10 adds
-beneficiary-authorized Moonlight withdrawal and owner-only proxies for each
-route's own contract-keyed credit, without a funder reclaim right or
-Mailbox-owner global drain.
+above the readiness minimum.
+
+Base PR #1 intentionally stops at beneficiary-keyed sponsorship. This stacked
+PR adds beneficiary-authorized Moonlight withdrawal and owner-only proxies for
+each route's own contract-keyed credit. Permissionless funding does not confer
+withdrawal rights: the effective payer owns the credit. Moonlight payers may
+withdraw to an explicit, semantically valid Moonlight key. There is no funder
+reclaim right or Mailbox-owner global drain. Contract-recipient payouts remain
+deferred until a callback ABI is specified.
+
+The withdrawal submission boundary is non-idempotent. Public target and
+recipient arguments are validated before signer material is read. After a
+transaction is constructed, every submission failure retains the exact hash;
+propagation transport/read failures are explicitly outcome-unknown and require
+hash reconciliation before retry. Confirmation observes until the advertised
+absolute deadline instead of stopping at a secondary attempt cap.
+
+Saved deployment reuse now requires the Mailbox ABI version introduced with
+withdrawal. The explorer data driver owns both the withdrawal input codec and
+the emitted event codec. VM coverage forces a post-debit transfer failure to
+prove atomic rollback, and direct plus all three proxied paths measure below
+the CLI's 30,000,000-gas default on the pinned runtime.
 
 ### Current DRC20 compatibility
 
@@ -137,11 +164,12 @@ binary or a single existing Mailbox WASM from silently selecting an older
 deployment topology.
 
 Saved-deployment reuse now treats the Dusk topology as one compatibility unit.
-Every deployed contract exposes a persisted-layout version; both reuse
-boundaries validate the complete matrix (WarpDrc20 and IGP version 2, all other
-current contracts version 1) before generating agent configuration. The live
-Mailbox default-ISM and exact IGP destination-pricing checks remain separate
-policy-binding requirements. Consequently,
+Every deployed contract exposes a compatibility version; both reuse boundaries
+validate the complete matrix (WarpDrc20, the withdrawal-capable Mailbox, and
+IGP at version 2; all other current contracts at version 1) before generating
+agent configuration. The live Mailbox default-ISM and exact IGP
+destination-pricing checks remain separate policy-binding requirements.
+Consequently,
 legacy contracts that merely retain an old liveness query cannot be accepted as
 compatible with the current escrow, accounting, or validator-policy semantics.
 
@@ -160,6 +188,15 @@ checkout guard.
   `95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`).
 - All 12 contract WASM crates compile against the current stack.
 - Contract/type WASM clippy passes.
+- The final combined-stack gate at
+  `db040e3f1eab4ba012a12a6be92c8f86268a993f` passed 29 type tests, 105 VM
+  tests, 19 `dusk-tx` tests, and 7 data-driver tests. Its durable log is
+  `/tmp/hyperlane-dusk-withdrawal-repro-db040e3.log` (SHA-256
+  `7bc6c75a802bc7a67c5a50c3d83189931edbb9780bf72fd4602224be46939f20`).
+- The VM set includes payer-isolated Mailbox withdrawal, multi-payer solvency,
+  withdrawal rollback after transfer failure, and owner-gated withdrawal for
+  all three production warp routes.
+- Base PR #1 independently passed the following narrower matrix:
 - `hyperlane-dusk-types`: 29 passed, 0 failed.
 - `cargo test -p hyperlane-dusk-integration-tests`: 99 passed, 0 failed.
 - `dusk-tx`: 17 passed, 0 failed.
@@ -213,9 +250,10 @@ surface:
 - The agent crate still depends on an adjacent Dusk types checkout, which is
   appropriate for the paired internal repositories but is not a self-contained
   upstream Hyperlane contribution.
-- Production signer custody, route funding/refund policy, account-registration
-  UX, upgrade/migration policy, monitoring, and Dusk release sign-off remain
-  explicit deployment decisions.
+- Production signer custody, route-funding responsibility and alert thresholds,
+  account-registration UX, upgrade/migration policy, monitoring, and Dusk
+  release sign-off remain explicit deployment decisions. The unused-credit
+  ownership and Moonlight withdrawal semantics are now defined.
 - The existing stress, fault-injection, and soak evidence remains historical
   evidence for its pinned commits. It should be repeated after later changes to
   the agent or runtime, even though both current live route matrices pass.

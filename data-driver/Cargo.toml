@@ -10,8 +10,16 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 dusk-data-driver = { workspace = true }
+dusk-core = { workspace = true }
+dusk-bytes = "0.1.7"
 hyperlane-dusk-types = { workspace = true, features = ["serde", "drc20"] }
+rkyv = { workspace = true, features = ["validation"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 [features]
 ffi = ["dusk-data-driver/wasm-export"]
 js = ["ffi", "dusk-data-driver/alloc"]
+
+[dev-dependencies]
+rand = "0.8"

@@ -36,8 +36,51 @@ tracked-source secret hygiene, and the full Dusk agent/base/validator/relayer/
 scraper/lander compile surface. Durable log:
 `/tmp/hyperlane-base-reentry-9058755.log`, SHA-256
 `16ac8e62d2d8c5952a9363c90f77e15ff756043a102302780f0f9e272a166d62`.
-The combined stack and live E2E anchors remain pending; all evidence below
-predates the reentrancy fix.
+The combined withdrawal-stack runtime anchor
+`dc8aba07773993878edd81735d59e66beddd66a3` was then reproduced from the
+same frozen layout and monorepo head. Its uninterrupted gate passed all 13
+contract WASM builds, production-contract clippy, 29 type tests, 115 VM tests,
+19 `dusk-tx` tests, 7 data-driver tests, release data-driver WASM, the
+standalone E2E operator build, tracked-source secret hygiene, and the full Dusk
+agent/base/validator/relayer/scraper/lander compile surface. Durable log:
+`/tmp/hyperlane-stack-repro-dc8aba0-green.log`, SHA-256
+`03de4d4e1597c8136e9a00bbb74e7fbbe290b5b2fa3e8cb8d82e004a31f640fb`.
+
+Fresh live runs used that exact stack runtime, monorepo
+`6ef326b8a926d262714afd315960b26e441c7b40`, and frozen Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. Both runs proved the live
+owner-only one-LUX dispatch-credit withdrawal before using the remaining
+route credit; bidirectional synthetic delivery; protocol-fee collection;
+native DUSK exact lock/release custody; canonical DRC20 exact allowance,
+lock, and release custody; and clean teardown.
+
+- TestMock run `1784638666`: log
+  `/tmp/hyperlane-stack-e2e-testmock-dc8aba0-6ef326b-1784638493.log`, SHA-256
+  `a195ea9f8c7e47e8c27c2e1ad728d83b9af0a23ff2ca79c59b52fd37fe5683bc`.
+- MessageIdMultisig run `1784639741`: log
+  `/tmp/hyperlane-stack-e2e-multisig-dc8aba0-6ef326b-1784639731.log`, SHA-256
+  `9d7a6db2e3599591c8c364d44187a61f9bb7b30b3067c058812fa2480cef85c9`.
+  Fetched checkpoints through index 2 used only validator
+  `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` in both directions.
+
+Post-run audit found no known development private key, no `nonce too low` or
+replacement-underpriced error, no generated signer/config run directory, no
+orphan test agent, and no listener on ports 8080, 8545, 5173, or 5100. Older
+evidence below remains regression history rather than evidence for this
+runtime anchor.
+
+The same exact runtime then passed the sequential fail-closed live suite:
+dirty deterministic redeploy refusal (`1784640786`), delayed validator
+checkpoint (`1784641180`), corrupted checkpoint rejection and restore
+(`1784641743`), unfunded Dusk signer rejection and funded recovery
+(`1784642252`), origin RPC outage and recovery (`1784642708`), destination RPC
+outage and recovery (`1784643165`), concurrent duplicate-relayer stability
+(`1784643621`), and five-message relayer restart/backlog recovery
+(`1784644080`). Aggregate log:
+`/tmp/hyperlane-stack-fault-e2e-dc8aba0-6ef326b.log`, SHA-256
+`6841c405430020027665ba37d282cf63724b32605407e40ab68b2318a7b0378b`.
+Post-suite audit found no known development private key, generated run
+directory, orphan test agent, or listener on the service and metrics ports.
 
 The same review found that the proposed `pull_request_target` policy wrapper
 passed the proposed checkout to trusted scripts that subsequently executed
@@ -130,30 +173,48 @@ validator fail-stop implementation. It does not replace static checkout
 `b4c46ce9`; it prevents that CI-only delta from being described as an untested
 runtime change.
 
-## 2026-07-21 Final Harness and Readiness Validation
+## 2026-07-21 Final Combined Static and Isolated E2E Validation
 
-The final base covered-tree anchor is
-`aaad04937483897ffc0fcc77cfcedbc53bfee326`. It adds no contract or agent
-semantics beyond `d32c0f56c66d93be203cc44e3f48a0a7257216f0`; it corrects the live E2E
-process boundary so the tracked PID is the relayer or validator binary rather
-than an intermediate shell. The correction was required after an otherwise
-successful run showed the TestMock relayer continuing to write during the
-following multisig case.
+The final covered implementation set was the Dusk base anchor
+`aaad04937483897ffc0fcc77cfcedbc53bfee326`, stacked withdrawal anchor
+`db040e3f1eab4ba012a12a6be92c8f86268a993f`, agent checkout
+`356cf22a592d1d657519b9cfd5f6af9148096972`, and Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`.
 
-A detached clean-layout reproduction against Rusk
-`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` passed all 12 contract WASMs,
-contract/type clippy, 29 type tests, 99 VM tests, 17 `dusk-tx` tests, 5
-data-driver tests, the standalone E2E operator compile, and tracked-source
-secret hygiene. Durable log:
-`/tmp/hyperlane-dusk-base-repro-aaad049.log`, SHA-256
-`95a6d2eff330df1c65873ee105a813ca11f0e679c5b4b58cc5ce055586d1b561`.
+The detached combined-stack gate passed all 12 contract WASM builds,
+contract/type clippy, 29 type tests, 105 VM tests, 19 `dusk-tx` tests, 7
+data-driver tests and the release data-driver WASM build, the standalone E2E
+operator compile, and tracked-source secret hygiene. Durable log:
+`/tmp/hyperlane-dusk-withdrawal-repro-db040e3.log`, SHA-256
+`7bc6c75a802bc7a67c5a50c3d83189931edbb9780bf72fd4602224be46939f20`.
 
-The readiness check also now counts its own running context when proving that
-both configured required checks exist, while still excluding itself from
-unfinished and failed-check counts. Its hosted rerun reported the monorepo
-branch 0 commits behind upstream and no covered-path delta. The only remaining
-premerge blockers were the deliberately required approval/merge of companion
-PRs, not code, check visibility, or fork freshness.
+The final isolated live run used TestMock run `1784607919` and
+MessageIdMultisig run `1784608531`. Each case withdrew exactly one LUX from
+WarpDrc20's contract-keyed dispatch credit, asserted the exact decrement, used
+the remaining credit, and delivered synthetic, native, and collateral routes
+in both directions. The checks covered exact custody, allowance, and protocol
+fee changes plus real Rusk process simulation; the multisig case also produced
+and consumed a real validator checkpoint and metadata. Combined harness log:
+`/tmp/hyperlane-final-e2e-db040e3-356cf22.log`, SHA-256
+`d796c471d024fbb3fce75fccddf01dfcaac426be45a25eb77de6c101e23948e7`.
+
+The harness now starts agents with `exec`, so tracked PIDs identify the actual
+relayer and validator rather than intermediate shells. After TestMock stopped,
+its relayer log remained exactly 725460 bytes with SHA-256
+`d508261c53e493a3a750fdea11e3cb22627d72cee7910a9bdcafbbe9d3c1f442`
+throughout the multisig case, proving there was no cross-case agent survivor.
+The multisig relayer and validator log hashes were respectively
+`05dfb3218b97542ba314030317979c14e51a287b60d87f83be0c3af75dc00893`
+and `2f26cf5334b9272d9d1846cdfbbd93182153bb95b66935e24be8a39860842341`.
+All retained harness, deploy, warm-validation, relayer, and validator logs
+passed the runtime secret scan. Earlier live runs are superseded because they
+did not prove process isolation even where their protocol assertions passed.
+
+At that historical head, the stack required Mailbox, WarpDrc20, and IGP
+compatibility version 2; every other deployed contract remained version 1.
+The current candidate's version matrix is recorded in the newest section
+above. Both preserve the base branch's single combined-manifest reuse authority
+and exact saved/live IGP policy check.
 
 The synchronized monorepo agent/CI anchor
 `9e386e81851fd02df86d957fb9fce6f15d81df34` pins this exact Dusk covered tree.
@@ -276,6 +337,62 @@ This is local clean-layout evidence, not a replacement for the still-blocked
 private-runner status check or a fresh bidirectional agent E2E after both
 stacked PR heads are finalized.
 
+## 2026-07-20 Dispatch-Credit Withdrawal Validation
+
+The focused stacked branch `feat/dispatch-credit-withdrawal` was validated at
+implementation anchor `8064476efa30126186971316f72b2646f0c3b7d2` after rebasing
+onto hardened base `b46fda9265e3381203962a65c15b697271fd5dff`, against clean
+detached current Rusk `origin/master` at
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` (Dusk Core/VM 1.7.1).
+
+An isolated compatible checkout layout passed:
+
+- all 12 contract WASM builds;
+- the production contract/type WASM clippy surface;
+- 29 type tests;
+- 95 VM integration tests;
+- 6 data-driver decoder tests; and
+- 13 `dusk-tx` tests.
+
+The rebase preserved the base branch's stricter 256-KiB status-response bound,
+exact-hash transaction confirmation, immediate first observation, and absolute
+deadline while layering the withdrawal surface on top. A pre-rebase backup is
+kept at `backup/dispatch-credit-pre-b46fda9`. The earlier clean repro caught two
+overlapping `mod tests` blocks in the data driver; they were consolidated and
+the full contract/type/VM portion plus every remaining driver, CLI, release-
+WASM, and hygiene layer passed at the implementation anchor above.
+
+The added VM cases prove that permissionless third-party funding does not grant
+withdrawal authority, another Moonlight payer cannot withdraw the named
+payer's credit, zero withdrawals fail, partial and full withdrawals reduce
+both accounting and native custody exactly, and only the configured owner of
+each WarpDrc20, WarpNative, or WarpDrc20Collateral route can withdraw that
+route's contract-keyed credit. Identity/invalid BLS recipients fail before
+credit or custody changes. The successful withdrawal's actual VM receipt event
+is decoded through `HyperlaneDataDriver`, joining the contract emission and
+explorer decoder in one test. The CLI separately proves valid, prefixed,
+wrong-length, and identity recipient-key handling, and exposes an explicit
+treasury option while retaining the signer as its default.
+
+The adversarial review found and corrected one tooling defect before handoff:
+`fund-dispatch` and `withdraw-dispatch` had treated signer nonce advancement as
+successful execution. Dusk spends the Moonlight nonce even when a contract
+call is rejected. Both commands now poll Rusk's GraphQL transaction record by
+the exact transaction hash and return an error when `SpentTransaction.err` is
+set. The confirmation path checks immediately, uses an absolute 60-second
+deadline, retries transient observation errors while preserving the hash,
+and caps status responses at 256 KiB; generic raw contract calls use the same
+execution-success boundary. Focused tests cover exact-hash query construction,
+success/failure/not-found parsing, GraphQL error rejection, malformed and
+oversized responses, retry/error branches, nonce exhaustion, and the VM
+invariant that a rejected withdrawal still advances the Moonlight nonce.
+
+An initial compatibility probe against historical clean Rusk
+`c0c64db4659500d077bb253ad13acba0e347d3fc` built every contract and passed
+contract clippy, but resolved Dusk VM 1.6 and stopped before integration tests
+because that older VM lacks the current host-query and execution-config API.
+It is not validation evidence for this branch; the current-Rusk run above is.
+
 ## 2026-07-20 Remediation Validation (Current)
 
 This section supersedes “current” wording in the May evidence and the earlier
@@ -291,7 +408,8 @@ the exact commits they name.
 
 Results:
 
-- `cargo test -p hyperlane-dusk-integration-tests`: 82 passed, 0 failed.
+- `cargo test -p hyperlane-dusk-integration-tests`: 98 passed, 0 failed at the
+  reassessed withdrawal head; the reassessed base branch has 93 tests.
 - All 12 contract WASMs build and the production contract/type clippy surface
   passes.
 - The VM suite validates the shared Moonlight/contract owner model, rejects
@@ -2889,6 +3007,41 @@ single-handle signer-file reads, and finalized sequence/Merkle integration.
 Bidirectional live-agent evidence is recorded separately after the final
 cross-repository heads are pinned.
 
+## 2026-07-20 Stacked Withdrawal Reassessment Gate
+
+The 11-commit withdrawal series was rebased from base
+`b46fda9265e3381203962a65c15b697271fd5dff` to the reassessed base without
+semantic changes: `git range-diff` paired every commit exactly. Withdrawal code
+anchor `ad6de95dd5e1a4efab55213733125d5d4b4d13da` was then reproduced from a
+detached clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e`. The subsequent rebase onto the
+base evidence-only commit changes documentation but no contract, CLI, driver,
+type, test, lockfile, or repro-script path.
+
+Durable local log: `/tmp/hyperlane-dusk-pr10-repro-ad6de95.log`.
+
+Result:
+
+- all contract WASMs and the data-driver release WASM built;
+- the targeted contract/type wasm clippy surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 98 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 6 passed, 0 failed;
+- `dusk-tx`: 13 passed, 0 failed; and
+- secret-hygiene checks passed.
+
+The five withdrawal cases prove payer-only authority, exact partial/full
+custody reduction, multi-payer solvency, and owner-gated proxy withdrawal for
+synthetic, native, and collateral routes. Invalid/identity recipient keys and
+zero or over-credit amounts reject without changing credit or paying the
+recipient. The actual VM receipt is decoded through the production data driver.
+These cases run in the same 98-test VM set as the new native reserve,
+synthetic pending-claim, realistic collateral-custody, and Merkle history cases.
+
+The exact pre-rebase head remains recoverable at
+`backup/feat-dispatch-credit-withdrawal-pre-6832b15`; no history was discarded
+while updating the stacked PR.
+
 ## 2026-07-21 Complete Deployment-Compatibility Gate
 
 An independent post-implementation red-team identified that the saved-state
@@ -2921,10 +3074,79 @@ The added VM coverage queries the version entry point on Mailbox, TestMock,
 TestRecipient, MessageIdMultisigISM, ProtocolFee, AggregationHook, IGP, and
 WarpDrc20Collateral. Build coverage includes ValidatorAnnounce and the three
 already-versioned route/hook contracts. The fail-closed self-test separately
-asserts that both deployment-reuse boundaries contain the complete 12-contract
-version matrix: WarpDrc20 version 2 and version 1 for every other current
-contract. Existing kind and policy probes remain in addition to those version
+asserts that both base-PR deployment-reuse boundaries contain the complete
+12-contract version matrix: WarpDrc20 version 2 and version 1 for every other
+base contract. The stacked withdrawal gate below raises Mailbox to compatibility
+version 2. Existing kind and policy probes remain in addition to those version
 checks.
+
+## 2026-07-21 Stacked Withdrawal Compatibility Gate
+
+The withdrawal stack was merged with base head
+`6246428d9246f4e4b581e7c90328d28f1439d9e5`. Because withdrawal is a required
+Mailbox ABI but adds no persisted field, the stacked Mailbox advances its
+deployment compatibility version from 1 to 2. Both reuse paths require that
+version, so a base-only Mailbox cannot be mistaken for a withdrawal-capable
+deployment. The corrected stacked implementation was frozen at
+`265b7e9b1e47f4feadc4e71644d23df04680661c` and reproduced from a detached,
+clean worktree against Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` with the standard local repro
+command.
+
+Durable local log:
+`/tmp/hyperlane-dusk-withdrawal-repro-265b7e9.log` (SHA-256
+`0bbaf2663eaa82982c95eed91921309feffa39b6ae1d649e6292ebcdd43d5f07`).
+
+Result:
+
+- all 12 contract WASMs built and the targeted wasm clippy surface passed;
+- `hyperlane-dusk-types`: 29 passed, 0 failed;
+- `hyperlane-dusk-integration-tests`: 101 passed, 0 failed;
+- `hyperlane-dusk-data-driver`: 7 passed, 0 failed;
+- `dusk-tx`: 18 passed, 0 failed;
+- the data-driver release WASM built;
+- the standalone E2E operator binary compiled; and
+- secret-hygiene checks passed.
+
+The full fail-closed self-test also passed from the linked withdrawal worktree.
+Its validation-only agent-config probe now runs without an ignored
+`.env.bridge`, and completion-audit repository detection accepts both primary
+checkouts and linked Git worktrees. This closes the two clean-runner assumptions
+exposed when the policy workflow began executing the complete self-test.
+
+## 2026-07-21 Final-Head Live Agent Matrix
+
+Fresh live E2E used withdrawal head
+`b16af0c05547a5d8e8687f47895c664b1aa93c00`, companion agent head
+`dbed54abd3`, and Rusk
+`5c6a0bab11c61fb4c81275afdeceb97fb942d85e` in an isolated compatible
+layout. TestMock run `1784597325` and MessageIdMultisig run `1784598195` both
+passed. Before generating agent configuration, each run redeployed fresh state
+and exercised the complete saved-topology validation, including Mailbox
+compatibility version 2 and every other exact contract version.
+
+Both runs:
+
+- confirmed a live one-LUX WarpDrc20 dispatch-credit withdrawal;
+- delivered synthetic, native, and collateral routes in both directions;
+- observed the exact ProtocolFee collection and residual route credit;
+- asserted exact native custody and collateral allowance/custody changes; and
+- observed successful Dusk process simulation before propagation.
+
+The multisig run additionally produced, discovered, and consumed a real signed
+checkpoint at threshold 1. Evidence:
+
+- combined harness log `/tmp/hyperlane-final-e2e-b16af0c-dbed54a.log`, SHA-256
+  `5d59231d77c1cce8fafa42e1527eecd9ba1d41993b18a8fc947a63257933170d`;
+- TestMock relayer log `/tmp/hyperlane-relayer-testMock-1784597325.log`,
+  SHA-256 `0cd06c863fa6d685657fc4f62e02673da77bc8f000c2ae7557f2c0275b20e7e5`;
+- multisig relayer log
+  `/tmp/hyperlane-relayer-messageIdMultisig-1784598195.log`, SHA-256
+  `484a45e3e801b5a4dba1134b4131111b5465571f1ecc2c69cd70d5fe528c1a83`;
+  and
+- multisig validator log
+  `/tmp/hyperlane-validator-messageIdMultisig-1784598195.log`, SHA-256
+  `d0efdc9209129efaa93b70745c0730fda1b690a1e154560ef5ca19baf3490797`.
 
 ## Remaining Work Before Production Readiness
 

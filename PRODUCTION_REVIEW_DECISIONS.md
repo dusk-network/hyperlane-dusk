@@ -1,9 +1,9 @@
 # Production Review Decisions
 
 > The reopened candidate and its replacement-evidence requirements are defined
-> in `CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md`. Head-specific evidence and
-> older version numbers below are historical until this document is refreshed
-> after the new frozen heads pass validation.
+> in `CLOSURE_REASSESSMENT_DECISIONS_2026-07-20.md`. The current runtime anchors
+> and replacement evidence are recorded in the newest `TEST_REPORT.md`
+> section. Older links below remain regression history only.
 
 This file is the reviewer-facing decision record for the Dusk Hyperlane
 revival. It should be updated when reviewers accept a recommendation or request
@@ -75,13 +75,98 @@ Accept immutable registration for v1. A different BLS key naturally produces a
 different recipient hash, and admin-controlled remapping would introduce a
 privileged path over user recipient identity.
 
+### Dispatch Fee Credit Ownership and Withdrawal
+
+Tracking issue: dusk-network/hyperlane-dusk#2.
+
+Decision (accepted 2026-07-20):
+
+- [x] Keep credit authority with the effective payer and allow withdrawal to
+  an explicit Moonlight account.
+- [x] Give each production warp route an owner-only proxy for its own
+  contract-keyed credit.
+- [x] Do not give the Mailbox owner a global credit-drain power.
+- [x] Defer contract-recipient withdrawal until a callback ABI and receiving
+  contract requirements are specified.
+
+Semantics:
+
+- `fund_dispatch` remains permissionless. A third party may fund a user or
+  route, but funding does not create a separate refund claim: the resulting
+  credit belongs to the named payer identity.
+- A direct Moonlight `withdraw_dispatch_credit` call resolves the signing
+  account as the payer. An inter-contract call resolves the immediate calling
+  contract as the payer. Callers cannot supply or impersonate a different
+  payer.
+- The payer selects an explicit Moonlight public key as recipient. State is
+  debited before the transfer-contract call, and the transaction reverts both
+  changes if that transfer fails. The key must also pass Dusk's semantic BLS
+  validity check before any credit is debited; an identity or invalid point is
+  rejected.
+- `dusk-tx withdraw-dispatch` defaults to the signer but accepts
+  `--recipient-public-key` so production routes can use a distinct operational
+  treasury without changing route ownership or signer custody. It also
+  requires `--expected-chain-id`, compares that operator-pinned value with the
+  endpoint before reading signer material, and signs only after they match.
+- `dusk-tx fund-dispatch` and `withdraw-dispatch` report success only after the
+  exact transaction hash is present in Rusk's ledger with no execution error.
+  Moonlight nonce advancement is intentionally not treated as success because
+  rejected contract calls are still spent transactions.
+- Once the withdrawal transaction has been constructed, every submission error
+  retains its exact hash. Preverification failures are labeled as occurring
+  before propagation; propagation transport/read failures are labeled
+  outcome-unknown and instruct the operator to reconcile that hash before any
+  retry of the non-idempotent withdrawal.
+- Every post-propagation observation failure other than an explicit on-chain
+  execution rejection is an unknown outcome. Timeouts and incompatible
+  successful HTTP/GraphQL response schemas both retain the exact hash and
+  require reconciliation before retry.
+- Transaction-result polling checks immediately, enforces a 60-second wall-
+  clock deadline as the authoritative bound rather than stopping at a smaller
+  attempt count, retries transient observation failures without losing the
+  transaction hash, and caps the GraphQL response at 256 KiB. The generic
+  `dusk-tx call` path uses the same execution-success boundary.
+- WarpDrc20, WarpNative, and WarpDrc20Collateral expose the same method only to
+  their configured owner. The nested Mailbox call can withdraw only that
+  route's credit.
+
+Evidence:
+
+- `test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed`.
+  This test also proves invalid-recipient rollback and decodes the actual VM
+  receipt event through the explorer data driver.
+- `test_dispatch_credit_withdrawal_rolls_back_after_transfer_failure` forces
+  the transfer contract to fail after the Mailbox credit debit and proves
+  credit, custody, recipient balance, and later caller resolution are restored.
+- `test_dispatch_credit_withdrawals_preserve_multi_payer_solvency`.
+- `test_warp_drc20_owner_can_withdraw_route_dispatch_credit`.
+- `test_warp_native_owner_can_withdraw_route_dispatch_credit`.
+- `test_warp_collateral_owner_can_withdraw_route_dispatch_credit`.
+- `dusk-tx` transaction-status response and exact-hash query tests.
+- `dusk-tx` bounded-response, transient-retry, immediate-check, execution-
+  failure, no-attempt-cap, submission-hash preservation, and nonce-exhaustion
+  tests.
+- Direct and all three owner-proxied VM withdrawal receipts are asserted below
+  the documented 30,000,000-gas CLI default on the pinned current Rusk runtime.
+- Clean-current-Rusk reproduction at withdrawal-stack runtime anchor
+  `dc8aba07773993878edd81735d59e66beddd66a3`: 13 WASMs, production contract
+  clippy, 29 type tests, 115 VM tests, 7 data-driver tests, 19 `dusk-tx` tests,
+  release data-driver WASM, standalone E2E host build, secret hygiene, and the
+  full companion-agent compile all pass. The exact log SHA256 is
+  `03de4d4e1597c8136e9a00bbb74e7fbbe290b5b2fa3e8cb8d82e004a31f640fb`.
+- Fresh TestMock and MessageIdMultisig live runs at the same runtime anchor
+  prove owner-only withdrawal followed by successful use of the remaining
+  route credit, bidirectional delivery, protocol fees, and exact native and
+  canonical-DRC20 custody. Their immutable anchors and hashes are in the newest
+  `TEST_REPORT.md` section.
+
 ### Pending Escrow Without Admin Drain
 
 Tracking issue: dusk-network/hyperlane-dusk#6.
 
-Decision:
+Decision (accepted 2026-07-20):
 
-- [ ] Accept no admin drain/recovery path for pending escrow.
+- [x] Accept no admin drain/recovery path for pending escrow.
 - [ ] Request a governed recovery design before release.
 
 Current implementation:
@@ -119,6 +204,12 @@ Recommended stance:
 Accept no admin drain for v1 if Dusk wants a non-custodial failure mode. If Dusk
 wants recovery for lost keys or wrong recipient hashes, design that separately
 with governance, timelock, audit, and user-dispute rules.
+
+This decision does not claim that lost-key or wrong-hash funds are recoverable.
+It records that adding unilateral route-owner seizure is a worse default. A
+future recovery design would need message/source provenance, an eligible refund
+destination, a delay and dispute window, governance authorization, events, and
+cross-chain replay/double-spend analysis.
 
 ### Permissionless Dispatch-Credit Funding
 
@@ -192,11 +283,13 @@ Current implementation:
 
 - Every deployed Dusk contract exposes an explicit `state_version()`.
   MerkleTreeHook, TestMock, MessageIdMultisigISM, ValidatorAnnounce,
-  ProtocolFee, AggregationHook, WarpNative, WarpDrc20Collateral, and
-  TestRecipient require version 1. Mailbox requires version 2 for its dispatch
-  reentrancy guard. WarpDrc20 requires version 2 after adding aggregate pending
-  synthetic supply capacity. IGP requires version 2 because unknown
-  destinations and zero pricing now fail closed.
+  ProtocolFee, AggregationHook, and TestRecipient require version 1. On this
+  stacked PR, Mailbox requires version 3, WarpDrc20 version 4,
+  WarpDrc20Collateral version 3, WarpNative version 2, and IGP version 2.
+  These versions jointly cover the dispatch reentrancy guard, beneficiary
+  withdrawal ABI, canonical principal/account-key storage, pending synthetic
+  supply capacity, route withdrawal proxies, canonical collateral ABI, and
+  fail-closed IGP pricing.
 - Existing serialized instances are not treated as compatible. Both demo
   `--skip-deploy` reuse boundaries validate the complete contract-version
   matrix and fail closed when any version is absent or unexpected. Semantic

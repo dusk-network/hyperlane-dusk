@@ -33,7 +33,6 @@ mod keys;
 mod rues;
 
 use rues::{RuesClient, TransactionStatus, TransactionStatusQueryError};
-
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
 const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
@@ -214,6 +213,37 @@ enum Command {
         /// Native DUSK amount in LUX.
         #[arg(long)]
         amount: u64,
+        #[arg(long, default_value = "30000000")]
+        gas_limit: u64,
+        #[arg(long, default_value = "2000")]
+        gas_price: u64,
+    },
+    /// Withdraw unused dispatch-fee credit to a Moonlight account.
+    WithdrawDispatch {
+        #[arg(long, default_value = "http://localhost:18090/")]
+        rues_url: String,
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        #[arg(long, default_value = "password")]
+        password: String,
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin.
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// Mailbox for account credit, or an owned warp route for route credit.
+        #[arg(long)]
+        target: String,
+        /// Native DUSK amount in LUX.
+        #[arg(long)]
+        amount: u64,
+        /// Explicit 96-byte Moonlight BLS public key (hex). Defaults to signer.
+        #[arg(long)]
+        recipient_public_key: Option<String>,
+        /// Expected native Dusk chain ID. The endpoint must match before the
+        /// signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         #[arg(long, default_value = "2000")]
@@ -557,6 +587,34 @@ async fn main() {
             )
             .await
         }
+        Command::WithdrawDispatch {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            target,
+            amount,
+            recipient_public_key,
+            expected_chain_id,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_withdraw_dispatch(
+                &rues_url,
+                keys,
+                &password,
+                secret_key,
+                secret_key_stdin,
+                &target,
+                amount,
+                recipient_public_key.as_deref(),
+                expected_chain_id,
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
         Command::Dispatch {
             rues_url,
             keys,
@@ -846,14 +904,16 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirmation_error_with_hash, next_moonlight_nonce, parse_igp_domain_configs,
-        parse_u32_pair, parse_validator_announce_query_addresses, prepare_bytes32_query_argument,
-        prepare_dispatch_call, prepare_process_call, read_secret_key_hex, resolve_keys_password,
-        resolve_signing_chain_id, submission_error_with_hash, wait_for_transaction_with,
-        Bytes32QueryArgument, MAX_CALL_ARGS_BYTES, MAX_PASSWORD_FILE_BYTES,
-        MAX_SECRET_KEY_STDIN_BYTES,
+        confirmation_error_with_hash, next_moonlight_nonce, parse_account_public_key,
+        parse_igp_domain_configs, parse_u32_pair, parse_validator_announce_query_addresses,
+        prepare_bytes32_query_argument, prepare_dispatch_call, prepare_process_call,
+        read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
+        submission_error_with_hash, wait_for_transaction_with, Bytes32QueryArgument, Cli,
+        MAX_CALL_ARGS_BYTES, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
     use crate::rues::{TransactionStatus, TransactionStatusQueryError};
+    use clap::Parser;
+    use dusk_bytes::Serializable;
     use std::collections::VecDeque;
     use std::future::ready;
     use std::sync::Mutex;
@@ -868,6 +928,31 @@ mod tests {
         assert!(resolve_signing_chain_id(Some(1), 2)
             .unwrap_err()
             .contains("does not match endpoint chain ID"));
+    }
+
+    #[test]
+    fn withdrawal_requires_an_explicit_expected_chain_id() {
+        let target = "11".repeat(32);
+        assert!(Cli::try_parse_from([
+            "dusk-tx",
+            "withdraw-dispatch",
+            "--target",
+            &target,
+            "--amount",
+            "1",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "dusk-tx",
+            "withdraw-dispatch",
+            "--target",
+            &target,
+            "--amount",
+            "1",
+            "--expected-chain-id",
+            "1",
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -917,6 +1002,26 @@ mod tests {
         let (args, message_id) = prepare_process_call("00", "").unwrap();
         assert!(args.len() <= MAX_CALL_ARGS_BYTES);
         assert_eq!(message_id, hyperlane_dusk_types::message::id(&[0u8]));
+    }
+
+    #[test]
+    fn withdrawal_recipient_public_key_is_checked() {
+        let (_, public_key) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let encoded = hex::encode(public_key.to_bytes());
+        assert_eq!(parse_account_public_key(&encoded).unwrap(), public_key);
+        assert_eq!(
+            parse_account_public_key(&format!("0x{encoded}")).unwrap(),
+            public_key
+        );
+
+        let mut identity = [0u8; 96];
+        identity[0] = 0xc0;
+        assert!(parse_account_public_key(&hex::encode(identity))
+            .unwrap_err()
+            .contains("identity"));
+        assert!(parse_account_public_key("abcd")
+            .unwrap_err()
+            .contains("96 bytes"));
     }
 
     #[test]
@@ -1096,22 +1201,21 @@ mod tests {
         wait_for_transaction_with(
             "aabbcc",
             || ready(statuses.pop_front().expect("status response should exist")),
-            2,
             Duration::ZERO,
             Duration::from_secs(1),
         )
         .await
         .expect("a later exact-hash success should reconcile the transaction");
 
-        let mut statuses = VecDeque::from([Err(TransactionStatusQueryError::Retryable(
-            "archive unavailable".to_string(),
-        ))]);
         let error = wait_for_transaction_with(
             "ddeeff",
-            || ready(statuses.pop_front().expect("status response should exist")),
-            1,
-            Duration::ZERO,
-            Duration::from_secs(1),
+            || {
+                ready(Err(TransactionStatusQueryError::Retryable(
+                    "archive unavailable".to_string(),
+                )))
+            },
+            Duration::from_millis(1),
+            Duration::from_millis(5),
         )
         .await
         .unwrap_err();
@@ -1130,7 +1234,6 @@ mod tests {
                     "response is missing data.tx.err".to_string(),
                 )))
             },
-            20,
             Duration::from_secs(60),
             Duration::from_secs(120),
         )
@@ -1148,7 +1251,6 @@ mod tests {
             wait_for_transaction_with(
                 "1122",
                 || ready(Ok(TransactionStatus::Executed)),
-                1,
                 Duration::from_secs(60),
                 Duration::from_secs(1),
             ),
@@ -1160,7 +1262,6 @@ mod tests {
         let error = wait_for_transaction_with(
             "3344",
             || ready(Ok(TransactionStatus::Failed("contract rejected".into()))),
-            1,
             Duration::ZERO,
             Duration::from_secs(1),
         )
@@ -1168,6 +1269,25 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("3344"));
         assert!(error.contains("contract rejected"));
+    }
+
+    #[tokio::test]
+    async fn transaction_wait_does_not_stop_at_the_old_attempt_cap() {
+        let mut statuses = VecDeque::from(
+            (0..20)
+                .map(|_| Ok(TransactionStatus::NotFound))
+                .chain([Ok(TransactionStatus::Executed)])
+                .collect::<Vec<_>>(),
+        );
+
+        wait_for_transaction_with(
+            "5566",
+            || ready(statuses.pop_front().expect("status response should exist")),
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("the absolute deadline must remain authoritative after twenty observations");
     }
 }
 
@@ -1324,6 +1444,82 @@ async fn cmd_fund_dispatch(
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+// ── cmd_withdraw_dispatch ────────────────────────────────────────────────
+
+async fn cmd_withdraw_dispatch(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    target_hex: &str,
+    amount: u64,
+    recipient_public_key_hex: Option<&str>,
+    expected_chain_id: u8,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    if amount == 0 {
+        return Err("Withdrawal amount must be greater than zero".into());
+    }
+    // Reject malformed public inputs before reading or decrypting one-shot
+    // signer material.
+    let target = ContractId::from_bytes(parse_bytes32(target_hex)?);
+    let explicit_recipient = recipient_public_key_hex
+        .map(parse_account_public_key)
+        .transpose()?;
+    let client = RuesClient::new(rues_url)?;
+    let observed_chain_id = client.query_chain_id().await?;
+    let chain_id = resolve_signing_chain_id(Some(expected_chain_id), observed_chain_id)?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let recipient = explicit_recipient.unwrap_or(pk);
+    let args = rkyv_serialize(&(recipient, amount));
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call_with_deposit(
+        &sk,
+        target,
+        "withdraw_dispatch_credit",
+        args,
+        0,
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let output = json!({
+        "success": true,
+        "target": target_hex,
+        "recipient_public_key": hex::encode(recipient.to_bytes()),
+        "amount": amount,
+        "tx_id": tx_id,
+    });
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
+    let value = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    let bytes =
+        hex::decode(value).map_err(|error| format!("Invalid recipient public key hex: {error}"))?;
+    let bytes: [u8; 96] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        format!(
+            "Recipient public key must be 96 bytes (192 hex), got {}",
+            bytes.len()
+        )
+    })?;
+    let recipient = BlsPublicKey::from_bytes(&bytes)
+        .map_err(|error| format!("Invalid recipient public key: {error:?}"))?;
+    if !recipient.is_valid() {
+        return Err("Invalid recipient public key: identity or invalid curve point".into());
+    }
+    Ok(recipient)
 }
 
 fn rkyv_serialize<T>(value: &T) -> Vec<u8>
@@ -2266,7 +2462,6 @@ async fn wait_for_transaction(client: &RuesClient, tx_id: &str) -> Result<(), St
     wait_for_transaction_with(
         tx_id,
         || client.query_transaction_status(tx_id),
-        20,
         std::time::Duration::from_secs(3),
         std::time::Duration::from_secs(60),
     )
@@ -2299,7 +2494,6 @@ async fn propagate_and_wait(
 async fn wait_for_transaction_with<F, Fut>(
     tx_id: &str,
     mut query_status: F,
-    max_attempts: usize,
     poll_interval: std::time::Duration,
     timeout: std::time::Duration,
 ) -> Result<(), String>
@@ -2309,12 +2503,14 @@ where
 {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut last_query_error = None;
+    let mut attempt = 0usize;
 
-    for attempt in 1..=max_attempts {
+    loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;
         }
+        attempt = attempt.saturating_add(1);
 
         match tokio::time::timeout(remaining, query_status()).await {
             Ok(Ok(TransactionStatus::Executed)) => return Ok(()),
@@ -2334,10 +2530,7 @@ where
         }
 
         if attempt % 5 == 0 {
-            eprintln!("  [transaction pending, attempt {attempt}/{max_attempts}]");
-        }
-        if attempt == max_attempts {
-            break;
+            eprintln!("  [transaction pending, attempt {attempt}; waiting until deadline]");
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

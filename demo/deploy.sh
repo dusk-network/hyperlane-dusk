@@ -555,7 +555,8 @@ validate_saved_deployment() {
         [ "$live_evm_value" = "${ANVIL_DEPLOYER,,}" ] \
             || fail "Running EVM IGP $method differs from the deployment policy; redeploy"
     done
-    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 2
+    validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
+    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 3
     [ "$(query_dusk_u32 "$dusk_mailbox" local_domain "Dusk Mailbox local domain")" = "$DUSK_DOMAIN" ] \
         || fail "Running Dusk Mailbox local domain differs from the saved deployment; redeploy"
     validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"
@@ -598,9 +599,9 @@ validate_saved_deployment() {
     [ "$live_route_value" = "$saved_account_h256" ] \
         || fail "Running Dusk Mailbox owner differs from the saved deployment owner; redeploy"
     validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"
-    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 3
-    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route"
-    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 2
+    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 4
+    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 2
+    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 3
     validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"
     validate_dusk_state_version "$dusk_igp" "Dusk IGP" 2
     validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"

@@ -48,6 +48,18 @@ silently relabeled as having run those tests.
   outcome-unknown and forbids retry before exact-hash reconciliation. The demo
   rejects zero-exit helper JSON without a canonical 32-byte transaction ID
   instead of continuing without an audit identity.
+- **Withdrawal endpoint identity:** `withdraw-dispatch` requires an explicit
+  native chain ID and compares it with the endpoint before loading signer
+  material. A wrong endpoint cannot silently select the signing domain for a
+  withdrawal.
+- **Live withdrawal chain identity:** the agent E2E loads the persisted
+  two-hex-digit native chain ID, validates it, converts it to the CLI's u8
+  representation, and does so before invoking `withdraw-dispatch`. The prior
+  lowercase variable had no initialization under `set -u`.
+- **Operator-visible transaction identity:** `dusk-tx` emits the locally
+  computed hash before its first propagation attempt. The local bridge demo no
+  longer discards the helper JSON; it prints completed Dusk hashes and carries
+  exact-hash reconciliation instructions through ordinary error paths.
 - **Escrow parity:** synthetic, collateral, and native routes support
   capability-authenticated claims for contract-shaped recipients. The native
   route transfers through a fixed `receive_native_pending` callback, and root
@@ -106,6 +118,13 @@ silently relabeled as having run those tests.
 
 ## Retained proof obligations, not merge blockers
 
+- The older live TestMock and MessageIdMultisig receipts do not prove the
+  stacked withdrawal step because that historical script could terminate on
+  the unset native-chain-ID variable. Static fail-closed checks prove the
+  corrected source order, but fresh exact-head live runs of both modes remain
+  required before claiming live withdrawal coverage. The protected runner and
+  environment-scoped private-source token are not currently provisioned.
+
 - Dusk transaction rollback is the authority for restoring the persisted
   dispatch reentrancy flag on a trapped outer call. The suite now proves a
   failed insufficient-credit dispatch can be followed by a successful funded
@@ -142,6 +161,10 @@ silently relabeled as having run those tests.
 - Administrators retain the owner bypass (`enforce_admins=false`). That makes
   emergency owner merging possible; it does not turn a bypassed PR into an
   approved or production-validated change.
+- The local bridge demo is intentionally not a durable transaction
+  orchestrator. It exposes the prepared hash before propagation and forbids a
+  blind retry, but a production operator still needs an atomic on-disk journal
+  and exact-hash reconciliation of unfinished entries.
 
 ## Evidence policy
 

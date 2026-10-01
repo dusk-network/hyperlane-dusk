@@ -237,11 +237,11 @@ bash demo/bridge.sh help
 
 Every Dusk write prints its locally computed transaction hash before the first
 propagation attempt, and `bridge.sh` requires, validates, and prints the
-completed canonical hash before continuing. If the command is interrupted
-after that line or reports an unknown outcome, do not repeat the operation:
-reconcile that exact hash against Rusk first. This local demo does not provide
-a durable transaction journal and must not be treated as a production
-transaction orchestrator.
+completed canonical hash before continuing.
+If the command is interrupted after that line or reports an unknown outcome,
+do not repeat the operation: reconcile that exact hash against Rusk first.
+This local demo does not provide a durable transaction journal and must not be
+treated as a production transaction orchestrator.
 
 ### Configuration
 
@@ -358,6 +358,20 @@ dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc2
 
 # Pre-fund value-backed Mailbox dispatch fees for a route
 dusk-tx fund-dispatch --mailbox <hex> --payer <route-hex> --amount <lux>
+
+# Withdraw a Moonlight account's own unused credit to the signing account
+dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux> \
+    --expected-chain-id <u8>
+
+# Select an explicit operational treasury instead of the signing account
+dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux> \
+    --expected-chain-id <u8> \
+    --recipient-public-key <96-byte-moonlight-public-key-hex>
+
+# A warp-route owner can withdraw that route's credit to the signer or an
+# explicit Moonlight treasury (the route still enforces owner authorization)
+dusk-tx withdraw-dispatch --target <route-hex> --amount <lux> \
+    --expected-chain-id <u8>
 
 # Query contract state
 dusk-tx query --contract <hex> --method nonce --return-type u32
