@@ -18,22 +18,22 @@ use hyperlane_dusk_types::{message, token_message, VERSION};
 /// Returns the raw encoded message bytes.
 #[wasm_bindgen]
 pub fn encode_message(
-    version: u8,
-    nonce: u32,
-    origin: u32,
+    #[wasm_bindgen(unchecked_param_type = "number")] version: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] nonce: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] origin: JsValue,
     sender: &[u8],
-    destination: u32,
+    #[wasm_bindgen(unchecked_param_type = "number")] destination: JsValue,
     recipient: &[u8],
     body: &[u8],
 ) -> Result<Vec<u8>, String> {
     let sender_h256 = checked_bytes32(sender)?;
     let recipient_h256 = checked_bytes32(recipient)?;
     Ok(message::encode(
-        version,
-        nonce,
-        origin,
+        u8::try_from(checked_u32(version)?).map_err(|_| "Version must fit in u8")?,
+        checked_u32(nonce)?,
+        checked_u32(origin)?,
         sender_h256,
-        destination,
+        checked_u32(destination)?,
         recipient_h256,
         body,
     ))
@@ -87,8 +87,14 @@ pub fn message_nonce(encoded: &[u8]) -> u32 {
 
 /// Encode a token message body (recipient + amount).
 #[wasm_bindgen]
-pub fn encode_token_message(recipient: &[u8], amount: u64) -> Result<Vec<u8>, String> {
-    Ok(token_message::encode(checked_bytes32(recipient)?, amount))
+pub fn encode_token_message(
+    recipient: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "bigint")] amount: JsValue,
+) -> Result<Vec<u8>, String> {
+    Ok(token_message::encode(
+        checked_bytes32(recipient)?,
+        checked_u64(amount)?,
+    ))
 }
 
 /// Decode a token message body and return it as a JSON string.
@@ -122,18 +128,22 @@ pub fn keccak256(data: &[u8]) -> Vec<u8> {
 
 /// Serialize a u32 value using rkyv (for contract query arguments).
 #[wasm_bindgen]
-pub fn rkyv_serialize_u32(value: u32) -> Vec<u8> {
-    rkyv::to_bytes::<_, 256>(&value)
+pub fn rkyv_serialize_u32(
+    #[wasm_bindgen(unchecked_param_type = "number")] value: JsValue,
+) -> Result<Vec<u8>, String> {
+    Ok(rkyv::to_bytes::<_, 256>(&checked_u32(value)?)
         .expect("u32 serialization should not fail")
-        .to_vec()
+        .to_vec())
 }
 
 /// Serialize a u64 value using rkyv.
 #[wasm_bindgen]
-pub fn rkyv_serialize_u64(value: u64) -> Vec<u8> {
-    rkyv::to_bytes::<_, 256>(&value)
+pub fn rkyv_serialize_u64(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] value: JsValue,
+) -> Result<Vec<u8>, String> {
+    Ok(rkyv::to_bytes::<_, 256>(&checked_u64(value)?)
         .expect("u64 serialization should not fail")
-        .to_vec()
+        .to_vec())
 }
 
 /// Serialize a bool value using rkyv.
@@ -225,6 +235,21 @@ mod hex {
         }
         s
     }
+}
+
+/// Preserve the JavaScript value until range validation; a native WASM u64
+/// parameter would already have wrapped negative or overflowing bigints.
+fn checked_u64(value: JsValue) -> Result<u64, String> {
+    u64::try_from(value).map_err(|_| "Expected a bigint in the u64 range".to_owned())
+}
+
+/// Native WASM u32 arguments coerce and truncate before entering Rust.
+fn checked_u32(value: JsValue) -> Result<u32, String> {
+    value
+        .as_f64()
+        .filter(|number| number.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(number))
+        .map(|number| number as u32)
+        .ok_or_else(|| "Expected an integer number in the u32 range".to_owned())
 }
 
 /// Validate addresses before encoding; truncation or padding changes identity.

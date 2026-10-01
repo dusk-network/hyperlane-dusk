@@ -18,6 +18,37 @@ test('token wire format and JSON preserve all 64 amount bits', () => {
   assert.equal(wasm.decode_token_message(encoded), undefined, 'out-of-range u256 must be rejected');
 });
 
+test('numeric encoders reject coercion, truncation, and unsigned wraparound', () => {
+  for (const invalid of [-1n, 1n << 64n, (1n << 64n) + 1n, 1, 1.5, '1', null, undefined]) {
+    assert.throws(() => wasm.encode_token_message(address, invalid), `token amount ${String(invalid)}`);
+    assert.throws(() => wasm.rkyv_serialize_u64(invalid), `u64 ${String(invalid)}`);
+  }
+  for (const valid of [0n, 1n, maxU64]) {
+    assert.equal(wasm.rkyv_deserialize_u64(wasm.rkyv_serialize_u64(valid)), valid);
+    assert.equal(JSON.parse(wasm.decode_token_message(wasm.encode_token_message(address, valid))).amount, valid.toString());
+  }
+  for (const invalid of [-1, 0.5, 2 ** 32, NaN, Infinity, -Infinity, '1', null, undefined]) {
+    assert.throws(() => wasm.rkyv_serialize_u32(invalid), `u32 ${String(invalid)}`);
+    for (const field of [1, 2, 4]) {
+      const args = [3, 0, 1, address, 2, address, new Uint8Array()];
+      args[field] = invalid;
+      assert.throws(() => wasm.encode_message(...args), `message field ${field}: ${String(invalid)}`);
+    }
+  }
+  for (const invalid of [-1, 0.5, 256, NaN, Infinity, '3', null, undefined]) {
+    assert.throws(() => wasm.encode_message(invalid, 0, 1, address, 2, address, new Uint8Array()));
+  }
+  for (const valid of [0, 1, 2 ** 32 - 1]) {
+    assert.equal(wasm.rkyv_deserialize_u32(wasm.rkyv_serialize_u32(valid)), valid);
+    const message = JSON.parse(wasm.decode_message(wasm.encode_message(3, valid, valid, address, valid, address, new Uint8Array())));
+    assert.equal(message.version, 3);
+    assert.equal(message.nonce, valid);
+    assert.equal(message.origin, valid);
+    assert.equal(message.destination, valid);
+  }
+  assert.equal(wasm.encode_message(255, 0, 1, address, 2, address, new Uint8Array())[0], 255);
+});
+
 test('address codecs reject truncation and padding', () => {
   for (const length of [0, 20, 31, 33, 64]) {
     const invalid = new Uint8Array(length);

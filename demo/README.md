@@ -432,6 +432,9 @@ The SDK returns `bigint` for `totalSupply()` and `deliveredAt()`. The WASM
 JSON token decoder returns the amount as a decimal string; convert it with
 `BigInt` when doing arithmetic. Address encoders require exactly 32 bytes and
 reject shorter or longer inputs instead of changing the address silently.
+Numeric encoders reject negative, fractional, or out-of-range values before
+WASM conversion; u64 inputs must be `bigint`, and u8/u32 inputs must be integer
+JavaScript numbers.
 
 The lifecycle helpers require Python 3. Teardown identifies Rusk by the exact
 state argument on Linux and macOS, and stops only recorded service PIDs or
