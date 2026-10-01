@@ -1490,6 +1490,159 @@ fn session_with_multisig_ism(
     session
 }
 
+// Real signatures exercise threshold counting separately from malformed-byte tests.
+fn checkpoint_signers() -> Vec<(EthAddress, SecpSecretKey)> {
+    let secp = Secp256k1::new();
+    let mut signers: Vec<_> = (1u8..=4)
+        .map(|index| {
+            let mut bytes = [0u8; 32];
+            bytes[31] = index;
+            let secret = SecpSecretKey::from_byte_array(bytes).unwrap();
+            let public =
+                secp256k1::PublicKey::from_secret_key(&secp, &secret).serialize_uncompressed();
+            let hash = message::keccak256(&public[1..]);
+            let address = EthAddress(hash[12..].try_into().unwrap());
+            (address, secret)
+        })
+        .collect();
+    signers.sort_by_key(|(address, _)| address.0);
+    signers
+}
+
+fn signed_checkpoint_metadata(message: &[u8], signers: &[&SecpSecretKey]) -> Vec<u8> {
+    let hook = [0x21; 32];
+    let root = [0x42; 32];
+    let index = 7u32;
+    let digest = hyperlane_dusk_types::checkpoint::checkpoint_digest(
+        message::origin(message),
+        &hook,
+        &root,
+        index,
+        &message::id(message),
+    );
+    let mut metadata = Vec::from(hook);
+    metadata.extend_from_slice(&root);
+    metadata.extend_from_slice(&index.to_be_bytes());
+    let secp = Secp256k1::new();
+    for signer in signers {
+        let signature = secp.sign_ecdsa_recoverable(SecpMessage::from_digest(digest), signer);
+        let (recovery, compact) = signature.serialize_compact();
+        metadata.extend_from_slice(&compact);
+        metadata.push(u8::try_from(i32::from(recovery)).unwrap() + 27);
+    }
+    metadata
+}
+
+#[test]
+fn test_multisig_ism_counts_distinct_enrolled_signers_in_order() {
+    let signers = checkpoint_signers();
+    let validators = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let valid = signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(valid, message.clone()))
+            .unwrap()
+            .data
+    );
+
+    for selected in [[0usize, 0], [2, 0], [0, 3]] {
+        let metadata = signed_checkpoint_metadata(
+            &message,
+            &[&signers[selected[0]].1, &signers[selected[1]].1],
+        );
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message.clone())),
+            "MultisigISM: insufficient valid signatures",
+        );
+    }
+    let one_signature = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    assert_contract_panic(
+        session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(one_signature, message)),
+        "MultisigISM: not enough signatures",
+    );
+}
+
+#[test]
+fn test_multisig_ism_signatures_bind_checkpoint_and_complete_message() {
+    let signers = checkpoint_signers();
+    let validators = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let metadata = signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(
+                ISM_MULTISIG_ID,
+                "verify",
+                &(metadata.clone(), message.clone())
+            )
+            .unwrap()
+            .data
+    );
+
+    // Hook, root, and index are each signed independently of the message.
+    for offset in [0, 32, 67] {
+        let mut changed = metadata.clone();
+        changed[offset] ^= 1;
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(changed, message.clone())),
+            "MultisigISM: insufficient valid signatures",
+        );
+    }
+    // Nonce, origin, sender, destination, recipient, and body are all bound.
+    for offset in [1, 5, 9, 41, 45, 77] {
+        let mut changed = message.clone();
+        changed[offset] ^= 1;
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata.clone(), changed)),
+            "MultisigISM: insufficient valid signatures",
+        );
+    }
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message))
+            .unwrap()
+            .data
+    );
+}
+
+#[test]
+fn test_multisig_ism_threshold_update_takes_effect_for_real_signatures() {
+    let signers = checkpoint_signers();
+    let validators: Vec<_> = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators.clone(), 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let two = signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(two.clone(), message.clone()))
+            .unwrap()
+            .data
+    );
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            ISM_MULTISIG_ID,
+            "set_validators_and_threshold",
+            &(validators, 3u8),
+        )
+        .unwrap();
+    assert_contract_panic(
+        session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(two, message.clone())),
+        "MultisigISM: not enough signatures",
+    );
+    let three =
+        signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[1].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(three, message))
+            .unwrap()
+            .data
+    );
+}
+
 #[test]
 fn test_multisig_ism_state_version() {
     let mut session = session_with_multisig_ism(*OWNER_ID, vec![EthAddress([1; 20])], 1);
