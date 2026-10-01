@@ -52,13 +52,36 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(self.pids.exists())
 
-    def test_existing_backup_is_restored(self):
+    def test_unowned_explorer_configuration_is_preserved(self):
         self.explorer.mkdir()
-        (self.explorer / ".env.backup.1").write_text("previous config\n")
-        (self.explorer / ".env").write_text("demo config\n")
+        (self.explorer / ".env.backup.1").write_text("old unrelated config\n")
+        (self.explorer / ".env").write_text("current external config\n")
         result = self.stop()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.explorer / ".env").read_text(), "current external config\n")
+        self.assertTrue((self.explorer / ".env.backup.1").exists())
+
+    def test_existing_backup_is_restored(self):
+        self.explorer.mkdir()
+        backup = self.explorer / ".env.backup.1"
+        backup.write_text("previous config\n")
+        unrelated = self.explorer / ".env.backup.2"
+        unrelated.write_text("unrelated config\n")
+        os.utime(backup, (1, 1))
+        os.utime(unrelated, (2, 2))
+        (self.explorer / ".env").write_text("demo config\n")
+        result = self.stop(f"dusk-explorer-env:backup:{backup}\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.explorer / ".env").read_text(), "previous config\n")
+        self.assertTrue(unrelated.exists(), "only the recorded backup may be restored")
+
+    def test_configuration_created_by_this_run_is_removed(self):
+        self.explorer.mkdir()
+        config = self.explorer / ".env"
+        config.write_text("demo config\n")
+        result = self.stop(f"dusk-explorer-env:created:{config}\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(config.exists())
 
     def test_owned_process_group_is_stopped_without_touching_other_processes(self):
         owned = subprocess.Popen(["sleep", "60"], start_new_session=True)

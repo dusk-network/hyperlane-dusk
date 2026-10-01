@@ -298,7 +298,11 @@ else
         fi
         # Back up existing .env and write our config
         if [ -f "$EXPLORER_DIR/.env" ]; then
-            cp "$EXPLORER_DIR/.env" "$EXPLORER_DIR/.env.backup.$(date +%s)"
+            EXPLORER_ENV_BACKUP="$(mktemp "$EXPLORER_DIR/.env.backup.XXXXXXXX")"
+            cp "$EXPLORER_DIR/.env" "$EXPLORER_ENV_BACKUP"
+            printf 'dusk-explorer-env:backup:%s\n' "$EXPLORER_ENV_BACKUP" >> "$PID_FILE"
+        else
+            printf 'dusk-explorer-env:created:%s\n' "$EXPLORER_DIR/.env" >> "$PID_FILE"
         fi
         cat > "$EXPLORER_DIR/.env" <<'ENVEOF'
 VITE_RUSK_PATH="/rusk"

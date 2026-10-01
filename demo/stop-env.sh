@@ -61,8 +61,16 @@ echo ""
 info "Stopping bridge environment..."
 echo ""
 
+explorer_env_action=""
+explorer_env_path=""
 while IFS=: read -r name type rest; do
     case "$type" in
+        backup|created)
+            [ "$name" = "dusk-explorer-env" ] || fail "Unexpected configuration record in PID file"
+            # Restore after the owned processes have stopped.
+            explorer_env_action="$type"
+            explorer_env_path="$rest"
+            ;;
         container)
             # Docker container
             container_name="$rest"
@@ -127,20 +135,28 @@ while IFS=: read -r name type rest; do
     esac
 done < "$PID_FILE"
 
-# Clean up PID file
+# Restore only the configuration change recorded by this start-env run.
+# A headless or externally managed explorer has no such record.
+case "$explorer_env_action" in
+    backup)
+        case "$explorer_env_path" in
+            "$EXPLORER_DIR"/.env.backup.*) ;;
+            *) fail "Unexpected explorer backup path in PID file" ;;
+        esac
+        [ -f "$explorer_env_path" ] || fail "Recorded explorer backup is missing"
+        mv "$explorer_env_path" "$EXPLORER_DIR/.env"
+        ok "Restored Dusk Explorer .env from this run's backup"
+        ;;
+    created)
+        [ "$explorer_env_path" = "$EXPLORER_DIR/.env" ] \
+            || fail "Unexpected explorer configuration path in PID file"
+        rm -f -- "$explorer_env_path"
+        ok "Removed Dusk Explorer .env created by this run"
+        ;;
+esac
+
+# Service ownership comes from the PID file. Never select by listening port.
 rm -f "$PID_FILE"
-
-# Service ownership comes from the PID file. Never kill a process merely
-# because it is listening on the configured explorer port.
-
-# Restore explorer .env backup if one exists
-if [ -d "${EXPLORER_DIR:-}" ]; then
-    LATEST_BACKUP=$(ls -t "$EXPLORER_DIR"/.env.backup.* 2>/dev/null | head -1 || true)
-    if [ -n "$LATEST_BACKUP" ]; then
-        mv "$LATEST_BACKUP" "$EXPLORER_DIR/.env"
-        ok "Restored Dusk Explorer .env from backup"
-    fi
-fi
 
 echo ""
 ok "Bridge environment stopped."
