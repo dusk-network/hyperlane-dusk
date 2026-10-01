@@ -8,7 +8,9 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "npm run build && tsc --noEmit --strict --target ES2020 --moduleResolution node --module ESNext tests/bindings-compatibility.ts && node --test tests/*.test.mjs",
+    "test:live": "node tests/live.mjs"
   },
   "dependencies": {},
   "devDependencies": {

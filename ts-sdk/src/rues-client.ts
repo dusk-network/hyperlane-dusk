@@ -2,8 +2,6 @@
 //
 // RUES HTTP client for querying Dusk contracts.
 
-import type { ContractQuery } from "./types.js";
-
 /**
  * HTTP client for the Dusk RUES (Rusk Universal Event System) API.
  *
@@ -31,21 +29,22 @@ export class RuesClient {
     method: string,
     args: Uint8Array
   ): Promise<Uint8Array> {
+    if (contractId.length !== 32) {
+      throw new Error("Contract ID must contain exactly 32 bytes");
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(method)) {
+      throw new Error("Invalid contract method name");
+    }
     const contractHex = bytesToHex(contractId);
-    const url = `${this.baseUrl}/on/contracts:${contractHex}/call`;
-
-    const body = JSON.stringify({
-      fn_name: method,
-      fn_args: Array.from(args),
-    });
+    const url = `${this.baseUrl}/on/contracts:${contractHex}/${method}`;
 
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/octet-stream",
         Accept: "application/octet-stream",
       },
-      body,
+      body: Uint8Array.from(args).buffer,
     });
 
     if (!response.ok) {
@@ -70,7 +69,7 @@ export class RuesClient {
       headers: {
         "Content-Type": "application/octet-stream",
       },
-      body: txBytes,
+      body: Uint8Array.from(txBytes).buffer,
     });
 
     if (!response.ok) {

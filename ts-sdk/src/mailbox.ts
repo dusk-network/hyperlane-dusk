@@ -63,15 +63,15 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_bool(result);
   }
 
-  /** Get the block height at which a message was delivered. Returns 0 if not delivered. */
-  async deliveredAt(messageId: Uint8Array): Promise<number> {
+  /** Get the block height at which a message was delivered. Returns 0n if not delivered. */
+  async deliveredAt(messageId: Uint8Array): Promise<bigint> {
     const args = this.wasm.rkyv_serialize_bytes32(messageId);
     const result = await this.rues.contractQuery(
       this.contractId,
       "delivered_at",
       args
     );
-    return Number(this.wasm.rkyv_deserialize_u64(result));
+    return this.wasm.rkyv_deserialize_u64(result);
   }
 
   /** Get the default ISM contract ID. */
@@ -158,11 +158,13 @@ export class DuskMailbox {
 export interface WasmBindings {
   rkyv_serialize_unit(): Uint8Array;
   rkyv_serialize_u32(value: number): Uint8Array;
-  rkyv_serialize_u64(value: bigint | number): Uint8Array;
+  rkyv_serialize_u64(value: bigint): Uint8Array;
   rkyv_serialize_bool(value: boolean): Uint8Array;
   rkyv_serialize_bytes32(data: Uint8Array): Uint8Array;
+  rkyv_deserialize_string(data: Uint8Array): string;
+  rkyv_deserialize_u8(data: Uint8Array): number;
   rkyv_deserialize_u32(data: Uint8Array): number;
-  rkyv_deserialize_u64(data: Uint8Array): bigint | number;
+  rkyv_deserialize_u64(data: Uint8Array): bigint;
   rkyv_deserialize_bool(data: Uint8Array): boolean;
   rkyv_deserialize_bytes32(data: Uint8Array): string;
   rkyv_deserialize_bytes(data: Uint8Array): Uint8Array;
@@ -175,9 +177,9 @@ export interface WasmBindings {
     recipient: Uint8Array,
     body: Uint8Array
   ): Uint8Array;
-  decode_message(encoded: Uint8Array): string | null;
+  decode_message(encoded: Uint8Array): string | undefined;
   message_id(encoded: Uint8Array): Uint8Array;
-  encode_token_message(recipient: Uint8Array, amount: bigint | number): Uint8Array;
-  decode_token_message(body: Uint8Array): string | null;
+  encode_token_message(recipient: Uint8Array, amount: bigint): Uint8Array;
+  decode_token_message(body: Uint8Array): string | undefined;
   keccak256(data: Uint8Array): Uint8Array;
 }

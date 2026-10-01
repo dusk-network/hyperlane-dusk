@@ -22,7 +22,8 @@ export interface DecodedMessage {
 /** Decoded token message. */
 export interface DecodedTokenMessage {
   recipient: HexBytes32;
-  amount: number;
+  /** Decimal u64 string, preserved exactly by the JSON decoder. */
+  amount: string;
   metadata: HexString;
 }
 

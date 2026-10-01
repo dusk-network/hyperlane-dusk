@@ -415,3 +415,20 @@ dusk-tx dispatch --mailbox <hex> --test-recipient <hex> \
 `--metadata` may be omitted only when the selected ISM accepts empty metadata,
 such as the explicit local `TestMock` deployment. MessageIdMultisig processing
 requires checkpoint and signature metadata.
+
+### TypeScript SDK verification
+
+With Node.js/npm and `wasm-bindgen-cli` 0.2.108 (matching `Cargo.lock`) on
+`PATH`, run `make test-sdk` from the repository root. This builds the actual
+WASM bindings, checks that their generated declarations match the SDK, and
+runs binary RUES, address validation, and exact u64 amount regressions.
+
+Run `E2E_SDK_CHECK=true bash demo/e2e-agents.sh` after that build to exercise
+all SDK query methods against the completed live three-route deployment in
+both ISM modes. This checks short and long rkyv strings, one-byte decimals,
+message IDs and delivery heights, route wiring, and exact token supply.
+
+The SDK returns `bigint` for `totalSupply()` and `deliveredAt()`. The WASM
+JSON token decoder returns the amount as a decimal string; convert it with
+`BigInt` when doing arithmetic. Address encoders require exactly 32 bytes and
+reject shorter or longer inputs instead of changing the address silently.
