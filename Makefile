@@ -231,3 +231,8 @@ test-sdk:
 	wasm-bindgen --target nodejs --out-dir wasm-bindings/pkg \
 		target/wasm-bindings/$(WASM_TARGET)/release/hyperlane_dusk_wasm_bindings.wasm
 	cd ts-sdk && npm ci --ignore-scripts && npm test
+
+# Isolated process fixtures; does not require the bridge network or signers.
+.PHONY: test-demo-lifecycle
+test-demo-lifecycle:
+	python3 -B scripts/test-demo-lifecycle.py

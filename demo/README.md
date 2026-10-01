@@ -439,5 +439,5 @@ JavaScript numbers.
 The lifecycle helpers require Python 3. Teardown identifies Rusk by the exact
 state argument on Linux and macOS, and stops only recorded service PIDs or
 process groups. An occupied explorer port is refused before its configuration
-is changed. `python3 -B scripts/test-demo-lifecycle.py` exercises these rules
-with isolated fixture processes; it is also part of the fail-closed self-test.
+is changed. `make test-demo-lifecycle` exercises these rules with isolated
+fixture processes.
