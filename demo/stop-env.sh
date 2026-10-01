@@ -32,41 +32,22 @@ if [ "${1:-}" = "--force" ]; then
 fi
 
 ensure_rusk_stopped() {
-    # Rusk may fork, so killing the recorded PID isn't always sufficient.
-    # Only stop rusk processes using this demo's exact state archive.
-    local pid arg matches_state
+    # Match real argv on Linux and macOS, including paths containing spaces.
+    # A stale wrapper PID must never hide a surviving demo-owned node.
+    local pid pids
+    pids="$(python3 "$SCRIPT_DIR/rusk-processes.py" --state "$RUSK_STATE")" || return 1
+    [ -n "$pids" ] || return 0
     while read -r pid; do
-        [ -r "/proc/$pid/cmdline" ] || continue
-        matches_state=false
-        while IFS= read -r -d '' arg; do
-            if [ "$arg" = "$RUSK_STATE" ]; then
-                matches_state=true
-                break
-            fi
-        done < "/proc/$pid/cmdline"
-        if [ "$matches_state" = true ]; then
-            kill "$pid" 2>/dev/null || true
-        fi
-    done < <(pgrep -x rusk 2>/dev/null || true)
-    # Give the listener a moment to release the port.
+        kill "$pid" 2>/dev/null || true
+    done <<< "$pids"
     for _ in 1 2 3 4 5; do
-        lsof -ti ":${RUSK_HTTP_PORT}" -sTCP:LISTEN >/dev/null 2>&1 || return 0
+        pids="$(python3 "$SCRIPT_DIR/rusk-processes.py" --state "$RUSK_STATE")" || return 1
+        [ -n "$pids" ] || return 0
         sleep 1
     done
-    # Force kill any matching stragglers.
     while read -r pid; do
-        [ -r "/proc/$pid/cmdline" ] || continue
-        matches_state=false
-        while IFS= read -r -d '' arg; do
-            if [ "$arg" = "$RUSK_STATE" ]; then
-                matches_state=true
-                break
-            fi
-        done < "/proc/$pid/cmdline"
-        if [ "$matches_state" = true ]; then
-            kill -9 "$pid" 2>/dev/null || true
-        fi
-    done < <(pgrep -x rusk 2>/dev/null || true)
+        kill -9 "$pid" 2>/dev/null || true
+    done <<< "$pids"
 }
 
 # ── Stop Services ────────────────────────────────────────────────────────────
@@ -90,6 +71,21 @@ while IFS=: read -r name type rest; do
                 && ok "Stopped: $name ($container_name)" \
                 || warn "Container $container_name was not running"
             ;;
+        group)
+            # Only start-env's explicitly recorded process groups are owned.
+            group="$rest"
+            [[ "$group" =~ ^[1-9][0-9]*$ ]] && [ "$group" -gt 1 ] \
+                || fail "Invalid process group in PID file"
+            kill -- -"$group" 2>/dev/null || true
+            if [ "$FORCE" = false ]; then
+                for _ in 1 2 3 4 5; do
+                    kill -0 -- -"$group" 2>/dev/null || break
+                    sleep 1
+                done
+            fi
+            kill -9 -- -"$group" 2>/dev/null || true
+            ok "Stopped: $name (process group $group)"
+            ;;
         external)
             # Service was already running when start-env.sh ran
             info "Skipping $name (was already running externally and is not demo-owned)"
@@ -97,6 +93,12 @@ while IFS=: read -r name type rest; do
         *)
             # PID-based process (format is name:pid)
             pid="$type"
+            if [ "$name" = "rusk" ]; then
+                info "Stopping Rusk processes using this demo's state archive..."
+                ensure_rusk_stopped
+                ok "Stopped: rusk"
+                continue
+            fi
             if kill -0 "$pid" 2>/dev/null; then
                 info "Stopping $name (PID: $pid)..."
                 # Kill the process group (handles npm/node child processes)
@@ -118,16 +120,8 @@ while IFS=: read -r name type rest; do
                     ok "Stopped: $name (PID: $pid)"
                 fi
 
-                if [ "$name" = "rusk" ]; then
-                    ensure_rusk_stopped
-                fi
             else
                 info "$name (PID: $pid) was not running"
-                if [ "$name" = "rusk" ]; then
-                    info "Ensuring no rusk process is still running..."
-                    ensure_rusk_stopped
-                    ok "Stopped: rusk"
-                fi
             fi
             ;;
     esac
@@ -136,14 +130,12 @@ done < "$PID_FILE"
 # Clean up PID file
 rm -f "$PID_FILE"
 
-# Kill any leftover process on the Dusk Explorer port
-if command -v fuser &>/dev/null; then
-    fuser -k "${DUSK_EXPLORER_PORT}/tcp" 2>/dev/null || true
-fi
+# Service ownership comes from the PID file. Never kill a process merely
+# because it is listening on the configured explorer port.
 
 # Restore explorer .env backup if one exists
 if [ -d "${EXPLORER_DIR:-}" ]; then
-    LATEST_BACKUP=$(ls -t "$EXPLORER_DIR"/.env.backup.* 2>/dev/null | head -1)
+    LATEST_BACKUP=$(ls -t "$EXPLORER_DIR"/.env.backup.* 2>/dev/null | head -1 || true)
     if [ -n "$LATEST_BACKUP" ]; then
         mv "$LATEST_BACKUP" "$EXPLORER_DIR/.env"
         ok "Restored Dusk Explorer .env from backup"

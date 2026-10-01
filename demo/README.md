@@ -432,3 +432,9 @@ The SDK returns `bigint` for `totalSupply()` and `deliveredAt()`. The WASM
 JSON token decoder returns the amount as a decimal string; convert it with
 `BigInt` when doing arithmetic. Address encoders require exactly 32 bytes and
 reject shorter or longer inputs instead of changing the address silently.
+
+The lifecycle helpers require Python 3. Teardown identifies Rusk by the exact
+state argument on Linux and macOS, and stops only recorded service PIDs or
+process groups. An occupied explorer port is refused before its configuration
+is changed. `python3 -B scripts/test-demo-lifecycle.py` exercises these rules
+with isolated fixture processes; it is also part of the fail-closed self-test.

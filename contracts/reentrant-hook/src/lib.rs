@@ -130,6 +130,7 @@ mod reentrant_hook {
         }
 
         /// Attempts reentry from an authenticated native-payment callback.
+        #[allow(clippy::needless_pass_by_value)] // The contract ABI deserializes an owned value.
         pub fn receive_payment(&mut self, transfer: ReceiveFromContract) {
             assert!(
                 caller::authentic_transfer_callback(transfer.contract, self.mailbox),

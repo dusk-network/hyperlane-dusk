@@ -814,4 +814,7 @@ expect_fail \
 rm -f -- "$untracked_probe"
 untracked_probe=""
 
+info "Checking demo lifecycle ownership"
+python3 -B "$ROOT/scripts/test-demo-lifecycle.py"
+
 info "Fail-closed self-test passed"
