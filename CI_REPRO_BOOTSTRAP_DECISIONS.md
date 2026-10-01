@@ -93,6 +93,10 @@ SHA, and head SHA; a successful run for the same head on another PR or base is
 not reusable evidence.
 The trusted policy gate has no manual trigger, so a `workflow_dispatch` run on
 a chosen ref cannot emit its required PR status context.
+The dispatcher self-check retains a manual trigger for operator diagnostics,
+but its manual job uses `Manual repro dispatcher manual validation`; only a
+`pull_request` run can emit the required `Manual repro dispatcher gate`
+context. This prevents branch protection from accepting a same-name manual run.
 
 ## Pinned validation tooling
 
