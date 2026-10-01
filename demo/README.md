@@ -443,3 +443,8 @@ is changed. Only this run's recorded explorer configuration is restored or
 removed at shutdown; unrelated backups and external configuration are preserved.
 `make test-demo-lifecycle` exercises these rules with isolated
 fixture processes.
+
+RPC-outage scenarios default their fault endpoint to `http://127.0.0.1:0`,
+which cannot collide with a listening local service when ports are customized.
+`BAD_ANVIL_RPC` and `BAD_DUSK_RPC` overrides must point to an unreachable endpoint;
+an identical healthy/fault URL is rejected before deployment.
