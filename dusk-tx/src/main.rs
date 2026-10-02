@@ -1731,7 +1731,6 @@ async fn cmd_deploy_hyperlane(
     let pk_short = hex::encode(&pk.to_bytes()[..8]);
 
     eprintln!("Deploying Hyperlane contracts on Dusk");
-    eprintln!("  RUES URL:    {rues_url}");
     eprintln!("  Chain ID:    {chain_id}");
     eprintln!("  Domain:      {domain}");
     eprintln!("  Deployer:    {pk_short}...");
