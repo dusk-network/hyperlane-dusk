@@ -1056,6 +1056,35 @@ mod tests {
     }
 
     #[test]
+    fn validator_query_preserves_positional_address_order() {
+        let descending = format!("0x{},0x{}", "22".repeat(20), "11".repeat(20));
+        let queried = parse_validator_announce_query_addresses(&descending).unwrap();
+        assert_eq!(
+            queried,
+            vec![
+                hyperlane_dusk_types::EthAddress([0x22; 20]),
+                hyperlane_dusk_types::EthAddress([0x11; 20])
+            ]
+        );
+        let deployed = super::parse_eth_addresses(&descending).unwrap();
+        assert_eq!(
+            deployed,
+            vec![queried[1], queried[0]],
+            "multisig deployment must still canonicalize validators"
+        );
+        let duplicate = format!("0x{},0x{}", "11".repeat(20), "11".repeat(20));
+        assert!(parse_validator_announce_query_addresses(&duplicate).is_err());
+    }
+
+    #[test]
+    fn igp_config_bounds_the_paid_gas_record() {
+        let excessive = format!("42:{}:1:1", u64::MAX);
+        assert!(parse_igp_domain_configs(&[excessive])
+            .unwrap_err()
+            .contains("adjusted gas exceeds u64"));
+    }
+
+    #[test]
     fn paginated_query_arguments_encode_both_u32_values() {
         assert_eq!(parse_u32_pair("0,2").unwrap(), (0, 2));
         assert_eq!(parse_u32_pair("17,1").unwrap(), (17, 1));
@@ -2306,6 +2335,10 @@ fn parse_igp_domain_configs(values: &[String]) -> Result<Vec<(u32, DomainGasConf
 }
 
 fn validate_igp_domain_config(domain: u32, config: DomainGasConfig) -> Result<(), String> {
+    config
+        .gas_overhead
+        .checked_add(IGP_MAX_GAS_LIMIT)
+        .ok_or_else(|| format!("IGP domain {domain} configured adjusted gas exceeds u64"))?;
     let quote = |gas_limit: u64| {
         (u128::from(gas_limit) + u128::from(config.gas_overhead))
             .checked_mul(u128::from(config.gas_price))
@@ -2327,34 +2360,29 @@ fn validate_igp_domain_config(domain: u32, config: DomainGasConfig) -> Result<()
 }
 
 fn parse_eth_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
-    let list = list.trim();
-    if list.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for raw in list.split(',') {
-        let s = raw.trim();
-        if s.is_empty() {
-            continue;
-        }
-        out.push(parse_eth_address(s)?);
-    }
-    out.sort();
+    let mut addresses = parse_eth_addresses_in_order(list)?;
+    addresses.sort();
+    Ok(addresses)
+}
 
-    for i in 1..out.len() {
-        if out[i - 1] == out[i] {
+fn parse_eth_addresses_in_order(list: &str) -> Result<Vec<EthAddress>, String> {
+    let mut addresses = Vec::new();
+    for raw in list.split(',').map(str::trim).filter(|raw| !raw.is_empty()) {
+        let address = parse_eth_address(raw)?;
+        if addresses.contains(&address) {
             return Err(format!(
                 "Duplicate validator address: 0x{}",
-                hex::encode(out[i].0)
+                hex::encode(address.0)
             ));
         }
+        addresses.push(address);
     }
-
-    Ok(out)
+    Ok(addresses)
 }
 
 fn parse_validator_announce_query_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
-    let addresses = parse_eth_addresses(list)?;
+    // The returned location lists correspond positionally to the input list.
+    let addresses = parse_eth_addresses_in_order(list)?;
     if addresses.len() > MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS {
         return Err(format!(
             "ValidatorAnnounce batch query supports at most {MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS} addresses"

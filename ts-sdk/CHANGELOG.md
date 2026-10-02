@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- Mailbox views derive the latest ID at their observed nonce, even during dispatch ([#11]).
+- Invalid archives and truncated message accessors return recoverable errors without exhausting the WASM instance ([#11]).
+
 - Contract queries use binary RUES method endpoints ([#11]).
 - Token metadata queries decode the contract's rkyv String and u8 representations ([#11]).
 - Typed-array HTTP bodies preserve the selected byte range ([#11]).

@@ -129,17 +129,27 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_u32(result);
   }
 
-  /** Get the full mailbox state in a single batch of queries. */
+  /**
+   * Query mailbox fields, keeping the nonce and latest message ID consistent.
+   * Configuration fields are independent current-state reads, not a snapshot.
+   */
   async getState(): Promise<MailboxState> {
-    const [localDomain, nonce, latestId, ism, hook, requiredHook] =
+    const [localDomain, nonce, ism, hook, requiredHook] =
       await Promise.all([
         this.localDomain(),
         this.nonce(),
-        this.latestDispatchedId(),
         this.defaultIsm(),
         this.defaultHook(),
         this.requiredHook(),
       ]);
+    // Dispatched messages are immutable. Derive the ID at the observed nonce
+    // so a concurrent dispatch cannot pair an old nonce with a newer ID.
+    const latestId = nonce === 0
+      ? "00".repeat(32)
+      : Array.from(
+          this.wasm.message_id(await this.dispatchedMessage(nonce - 1)),
+          byte => byte.toString(16).padStart(2, "0")
+        ).join("");
     return {
       localDomain,
       nonce,

@@ -67,7 +67,7 @@ impl RuesClient {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .map_err(|e| format!("Failed to build RUES HTTP client: {e}"))?;
+            .map_err(|e| format!("Failed to build RUES HTTP client: {}", e.without_url()))?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -128,7 +128,7 @@ impl RuesClient {
             .body(tx_bytes.to_vec())
             .send()
             .await
-            .map_err(|e| format!("Preverify failed before propagation: {e}"))?;
+            .map_err(|e| format!("Preverify failed before propagation: {}", e.without_url()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -150,7 +150,7 @@ impl RuesClient {
             .body(tx_bytes.to_vec())
             .send()
             .await
-            .map_err(|e| format!("Propagation outcome unknown: {e}"))?;
+            .map_err(|e| format!("Propagation outcome unknown: {}", e.without_url()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -180,7 +180,9 @@ impl RuesClient {
             )
             .send()
             .await
-            .map_err(|e| TransactionStatusQueryError::Retryable(format!("HTTP error: {e}")))?;
+            .map_err(|e| {
+                TransactionStatusQueryError::Retryable(format!("HTTP error: {}", e.without_url()))
+            })?;
 
         let status = response.status();
         let body = read_response_body(
@@ -217,7 +219,7 @@ impl RuesClient {
             .body(Vec::new())
             .send()
             .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+            .map_err(|e| format!("HTTP error: {}", e.without_url()))?;
 
         let status = response.status();
         if status.is_success() {
@@ -259,7 +261,7 @@ impl RuesClient {
             .body(body.to_vec())
             .send()
             .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+            .map_err(|e| format!("HTTP error: {}", e.without_url()))?;
 
         let status = response.status();
         let max_bytes = if status.is_success() {
@@ -307,7 +309,10 @@ async fn read_response_body(
             .min(max_bytes as u64) as usize,
     );
     while let Some(chunk) = response.chunk().await.map_err(|e| {
-        ResponseBodyError::Transport(format!("Failed to read {context} response: {e}"))
+        ResponseBodyError::Transport(format!(
+            "Failed to read {context} response: {}",
+            e.without_url()
+        ))
     })? {
         append_bounded_chunk(&mut body, &chunk, max_bytes, context)?;
     }
@@ -397,6 +402,41 @@ mod tests {
         transaction_status_query, ResponseBodyError, TransactionStatus,
         MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
     };
+
+    #[tokio::test]
+    async fn transport_errors_do_not_expose_rpc_credentials_or_paths() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client = super::RuesClient::new(&format!(
+            "http://rpc-user:rpc-password@{address}/rpc-path-sentinel?key=query-sentinel"
+        ))
+        .unwrap();
+        let errors = [
+            client.query_chain_id().await.unwrap_err(),
+            client.contract_exists(&"02".repeat(32)).await.unwrap_err(),
+            client.propagate_tx(&[0]).await.unwrap_err(),
+            client
+                .query_transaction_status(&"ab".repeat(32))
+                .await
+                .unwrap_err()
+                .to_string(),
+        ];
+        for error in errors {
+            for secret in [
+                "rpc-user",
+                "rpc-password",
+                "rpc-path-sentinel",
+                "query-sentinel",
+            ] {
+                assert!(
+                    !error.contains(secret),
+                    "RPC diagnostic retained {secret}: {error}"
+                );
+            }
+            assert!(!error.contains("http://"));
+        }
+    }
 
     #[test]
     fn every_propagation_non_success_remains_outcome_unknown() {

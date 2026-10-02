@@ -2886,7 +2886,7 @@ fn test_igp_rejects_pricing_outside_executable_quote_domain() {
         ),
         (
             DomainGasConfig {
-                gas_overhead: u64::MAX,
+                gas_overhead: 0,
                 token_exchange_rate: u64::MAX,
                 gas_price: u64::MAX,
             },
@@ -6242,4 +6242,93 @@ fn test_warp_collateral_contract_claim_rejects_root_moonlight_caller() {
         result,
         "WarpCollateral: claim_pending_contract requires contract caller",
     );
+}
+
+#[test]
+fn test_igp_credits_the_overhead_in_paid_gas() {
+    let mut session = session_with_hooks_and_igp_config(vec![(
+        REMOTE_DOMAIN,
+        DomainGasConfig {
+            gas_overhead: 100_000,
+            token_exchange_rate: 10_000_000_000,
+            gas_price: 1,
+        },
+    )]);
+    let receipt = session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(
+                MAILBOX_ID,
+                REMOTE_DOMAIN,
+                [0xBBu8; 32],
+                b"paid gas includes overhead".to_vec(),
+            ),
+        )
+        .expect("funded dispatch should succeed");
+    let records = session
+        .direct_call::<_, Vec<GasPaymentRecord>>(IGP_ID, "gas_payments", &(0u32, 256u32))
+        .unwrap()
+        .data;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].message_id, receipt.data);
+    assert_eq!(records[0].payment, 150_000);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), 150_000);
+    assert_eq!(
+        records[0].gas_limit, 150_000,
+        "all quoted destination gas must be credited"
+    );
+    let event = receipt
+        .events
+        .iter()
+        .find(|event| event.source == IGP_ID && event.topic == events::GasPayment::TOPIC)
+        .expect("authenticated payment must emit its gas credit");
+    let decoded = HyperlaneDataDriver
+        .decode_event(&event.topic, &event.data)
+        .unwrap();
+    assert_eq!(decoded["gas_limit"].as_u64(), Some(150_000));
+    assert_eq!(decoded["payment"].as_u64(), Some(150_000));
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_domain_gas_config",
+            &(
+                REMOTE_DOMAIN,
+                DomainGasConfig {
+                    gas_overhead: 0,
+                    token_exchange_rate: 10_000_000_000,
+                    gas_price: 1,
+                },
+            ),
+        )
+        .unwrap();
+    let historical = session
+        .direct_call::<_, GasPaymentRecord>(IGP_ID, "gas_payment_at", &(0u32,))
+        .unwrap()
+        .data;
+    assert_eq!(
+        historical.gas_limit, 150_000,
+        "later oracle settings cannot change historical paid gas"
+    );
+}
+
+#[test]
+fn test_igp_rejects_config_with_unrepresentable_adjusted_gas() {
+    let mut session = session_with_hooks_and_igp_config(vec![]);
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        IGP_ID,
+        "set_domain_gas_config",
+        &(
+            REMOTE_DOMAIN,
+            DomainGasConfig {
+                gas_overhead: u64::MAX,
+                token_exchange_rate: 1,
+                gas_price: 1,
+            },
+        ),
+    );
+    assert_contract_panic(result, "IGP: configured adjusted gas exceeds u64");
 }

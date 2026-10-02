@@ -71,14 +71,20 @@ pub fn protocol_version() -> u8 {
 
 /// Extract the destination domain from an encoded message.
 #[wasm_bindgen]
-pub fn message_destination(encoded: &[u8]) -> u32 {
-    message::destination(encoded)
+pub fn message_destination(encoded: &[u8]) -> Result<u32, String> {
+    if encoded.len() < message::MIN_MESSAGE_LENGTH {
+        return Err("Encoded message is shorter than its header".into());
+    }
+    Ok(message::destination(encoded))
 }
 
 /// Extract the nonce from an encoded message.
 #[wasm_bindgen]
-pub fn message_nonce(encoded: &[u8]) -> u32 {
-    message::nonce(encoded)
+pub fn message_nonce(encoded: &[u8]) -> Result<u32, String> {
+    if encoded.len() < message::MIN_MESSAGE_LENGTH {
+        return Err("Encoded message is shorter than its header".into());
+    }
+    Ok(message::nonce(encoded))
 }
 
 // =============================================================================
@@ -172,52 +178,58 @@ pub fn rkyv_serialize_unit() -> Vec<u8> {
 
 /// Deserialize a u8 from rkyv bytes (for token decimals).
 #[wasm_bindgen]
-pub fn rkyv_deserialize_u8(data: &[u8]) -> u8 {
-    *rkyv::check_archived_root::<u8>(data).expect("invalid rkyv u8 data")
+pub fn rkyv_deserialize_u8(data: &[u8]) -> Result<u8, String> {
+    rkyv::check_archived_root::<u8>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv u8 data".into())
 }
 
 /// Deserialize a String, including rkyv's inline short-string representation.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_string(data: &[u8]) -> String {
+pub fn rkyv_deserialize_string(data: &[u8]) -> Result<String, String> {
     rkyv::check_archived_root::<String>(data)
-        .expect("invalid rkyv String data")
-        .as_str()
-        .to_owned()
+        .map(|archived| archived.as_str().to_owned())
+        .map_err(|_| "Invalid rkyv String data".into())
 }
 
 /// Deserialize a u32 from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_u32(data: &[u8]) -> u32 {
-    let archived = rkyv::check_archived_root::<u32>(data).expect("invalid rkyv u32 data");
-    *archived
+pub fn rkyv_deserialize_u32(data: &[u8]) -> Result<u32, String> {
+    rkyv::check_archived_root::<u32>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv u32 data".into())
 }
 
 /// Deserialize a u64 from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_u64(data: &[u8]) -> u64 {
-    let archived = rkyv::check_archived_root::<u64>(data).expect("invalid rkyv u64 data");
-    *archived
+pub fn rkyv_deserialize_u64(data: &[u8]) -> Result<u64, String> {
+    rkyv::check_archived_root::<u64>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv u64 data".into())
 }
 
 /// Deserialize a bool from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_bool(data: &[u8]) -> bool {
-    let archived = rkyv::check_archived_root::<bool>(data).expect("invalid rkyv bool data");
-    *archived
+pub fn rkyv_deserialize_bool(data: &[u8]) -> Result<bool, String> {
+    rkyv::check_archived_root::<bool>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv bool data".into())
 }
 
 /// Deserialize a bytes32 (H256) from rkyv bytes, returned as hex string.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_bytes32(data: &[u8]) -> String {
-    let archived = rkyv::check_archived_root::<[u8; 32]>(data).expect("invalid rkyv H256 data");
-    hex::encode(archived)
+pub fn rkyv_deserialize_bytes32(data: &[u8]) -> Result<String, String> {
+    rkyv::check_archived_root::<[u8; 32]>(data)
+        .map(|archived| hex::encode(archived))
+        .map_err(|_| "Invalid rkyv H256 data".into())
 }
 
 /// Deserialize raw bytes (Vec<u8>) from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_bytes(data: &[u8]) -> Vec<u8> {
-    let archived = rkyv::check_archived_root::<Vec<u8>>(data).expect("invalid rkyv Vec<u8> data");
-    archived.to_vec()
+pub fn rkyv_deserialize_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
+    rkyv::check_archived_root::<Vec<u8>>(data)
+        .map(|archived| archived.to_vec())
+        .map_err(|_| "Invalid rkyv Vec<u8> data".into())
 }
 
 // =============================================================================
@@ -266,7 +278,7 @@ mod tests {
     fn rkyv_string_decoder_handles_inline_and_allocated_strings() {
         for value in ["", "wDUSK", "Wrapped Dusk", "Dusk 🌘"] {
             let encoded = rkyv::to_bytes::<_, 256>(&value.to_owned()).unwrap();
-            assert_eq!(rkyv_deserialize_string(&encoded), value);
+            assert_eq!(rkyv_deserialize_string(&encoded).unwrap(), value);
         }
     }
 
@@ -275,7 +287,7 @@ mod tests {
         for value in [0u8, 9, 18, 255] {
             let encoded = rkyv::to_bytes::<_, 256>(&value).unwrap();
             assert_eq!(encoded.len(), 1);
-            assert_eq!(rkyv_deserialize_u8(&encoded), value);
+            assert_eq!(rkyv_deserialize_u8(&encoded).unwrap(), value);
         }
     }
 }
