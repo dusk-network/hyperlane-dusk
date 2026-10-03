@@ -25,11 +25,15 @@ export interface RuesRequestOptions {
  * callers must reconcile their signed transaction before retrying.
  */
 export class RuesClient {
-  private readonly baseUrl: string;
+  private readonly baseUrl: URL;
   private readonly options: Required<RuesClientOptions>;
 
   constructor(url: string, options: RuesClientOptions = {}) {
-    this.baseUrl = url.replace(/\/+$/, "");
+    const browserBase = globalThis.document?.baseURI ?? globalThis.location?.href;
+    this.baseUrl = new URL(url, browserBase);
+    if (!["http:", "https:"].includes(this.baseUrl.protocol)) {
+      throw new Error("RUES URL must use HTTP or HTTPS");
+    }
     this.options = {
       timeoutMs: options.timeoutMs ?? 30_000,
       maxResponseBytes: options.maxResponseBytes ?? 4 * 1024 * 1024,
@@ -60,7 +64,7 @@ export class RuesClient {
       throw new Error("Invalid contract method name");
     }
     return this.request(
-      `${this.baseUrl}/on/contracts:${bytesToHex(contractId)}/${method}`,
+      this.endpoint(`/on/contracts:${bytesToHex(contractId)}/${method}`),
       args,
       "RUES query",
       true,
@@ -74,12 +78,19 @@ export class RuesClient {
     options: RuesRequestOptions = {}
   ): Promise<void> {
     await this.request(
-      `${this.baseUrl}/on/transactions/propagate`,
+      this.endpoint("/on/transactions/propagate"),
       txBytes,
       "TX propagation",
       false,
       options
     );
+  }
+
+  private endpoint(path: string): string {
+    const url = new URL(this.baseUrl);
+    url.pathname = `${url.pathname.replace(/\/+$/, "")}${path}`;
+    url.hash = "";
+    return url.toString();
   }
 
   private async request(

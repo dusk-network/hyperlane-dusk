@@ -20,6 +20,8 @@
 
 ### Fixed
 
+- RUES routes preserve base-path prefixes and query parameters while omitting URL fragments ([#11]).
+
 - Mailbox views reject malformed dispatched messages and nonce/domain mismatches ([#11]).
 
 - Mailbox views derive the latest ID at their observed nonce, even during dispatch ([#11]).
