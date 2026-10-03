@@ -29,9 +29,9 @@ export interface DecodedTokenMessage {
 
 /** Gas configuration for a remote domain. */
 export interface DomainGasConfig {
-  gasOverhead: number;
-  tokenExchangeRate: number;
-  gasPrice: number;
+  gasOverhead: bigint;
+  tokenExchangeRate: bigint;
+  gasPrice: bigint;
 }
 
 /** RUES contract query request. */

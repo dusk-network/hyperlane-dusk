@@ -17,13 +17,60 @@ use alloc::vec::Vec;
 use dusk_bytes::Serializable;
 use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
 use dusk_data_driver::{
-    from_rkyv, json_to_rkyv, rkyv_to_json, rkyv_to_json_u64, ConvertibleContract, Error, JsonValue,
+    from_rkyv, json_to_rkyv, rkyv_to_json_u64, ConvertibleContract, Error, JsonValue,
 };
 use serde::Deserialize;
 
 use hyperlane_dusk_types::drc20::{Allowance, BalanceOf};
 use hyperlane_dusk_types::events;
 use hyperlane_dusk_types::{DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256};
+
+mod lossless_json;
+
+fn rkyv_to_json<T>(bytes: &[u8]) -> Result<JsonValue, Error>
+where
+    T: serde::Serialize + rkyv::Archive,
+    for<'a> T::Archived: rkyv::CheckBytes<rkyv::validation::validators::DefaultValidator<'a>>
+        + rkyv::Deserialize<T, rkyv::Infallible>,
+{
+    let value: T = from_rkyv(bytes)?;
+    Ok(lossless_json::to_json(&value)?)
+}
+
+fn deserialize_u64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Input {
+        Integer(u64),
+        Decimal(String),
+    }
+    match Input::deserialize(deserializer)? {
+        Input::Integer(value) => Ok(value),
+        Input::Decimal(value) => {
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(serde::de::Error::custom("expected an unsigned decimal u64"));
+            }
+            value.parse().map_err(serde::de::Error::custom)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct JsonU64(#[serde(deserialize_with = "deserialize_u64")] u64);
+
+fn encode_quote_gas_input(json: &str) -> Result<Vec<u8>, Error> {
+    let (domain, amount): (u32, JsonU64) = serde_json::from_str(json)?;
+    rkyv::to_bytes::<_, 1024>(&(domain, amount.0))
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| Error::Rkyv(format!("cannot serialize quote input: {error}")))
+}
+
+fn encode_quote_transfer_input(json: &str) -> Result<Vec<u8>, Error> {
+    let (domain, recipient, amount): (u32, H256, JsonU64) = serde_json::from_str(json)?;
+    rkyv::to_bytes::<_, 1024>(&(domain, recipient, amount.0))
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| Error::Rkyv(format!("cannot serialize quote input: {error}")))
+}
 
 /// Data driver for Hyperlane Dusk contracts (Mailbox, hooks, warp routes).
 ///
@@ -35,6 +82,7 @@ pub struct HyperlaneDataDriver;
 #[derive(Deserialize)]
 struct WithdrawalInputJson {
     recipient: Vec<u8>,
+    #[serde(deserialize_with = "deserialize_u64")]
     amount: u64,
 }
 
@@ -62,7 +110,7 @@ fn decode_withdrawal_input(rkyv: &[u8]) -> Result<JsonValue, Error> {
     let (recipient, amount): (AccountPublicKey, u64) = from_rkyv(rkyv)?;
     Ok(serde_json::json!({
         "recipient": recipient.to_bytes().to_vec(),
-        "amount": amount,
+        "amount": alloc::string::ToString::to_string(&amount),
     }))
 }
 
@@ -112,8 +160,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
                 json_to_rkyv::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(json)
                     .or_else(|_| json_to_rkyv::<(Vec<u8>, Vec<u8>)>(json))
             }
-            "quote_transfer_remote" => json_to_rkyv::<(u32, H256, u64)>(json),
-            "quote_gas_payment" => json_to_rkyv::<(u32, u64)>(json),
+            "quote_transfer_remote" => encode_quote_transfer_input(json),
+            "quote_gas_payment" => encode_quote_gas_input(json),
             "domain_gas_config" => json_to_rkyv::<(u32,)>(json),
             // Warp route queries
             "mailbox"
@@ -590,7 +638,7 @@ mod tests {
         let decoded = HyperlaneDataDriver
             .decode_event(events::DispatchFeeWithdrawn::TOPIC, &bytes)
             .expect("event bytes should decode");
-        assert_eq!(decoded["amount"].as_u64(), Some(42));
+        assert_eq!(decoded["amount"].as_str(), Some("42"));
         assert!(decoded["payer"]
             .as_array()
             .expect("payer should be an array")
@@ -622,6 +670,121 @@ mod tests {
         let decoded = HyperlaneDataDriver
             .decode_input_fn("withdraw_dispatch_credit", &bytes)
             .expect("withdrawal input should decode");
+        let mut expected = expected;
+        expected["amount"] = serde_json::json!("42");
         assert_eq!(decoded, expected);
+        assert_eq!(
+            HyperlaneDataDriver
+                .encode_input_fn("withdraw_dispatch_credit", &decoded.to_string())
+                .unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn structured_u64_outputs_are_decimal_strings_at_every_magnitude() {
+        use hyperlane_dusk_types::DomainGasConfig;
+        for value in [0u64, 42, 9_007_199_254_740_993, u64::MAX] {
+            let config = DomainGasConfig {
+                gas_overhead: value,
+                token_exchange_rate: value,
+                gas_price: value,
+            };
+            let bytes = rkyv::to_bytes::<_, 1024>(&config).unwrap();
+            let decoded = HyperlaneDataDriver
+                .decode_output_fn("domain_gas_config", &bytes)
+                .unwrap();
+            for field in ["gas_overhead", "token_exchange_rate", "gas_price"] {
+                assert_eq!(decoded[field], serde_json::json!(value.to_string()));
+            }
+            let record = GasPaymentRecord {
+                message_id: [0x11; 32],
+                destination: u32::MAX,
+                gas_limit: value,
+                payment: value,
+                block_height: value,
+            };
+            let bytes = rkyv::to_bytes::<_, 1024>(&vec![record]).unwrap();
+            let decoded = HyperlaneDataDriver
+                .decode_output_fn("gas_payments", &bytes)
+                .unwrap();
+            let record = &decoded[0];
+            assert_eq!(record["destination"].as_u64(), Some(u64::from(u32::MAX)));
+            assert_eq!(record["message_id"], serde_json::json!([0x11; 32].as_slice()));
+            for field in ["gas_limit", "payment", "block_height"] {
+                assert_eq!(record[field], serde_json::json!(value.to_string()));
+            }
+            let event = events::GasPayment {
+                message_id: [0x22; 32],
+                gas_limit: value,
+                payment: value,
+            };
+            let bytes = rkyv::to_bytes::<_, 1024>(&event).unwrap();
+            let decoded = HyperlaneDataDriver
+                .decode_event(events::GasPayment::TOPIC, &bytes)
+                .unwrap();
+            assert_eq!(decoded["gas_limit"], serde_json::json!(value.to_string()));
+            assert_eq!(decoded["payment"], serde_json::json!(value.to_string()));
+            assert_eq!(decoded["message_id"], serde_json::json!([0x22; 32].as_slice()));
+        }
+    }
+
+    #[test]
+    fn quote_inputs_accept_decimal_strings_and_preserve_binary_round_trips() {
+        for value in [0u64, 42, 9_007_199_254_740_993, u64::MAX] {
+            let recipient = [0x33u8; 32];
+            for (name, number, decimal, index) in [
+                (
+                    "quote_gas_payment",
+                    serde_json::json!([4242, value]),
+                    serde_json::json!([4242, value.to_string()]),
+                    1,
+                ),
+                (
+                    "quote_transfer_remote",
+                    serde_json::json!([4242, recipient, value]),
+                    serde_json::json!([4242, recipient, value.to_string()]),
+                    2,
+                ),
+            ] {
+                let legacy = HyperlaneDataDriver
+                    .encode_input_fn(name, &number.to_string())
+                    .unwrap();
+                let encoded = HyperlaneDataDriver
+                    .encode_input_fn(name, &decimal.to_string())
+                    .unwrap();
+                assert_eq!(legacy, encoded);
+                let decoded = HyperlaneDataDriver.decode_input_fn(name, &encoded).unwrap();
+                assert_eq!(decoded[index], serde_json::json!(value.to_string()));
+                assert_eq!(decoded[0].as_u64(), Some(4242));
+                assert_eq!(
+                    HyperlaneDataDriver
+                        .encode_input_fn(name, &decoded.to_string())
+                        .unwrap(),
+                    encoded
+                );
+            }
+        }
+        for bad in ["", "-1", "+1", "1.5", "1e3", "18446744073709551616"] {
+            assert!(HyperlaneDataDriver
+                .encode_input_fn(
+                    "quote_gas_payment",
+                    &serde_json::json!([4242, bad]).to_string()
+                )
+                .is_err());
+        }
+        for bad in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+            serde_json::json!(null),
+        ] {
+            assert!(HyperlaneDataDriver
+                .encode_input_fn(
+                    "quote_gas_payment",
+                    &serde_json::json!([4242, bad]).to_string()
+                )
+                .is_err());
+        }
     }
 }

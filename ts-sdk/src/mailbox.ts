@@ -3,7 +3,7 @@
 // Mailbox contract interface for TypeScript.
 
 import type { RuesClient } from "./rues-client.js";
-import type { HexBytes32, MailboxState } from "./types.js";
+import type { DecodedMessage, HexBytes32, MailboxState } from "./types.js";
 
 /**
  * Provides a TypeScript interface to query the Hyperlane Mailbox contract
@@ -144,12 +144,22 @@ export class DuskMailbox {
       ]);
     // Dispatched messages are immutable. Derive the ID at the observed nonce
     // so a concurrent dispatch cannot pair an old nonce with a newer ID.
-    const latestId = nonce === 0
-      ? "00".repeat(32)
-      : Array.from(
-          this.wasm.message_id(await this.dispatchedMessage(nonce - 1)),
-          byte => byte.toString(16).padStart(2, "0")
-        ).join("");
+    let latestId = "00".repeat(32);
+    if (nonce > 0) {
+      const message = await this.dispatchedMessage(nonce - 1);
+      const decoded = this.wasm.decode_message(message);
+      if (decoded === undefined) {
+        throw new Error("Invalid dispatched message");
+      }
+      const { nonce: messageNonce, origin } = JSON.parse(decoded) as DecodedMessage;
+      if (messageNonce !== nonce - 1 || origin !== localDomain) {
+        throw new Error("Dispatched message does not match mailbox state");
+      }
+      latestId = Array.from(
+        this.wasm.message_id(message),
+        byte => byte.toString(16).padStart(2, "0")
+      ).join("");
+    }
     return {
       localDomain,
       nonce,

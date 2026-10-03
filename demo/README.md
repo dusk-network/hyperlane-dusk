@@ -436,6 +436,20 @@ Numeric encoders reject negative, fractional, or out-of-range values before
 WASM conversion; u64 inputs must be `bigint`, and u8/u32 inputs must be integer
 JavaScript numbers.
 
+The RUES client bounds each request, including its response body, to 30 seconds
+by default. `new RuesClient(url, { timeoutMs, maxResponseBytes,
+maxErrorResponseBytes })` configures the deadline and the 4 MiB successful-query
+and 64 KiB error-body defaults. `contractQuery` and `propagateTx` accept a final
+`{ signal }` option for cancellation. A propagation timeout or cancellation leaves
+its outcome uncertain: reconcile the signed transaction before retrying it.
+
+Data-driver JSON uses decimal strings for all u64 fields, including nested gas
+configurations, event amounts and block heights. Use `BigInt(value)` when arithmetic
+is needed. Quote and withdrawal inputs accept decimal strings and legacy unsigned
+JSON integers; JavaScript callers should send strings or W3sper bigints so values
+are exact before serialization. `DomainGasConfig` SDK fields are `bigint`.
+
+
 The lifecycle helpers require Python 3. Teardown identifies Rusk by the exact
 state argument on Linux and macOS, and stops only recorded service PIDs or
 process groups. An occupied explorer port is refused before its configuration
