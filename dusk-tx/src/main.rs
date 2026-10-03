@@ -11,7 +11,10 @@
 
 use std::future::Future;
 use std::path::PathBuf;
-use std::{env, fs, io::Read};
+use std::{
+    env, fs,
+    io::{BufRead, Read},
+};
 
 use clap::{Parser, Subcommand};
 use dusk_bytes::Serializable;
@@ -35,6 +38,7 @@ mod rues;
 use rues::{RuesClient, TransactionStatus, TransactionStatusQueryError};
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
+const MAX_RUES_URL_STDIN_BYTES: usize = 8 * 1024;
 const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
 const MAX_CALL_ARGS_BYTES: usize = 60 * 1024;
 // Keep this synchronized with validator-announce's MAX_QUERY_VALIDATORS.
@@ -57,6 +61,10 @@ enum Command {
     Call {
         #[arg(long, default_value = "http://localhost:18090/")]
         rues_url: String,
+        /// Read the RUES URL from the first stdin line. When combined with
+        /// --secret-key-stdin, the key follows on the next line.
+        #[arg(long, conflicts_with = "rues_url")]
+        rues_url_stdin: bool,
         /// Path to encrypted consensus.keys file.
         #[arg(long)]
         keys: Option<PathBuf>,
@@ -465,6 +473,7 @@ async fn main() {
     let result = match cli.command {
         Command::Call {
             rues_url,
+            rues_url_stdin,
             keys,
             password,
             secret_key,
@@ -479,6 +488,7 @@ async fn main() {
         } => {
             cmd_call(
                 &rues_url,
+                rues_url_stdin,
                 keys,
                 &password,
                 secret_key,
@@ -855,6 +865,27 @@ fn load_keys(
     }
 }
 
+fn read_rues_url(reader: impl BufRead) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_RUES_URL_STDIN_BYTES + 1) as u64)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|_| "Failed to read RUES URL from stdin".to_string())?;
+    if bytes.len() > MAX_RUES_URL_STDIN_BYTES {
+        return Err("RUES URL stdin line exceeds 8192 bytes".into());
+    }
+    if bytes.pop() != Some(b'\n') {
+        return Err("RUES URL stdin must end with a newline".into());
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        return Err("RUES URL stdin is empty".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "RUES URL stdin must be UTF-8".into())
+}
+
 fn read_secret_key_hex(reader: impl Read) -> Result<String, String> {
     let mut buf = String::new();
     reader
@@ -982,6 +1013,42 @@ mod tests {
     }
 
     #[test]
+    fn private_url_stdin_preserves_the_following_signer_line() {
+        let key = "11".repeat(32);
+        let url = "http://synthetic:password@localhost/private?token=fixture";
+        let bytes = format!("{url}\n{key}\n");
+        let mut input = std::io::BufReader::new(bytes.as_bytes());
+        assert_eq!(super::read_rues_url(&mut input).unwrap(), url);
+        assert_eq!(read_secret_key_hex(input).unwrap(), key);
+        for bytes in [
+            b"\n".to_vec(),
+            b"missing-newline".to_vec(),
+            vec![b'a'; super::MAX_RUES_URL_STDIN_BYTES + 1],
+            vec![0xff, b'\n'],
+        ] {
+            assert!(super::read_rues_url(bytes.as_slice()).is_err());
+        }
+    }
+
+    #[test]
+    fn private_url_flag_accepts_stdin_key_and_rejects_an_argv_url() {
+        let contract = "11".repeat(32);
+        let mut args = vec![
+            "dusk-tx",
+            "call",
+            "--rues-url-stdin",
+            "--secret-key-stdin",
+            "--contract",
+            &contract,
+            "--fn-name",
+            "process",
+        ];
+        assert!(Cli::try_parse_from(&args).is_ok());
+        args.extend(["--rues-url", "http://localhost"]);
+        assert!(Cli::try_parse_from(&args).is_err());
+    }
+
+    #[test]
     fn secret_key_stdin_is_bounded() {
         let oversized = vec![b'a'; MAX_SECRET_KEY_STDIN_BYTES + 1];
         assert!(read_secret_key_hex(oversized.as_slice())
@@ -1053,6 +1120,35 @@ mod tests {
         assert!(parse_validator_announce_query_addresses(&three)
             .unwrap_err()
             .contains("at most 2"));
+    }
+
+    #[test]
+    fn validator_query_preserves_positional_address_order() {
+        let descending = format!("0x{},0x{}", "22".repeat(20), "11".repeat(20));
+        let queried = parse_validator_announce_query_addresses(&descending).unwrap();
+        assert_eq!(
+            queried,
+            vec![
+                hyperlane_dusk_types::EthAddress([0x22; 20]),
+                hyperlane_dusk_types::EthAddress([0x11; 20])
+            ]
+        );
+        let deployed = super::parse_eth_addresses(&descending).unwrap();
+        assert_eq!(
+            deployed,
+            vec![queried[1], queried[0]],
+            "multisig deployment must still canonicalize validators"
+        );
+        let duplicate = format!("0x{},0x{}", "11".repeat(20), "11".repeat(20));
+        assert!(parse_validator_announce_query_addresses(&duplicate).is_err());
+    }
+
+    #[test]
+    fn igp_config_bounds_the_paid_gas_record() {
+        let excessive = format!("42:{}:1:1", u64::MAX);
+        assert!(parse_igp_domain_configs(&[excessive])
+            .unwrap_err()
+            .contains("adjusted gas exceeds u64"));
     }
 
     #[test]
@@ -1537,6 +1633,7 @@ where
 
 async fn cmd_call(
     rues_url: &str,
+    rues_url_stdin: bool,
     keys_path: Option<PathBuf>,
     password: &str,
     secret_key_hex: Option<String>,
@@ -1577,6 +1674,13 @@ async fn cmd_call(
                 .into(),
         );
     }
+    let stdin_url;
+    let rues_url = if rues_url_stdin {
+        stdin_url = read_rues_url(std::io::stdin().lock())?;
+        &stdin_url
+    } else {
+        rues_url
+    };
     let client = RuesClient::new(rues_url)?;
     let observed_chain_id = client.query_chain_id().await?;
     let chain_id = resolve_signing_chain_id(expected_chain_id, observed_chain_id)?;
@@ -1702,7 +1806,6 @@ async fn cmd_deploy_hyperlane(
     let pk_short = hex::encode(&pk.to_bytes()[..8]);
 
     eprintln!("Deploying Hyperlane contracts on Dusk");
-    eprintln!("  RUES URL:    {rues_url}");
     eprintln!("  Chain ID:    {chain_id}");
     eprintln!("  Domain:      {domain}");
     eprintln!("  Deployer:    {pk_short}...");
@@ -2306,6 +2409,10 @@ fn parse_igp_domain_configs(values: &[String]) -> Result<Vec<(u32, DomainGasConf
 }
 
 fn validate_igp_domain_config(domain: u32, config: DomainGasConfig) -> Result<(), String> {
+    config
+        .gas_overhead
+        .checked_add(IGP_MAX_GAS_LIMIT)
+        .ok_or_else(|| format!("IGP domain {domain} configured adjusted gas exceeds u64"))?;
     let quote = |gas_limit: u64| {
         (u128::from(gas_limit) + u128::from(config.gas_overhead))
             .checked_mul(u128::from(config.gas_price))
@@ -2327,34 +2434,29 @@ fn validate_igp_domain_config(domain: u32, config: DomainGasConfig) -> Result<()
 }
 
 fn parse_eth_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
-    let list = list.trim();
-    if list.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for raw in list.split(',') {
-        let s = raw.trim();
-        if s.is_empty() {
-            continue;
-        }
-        out.push(parse_eth_address(s)?);
-    }
-    out.sort();
+    let mut addresses = parse_eth_addresses_in_order(list)?;
+    addresses.sort();
+    Ok(addresses)
+}
 
-    for i in 1..out.len() {
-        if out[i - 1] == out[i] {
+fn parse_eth_addresses_in_order(list: &str) -> Result<Vec<EthAddress>, String> {
+    let mut addresses = Vec::new();
+    for raw in list.split(',').map(str::trim).filter(|raw| !raw.is_empty()) {
+        let address = parse_eth_address(raw)?;
+        if addresses.contains(&address) {
             return Err(format!(
                 "Duplicate validator address: 0x{}",
-                hex::encode(out[i].0)
+                hex::encode(address.0)
             ));
         }
+        addresses.push(address);
     }
-
-    Ok(out)
+    Ok(addresses)
 }
 
 fn parse_validator_announce_query_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
-    let addresses = parse_eth_addresses(list)?;
+    // The returned location lists correspond positionally to the input list.
+    let addresses = parse_eth_addresses_in_order(list)?;
     if addresses.len() > MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS {
         return Err(format!(
             "ValidatorAnnounce batch query supports at most {MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS} addresses"

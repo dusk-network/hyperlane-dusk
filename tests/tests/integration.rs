@@ -660,6 +660,113 @@ fn test_process_delivers_message() {
 }
 
 #[test]
+fn test_process_rejects_replay_during_recipient_ism_resolution() {
+    let mut s = HyperlaneSession::new();
+    s.session
+        .deploy(
+            REENTRANT_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(REENTRANT_HOOK_ID),
+        )
+        .unwrap();
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REENTRANT_HOOK_ID.to_bytes(),
+        b"deliver only once even when resolving the recipient ISM",
+    );
+    s.session
+        .direct_call::<_, ()>(REENTRANT_HOOK_ID, "configure_inbound", &(encoded.clone(),))
+        .unwrap();
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), encoded.clone())
+        .unwrap();
+    assert!(
+        s.session
+            .direct_call::<_, bool>(REENTRANT_HOOK_ID, "attempted", &())
+            .unwrap()
+            .data
+    );
+    assert_eq!(
+        s.session
+            .direct_call::<_, u32>(REENTRANT_HOOK_ID, "handled_count", &())
+            .unwrap()
+            .data,
+        1,
+        "recipient ISM resolution must not permit a second delivery of the same message"
+    );
+    assert!(
+        !s.session
+            .direct_call::<_, bool>(REENTRANT_HOOK_ID, "nested_succeeded", &())
+            .unwrap()
+            .data
+    );
+    assert!(s.mailbox_delivered(message::id(&encoded)));
+    assert_eq!(s.mailbox_processed_count(), 1);
+    assert_eq!(s.mailbox_processed_at_index(0), message::id(&encoded));
+    assert_eq!(
+        receipt
+            .events
+            .iter()
+            .filter(|event| event.source == MAILBOX_ID && event.topic == events::ProcessId::TOPIC)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn test_process_rejected_ism_rolls_back_delivery_reservation() {
+    let mut s = HyperlaneSession::new();
+    s.session
+        .deploy(
+            ISM_MULTISIG_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(*OWNER_ID, vec![EthAddress([0x11; 20])], 1u8))
+                .contract_id(ISM_MULTISIG_ID),
+        )
+        .unwrap();
+    s.session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "set_default_ism",
+            &(ISM_MULTISIG_ID,),
+        )
+        .unwrap();
+    let encoded = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        b"retry after failed verification",
+    );
+    let result = s.mailbox_process_via_tx(Vec::new(), encoded.clone());
+    assert_contract_panic(
+        result,
+        r#"Mailbox: ISM call failed: Panic("MultisigISM: metadata too short")"#,
+    );
+    assert!(!s.mailbox_delivered(message::id(&encoded)));
+    assert_eq!(s.mailbox_processed_count(), 0);
+    assert_eq!(s.recipient_handled_count(), 0);
+    s.session
+        .call_public::<_, ()>(&OWNER_SK, MAILBOX_ID, "set_default_ism", &(TEST_MOCK_ID,))
+        .unwrap();
+    s.mailbox_process_via_tx(Vec::new(), encoded.clone())
+        .unwrap();
+    assert!(s.mailbox_delivered(message::id(&encoded)));
+    assert_eq!(s.mailbox_processed_count(), 1);
+    assert_eq!(s.recipient_handled_count(), 1);
+}
+
+#[test]
 fn test_process_rejects_wrong_destination() {
     let mut s = HyperlaneSession::new();
 
@@ -938,6 +1045,20 @@ fn test_dispatch_via_recipient_proxy() {
 
 #[test]
 fn test_dispatch_rejects_quote_hook_reentrancy_without_corrupting_nonce_order() {
+    assert_dispatch_reentry_rejected(0, 0);
+}
+
+#[test]
+fn test_dispatch_rejects_post_hook_reentrancy_without_corrupting_nonce_order() {
+    assert_dispatch_reentry_rejected(1, 0);
+}
+
+#[test]
+fn test_dispatch_rejects_payment_reentrancy_without_corrupting_nonce_order() {
+    assert_dispatch_reentry_rejected(2, 17);
+}
+
+fn assert_dispatch_reentry_rejected(stage: u8, fee: u64) {
     let mut s = HyperlaneSession::new();
     s.session
         .deploy(
@@ -948,6 +1069,20 @@ fn test_dispatch_rejects_quote_hook_reentrancy_without_corrupting_nonce_order() 
                 .contract_id(REENTRANT_HOOK_ID),
         )
         .expect("Deploying ReentrantHook should succeed");
+    s.session
+        .direct_call::<_, ()>(REENTRANT_HOOK_ID, "configure", &(stage, fee, false))
+        .expect("hook configuration should succeed");
+    if fee > 0 {
+        s.session
+            .call_public_with_deposit::<_, ()>(
+                &OWNER_SK,
+                MAILBOX_ID,
+                "fund_dispatch",
+                &(*OWNER_ID, fee),
+                fee,
+            )
+            .expect("outer fee funding should succeed");
+    }
 
     let destination = REMOTE_DOMAIN;
     let recipient = [0xD5u8; 32];
@@ -989,6 +1124,19 @@ fn test_dispatch_rejects_quote_hook_reentrancy_without_corrupting_nonce_order() 
         1
     );
 
+    assert_eq!(
+        s.session.contract_balance(&REENTRANT_HOOK_ID).unwrap(),
+        fee,
+        "only the outer dispatch's quoted fee may leave Mailbox custody"
+    );
+    assert_eq!(s.session.contract_balance(&MAILBOX_ID).unwrap(), 0);
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .unwrap()
+            .data,
+        0
+    );
     assert_eq!(s.mailbox_nonce(), 1);
     let encoded = s.mailbox_dispatched_message(0);
     let decoded = message::decode(&encoded).expect("stored message should decode");
@@ -1022,6 +1170,69 @@ fn test_dispatch_rejects_quote_hook_reentrancy_without_corrupting_nonce_order() 
         .expect("later stored message should decode");
     assert_eq!(control.nonce, 1);
     assert_eq!(control.body, control_body);
+}
+
+#[test]
+fn test_failed_post_dispatch_rolls_back_nonce_credit_custody_and_guard() {
+    let mut s = HyperlaneSession::new();
+    s.session
+        .deploy(
+            REENTRANT_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(REENTRANT_HOOK_ID),
+        )
+        .unwrap();
+    let fee = 17u64;
+    s.session
+        .direct_call::<_, ()>(REENTRANT_HOOK_ID, "configure", &(1u8, fee, true))
+        .unwrap();
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, fee),
+            fee,
+        )
+        .unwrap();
+    let args = (
+        REMOTE_DOMAIN,
+        [0xD5u8; 32],
+        b"retry after rejected callback".to_vec(),
+        Vec::<u8>::new(),
+        REENTRANT_HOOK_ID,
+    );
+    let result = s
+        .session
+        .call_public::<_, MessageId>(&OWNER_SK, MAILBOX_ID, "dispatch", &args);
+    assert_contract_panic(
+        result,
+        r#"Mailbox: hook post_dispatch failed: Panic("ReentrantHook: rejected callback")"#,
+    );
+    assert_eq!(s.mailbox_nonce(), 0);
+    assert_eq!(s.mailbox_latest_dispatched_id(), [0u8; 32]);
+    assert_eq!(s.session.contract_balance(&MAILBOX_ID).unwrap(), fee);
+    assert_eq!(s.session.contract_balance(&REENTRANT_HOOK_ID).unwrap(), 0);
+    assert_eq!(
+        s.session
+            .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(*OWNER_ID,))
+            .unwrap()
+            .data,
+        fee
+    );
+    s.session
+        .direct_call::<_, ()>(REENTRANT_HOOK_ID, "configure", &(1u8, fee, false))
+        .unwrap();
+    let receipt = s
+        .session
+        .call_public::<_, MessageId>(&OWNER_SK, MAILBOX_ID, "dispatch", &args)
+        .expect("retry must succeed after the entire failed callback rolls back");
+    assert_eq!(s.mailbox_nonce(), 1);
+    assert_eq!(message::id(&s.mailbox_dispatched_message(0)), receipt.data);
+    assert_eq!(s.session.contract_balance(&MAILBOX_ID).unwrap(), 0);
+    assert_eq!(s.session.contract_balance(&REENTRANT_HOOK_ID).unwrap(), fee);
 }
 
 // =============================================================================
@@ -1277,6 +1488,159 @@ fn session_with_multisig_ism(
         .expect("Deploying MessageIdMultisigISM should succeed");
 
     session
+}
+
+// Real signatures exercise threshold counting separately from malformed-byte tests.
+fn checkpoint_signers() -> Vec<(EthAddress, SecpSecretKey)> {
+    let secp = Secp256k1::new();
+    let mut signers: Vec<_> = (1u8..=4)
+        .map(|index| {
+            let mut bytes = [0u8; 32];
+            bytes[31] = index;
+            let secret = SecpSecretKey::from_byte_array(bytes).unwrap();
+            let public =
+                secp256k1::PublicKey::from_secret_key(&secp, &secret).serialize_uncompressed();
+            let hash = message::keccak256(&public[1..]);
+            let address = EthAddress(hash[12..].try_into().unwrap());
+            (address, secret)
+        })
+        .collect();
+    signers.sort_by_key(|(address, _)| address.0);
+    signers
+}
+
+fn signed_checkpoint_metadata(message: &[u8], signers: &[&SecpSecretKey]) -> Vec<u8> {
+    let hook = [0x21; 32];
+    let root = [0x42; 32];
+    let index = 7u32;
+    let digest = hyperlane_dusk_types::checkpoint::checkpoint_digest(
+        message::origin(message),
+        &hook,
+        &root,
+        index,
+        &message::id(message),
+    );
+    let mut metadata = Vec::from(hook);
+    metadata.extend_from_slice(&root);
+    metadata.extend_from_slice(&index.to_be_bytes());
+    let secp = Secp256k1::new();
+    for signer in signers {
+        let signature = secp.sign_ecdsa_recoverable(SecpMessage::from_digest(digest), signer);
+        let (recovery, compact) = signature.serialize_compact();
+        metadata.extend_from_slice(&compact);
+        metadata.push(u8::try_from(i32::from(recovery)).unwrap() + 27);
+    }
+    metadata
+}
+
+#[test]
+fn test_multisig_ism_counts_distinct_enrolled_signers_in_order() {
+    let signers = checkpoint_signers();
+    let validators = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let valid = signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(valid, message.clone()))
+            .unwrap()
+            .data
+    );
+
+    for selected in [[0usize, 0], [2, 0], [0, 3]] {
+        let metadata = signed_checkpoint_metadata(
+            &message,
+            &[&signers[selected[0]].1, &signers[selected[1]].1],
+        );
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message.clone())),
+            "MultisigISM: insufficient valid signatures",
+        );
+    }
+    let one_signature = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    assert_contract_panic(
+        session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(one_signature, message)),
+        "MultisigISM: not enough signatures",
+    );
+}
+
+#[test]
+fn test_multisig_ism_signatures_bind_checkpoint_and_complete_message() {
+    let signers = checkpoint_signers();
+    let validators = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let metadata = signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(
+                ISM_MULTISIG_ID,
+                "verify",
+                &(metadata.clone(), message.clone())
+            )
+            .unwrap()
+            .data
+    );
+
+    // Hook, root, and index are each signed independently of the message.
+    for offset in [0, 32, 67] {
+        let mut changed = metadata.clone();
+        changed[offset] ^= 1;
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(changed, message.clone())),
+            "MultisigISM: insufficient valid signatures",
+        );
+    }
+    // Nonce, origin, sender, destination, recipient, and body are all bound.
+    for offset in [1, 5, 9, 41, 45, 77] {
+        let mut changed = message.clone();
+        changed[offset] ^= 1;
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata.clone(), changed)),
+            "MultisigISM: insufficient valid signatures",
+        );
+    }
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message))
+            .unwrap()
+            .data
+    );
+}
+
+#[test]
+fn test_multisig_ism_threshold_update_takes_effect_for_real_signatures() {
+    let signers = checkpoint_signers();
+    let validators: Vec<_> = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators.clone(), 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let two = signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(two.clone(), message.clone()))
+            .unwrap()
+            .data
+    );
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            ISM_MULTISIG_ID,
+            "set_validators_and_threshold",
+            &(validators, 3u8),
+        )
+        .unwrap();
+    assert_contract_panic(
+        session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(two, message.clone())),
+        "MultisigISM: not enough signatures",
+    );
+    let three =
+        signed_checkpoint_metadata(&message, &[&signers[0].1, &signers[1].1, &signers[2].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(three, message))
+            .unwrap()
+            .data
+    );
 }
 
 #[test]
@@ -2522,7 +2886,7 @@ fn test_igp_rejects_pricing_outside_executable_quote_domain() {
         ),
         (
             DomainGasConfig {
-                gas_overhead: u64::MAX,
+                gas_overhead: 0,
                 token_exchange_rate: u64::MAX,
                 gas_price: u64::MAX,
             },
@@ -5878,4 +6242,93 @@ fn test_warp_collateral_contract_claim_rejects_root_moonlight_caller() {
         result,
         "WarpCollateral: claim_pending_contract requires contract caller",
     );
+}
+
+#[test]
+fn test_igp_credits_the_overhead_in_paid_gas() {
+    let mut session = session_with_hooks_and_igp_config(vec![(
+        REMOTE_DOMAIN,
+        DomainGasConfig {
+            gas_overhead: 100_000,
+            token_exchange_rate: 10_000_000_000,
+            gas_price: 1,
+        },
+    )]);
+    let receipt = session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(
+                MAILBOX_ID,
+                REMOTE_DOMAIN,
+                [0xBBu8; 32],
+                b"paid gas includes overhead".to_vec(),
+            ),
+        )
+        .expect("funded dispatch should succeed");
+    let records = session
+        .direct_call::<_, Vec<GasPaymentRecord>>(IGP_ID, "gas_payments", &(0u32, 256u32))
+        .unwrap()
+        .data;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].message_id, receipt.data);
+    assert_eq!(records[0].payment, 150_000);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), 150_000);
+    assert_eq!(
+        records[0].gas_limit, 150_000,
+        "all quoted destination gas must be credited"
+    );
+    let event = receipt
+        .events
+        .iter()
+        .find(|event| event.source == IGP_ID && event.topic == events::GasPayment::TOPIC)
+        .expect("authenticated payment must emit its gas credit");
+    let decoded = HyperlaneDataDriver
+        .decode_event(&event.topic, &event.data)
+        .unwrap();
+    assert_eq!(decoded["gas_limit"].as_u64(), Some(150_000));
+    assert_eq!(decoded["payment"].as_u64(), Some(150_000));
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_domain_gas_config",
+            &(
+                REMOTE_DOMAIN,
+                DomainGasConfig {
+                    gas_overhead: 0,
+                    token_exchange_rate: 10_000_000_000,
+                    gas_price: 1,
+                },
+            ),
+        )
+        .unwrap();
+    let historical = session
+        .direct_call::<_, GasPaymentRecord>(IGP_ID, "gas_payment_at", &(0u32,))
+        .unwrap()
+        .data;
+    assert_eq!(
+        historical.gas_limit, 150_000,
+        "later oracle settings cannot change historical paid gas"
+    );
+}
+
+#[test]
+fn test_igp_rejects_config_with_unrepresentable_adjusted_gas() {
+    let mut session = session_with_hooks_and_igp_config(vec![]);
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        IGP_ID,
+        "set_domain_gas_config",
+        &(
+            REMOTE_DOMAIN,
+            DomainGasConfig {
+                gas_overhead: u64::MAX,
+                token_exchange_rate: 1,
+                gas_price: 1,
+            },
+        ),
+    );
+    assert_contract_panic(result, "IGP: configured adjusted gas exceeds u64");
 }

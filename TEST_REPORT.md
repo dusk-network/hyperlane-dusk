@@ -1,7 +1,7 @@
 # Dusk Hyperlane Test Report
 
 Date: 2026-05-11
-Last updated: 2026-07-21
+Last updated: 2026-10-01
 
 This report captures the current local verification for the revived Dusk
 Hyperlane branches. It is not a production-readiness sign-off; the remaining
@@ -11,6 +11,165 @@ Sections below the newest candidate section are retained as chronological
 regression history. Any older heading containing “Final” or “Current” applies
 only to the commit named in that section and is not release evidence for a
 newer candidate.
+
+## 2026-10-01 Mac mini invariant verification
+
+This run checks the Dusk contracts, agent integration, helper, SDK, and local
+service lifecycle on an isolated ARM64 Mac mini with local Rusk and Anvil.
+The reviewed changes are in [Dusk PR #11](https://github.com/dusk-network/hyperlane-dusk/pull/11)
+and [agent PR #4](https://github.com/dusk-network/hyperlane-monorepo/pull/4).
+
+### Source and execution identity
+
+| Evidence | Dusk source | Agent source |
+|---|---|---|
+| Both verification modes and the first four fault scenarios | `31a639afaa01967ceacd5ceced7856edae71e353` | `8278ade9bd685e07d1bff6a66855876869a26699` |
+| Corrected RPC faults, duplicate relayers, restart, soak, SDK, and static checks | `68423d6e87c017dfb5898c5d760526620547e4df` | `8278ade9bd685e07d1bff6a66855876869a26699` |
+| Final live MessageIdMultisig and SDK run after the agent review fix | `68423d6e87c017dfb5898c5d760526620547e4df` | `53aae67bea4493984e0052ca757796f158cc336e` |
+
+All runs use frozen Rusk `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` and its
+pinned contract submodule. Production contract WASM hashes are identical
+between the two Dusk source anchors; the later test-only callback fixture is
+recorded separately. The manifests include clean checkout status and WASM
+hashes; the last live manifest also includes agent binary hashes. Subsequent
+report/changelog edits do not change those tested runtime sources.
+
+The agent source includes the completed upstream sync through Hyperlane
+`0ba2eb34de748d2b2ae31bdcadb5fb0267e9a7ee`. Builds use Dusk nightly
+`nightly-2026-02-27`, agent Rust 1.88.0, Rusk Rust 1.94.1, Foundry 1.8.3,
+Node 22.22.0, and wasm-bindgen 0.2.108. Full versions and environment flags are
+in `logs/tool-versions.log` and `env.sh` in the evidence archive.
+
+### Confirmed fixes and regressions
+
+| Issue | Fix and evidence |
+|---|---|
+| Recipient ISM lookup could recursively process the same message twice | Reserve delivery before every recipient/ISM callback. The original VM regression observed two handler calls; the fix proves one handler, processed index and ProcessId event, plus rollback and successful retry after rejected verification. |
+| SDK queries did not match the live RUES/contract ABI | Use binary method endpoints, decode String/u8 correctly, preserve typed-array slices, and align generated binding declarations. The original build/query failures and passing real-WASM/live-query tests are retained. |
+| JavaScript/WASM numeric coercion silently wrapped invalid values | Validate before converting JS values to u8/u32/u64, require exact 32-byte addresses, return u64 values as bigint, and encode JSON token amounts as decimal strings. The original negative-bigint test fails; zero/max/invalid-input cases pass after the fix. |
+| Mac teardown missed owned Rusk processes and could affect external explorer state | Match exact process arguments/state paths, record owned process groups, and restore only the configuration backup recorded by the current run. Seven isolated process/file tests cover external services, stale wrapper PIDs, spaces in paths, and configuration ownership. |
+| RPC fault defaults collided with customized healthy ports | Use a non-listening port-zero default and reject identical healthy/fault URLs before deployment. Both corrected outage/recovery scenarios pass. |
+| Dusk checkpoint reads ignored the configured block delay | Apply the earlier of consensus finality and the delayed tip for counts, tree reconstruction and checkpoints; reject unsupported tags. Both public-adapter regressions fail before the fix and pass on Mac and Linux afterward. |
+
+The VM suite also gains real two-of-three signature tests for distinct enrolled
+signers, signer order, checkpoint/message field binding, insufficient
+quorum, and threshold updates. Dispatch callback tests cover quote,
+post-dispatch and payment reentry, custody, nonce ordering, rollback and guard
+release. Restart runs now assert their final balances and supply instead of
+only printing them. Consumer-visible SDK changes are recorded in
+`ts-sdk/CHANGELOG.md` and `demo/README.md`.
+
+### Invariant coverage
+
+| Invariant | Inspected boundary and verification |
+|---|---|
+| Exactly one delivery per message ID | `Mailbox.process` reserves the ID before recipient ISM lookup, ISM verification, or handling; VM replay callback checks one handler invocation, one processed index, and one ProcessId event. |
+| Rejected processing is retryable | VM failure leaves delivered=false, processed count zero, and recipient untouched; a later valid verification delivers once. |
+| Dispatch ordering survives callbacks | Quote, post-dispatch, and payment callbacks cannot recursively reserve a second nonce; VM checks nonce/message/event ordering, payment custody, guard release, and rollback after failed post-dispatch. |
+| Message and checkpoint identity | Version/destination/router checks and real multisig signatures bind the checkpoint hook/root/index and every message field; insufficient, repeated, out-of-order, or unenrolled signers fail. |
+| Threshold and administrative authority | Owner-only updates, initialization rejection, and a real-signature threshold change from two to three are exercised in the VM. |
+| Synthetic conservation | Live EVM burn/Dusk mint and Dusk burn/EVM mint preserve combined supply; restart rounds must restore the original EVM balance and Dusk supply. |
+| Native and token backing | Live wrapped supply equals exact escrow custody; VM covers native DUSK, canonical upstream DRC20 allowances, contract/account claim authentication, pending-liability priority, and insufficient backing. |
+| Dispatch credit and fee solvency | VM checks caller-owned, value-backed credit, exact per-dispatch fee contribution, withdrawal rollback and multiple payers; live owner withdrawal and protocol-fee totals are checked before/after all three routes. |
+| SDK wire and numeric fidelity | Generated WASM/TypeScript declarations, binary RUES requests, typed-array slices, String/u8 decoding, exact u64 outputs, and rejection before JS/WASM integer coercion; live queries cover all three routes. |
+| Failed dependencies cannot create delivery | Live delayed validator, corrupted checkpoint, unfunded signer, origin/destination outage, duplicate relayer and restart scenarios check failure plus recovery. |
+| Persistence and finality | Adapter tests cover row-owned event provenance, durable cache reopening, cursor rollback and topic isolation; validator tests cover checkpoint quorum and durable reorg halts. Live tests exercise ordinary restarts, not a multi-node consensus fork. |
+| Operator checkpoint delay | Configured numeric delay is applied in addition to the consensus-finality ceiling; public-adapter HTTP tests prove longer/shorter delays, genesis saturation, and explicit rejection of unsupported tags. Both tests fail on the original code and pass after the fix. |
+| Transaction uncertainty retains identity | Helper timeout and observation-error tests retain the prepared transaction hash for exact-hash reconciliation; bounded output/body handling and chain/domain identity validation were traced through the callers. |
+| Teardown owns its resources | Isolated process/file tests ensure only the recorded group or exact Rusk state is stopped, external processes/config remain intact, and only this run's explorer backup is restored. |
+
+### Results
+
+| Check | Result |
+|---|---|
+| TestMock and MessageIdMultisig, all three routes in both directions | Passed |
+| Eight fault/recovery scenarios | Passed |
+| Restart soak: three deployments, 20 transfers each direction per cycle | 120 transfers passed; original balances/supply restored each cycle |
+| Contract build and lint | 13 contract WASMs, pinned canonical DRC20 fixture, production-contract clippy passed |
+| Dusk types and canonical DRC20 ABI | 29 + 3 tests passed |
+| Dusk VM integration | 132 tests passed |
+| Transaction helper and data driver | 26 + 8 tests passed |
+| SDK | 4 real-WASM Node tests, 2 native binding tests, TypeScript declaration compatibility, and live queries passed |
+| Local lifecycle | 7 isolated process/file tests passed |
+| Dusk adapter | 32 unit tests and 2 new public-adapter checkpoint regressions passed |
+| Agent settings | 10 Dusk-specific and 16 parser tests passed |
+| Validator | 167 tests passed |
+| Agent compilation | Dusk, base, validator, relayer, scraper and lander passed |
+| Final agent integration | Fresh MessageIdMultisig and live SDK run passed at agent `53aae67be` |
+| Final resource/identity audit | No owned process, listener, generated agent directory or PID file remains; source, binary and WASM hashes unchanged |
+
+The final 17-stage driver completed successfully at 17:48:05 UTC; the final
+agent build/live driver completed at 18:00:45 UTC. The additional checkpoint
+regressions also passed in Linux hosted CI. Required checks passed at both
+runtime code commits. An optional production-readiness attempt at Dusk
+`68423d6` stopped on GitHub's API quota (HTTP 403); it did not assess the release
+decision gates. Final report-only commit checks are read separately on GitHub.
+
+Each soak cycle logged one handled EVM `nonce too low` incident, repeated at
+several middleware layers. The nonce manager explicitly resynchronized from
+47 to 48 and retried; each complete cycle then restored its exact original
+balances. These messages are preserved in the three `restart-stress-relayer-b`
+logs listed by `artifact-audit.json`. This run does not claim error-free logs;
+no Dusk delivery or conservation failure resulted from those retries.
+
+The live route checks cover synthetic burn/mint in both directions, native DUSK
+lock/release, token collateral lock/release, owner-only dispatch-credit
+withdrawal, exact protocol-fee totals, and combined supply/custody conservation.
+The final live SDK check reads all supported query methods from the deployed
+routes and preserves the exact large token supply.
+
+The eight fault scenarios are dirty redeployment, delayed validator,
+corrupted checkpoint, unfunded Dusk signer, origin RPC outage, destination RPC
+outage, duplicate relayers, and relayer restart/backlog recovery. The synthetic-route soak uses
+three fresh deployments and 20 transfers per direction per cycle: 120 transfers
+in total, with exact restoration of the initial EVM balance and Dusk supply.
+
+The evidence retains negative and superseded runs explicitly. The first full
+driver stopped at its old origin-RPC port collision; only its five completed
+passing stages are reused. The earlier baseline interrupted by editing its
+running script is not passing evidence. The corrected resumed driver and the
+final agent integration run each completed from frozen source trees.
+
+### Final review and evidence limits
+
+The final author-side bug review traced the changed code through its callers
+and the invariants above after the completed E2E/static checks. The confirmed
+Dusk-specific defects were fixed and reproduced with regressions; no additional
+confirmed in-scope defect remains in this pass. The review includes ownership
+and rollback boundaries, fee/credit solvency, pending liabilities, message and
+checkpoint identity, SDK ABI/numeric fidelity, exact-hash transaction
+reconciliation, event persistence, and operator checkpoint delay. It is an
+author self-review, not independent approval.
+
+The final audit found no test process or listener on the configured service,
+metrics, or Rusk UDP ports, no generated signer/config agent directory, and no
+bridge PID file. All five unrelated containers remained running with their
+August start times. The archive scan checked 162 logs and found no known
+development private-key value. The final agent binaries and all shared WASM
+files match their recorded manifests. The final manifest additionally includes
+the canonical DRC20 VM fixture built by the static suite.
+
+This is local correctness evidence, not a production release decision or a
+proof over every input and scheduling interleaving. Live MessageIdMultisig
+uses one validator; multi-validator thresholds use real signatures in the
+Dusk VM. Canonical upstream DRC20 allowance/custody is tested in the VM; live
+collateral wraps this repository's synthetic token. Live gas-payment
+enforcement is disabled, with fee accounting checked separately. Finality,
+quorum failures and durable reorg halts have adapter/validator coverage; this
+run does not create a multi-node consensus fork. SDK queries run live;
+propagation transport uses an HTTP fixture plus the live Rust transaction
+helper, without claiming a JavaScript signing implementation.
+
+Durable Mac evidence archive:
+`/Users/hdauven/hyperlane-review-20261001/dusk-invariant-evidence-20261001.tgz`
+SHA-256: `c68daa77e3a66a2531c07bcb1701878c53d7f013341f26774227a4d4a4651b4b`.
+
+The archive contains command logs, source/binary/WASM manifests, patches,
+negative reproductions, the invariant-to-test map, hosted validation evidence,
+and the final resource audit. Signer files, environment secrets, Anvil's
+startup key listing, node state, and build caches are excluded. The local
+report-hygiene command uses this archive path/hash explicitly because its
+historical default points to a different machine.
 
 ## 2026-07-21 Mailbox Reentrancy Remediation Candidate
 

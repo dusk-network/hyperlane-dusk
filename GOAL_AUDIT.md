@@ -1,13 +1,59 @@
 # Dusk Hyperlane Revival Goal Audit
 
 Date: 2026-05-14
+Last updated: 2026-10-01
 
 This audit maps the original revival/hardening goal to concrete artifacts and
 current gates. It is intentionally not a production-readiness sign-off. Items
 marked `Gated` need Dusk reviewer acceptance or additional release evidence
 before upstream submission or production claims.
 
-## Completion Audit Summary
+## 2026-10-01 Mac mini verification and review
+
+The current task covers correctness invariants in the Dusk contracts, helper,
+SDK, Hyperlane agent integration, and local service lifecycle. The complete
+invariant map, exact commands/results, source anchors, negative reproductions,
+and evidence limits are in the newest section of [TEST_REPORT.md](TEST_REPORT.md).
+
+The earlier Dusk PRs [#1](https://github.com/dusk-network/hyperlane-dusk/pull/1),
+[#3](https://github.com/dusk-network/hyperlane-dusk/pull/3), and
+[#10](https://github.com/dusk-network/hyperlane-dusk/pull/10) are merged.
+Agent integration [#1](https://github.com/dusk-network/hyperlane-monorepo/pull/1)
+and the latest upstream sync
+[#3](https://github.com/dusk-network/hyperlane-monorepo/pull/3) are also merged.
+The synced agent base is `8278ade9bd685e07d1bff6a66855876869a26699`, containing
+Hyperlane upstream `0ba2eb34de748d2b2ae31bdcadb5fb0267e9a7ee` as checked on
+October 1. No upstream Hyperlane PR is part of this task.
+
+| Component | Reviewed code | Current artifact |
+|---|---|---|
+| Dusk contracts, SDK, and lifecycle | `68423d6e87c017dfb5898c5d760526620547e4df` | [Dusk PR #11](https://github.com/dusk-network/hyperlane-dusk/pull/11) |
+| Checkpoint block-delay correction | `53aae67bea4493984e0052ca757796f158cc336e` | [Agent PR #4](https://github.com/dusk-network/hyperlane-monorepo/pull/4) |
+| Frozen Rusk and pinned contracts | `5c6a0bab11c61fb4c81275afdeceb97fb942d85e` | Used by all October local runs |
+
+The local verification is complete: both ISM modes, all three routes, eight
+fault/recovery scenarios, the 120-transfer restart soak, 132 VM tests, SDK/helper/
+ABI/lifecycle checks, and the full 167-test validator suite passed. A fresh final
+live run passed with both reviewed code commits above. Final source/binary/WASM
+identity and teardown audits passed, and the final author-side review found no
+remaining confirmed in-scope bug. Live/test-fixture boundaries and handled EVM
+nonce retries are explicitly documented in the report.
+
+The two follow-up PRs contain the defects found during this run and review.
+Documentation added afterward does not alter the tested runtime code. Exact
+code-commit required CI results are retained with the local evidence; moving
+PR status is read from GitHub. Production release decisions remain a separate
+scope from this local correctness verification.
+
+Durable Mac evidence archive:
+`/Users/hdauven/hyperlane-review-20261001/dusk-invariant-evidence-20261001.tgz`
+SHA-256: `c68daa77e3a66a2531c07bcb1701878c53d7f013341f26774227a4d4a4651b4b`.
+
+Everything below is retained historical audit material. Its old open-PR,
+credential-provisioning, branch, and CI statements describe their recorded
+May/July candidates, not the current October state above.
+
+## Historical May Completion Audit Summary
 
 Objective restated as concrete success criteria:
 
@@ -28,7 +74,7 @@ not complete because internal Dusk review, production signer/CI policy, CI
 runner strategy, and soak acceptance are still open in
 `dusk-network/hyperlane-dusk#2` and split decision issues #4 through #9.
 
-## Branches And Evidence Commits
+## Historical May Branches And Evidence Commits
 
 | Component | Branch | Evidence | State |
 |---|---|---|---|

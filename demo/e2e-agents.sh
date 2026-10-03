@@ -82,6 +82,12 @@ require_tools() {
     command -v cast >/dev/null 2>&1 || fail "cast not found (foundry)"
     command -v forge >/dev/null 2>&1 || fail "forge not found (foundry)"
     command -v python3 >/dev/null 2>&1 || fail "python3 not found"
+    if [ "${E2E_SDK_CHECK:-false}" = "true" ]; then
+        command -v node >/dev/null 2>&1 || fail "node not found"
+        [ -f "$SCRIPT_DIR/../ts-sdk/dist/index.js" ] && \
+          [ -f "$SCRIPT_DIR/../wasm-bindings/pkg/hyperlane_dusk_wasm_bindings.js" ] \
+          || fail "Run make test-sdk before enabling E2E_SDK_CHECK"
+    fi
 }
 
 kill_pid() {
@@ -372,6 +378,9 @@ PY
     amount_to_evm_wei="$(to_wei "$AMOUNT_TO_EVM")"
     local evm_balance_mid
     evm_balance_mid="$(cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    local expected_evm_after_burn
+    expected_evm_after_burn="$(python3 -c 'import sys; print(int(sys.argv[1]) - int(sys.argv[2]))' "$evm_balance_before" "$amount_to_dusk_wei")"
+    [ "$evm_balance_mid" = "$expected_evm_after_burn" ] || fail "EVM synthetic burn mismatch"
     local protocol_collected_before protocol_fee_per_dispatch
     protocol_collected_before="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
     protocol_fee_per_dispatch="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method protocol_fee --return-type u64 2>/dev/null | jq -r '.value')"
@@ -537,11 +546,35 @@ PY
     collateral_locked_after="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
       --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
     [ "$collateral_locked_after" = "$((collateral_locked_before + collateral_send - collateral_return))" ] || fail "DRC20 custody mismatch after unlock"
-    info "Collateral route round trip delivered with exact allowance and custody changes."
+    info "Collateral route round trip delivered with exact token custody."
 
     protocol_collected_after="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_protocol_fee" --method collected_fees --return-type u64 2>/dev/null | jq -r '.value')"
     expected_protocol_collected="$((protocol_collected_before + 3 * protocol_fee_per_dispatch))"
     [ "$protocol_collected_after" = "$expected_protocol_collected" ] || fail "three-route protocol fee mismatch"
+
+    # Cross-chain conservation after every queued route has settled. Python
+    # keeps u64/u256 amounts exact above bash's signed 64-bit arithmetic range.
+    local final_dusk_supply final_evm_supply native_evm_supply collateral_evm_supply
+    final_dusk_supply="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_warp" --method total_supply --return-type u64 2>/dev/null | jq -r '.value')"
+    final_evm_supply="$(cast call "$evm_token" "totalSupply()(uint256)" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    native_evm_supply="$(cast call "$evm_native_token" "totalSupply()(uint256)" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    collateral_evm_supply="$(cast call "$evm_collateral_token" "totalSupply()(uint256)" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
+    python3 - "$final_dusk_supply" "$final_evm_supply" "$dusk_supply_before" "$INITIAL_SUPPLY" <<'PY_CHECK'
+import sys
+actual_dusk, actual_evm, initial_dusk, initial_evm = map(int, sys.argv[1:])
+assert actual_dusk + actual_evm == initial_dusk + initial_evm, "synthetic cross-chain supply changed"
+PY_CHECK
+    [ "$native_evm_supply" = "$native_locked" ] || fail "native wrapped supply is not exactly backed by DUSK custody"
+    [ "$collateral_evm_supply" = "$collateral_locked_after" ] || fail "collateral wrapped supply is not exactly backed by DRC20 custody"
+    info "All three routes conserve supply and collateral across chains."
+
+    if [ "${E2E_SDK_CHECK:-false}" = "true" ]; then
+        info "Checking the TypeScript SDK against the completed live routes..."
+        DUSK_RUES_URL="$DUSK_RUES_URL" BRIDGE_STATE_FILE="$BRIDGE_STATE_FILE" \
+          TOKEN_NAME="$TOKEN_NAME" TOKEN_DECIMALS="$TOKEN_DECIMALS" \
+          EXPECTED_DUSK_SUPPLY="$(python3 -c 'import sys; print(int(sys.argv[1]) + int(sys.argv[2]) - int(sys.argv[3]))' "$dusk_supply_before" "$amount_to_dusk_wei" "$amount_to_evm_wei")" \
+          node "$SCRIPT_DIR/../ts-sdk/tests/live.mjs"
+    fi
 
     # Cleanup agents + env.
     info "Stopping agents..."

@@ -140,6 +140,8 @@ elif ! command -v npm &>/dev/null; then
 elif [ ! -d "$EXPLORER_DIR/src/lib/assets" ]; then
     warn "Dusk Explorer assets not found at $EXPLORER_DIR/src/lib/assets — skipping"
     SKIP_DUSK_EXPLORER=true
+elif port_in_use "$DUSK_EXPLORER_PORT"; then
+    fail "Dusk Explorer port $DUSK_EXPLORER_PORT is already in use"
 else
     SKIP_DUSK_EXPLORER=false
     info "Ensuring data-driver WASM is current..."
@@ -170,8 +172,14 @@ ok "Foundry tools: anvil, forge, cast"
 command -v jq &>/dev/null || fail "jq not found. Install: sudo apt-get install jq"
 ok "jq available"
 
+# Python provides exact process-argument matching on macOS and Linux.
+command -v python3 &>/dev/null || fail "python3 is required for service lifecycle management"
+if [ "$SKIP_DUSK_EXPLORER" = false ] && port_in_use "$DUSK_EXPLORER_PORT"; then
+    fail "Dusk Explorer port $DUSK_EXPLORER_PORT is already in use"
+fi
+
 # Initialize PID file
-> "$PID_FILE"
+: > "$PID_FILE"
 
 # ── Start Rusk ───────────────────────────────────────────────────────────────
 
@@ -285,9 +293,16 @@ else
     if [ ! -d "$EXPLORER_DIR" ]; then
         warn "Dusk Explorer not found at $EXPLORER_DIR — skipping"
     else
+        if port_in_use "$DUSK_EXPLORER_PORT"; then
+            fail "Dusk Explorer port $DUSK_EXPLORER_PORT is already in use"
+        fi
         # Back up existing .env and write our config
         if [ -f "$EXPLORER_DIR/.env" ]; then
-            cp "$EXPLORER_DIR/.env" "$EXPLORER_DIR/.env.backup.$(date +%s)"
+            EXPLORER_ENV_BACKUP="$(mktemp "$EXPLORER_DIR/.env.backup.XXXXXXXX")"
+            cp "$EXPLORER_DIR/.env" "$EXPLORER_ENV_BACKUP"
+            printf 'dusk-explorer-env:backup:%s\n' "$EXPLORER_ENV_BACKUP" >> "$PID_FILE"
+        else
+            printf 'dusk-explorer-env:created:%s\n' "$EXPLORER_DIR/.env" >> "$PID_FILE"
         fi
         cat > "$EXPLORER_DIR/.env" <<'ENVEOF'
 VITE_RUSK_PATH="/rusk"
@@ -307,19 +322,26 @@ ENVEOF
             (cd "$EXPLORER_DIR" && npm install) || warn "npm install failed"
         fi
 
-        # Kill any existing process on our port
+        # A busy port belongs to its existing service; do not take it over.
         if port_in_use "$DUSK_EXPLORER_PORT"; then
-            info "Port $DUSK_EXPLORER_PORT in use — killing existing process..."
-            fuser -k "${DUSK_EXPLORER_PORT}/tcp" 2>/dev/null || true
-            sleep 1
+            fail "Dusk Explorer port $DUSK_EXPLORER_PORT is already in use"
         fi
 
-        # Start dev server with --strictPort (fail if port taken instead of silently switching)
-        # Use npx vite dev directly to avoid npm subshell PID issues
-        # --host binds to 0.0.0.0 (needed for WSL2 access from Windows browser)
-        (cd "$EXPLORER_DIR" && npx vite dev --port "$DUSK_EXPLORER_PORT" --strictPort --host > /tmp/dusk-explorer.log 2>&1) &
-        EXPLORER_PID=$!
-        record_pid "dusk-explorer" "$EXPLORER_PID"
+        # Give the owned server and its children a dedicated process group.
+        # stdout goes to a file so command substitution does not wait for it.
+        EXPLORER_PID="$(cd "$EXPLORER_DIR" && python3 - "$DUSK_EXPLORER_PORT" <<'PY_SERVICE'
+import subprocess
+import sys
+with open("/tmp/dusk-explorer.log", "wb") as log:
+    process = subprocess.Popen(
+        ["npx", "vite", "dev", "--port", sys.argv[1], "--strictPort", "--host"],
+        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+print(process.pid)
+PY_SERVICE
+)"
+        printf 'dusk-explorer:group:%s\n' "$EXPLORER_PID" >> "$PID_FILE"
 
         # Wait for the dev server to become reachable
         info "Waiting for Dusk Explorer..."

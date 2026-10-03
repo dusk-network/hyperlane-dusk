@@ -3,6 +3,7 @@
 // Hyperlane Dusk TypeScript SDK — main entry point.
 
 export { RuesClient } from "./rues-client.js";
+export type { RuesClientOptions, RuesRequestOptions } from "./rues-client.js";
 export { DuskMailbox } from "./mailbox.js";
 export type { WasmBindings } from "./mailbox.js";
 export {

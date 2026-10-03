@@ -455,10 +455,6 @@ mod mailbox {
                 "Mailbox: already delivered"
             );
 
-            // Resolve the recipient's ISM, falling back to default.
-            let recipient_id = ContractId::from_bytes(msg.recipient);
-            let ism = self.resolve_recipient_ism(recipient_id);
-
             // Track delivery order for off-chain indexing.
             let block_height = abi::block_height();
             self.processed_ids.push(id);
@@ -480,6 +476,12 @@ mod mailbox {
                 events::ProcessId::TOPIC,
                 events::ProcessId { message_id: id },
             );
+
+            // Recipient ISM resolution is itself an external call and can
+            // reenter process. Reserve delivery before this lookup as well
+            // as verification and handling; failed calls roll it all back.
+            let recipient_id = ContractId::from_bytes(msg.recipient);
+            let ism = self.resolve_recipient_ism(recipient_id);
 
             // Verify via ISM
             let verified: bool = abi::call(ism, "verify", &(metadata, encoded_message))
