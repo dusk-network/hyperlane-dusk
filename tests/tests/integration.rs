@@ -1507,8 +1507,13 @@ fn session_with_multisig_ism(
 
 // Real signatures exercise threshold counting separately from malformed-byte tests.
 fn checkpoint_signers() -> Vec<(EthAddress, SecpSecretKey)> {
+    checkpoint_signer_set(4)
+}
+
+/// `count` validator keys, sorted by address as the ISM requires.
+fn checkpoint_signer_set(count: u8) -> Vec<(EthAddress, SecpSecretKey)> {
     let secp = Secp256k1::new();
-    let mut signers: Vec<_> = (1u8..=4)
+    let mut signers: Vec<_> = (1u8..=count)
         .map(|index| {
             let mut bytes = [0u8; 32];
             bytes[31] = index;
@@ -7886,6 +7891,79 @@ fn test_warp_drc20_forged_key_cannot_redirect_registered_account() {
 #[test]
 fn test_warp_collateral_forged_key_cannot_redirect_registered_account() {
     assert_forged_key_cannot_redirect_registered_account(Route::Collateral);
+}
+
+// =============================================================================
+// Relayer gas limit
+// =============================================================================
+
+/// The relayer submits `process` with a fixed gas limit, and a failed Dusk
+/// transaction pays all of it, for example when someone else delivered the
+/// message first. So the limit is kept low: `DUSK_RELAYER_GAS_LIMIT`, 5M in
+/// `deploy/testnet.env.example` and `demo/gen-agent-configs.sh`. Below the
+/// real cost every delivery would run out of gas, which the relayer's
+/// simulation can't see. A relayed transfer must fit with 1.5x headroom at
+/// every threshold the demo runs (1 to 5), signed by the validators at the
+/// end of the list. It costs about 1.95M gas plus 0.22M per signature,
+/// the estimate `deploy/testnet.sh` checks the limit against.
+#[test]
+fn test_relayed_process_fits_the_relayer_gas_limit() {
+    const RELAYER_GAS_LIMIT: u64 = 5_000_000;
+    let signers = checkpoint_signer_set(5);
+    let validators: Vec<EthAddress> = signers.iter().map(|(address, _)| *address).collect();
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    session
+        .deploy(
+            ISM_MULTISIG_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(*OWNER_ID, validators.clone(), 1u8))
+                .contract_id(ISM_MULTISIG_ID),
+        )
+        .expect("Deploying MessageIdMultisigISM should succeed");
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "set_default_ism",
+            &(ISM_MULTISIG_ID,),
+        )
+        .expect("the owner sets the default ISM");
+    let amount = 1_000u64;
+    fund_warp_native(&mut session, 20 * amount);
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
+        .expect("register_account should succeed");
+
+    let mut nonce = 0u32;
+    for threshold in 1u8..=5 {
+        session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                ISM_MULTISIG_ID,
+                "set_validators_and_threshold",
+                &(validators.clone(), threshold),
+            )
+            .expect("the owner sets the threshold");
+        let signing: Vec<&SecpSecretKey> = signers[signers.len() - usize::from(threshold)..]
+            .iter()
+            .map(|(_, key)| key)
+            .collect();
+        // A payout to a registered account and a new escrow entry.
+        for recipient in [*OWNER_ID, [0x70 + threshold; 32]] {
+            let inbound = inbound_transfer(WARP_NATIVE_ID, remote_router, nonce, recipient, amount);
+            nonce += 1;
+            let metadata = signed_checkpoint_metadata(&inbound, &signing);
+            let receipt = session
+                .call_public::<_, ()>(&RELAYER_SK, MAILBOX_ID, "process", &(metadata, inbound))
+                .expect("a relayed transfer should be delivered");
+            assert!(
+                receipt.gas_spent * 3 / 2 <= RELAYER_GAS_LIMIT,
+                "threshold {threshold}: process took {} gas, too close to {RELAYER_GAS_LIMIT}",
+                receipt.gas_spent
+            );
+        }
+    }
 }
 
 /// A recipient without `interchain_security_module` gets the default ISM.

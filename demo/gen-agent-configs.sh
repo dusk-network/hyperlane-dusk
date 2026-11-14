@@ -157,6 +157,11 @@ fi
 
 # Gas settings for Dusk tx submission (passed through to dusk-tx). Calls
 # only need a gas price above zero; 2000 is the minimum for deploys only.
+# The relayer's `process` costs about 1.95M gas plus 0.22M per validator
+# signature, so 5M covers the e2e thresholds (up to 5). A failed transaction
+# pays its whole limit, for example when a message was already delivered, so
+# the relayer's limit stays low. The validators' covers their announcement.
+DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
 DUSK_GAS_LIMIT="${DUSK_GAS_LIMIT:-30000000}"
 DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-1}"
 
@@ -274,7 +279,7 @@ cat > "$RELAYER_CONFIG" <<JSON
       "eventCursorDir": "${DUSK_RELAYER_EVENT_CURSOR_DIR}",
       "protocol": "dusk",
       "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
-      "gasLimit": ${DUSK_GAS_LIMIT},
+      "gasLimit": ${DUSK_RELAYER_GAS_LIMIT},
       "gasPrice": ${DUSK_GAS_PRICE},
       "mailbox": "0x${DUSK_MAILBOX}",
       "interchainGasPaymaster": "0x${DUSK_IGP}",

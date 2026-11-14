@@ -32,6 +32,7 @@ source "$ENV_FILE"
 DUSK_TX="${DUSK_TX:-$DUSK_DIR/target/release/dusk-tx}"
 AGENT_STATE_DIR="${AGENT_STATE_DIR:-/var/lib/hyperlane}"
 DUSK_SIGNER_KEY_FILE="${DUSK_SIGNER_KEY_FILE:-/run/secrets/dusk-signer.key}"
+DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
 WASM_DIR="${WASM_DIR:-$DUSK_DIR/target/contract/wasm32-unknown-unknown/release}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
 STATE="$OUT_DIR/deployment.json"
@@ -180,6 +181,17 @@ preflight_keys() {
     n="$(tr ',' '\n' <<<"$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")" | grep -c .)"
     [ "$EVM_ORIGIN_THRESHOLD" -ge 1 ] && [ "$EVM_ORIGIN_THRESHOLD" -le "$n" ] \
         || fail "EVM_ORIGIN_THRESHOLD must be between 1 and the $n EVM-origin validators"
+    check_relayer_gas_limit
+}
+
+# A relayed `process` costs about 1.95M gas plus 0.22M per signature the
+# Dusk ISM checks (test_relayed_process_fits_the_relayer_gas_limit). Below
+# that every delivery runs out of gas and pays the whole limit, which the
+# relayer's simulation can't catch, so insist on 1.5 times the cost.
+check_relayer_gas_limit() {
+    local need=$(((1950000 + 220000 * EVM_ORIGIN_THRESHOLD) * 3 / 2))
+    [ "$DUSK_RELAYER_GAS_LIMIT" -ge "$need" ] \
+        || fail "DUSK_RELAYER_GAS_LIMIT is $DUSK_RELAYER_GAS_LIMIT; with EVM_ORIGIN_THRESHOLD $EVM_ORIGIN_THRESHOLD it must be at least $need"
 }
 
 cmd_preflight() {
@@ -324,10 +336,10 @@ cmd_deploy() {
 # ── Agent configs ────────────────────────────────────────────────────────────
 
 dusk_chain_json() {
-    local cursor_dir="$1"
+    local cursor_dir="$1" gas_limit="$2"
     jq -n --arg url "$DUSK_RUES_URL" --argjson domain "$DUSK_DOMAIN" \
         --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --arg cursors "$cursor_dir" \
-        --argjson gl "$DUSK_AGENT_GAS_LIMIT" --argjson gp "$DUSK_AGENT_GAS_PRICE" \
+        --argjson gl "$gas_limit" --argjson gp "$DUSK_AGENT_GAS_PRICE" \
         --arg key_file "$DUSK_SIGNER_KEY_FILE" --slurpfile s "$STATE" '{
           name: "dusk", protocol: "dusk", domainId: $domain, chainId: $chain,
           rpcUrls: [{http: $url}], eventCursorDir: $cursors,
@@ -343,6 +355,7 @@ dusk_chain_json() {
 
 cmd_agent_configs() {
     [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
+    check_relayer_gas_limit
     local evm_chain token route
     token="$(state_get '.evm.token')"
     route="$(state_get '.dusk.warp_native')"
@@ -363,7 +376,7 @@ cmd_agent_configs() {
     # The relayer only relays this deployment's route, in both directions, and
     # does not require gas payments (the IGPs are not priced for production).
     jq -n --arg evm "$EVM_CHAIN_NAME" --argjson evm_chain "$evm_chain" \
-        --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/relayer-dusk-events")" \
+        --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/relayer-dusk-events" "$DUSK_RELAYER_GAS_LIMIT")" \
         --argjson ed "$EVM_DOMAIN" --argjson dd "$DUSK_DOMAIN" \
         --arg token "0x$(pad32 "$token")" --arg route "0x$route" --arg db "$AGENT_STATE_DIR/relayer-db" '{
           db: $db,
@@ -379,7 +392,7 @@ cmd_agent_configs() {
 
     # One Dusk-origin validator. Each validator operator copies this, sets its
     # own signing key and checkpoint bucket, and runs it on its own host.
-    jq -n --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/validator-dusk-events")" \
+    jq -n --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/validator-dusk-events" "$DUSK_AGENT_GAS_LIMIT")" \
         --arg db "$AGENT_STATE_DIR/validator-db" '{
           db: $db,
           originChainName: "dusk",

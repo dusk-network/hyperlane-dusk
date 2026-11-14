@@ -46,7 +46,7 @@ payments, and relays only this deployment's routes.
 |---|---|---|---|
 | Deployer | Dusk testnet | about 400 DUSK | Contract deploys, about 220 DUSK (a local rehearsal spent 207.4 DUSK on 11 transactions; the native route has since grown by 48 KB, about 10 DUSK). Each deploy also needs its gas limit times the deploy gas price, 100 DUSK, in the balance when it is submitted. `preflight` checks the balance. |
 | Deployer | Sepolia | about 0.05 ETH | ISM, token and enrollment transactions. |
-| Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each. |
+| Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each, and 0.005 DUSK for one that fails. |
 | Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. |
 | Each Dusk-origin validator | EVM key, no funds | | Signing checkpoints. Its address goes in `DUSK_ORIGIN_VALIDATORS`. |
 | Each Dusk-origin validator | Dusk testnet | 0.1 DUSK | Its one-time announcement on Dusk, about 2.1M gas. |
@@ -66,6 +66,17 @@ Gas on Dusk:
   `DUSK_AGENT_GAS_PRICE` (1 LUX). A relayed `process` takes about 2.2M gas
   with one validator signature and about 0.22M more per extra signature:
   0.0022 DUSK at 1 LUX.
+- The relayer's gas limit is `DUSK_RELAYER_GAS_LIMIT`, 5M. A failed
+  transaction pays its whole limit, and the relayer's `process` fails
+  whenever someone else delivers the message first, or when a recipient
+  passes the simulation and then reverts. The VM test
+  `test_relayed_process_fits_the_relayer_gas_limit` measures a relayed
+  native transfer at 1.95M gas plus 0.22M per signature the Dusk ISM checks
+  (`EVM_ORIGIN_THRESHOLD`): 2.14M at one signature and 3.01M at five. 5M is
+  2.3 times the cost at the default threshold of 1 and still 1.5 times it at
+  6. `agent-configs` refuses a limit below 1.5 times the cost at
+  `EVM_ORIGIN_THRESHOLD`, so raise it with the threshold. Validators keep
+  `DUSK_AGENT_GAS_LIMIT` (30M) for their one-time announcement.
 - An escrow claim (`claim-pending`) takes about 59M gas, because the route
   decodes the recipient's public key on chain. `dusk-tx` gives it an 80M
   limit, so the signer needs 0.08 DUSK at 1 LUX.

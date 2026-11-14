@@ -79,6 +79,7 @@ and which design decisions are still open.
 | LOW-5 | `dusk-tx transfer-remote` accepted any 32-byte recipient. A right-padded EVM address passed Dusk's checks, the EVM token rejected it, and the DUSK stayed locked. | `dusk-tx` takes a 20-byte address and rejects non-zero upper bytes unless `--raw-recipient`. |
 | CRITICAL-1 | `claim_pending_for` and `register_account_for` used the caller's `PublicKey` as given. A twin of the recipient's key (a changed y limb, or x.c0 stored as x.c0 + p, which even passes `is_valid`) has the recipient's hash but other raw bytes, so anyone could pay an escrow, or every later transfer to a registered account, into an account nobody can spend from. On all three routes. | Routes decode the key from its compressed encoding and use only the decoded key. |
 | MEDIUM-9 | `register_account_for` registered any key for about 39k gas, enough to fill a route's 4 GiB of memory for about 500 DUSK, after which new escrow entries couldn't be allocated. | Removed. Only `register_account` (the signer) and a claim of existing escrow register keys. |
+| LOW-6 | The relayer sent `process` with a 30M gas limit. A failed transaction pays its whole limit, so anyone who delivered a message first cost the relayer 30M gas. | The relayer's limit is 5M (`DUSK_RELAYER_GAS_LIMIT`), checked against the ISM threshold. |
 
 The fixes have regression tests in `tests/tests/integration.rs`, except the
 overflow paths listed under known limitations. HIGH-5 and HIGH-6 use the
@@ -168,7 +169,7 @@ Accepted:
   Rusk 1.7.3 only sets the sender for a transaction
   (`rusk-private/core/src/abi.rs`). A hostile recipient can pass the
   simulation and fail the real delivery, costing the relayer the
-  transaction's gas limit, as gas estimation can be fooled on EVM.
+  transaction's gas limit (5M), as gas estimation can be fooled on EVM.
   Enforce IGP gas payments for Dusk destinations on mainnet.
 - **Recipients must not read `public_sender()`.** A recipient's `handle`,
   its `interchain_security_module` getter and any ISM it uses run inside the

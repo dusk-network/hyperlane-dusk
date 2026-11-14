@@ -176,8 +176,8 @@ A Dusk chain entry in an agent config looks like this:
   "chainId": <chain id reported by the node>,
   "rpcUrls": [{ "http": "https://<rusk-node>" }],
   "eventCursorDir": "/var/lib/hyperlane/dusk-relayer-events",
-  "gasLimit": 30000000,
-  "gasPrice": 2000,
+  "gasLimit": 5000000,
+  "gasPrice": 1,
   "mailbox": "0x<mailbox contract id>",
   "interchainGasPaymaster": "0x<igp contract id>",
   "validatorAnnounce": "0x<validator-announce contract id>",
@@ -189,8 +189,11 @@ A Dusk chain entry in an agent config looks like this:
 Every agent process needs its own `eventCursorDir`. The `duskKey` signer takes
 exactly one of `keyFile` (a file with no group or world permissions),
 `keyEnv`, or an inline `key` (local development only). Domain 4242 and the gas
-values are the local demo's defaults. `demo/gen-agent-configs.sh` generates
-complete working configs for the local environment.
+values are the local demo relayer's defaults. A failed Dusk transaction pays
+its whole `gasLimit`, so the relayer's is kept low; see
+[docs/testnet.md](docs/testnet.md) for how it was chosen.
+`demo/gen-agent-configs.sh` generates complete working configs for the local
+environment.
 
 Key custody, secret handling and dispatch-credit funding are covered in
 [docs/operations.md](docs/operations.md).
