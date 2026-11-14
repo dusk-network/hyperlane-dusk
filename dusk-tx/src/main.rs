@@ -1157,6 +1157,57 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// `--mailbox` may carry a `0x` prefix or upper-case hex, and so may the
+    /// event source; the match is on the bytes.
+    #[test]
+    fn dispatched_message_matches_the_mailbox_in_any_hex_form() {
+        use hyperlane_dusk_types::events::Dispatch;
+
+        let mailbox = [0xab_u8; 32];
+        let message = b"dispatched message".to_vec();
+        let id = hyperlane_dusk_types::message::id(&message);
+        let data = hex::encode(super::rkyv_serialize(&Dispatch {
+            sender: [1; 32],
+            destination: 2,
+            recipient: [3; 32],
+            message: message.clone(),
+        }));
+        let event = |source: String, reverted: bool| {
+            serde_json::json!({
+                "source": source,
+                "topic": Dispatch::TOPIC,
+                "data": data,
+                "reverted": reverted,
+            })
+        };
+        let other_contract = event(hex::encode([0xcd_u8; 32]), false);
+        let reverted = event(hex::encode(mailbox), true);
+        let forms = [
+            hex::encode(mailbox),
+            format!("0x{}", hex::encode(mailbox)),
+            hex::encode_upper(mailbox),
+        ];
+        for source in &forms {
+            let events = [
+                other_contract.clone(),
+                reverted.clone(),
+                event(source.clone(), false),
+            ];
+            for argument in &forms {
+                let parsed = super::parse_bytes32(argument).unwrap();
+                assert_eq!(
+                    super::find_dispatched_message(&events, &parsed, &id),
+                    Some(message.clone()),
+                    "event source {source}, --mailbox {argument}"
+                );
+            }
+        }
+        assert_eq!(
+            super::find_dispatched_message(&[other_contract, reverted], &mailbox, &id),
+            None
+        );
+    }
+
     /// Routes register an account for someone else only by claiming its
     /// escrow, so only `claim-pending` takes another account.
     #[test]
@@ -3937,10 +3988,11 @@ fn cmd_export_signer_key(
 
 // ── cmd_dispatched_message ────────────────────────────────────────────────
 
-async fn cmd_dispatched_message(rues_url: &str, mailbox_hex: &str, nonce: u32) -> Result<(), String> {
-    use hyperlane_dusk_types::events::Dispatch;
-    use hyperlane_dusk_types::message;
-
+async fn cmd_dispatched_message(
+    rues_url: &str,
+    mailbox_hex: &str,
+    nonce: u32,
+) -> Result<(), String> {
     let client = RuesClient::new(rues_url)?;
     let mailbox = parse_bytes32(mailbox_hex)?;
     let count: u32 = client.contract_query(&mailbox, "nonce", &()).await?;
@@ -3958,34 +4010,15 @@ async fn cmd_dispatched_message(rues_url: &str, mailbox_hex: &str, nonce: u32) -
 
     // The archive can trail the block by a moment.
     for attempt in 0..15 {
-        for event in client.block_events(height).await? {
-            let field = |name: &str| event.get(name).and_then(serde_json::Value::as_str);
-            let from_mailbox = field("source")
-                .is_some_and(|s| s.trim_start_matches("0x").eq_ignore_ascii_case(mailbox_hex));
-            let reverted = event
-                .get("reverted")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if !from_mailbox || reverted || field("topic") != Some(Dispatch::TOPIC) {
-                continue;
-            }
-            let Some(data) = field("data").and_then(|d| hex::decode(d.trim_start_matches("0x")).ok())
-            else {
-                continue;
-            };
-            let Ok(dispatch) = rues::rkyv_deserialize::<Dispatch>(&data) else {
-                continue;
-            };
-            if message::id(&dispatch.message) != id {
-                continue;
-            }
+        let events = client.block_events(height).await?;
+        if let Some(message) = find_dispatched_message(&events, &mailbox, &id) {
             let output = json!({
                 "success": true,
                 "nonce": nonce,
                 "message_id": hex::encode(id),
                 "block_height": height,
-                "message": hex::encode(&dispatch.message),
-                "length": dispatch.message.len(),
+                "message": hex::encode(&message),
+                "length": message.len(),
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
             return Ok(());
@@ -3998,4 +4031,32 @@ async fn cmd_dispatched_message(rues_url: &str, mailbox_hex: &str, nonce: u32) -
         "No Dispatch event with message ID {} in block {height}; the node may not serve the archive",
         hex::encode(id)
     ))
+}
+
+/// The message with ID `id` among a block's `events`, taken from a `Dispatch`
+/// event that `mailbox` emitted and that wasn't reverted.
+fn find_dispatched_message(
+    events: &[serde_json::Value],
+    mailbox: &[u8; 32],
+    id: &[u8; 32],
+) -> Option<Vec<u8>> {
+    use hyperlane_dusk_types::events::Dispatch;
+    use hyperlane_dusk_types::message;
+
+    events.iter().find_map(|event| {
+        let field = |name: &str| event.get(name).and_then(serde_json::Value::as_str);
+        // Compare bytes: either side may be written with `0x` or in upper case.
+        let from_mailbox = field("source")
+            .is_some_and(|source| parse_bytes32(source).is_ok_and(|bytes| bytes == *mailbox));
+        let reverted = event
+            .get("reverted")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !from_mailbox || reverted || field("topic") != Some(Dispatch::TOPIC) {
+            return None;
+        }
+        let data = hex::decode(field("data")?.trim_start_matches("0x")).ok()?;
+        let dispatch = rues::rkyv_deserialize::<Dispatch>(&data).ok()?;
+        (message::id(&dispatch.message) == *id).then_some(dispatch.message)
+    })
 }
