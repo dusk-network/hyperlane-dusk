@@ -6334,3 +6334,330 @@ fn test_igp_rejects_config_with_unrepresentable_adjusted_gas() {
     );
     assert_contract_panic(result, "IGP: configured adjusted gas exceeds u64");
 }
+
+// =============================================================================
+// Red team: verification (forger persona)
+//
+// The forger runs a relayer, holds at most `threshold - 1` enrolled validator
+// keys plus any number of outsider keys, and may call ValidatorAnnounce.
+// Tests named `redteam_*` assert the secure or Solidity-compatible behaviour;
+// `redteam_held_*` tests document attacks that the current code resists.
+// =============================================================================
+
+/// secp256k1 group order `n`, big-endian.
+const REDTEAM_SECP256K1_N: [u8; 32] = [
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+    0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41,
+];
+
+/// Turn a canonical low-s `r || s || v` signature into its high-s twin
+/// `r || n - s || v'`. Both recover the same signer; OpenZeppelin's
+/// `ECDSA.recover` (used by Solidity `AbstractMultisigIsm` and
+/// `ValidatorAnnounce`) rejects the high-s form.
+fn redteam_malleate_high_s(signature: &[u8]) -> Vec<u8> {
+    assert_eq!(signature.len(), 65);
+    let mut out = signature.to_vec();
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let mut diff = i16::from(REDTEAM_SECP256K1_N[i]) - i16::from(signature[32 + i]) - borrow;
+        if diff < 0 {
+            diff += 256;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        out[32 + i] = u8::try_from(diff).unwrap();
+    }
+    assert_eq!(borrow, 0, "s must be below n");
+    // Negating s negates R, so the recovery parity flips.
+    out[64] = match signature[64] {
+        27 => 28,
+        28 => 27,
+        0 => 1,
+        1 => 0,
+        v => v,
+    };
+    out
+}
+
+/// A Dusk deployment shaped like `dusk-tx deploy-hyperlane --default-ism
+/// messageIdMultisig`: the Mailbox defaults to a real 2-of-3 multisig ISM, and
+/// the TestMock (NullISM) and TestRecipient fixtures are deployed alongside it.
+fn redteam_session_with_multisig_default_ism() -> (TestSession, Vec<(EthAddress, SecpSecretKey)>) {
+    let signers = checkpoint_signers();
+    let validators: Vec<EthAddress> = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    session
+        .deploy(
+            TEST_MOCK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_MOCK_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            TEST_RECIPIENT_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_RECIPIENT_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            MERKLE_TREE_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(MERKLE_TREE_HOOK_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            MAILBOX_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    LOCAL_DOMAIN,
+                    *OWNER_ID,
+                    ISM_MULTISIG_ID,
+                    TEST_MOCK_ID,
+                    MERKLE_TREE_HOOK_ID,
+                ))
+                .contract_id(MAILBOX_ID),
+        )
+        .unwrap();
+    (session, signers)
+}
+
+/// FINDING: the deployed TestRecipient lets anyone choose its ISM, and the
+/// deploy always ships a NullISM (TestMock). A forger with no quorum gets the
+/// canonical Mailbox to accept, mark delivered and emit `Process` for a
+/// message no validator signed. Solidity's TestRecipient gates
+/// `setInterchainSecurityModule` with `onlyOwner`.
+#[test]
+fn redteam_forger_cannot_downgrade_deployed_recipient_ism() {
+    let (mut session, signers) = redteam_session_with_multisig_default_ism();
+    let forged = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xEE; 32],
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        b"never signed by the validator quorum",
+    );
+    let id = message::id(&forged);
+
+    // Baseline: with the real default ISM the forger's best metadata
+    // (threshold - 1 enrolled signer + an outsider) and empty metadata fail.
+    let partial = signed_checkpoint_metadata(&forged, &[&signers[0].1, &signers[3].1]);
+    for metadata in [partial, Vec::new()] {
+        assert!(session
+            .call_public::<_, ()>(
+                &RELAYER_SK,
+                MAILBOX_ID,
+                "process",
+                &(metadata, forged.clone())
+            )
+            .is_err());
+    }
+
+    // Attack: the forger (not the deployer, not any owner) points the deployed
+    // TestRecipient at the deployed NullISM, then relays with empty metadata.
+    let downgrade = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        TEST_RECIPIENT_ID,
+        "set_interchain_security_module",
+        &(TEST_MOCK_ID,),
+    );
+    let process = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), forged.clone()),
+    );
+    let delivered = session
+        .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+        .unwrap()
+        .data;
+    assert!(
+        process.is_err() && !delivered,
+        "unsigned message accepted by the Mailbox: ism downgrade ok={}, process ok={}, delivered={delivered}",
+        downgrade.is_ok(),
+        process.is_ok(),
+    );
+}
+
+/// FINDING (compatibility): a high-s twin of a validator signature verifies on
+/// Dusk. OpenZeppelin `ECDSA.recover` reverts with "invalid signature 's'
+/// value", so Dusk accepts metadata the Solidity ISM rejects.
+#[test]
+fn redteam_multisig_rejects_high_s_signature() {
+    let signers = checkpoint_signers();
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![signers[0].0], 1);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let metadata = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(
+                ISM_MULTISIG_ID,
+                "verify",
+                &(metadata.clone(), message.clone())
+            )
+            .unwrap()
+            .data
+    );
+
+    let mut malleated = metadata.clone();
+    let high_s = redteam_malleate_high_s(&metadata[68..133]);
+    malleated[68..133].copy_from_slice(&high_s);
+    let result = session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(malleated, message));
+    assert!(
+        result.is_err(),
+        "high-s signature accepted by MultisigISM (OpenZeppelin ECDSA.recover rejects s > n/2)"
+    );
+}
+
+/// FINDING (compatibility): `v` of 0 or 1 verifies on Dusk. OpenZeppelin
+/// `ECDSA.recover` only accepts 27 or 28.
+#[test]
+fn redteam_multisig_rejects_raw_recovery_id_v() {
+    let signers = checkpoint_signers();
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![signers[0].0], 1);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let mut metadata = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    metadata[132] -= 27;
+    let result = session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message));
+    assert!(
+        result.is_err(),
+        "v in {{0,1}} accepted by MultisigISM (OpenZeppelin ECDSA.recover requires 27 or 28)"
+    );
+}
+
+/// FINDING (compatibility): ValidatorAnnounce shares the permissive recovery.
+#[test]
+fn redteam_validator_announce_rejects_high_s_signature() {
+    let mut session = session_with_validator_announce();
+    let location = alloc::string::String::from("s3://validator/checkpoints");
+    let (validator, signature) = validator_announcement(&location);
+    let result = session.call_public::<_, bool>(
+        &OWNER_SK,
+        VALIDATOR_ANNOUNCE_ID,
+        "announce",
+        &(validator, location, redteam_malleate_high_s(&signature)),
+    );
+    assert!(
+        result.is_err(),
+        "high-s announcement signature accepted (OpenZeppelin ECDSA.recover rejects s > n/2)"
+    );
+}
+
+/// HELD: one enrolled key presented twice under different encodings (low-s
+/// and high-s, or v=27 and v=0) is still one signer.
+#[test]
+fn redteam_held_same_signer_two_encodings_not_double_counted() {
+    let signers = checkpoint_signers();
+    let validators = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let single = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    let signature = single[68..133].to_vec();
+
+    let mut raw_v = signature.clone();
+    raw_v[64] -= 27;
+    for twin in [redteam_malleate_high_s(&signature), raw_v] {
+        let mut metadata = single.clone();
+        metadata.extend_from_slice(&twin);
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message.clone())),
+            "MultisigISM: insufficient valid signatures",
+        );
+    }
+}
+
+/// HELD: only the configured caller can insert leaves into the tree that
+/// validators sign.
+#[test]
+fn redteam_held_merkle_tree_hook_rejects_foreign_insert() {
+    let mut s = HyperlaneSession::new();
+    let forged = sample_encoded_message(TEST_RECIPIENT_ID);
+    assert_contract_panic(
+        s.session.call_public::<_, ()>(
+            &RELAYER_SK,
+            MERKLE_TREE_HOOK_ID,
+            "post_dispatch",
+            &(Vec::<u8>::new(), forged.clone()),
+        ),
+        "MerkleTreeHook: caller is not mailbox",
+    );
+    // Selecting the required hook as the custom hook is also refused, so a
+    // dispatch cannot insert its own leaf twice.
+    let result = s.session.call_public::<_, MessageId>(
+        &RELAYER_SK,
+        MAILBOX_ID,
+        "dispatch",
+        &(
+            REMOTE_DOMAIN,
+            [0x01u8; 32],
+            b"x".to_vec(),
+            Vec::<u8>::new(),
+            MERKLE_TREE_HOOK_ID,
+        ),
+    );
+    assert_contract_panic(result, "Mailbox: selected hook cannot equal required hook");
+    assert_eq!(s.merkle_count(), 0);
+}
+
+/// HELD: an announcement signed for one (domain, Mailbox) does not verify on a
+/// ValidatorAnnounce bound to another domain or Mailbox.
+#[test]
+fn redteam_held_announcement_bound_to_domain_and_mailbox() {
+    let mut session = session_with_validator_announce();
+    let other_mailbox_va = ContractId::from_bytes([0x71; 32]);
+    let other_domain_va = ContractId::from_bytes([0x72; 32]);
+    for (id, init) in [
+        (other_mailbox_va, (LOCAL_DOMAIN, TEST_MOCK_ID)),
+        (other_domain_va, (REMOTE_DOMAIN, MAILBOX_ID)),
+    ] {
+        session
+            .deploy(
+                VALIDATOR_ANNOUNCE_BYTECODE,
+                dusk_vm::ContractData::builder()
+                    .owner(DEPLOYER)
+                    .init_arg(&init)
+                    .contract_id(id),
+            )
+            .unwrap();
+    }
+    let location = alloc::string::String::from("s3://validator/checkpoints");
+    let (validator, signature) = validator_announcement(&location);
+    for id in [other_mailbox_va, other_domain_va] {
+        assert_contract_panic(
+            session.call_public::<_, bool>(
+                &OWNER_SK,
+                id,
+                "announce",
+                &(validator, location.clone(), signature.clone()),
+            ),
+            "ValidatorAnnounce: invalid signature",
+        );
+    }
+    session
+        .call_public::<_, bool>(
+            &OWNER_SK,
+            VALIDATOR_ANNOUNCE_ID,
+            "announce",
+            &(validator, location.clone(), signature.clone()),
+        )
+        .unwrap();
+    assert_contract_panic(
+        session.call_public::<_, bool>(
+            &OWNER_SK,
+            VALIDATOR_ANNOUNCE_ID,
+            "announce",
+            &(validator, location, redteam_malleate_high_s(&signature)),
+        ),
+        "ValidatorAnnounce: replay",
+    );
+}
