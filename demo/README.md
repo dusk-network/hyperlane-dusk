@@ -9,7 +9,10 @@ Full local setup with Rusk (Dusk node), Anvil (EVM), and block explorers.
 
 ### Prerequisites
 
-- **Rusk** (Dusk node) built from local fork at `~/projects/rusk`
+- **Rusk** (Dusk node) built from the `rusk-private` checkout the contracts
+  build against (`../../rusk-private` from this repository)
+- **A Dusk consensus key** (`consensus.keys` plus its password) for a Moonlight
+  account funded in the local genesis state, at `e2e/consensus.keys` by default
 - **Foundry** (anvil, forge, cast): `curl -L https://foundry.paradigm.xyz | bash && foundryup`
 - **Docker**: for Otterscan (EVM explorer)
 - **Node.js/npm**: for Dusk Explorer
@@ -18,18 +21,22 @@ Full local setup with Rusk (Dusk node), Anvil (EVM), and block explorers.
 ### One-Time Setup
 
 ```bash
-# 1. Build Rusk (from local fork with secp256k1_recover)
-cd ~/projects/rusk
+# 0. Create the local environment file, then set CONSENSUS_PASSWORD and
+#    ANVIL_PRIVATE_KEY in it
+cp demo/bridge.env.example demo/.env.bridge
+
+# 1. Build Rusk
+cd ../../rusk-private
 make prepare-dev        # Generates circuit keys + genesis state (~10 min)
-cargo build --release -p dusk-rusk
+cargo build --release -p dusk-rusk --features archive
 
 # 2. Build Hyperlane contracts + CLI
-cd ~/projects/hyperlane/dusk
-make all                # 12 contract WASMs
+cd -                    # back to this repository
+make all                # 13 contract WASMs
 make dusk-tx            # CLI tool
 
 # 3. Install Dusk Explorer deps
-cd ~/projects/explorer
+cd ../../explorer
 npm install
 ```
 
@@ -245,12 +252,13 @@ treated as a production transaction orchestrator.
 
 ### Configuration
 
-All settings are in `demo/.env.bridge`. Key overrides:
+All settings are in `demo/.env.bridge` (copied from `demo/bridge.env.example`).
+Key overrides:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUSK_DIR` | `~/projects/rusk` | Path to Rusk source |
-| `EXPLORER_DIR` | `~/projects/explorer` | Path to Dusk Explorer |
+| `RUSK_DIR` | `../../rusk-private` | Path to Rusk source; must match the contracts' build dependency |
+| `EXPLORER_DIR` | `../../explorer` | Path to Dusk Explorer |
 | `RUSK_HTTP_PORT` | `8080` | Rusk HTTP/RUES port |
 | `ANVIL_PORT` | `8545` | Anvil RPC port |
 | `DUSK_EXPLORER_PORT` | `5173` | Dusk Explorer port |
@@ -282,7 +290,8 @@ The EVM private keys used by these scripts are Anvil dev keys only.
 
 Run `make secret-hygiene` before review. Before uploading CI or E2E artifacts,
 scan the exact artifact paths with `bash scripts/secret-hygiene-check.sh
-<paths...>`. See `SECRET_HANDLING.md` for the release guardrail.
+<paths...>`. See [docs/operations.md](../docs/operations.md) for production key
+handling.
 
 ### Troubleshooting
 
