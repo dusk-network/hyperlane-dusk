@@ -3,7 +3,7 @@
 // Mailbox contract interface for TypeScript.
 
 import type { RuesClient } from "./rues-client.js";
-import type { DecodedMessage, HexBytes32, MailboxState } from "./types.js";
+import type { HexBytes32, MailboxState } from "./types.js";
 
 /**
  * Provides a TypeScript interface to query the Hyperlane Mailbox contract
@@ -107,15 +107,18 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_bytes32(result);
   }
 
-  /** Get the encoded dispatched message at a given nonce. */
-  async dispatchedMessage(nonce: number): Promise<Uint8Array> {
+  /**
+   * Get the ID of the message dispatched at a given nonce. The Mailbox
+   * stores only the ID; the message is in that block's `Dispatch` event.
+   */
+  async dispatchedId(nonce: number): Promise<HexBytes32> {
     const args = this.wasm.rkyv_serialize_u32(nonce);
     const result = await this.rues.contractQuery(
       this.contractId,
-      "dispatched_message",
+      "dispatched_id",
       args
     );
-    return new Uint8Array(this.wasm.rkyv_deserialize_bytes(result));
+    return this.wasm.rkyv_deserialize_bytes32(result);
   }
 
   /** Get the number of processed (delivered) messages. */
@@ -142,24 +145,10 @@ export class DuskMailbox {
         this.defaultHook(),
         this.requiredHook(),
       ]);
-    // Dispatched messages are immutable. Derive the ID at the observed nonce
-    // so a concurrent dispatch cannot pair an old nonce with a newer ID.
-    let latestId = "00".repeat(32);
-    if (nonce > 0) {
-      const message = await this.dispatchedMessage(nonce - 1);
-      const decoded = this.wasm.decode_message(message);
-      if (decoded === undefined) {
-        throw new Error("Invalid dispatched message");
-      }
-      const { nonce: messageNonce, origin } = JSON.parse(decoded) as DecodedMessage;
-      if (messageNonce !== nonce - 1 || origin !== localDomain) {
-        throw new Error("Dispatched message does not match mailbox state");
-      }
-      latestId = Array.from(
-        this.wasm.message_id(message),
-        byte => byte.toString(16).padStart(2, "0")
-      ).join("");
-    }
+    // Dispatched IDs are immutable. Read the ID at the observed nonce so a
+    // concurrent dispatch cannot pair an old nonce with a newer ID.
+    const latestId =
+      nonce > 0 ? await this.dispatchedId(nonce - 1) : "00".repeat(32);
     return {
       localDomain,
       nonce,

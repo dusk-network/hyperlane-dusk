@@ -3,7 +3,7 @@
 //! Ethereum ECDSA signature rules shared by the contracts that recover
 //! validator addresses.
 
-/// Half the secp256k1 group order, big-endian. OpenZeppelin's
+/// Half the secp256k1 group order, big-endian. `OpenZeppelin`'s
 /// `ECDSA.recover` rejects any `s` above it.
 const SECP256K1_HALF_ORDER: [u8; 32] = [
     0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -11,7 +11,7 @@ const SECP256K1_HALF_ORDER: [u8; 32] = [
 ];
 
 /// Whether a 65-byte `r || s || v` signature is in the canonical form that
-/// OpenZeppelin's `ECDSA.recover` accepts: `v` is 27 or 28 and `s` is in the
+/// `OpenZeppelin`'s `ECDSA.recover` accepts: `v` is 27 or 28 and `s` is in the
 /// lower half of the curve order.
 ///
 /// The Dusk `secp256k1_recover` host query also accepts `v` of 0 or 1 and

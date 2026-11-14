@@ -292,11 +292,25 @@ impl HyperlaneSession {
             .data
     }
 
-    fn mailbox_dispatched_message(&mut self, nonce: u32) -> Vec<u8> {
+    fn mailbox_dispatched_id(&mut self, nonce: u32) -> MessageId {
         self.session
-            .direct_call::<_, Vec<u8>>(MAILBOX_ID, "dispatched_message", &(nonce,))
-            .expect("dispatched_message should succeed")
+            .direct_call::<_, MessageId>(MAILBOX_ID, "dispatched_id", &(nonce,))
+            .expect("dispatched_id should succeed")
             .data
+    }
+
+    /// The message a dispatch receipt's `Dispatch` event carries for `nonce`,
+    /// checked against the ID the Mailbox stored for that nonce.
+    fn dispatched_message<R>(&mut self, receipt: &CallReceipt<R>, nonce: u32) -> Vec<u8> {
+        let encoded = receipt
+            .events
+            .iter()
+            .filter(|e| e.source == MAILBOX_ID && e.topic == events::Dispatch::TOPIC)
+            .map(|e| test_session::rkyv_deserialize::<events::Dispatch>(&e.data).message)
+            .find(|m| message::decode(m).is_some_and(|d| d.nonce == nonce))
+            .expect("the receipt should carry the Dispatch event");
+        assert_eq!(message::id(&encoded), self.mailbox_dispatched_id(nonce));
+        encoded
     }
 
     fn mailbox_processed_at_index(&mut self, index: u32) -> MessageId {
@@ -479,7 +493,7 @@ fn test_mailbox_init() {
     let mut s = HyperlaneSession::new();
 
     for (contract, label, expected) in [
-        (MAILBOX_ID, "Mailbox", 3),
+        (MAILBOX_ID, "Mailbox", 4),
         (TEST_MOCK_ID, "TestMock", 1),
         (TEST_RECIPIENT_ID, "TestRecipient", 1),
     ] {
@@ -853,7 +867,7 @@ fn test_process_multiple_messages() {
 }
 
 // =============================================================================
-// Tests: Indexer query methods (dispatched_message, processed_at_index)
+// Tests: Indexer query methods (dispatched_id, processed_at_index)
 // =============================================================================
 
 #[test]
@@ -939,7 +953,7 @@ fn test_dispatch_via_transaction() {
             .direct_call::<_, u32>(MAILBOX_ID, "state_version", &())
             .expect("Mailbox state_version should succeed")
             .data,
-        3
+        4
     );
     assert_eq!(s.merkle_count(), 0);
     assert_eq!(
@@ -997,8 +1011,8 @@ fn test_dispatch_via_transaction() {
         vec![message_id]
     );
 
-    // Verify dispatched_message is stored and decodable
-    let encoded = s.mailbox_dispatched_message(0);
+    // The Dispatch event carries the message, and the Mailbox stores its ID
+    let encoded = s.dispatched_message(&receipt, 0);
     let msg = message::decode(&encoded).expect("decode should succeed");
     assert_eq!(msg.version, VERSION);
     assert_eq!(msg.nonce, 0);
@@ -1037,7 +1051,7 @@ fn test_dispatch_via_recipient_proxy() {
     assert_eq!(s.merkle_count(), 1);
 
     // Verify the message sender is TestRecipient's ContractId
-    let encoded = s.mailbox_dispatched_message(0);
+    let encoded = s.dispatched_message(&receipt, 0);
     let msg = message::decode(&encoded).expect("decode should succeed");
     assert_eq!(msg.sender, TEST_RECIPIENT_ID.to_bytes());
     assert_eq!(msg.body, body);
@@ -1138,7 +1152,7 @@ fn assert_dispatch_reentry_rejected(stage: u8, fee: u64) {
         0
     );
     assert_eq!(s.mailbox_nonce(), 1);
-    let encoded = s.mailbox_dispatched_message(0);
+    let encoded = s.dispatched_message(&receipt, 0);
     let decoded = message::decode(&encoded).expect("stored message should decode");
     assert_eq!(decoded.nonce, 0);
     assert_eq!(decoded.destination, destination);
@@ -1163,10 +1177,11 @@ fn assert_dispatch_reentry_rejected(stage: u8, fee: u64) {
     );
 
     let control_body = b"guard cleared for later dispatch".to_vec();
-    s.mailbox_dispatch_via_tx(&OWNER_SK, destination, recipient, control_body.clone())
+    let control_receipt = s
+        .mailbox_dispatch_via_tx(&OWNER_SK, destination, recipient, control_body.clone())
         .expect("later legitimate dispatch should succeed");
     assert_eq!(s.mailbox_nonce(), 2);
-    let control = message::decode(&s.mailbox_dispatched_message(1))
+    let control = message::decode(&s.dispatched_message(&control_receipt, 1))
         .expect("later stored message should decode");
     assert_eq!(control.nonce, 1);
     assert_eq!(control.body, control_body);
@@ -1230,7 +1245,7 @@ fn test_failed_post_dispatch_rolls_back_nonce_credit_custody_and_guard() {
         .call_public::<_, MessageId>(&OWNER_SK, MAILBOX_ID, "dispatch", &args)
         .expect("retry must succeed after the entire failed callback rolls back");
     assert_eq!(s.mailbox_nonce(), 1);
-    assert_eq!(message::id(&s.mailbox_dispatched_message(0)), receipt.data);
+    assert_eq!(s.mailbox_dispatched_id(0), receipt.data);
     assert_eq!(s.session.contract_balance(&MAILBOX_ID).unwrap(), 0);
     assert_eq!(s.session.contract_balance(&REENTRANT_HOOK_ID).unwrap(), fee);
 }
@@ -2448,7 +2463,10 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
         dusk_data_driver::to_json(message::keccak256(&RELAYER_PK.to_bytes())).unwrap()
     );
     // The data driver encodes u64 as decimal strings so JavaScript keeps them exact.
-    assert_eq!(decoded["amount"].as_str(), Some(partial.to_string().as_str()));
+    assert_eq!(
+        decoded["amount"].as_str(),
+        Some(partial.to_string().as_str())
+    );
     let relayer_balance_after = s
         .session
         .account(&RELAYER_PK)
@@ -3451,7 +3469,7 @@ fn test_warp_drc20_init() {
             .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        4
+        5
     );
 }
 
@@ -3559,7 +3577,7 @@ fn test_warp_native_init() {
             .direct_call::<_, u32>(WARP_NATIVE_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        2
+        3
     );
 }
 
@@ -3651,7 +3669,7 @@ fn test_warp_collateral_init() {
         .direct_call::<_, u32>(WARP_DRC20_COLLATERAL_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(state_version, 3);
+    assert_eq!(state_version, 4);
 }
 
 #[test]
@@ -7280,7 +7298,7 @@ fn redteam_hook_process_during_dispatch_keeps_indexes_aligned() {
     assert!(rt_delivered(&mut s.session, message::id(&inbound)));
     assert_eq!(s.mailbox_nonce(), 1);
     assert_eq!(s.merkle_count(), 1);
-    let stored = s.mailbox_dispatched_message(0);
+    let stored = s.dispatched_message(&receipt, 0);
     assert_eq!(message::decode(&stored).unwrap().body, body);
     assert_eq!(receipt.data, message::id(&stored));
 
@@ -7288,4 +7306,368 @@ fn redteam_hook_process_during_dispatch_keeps_indexes_aligned() {
         .expect("guard must be clear");
     assert_eq!(s.mailbox_nonce(), 2);
     assert_eq!(s.merkle_count(), 2);
+}
+
+// =============================================================================
+// Sponsored escrow claims, bounded recipient ISM lookup, Mailbox memory
+// =============================================================================
+
+/// A recipient that holds no DUSK at all.
+static FRESH_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
+    let mut rng = StdRng::seed_from_u64(0xF2E5_4000);
+    AccountSecretKey::random(&mut rng)
+});
+static FRESH_PK: LazyLock<AccountPublicKey> = LazyLock::new(|| AccountPublicKey::from(&*FRESH_SK));
+static FRESH_ID: LazyLock<H256> = LazyLock::new(|| message::keccak256(&FRESH_PK.to_bytes()));
+
+const PLAIN_RECIPIENT_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_plain_recipient.wasm"
+);
+const PLAIN_RECIPIENT_ID: ContractId = ContractId::from_bytes([41; 32]);
+
+fn inbound_transfer(
+    route: ContractId,
+    remote_router: H256,
+    nonce: u32,
+    recipient: H256,
+    amount: u64,
+) -> Vec<u8> {
+    message::encode(
+        VERSION,
+        nonce,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        route.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(recipient, amount),
+    )
+}
+
+fn route_u64(session: &mut TestSession, route: ContractId, fn_name: &str, h: H256) -> u64 {
+    session
+        .direct_call::<_, u64>(route, fn_name, &(h,))
+        .unwrap_or_else(|e| panic!("{fn_name} query failed: {e}"))
+        .data
+}
+
+fn route_is_registered(session: &mut TestSession, route: ContractId, h: H256) -> bool {
+    session
+        .direct_call::<_, bool>(route, "is_registered", &(h,))
+        .expect("is_registered query should succeed")
+        .data
+}
+
+fn moonlight_balance(session: &mut TestSession, pk: &AccountPublicKey) -> u64 {
+    session
+        .account(pk)
+        .expect("account query should succeed")
+        .balance
+}
+
+/// A recipient whose only DUSK is in escrow can't pay for `claim_pending`.
+/// Anyone can pay for `claim_pending_for` instead, and the DUSK still only
+/// goes to the escrowed key.
+#[test]
+fn test_warp_native_sponsor_claims_escrow_for_unfunded_recipient() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let amount = 700_000u64;
+    fund_warp_native(&mut session, amount);
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_NATIVE_ID, remote_router, 0, *FRESH_ID, amount),
+            ),
+        )
+        .expect("a transfer to an unregistered recipient goes to escrow");
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), 0);
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        amount
+    );
+
+    // A claim for a different key finds nothing and leaves the escrow alone.
+    let wrong = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_NATIVE_ID,
+        "claim_pending_for",
+        &(*OWNER_PK,),
+    );
+    assert_contract_panic(wrong, "WarpNative: no pending transfers");
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        amount
+    );
+
+    let sponsor_before = moonlight_balance(&mut session, &RELAYER_PK);
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_NATIVE_ID,
+            "claim_pending_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can claim escrow on the recipient's behalf");
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), amount);
+    assert!(
+        moonlight_balance(&mut session, &RELAYER_PK) < sponsor_before,
+        "the sponsor pays the gas and receives nothing"
+    );
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        0
+    );
+    assert!(route_is_registered(&mut session, WARP_NATIVE_ID, *FRESH_ID));
+
+    let again = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_NATIVE_ID,
+        "claim_pending_for",
+        &(*FRESH_PK,),
+    );
+    assert_contract_panic(again, "WarpNative: no pending transfers");
+}
+
+/// A sponsor can register a recipient up front, so its first transfer is
+/// paid out directly instead of going to escrow.
+#[test]
+fn test_warp_native_sponsor_registration_enables_direct_delivery() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let amount = 400_000u64;
+    fund_warp_native(&mut session, amount);
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_NATIVE_ID,
+            "register_account_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can register any key");
+    assert!(route_is_registered(&mut session, WARP_NATIVE_ID, *FRESH_ID));
+
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_NATIVE_ID, remote_router, 0, *FRESH_ID, amount),
+            ),
+        )
+        .expect("a transfer to a registered recipient is paid out");
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), amount);
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        0
+    );
+}
+
+#[test]
+fn test_warp_drc20_sponsor_claims_escrow_for_unfunded_recipient() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    let amount = 650_000u64;
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_DRC20_ID, remote_router, 0, *FRESH_ID, amount),
+            ),
+        )
+        .expect("a transfer to an unregistered recipient goes to escrow");
+
+    let wrong = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_DRC20_ID,
+        "claim_pending_for",
+        &(*OWNER_PK,),
+    );
+    assert_contract_panic(wrong, "WarpDrc20: no pending transfers");
+
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_ID,
+            "claim_pending_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can claim escrow on the recipient's behalf");
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&FRESH_PK)),
+        amount
+    );
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&RELAYER_PK)),
+        0
+    );
+    assert_eq!(
+        route_u64(&mut session, WARP_DRC20_ID, "pending_balance", *FRESH_ID),
+        0
+    );
+    assert!(route_is_registered(&mut session, WARP_DRC20_ID, *FRESH_ID));
+}
+
+#[test]
+fn test_warp_collateral_sponsor_claims_escrow_for_unfunded_recipient() {
+    let (mut session, remote_router) = session_with_warp_collateral_funded_flow();
+    let amount = 300_000u64;
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(
+                    WARP_DRC20_COLLATERAL_ID,
+                    remote_router,
+                    1,
+                    *FRESH_ID,
+                    amount,
+                ),
+            ),
+        )
+        .expect("a transfer to an unregistered recipient goes to escrow");
+
+    let wrong = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_DRC20_COLLATERAL_ID,
+        "claim_pending_for",
+        &(*OWNER_PK,),
+    );
+    assert_contract_panic(wrong, "WarpCollateral: no pending transfers");
+
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "claim_pending_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can claim escrow on the recipient's behalf");
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&FRESH_PK)),
+        amount
+    );
+    assert_eq!(
+        route_u64(
+            &mut session,
+            WARP_DRC20_COLLATERAL_ID,
+            "pending_balance",
+            *FRESH_ID
+        ),
+        0
+    );
+    assert!(route_is_registered(
+        &mut session,
+        WARP_DRC20_COLLATERAL_ID,
+        *FRESH_ID
+    ));
+}
+
+/// A recipient without `interchain_security_module` gets the default ISM.
+/// The failed lookup costs at most its fixed allowance; an unbounded call
+/// would be charged most of the transaction's gas.
+#[test]
+fn test_process_recipient_without_ism_getter_uses_default_ism_cheaply() {
+    let mut s = HyperlaneSession::new();
+    s.session
+        .deploy(
+            PLAIN_RECIPIENT_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(PLAIN_RECIPIENT_ID),
+        )
+        .expect("Deploying PlainRecipient should succeed");
+
+    let sender = [0xABu8; 32];
+    let to_test_recipient = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        sender,
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        b"baseline",
+    );
+    let to_plain = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        sender,
+        LOCAL_DOMAIN,
+        PLAIN_RECIPIENT_ID.to_bytes(),
+        b"baseline",
+    );
+    let baseline = s
+        .mailbox_process(Vec::new(), to_test_recipient)
+        .expect("delivery to TestRecipient should succeed");
+    let plain = s
+        .mailbox_process(Vec::new(), to_plain.clone())
+        .expect("delivery to a recipient without an ISM getter should succeed");
+
+    assert!(s.mailbox_delivered(message::id(&to_plain)));
+    assert_eq!(
+        rt_u32(&mut s.session, PLAIN_RECIPIENT_ID, "handled_count"),
+        1
+    );
+    assert_eq!(
+        s.mock_verify_count(),
+        2,
+        "both deliveries use the default ISM"
+    );
+    assert!(
+        plain.gas_spent <= baseline.gas_spent + 1_000_000,
+        "a missing ISM getter must cost at most its lookup allowance: {} vs baseline {}",
+        plain.gas_spent,
+        baseline.gas_spent
+    );
+}
+
+/// A recipient whose ISM getter runs out of its allowance does not fall back
+/// to the default ISM: otherwise the submitter's gas limit could choose which
+/// ISM verifies the message.
+#[test]
+fn test_process_rejects_message_when_recipient_ism_lookup_runs_out_of_gas() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    s.session
+        .direct_call::<_, ()>(REDTEAM_ID, "set_ism_burn", &(u64::MAX,))
+        .expect("attacker configuration should succeed");
+
+    let inbound = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"expensive getter",
+    );
+    let result =
+        s.session
+            .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound.clone()));
+    assert_contract_panic(result, "Mailbox: recipient ISM lookup ran out of gas");
+    assert!(!rt_delivered(&mut s.session, message::id(&inbound)));
+    assert_eq!(rt_counters(&mut s.session).0, 0);
+    assert_eq!(s.mock_verify_count(), 0);
+}
+
+#[test]
+fn test_mailbox_reports_memory_below_dispatch_limit() {
+    let mut s = HyperlaneSession::new();
+    s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xBBu8; 32], b"sized".to_vec())
+        .expect("dispatch should succeed");
+    let bytes = s
+        .session
+        .direct_call::<_, u64>(MAILBOX_ID, "memory_bytes", &())
+        .expect("memory_bytes should succeed")
+        .data;
+    assert!(
+        bytes > 0 && bytes % (64 * 1024) == 0,
+        "whole wasm pages: {bytes}"
+    );
+    assert!(bytes < 3 * 1024 * 1024 * 1024);
 }

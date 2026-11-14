@@ -106,6 +106,32 @@ fn encode_withdrawal_input(json: &str) -> Result<Vec<u8>, Error> {
         .map_err(|error| Error::Rkyv(format!("cannot serialize withdrawal input: {error}")))
 }
 
+#[derive(Deserialize)]
+struct AccountInputJson {
+    account: Vec<u8>,
+}
+
+/// `register_account_for` and `claim_pending_for` take one account public key.
+fn encode_account_input(json: &str) -> Result<Vec<u8>, Error> {
+    let input: AccountInputJson = serde_json::from_str(json)?;
+    let account_bytes: [u8; 96] = input.account.try_into().map_err(|bytes: Vec<u8>| {
+        Error::Json(format!("account must be 96 bytes, got {}", bytes.len()))
+    })?;
+    let account = AccountPublicKey::from_bytes(&account_bytes)
+        .map_err(|error| Error::Json(format!("invalid account: {error:?}")))?;
+    if !account.is_valid() {
+        return Err(Error::Json("account is not a valid BLS public key".into()));
+    }
+    rkyv::to_bytes::<_, 1024>(&account)
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| Error::Rkyv(format!("cannot serialize account input: {error}")))
+}
+
+fn decode_account_input(rkyv: &[u8]) -> Result<JsonValue, Error> {
+    let account: AccountPublicKey = from_rkyv(rkyv)?;
+    Ok(serde_json::json!({ "account": account.to_bytes().to_vec() }))
+}
+
 fn decode_withdrawal_input(rkyv: &[u8]) -> Result<JsonValue, Error> {
     let (recipient, amount): (AccountPublicKey, u64) = from_rkyv(rkyv)?;
     Ok(serde_json::json!({
@@ -132,10 +158,11 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "pending_total"
             | "state_version"
             | "validators_and_threshold"
-            | "announced_validator_count" => json_to_rkyv::<()>(json),
+            | "announced_validator_count"
+            | "memory_bytes" => json_to_rkyv::<()>(json),
             // Mailbox queries with args
             "delivered" | "delivered_at" => json_to_rkyv::<(MessageId,)>(json),
-            "dispatched_message"
+            "dispatched_id"
             | "dispatched_block_height"
             | "processed_at_index"
             | "processed_block_height_at_index"
@@ -150,6 +177,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "get_announced_storage_locations_for_validator" => json_to_rkyv::<(EthAddress,)>(json),
             "get_announced_storage_locations" => json_to_rkyv::<(Vec<EthAddress>,)>(json),
             "withdraw_dispatch_credit" => encode_withdrawal_input(json),
+            "register_account_for" | "claim_pending_for" => encode_account_input(json),
             // Hook queries
             "hook_type" | "total_gas_payments" | "collected_fees" | "protocol_fee"
             | "max_protocol_fee" | "beneficiary" => json_to_rkyv::<()>(json),
@@ -197,6 +225,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "state_version"
             | "validators_and_threshold"
             | "announced_validator_count"
+            | "memory_bytes"
             | "hook_type"
             | "total_gas_payments"
             | "collected_fees"
@@ -212,7 +241,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "decimals"
             | "wrapped_token" => rkyv_to_json::<()>(rkyv),
             "delivered" | "delivered_at" => rkyv_to_json::<(MessageId,)>(rkyv),
-            "dispatched_message"
+            "dispatched_id"
             | "dispatched_block_height"
             | "processed_at_index"
             | "processed_block_height_at_index"
@@ -227,6 +256,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "get_announced_storage_locations_for_validator" => rkyv_to_json::<(EthAddress,)>(rkyv),
             "get_announced_storage_locations" => rkyv_to_json::<(Vec<EthAddress>,)>(rkyv),
             "withdraw_dispatch_credit" => decode_withdrawal_input(rkyv),
+            "register_account_for" | "claim_pending_for" => decode_account_input(rkyv),
             "quote_dispatch" | "quote_dispatch_for_contract" => {
                 rkyv_to_json::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
                     .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv))
@@ -265,15 +295,18 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "dispatched_block_height"
             | "inserted_block_height"
             | "processed_block_height_at_index"
+            | "memory_bytes"
             | "pending_total" => rkyv_to_json_u64(rkyv),
             // u8 outputs
             "hook_type" | "decimals" => rkyv_to_json::<u8>(rkyv),
             // bool outputs
             "delivered" | "is_registered" => rkyv_to_json::<bool>(rkyv),
             // H256 outputs
-            "latest_dispatched_id" | "processed_at_index" | "message_id_at" | "root_at" => {
-                rkyv_to_json::<MessageId>(rkyv)
-            }
+            "latest_dispatched_id"
+            | "dispatched_id"
+            | "processed_at_index"
+            | "message_id_at"
+            | "root_at" => rkyv_to_json::<MessageId>(rkyv),
             // ContractId (= H256) outputs
             "default_ism"
             | "default_hook"
@@ -286,8 +319,6 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "wrapped_token"
             | "enrolled_router" => rkyv_to_json::<H256>(rkyv),
             "owner" => rkyv_to_json::<Option<H256>>(rkyv),
-            // Vec<u8> outputs
-            "dispatched_message" => rkyv_to_json::<Vec<u8>>(rkyv),
             // Vec<H256> outputs
             "hooks" | "message_ids" => rkyv_to_json::<Vec<H256>>(rkyv),
             // String outputs
@@ -710,7 +741,10 @@ mod tests {
                 .unwrap();
             let record = &decoded[0];
             assert_eq!(record["destination"].as_u64(), Some(u64::from(u32::MAX)));
-            assert_eq!(record["message_id"], serde_json::json!([0x11; 32].as_slice()));
+            assert_eq!(
+                record["message_id"],
+                serde_json::json!([0x11; 32].as_slice())
+            );
             for field in ["gas_limit", "payment", "block_height"] {
                 assert_eq!(record[field], serde_json::json!(value.to_string()));
             }
@@ -725,7 +759,10 @@ mod tests {
                 .unwrap();
             assert_eq!(decoded["gas_limit"], serde_json::json!(value.to_string()));
             assert_eq!(decoded["payment"], serde_json::json!(value.to_string()));
-            assert_eq!(decoded["message_id"], serde_json::json!([0x22; 32].as_slice()));
+            assert_eq!(
+                decoded["message_id"],
+                serde_json::json!([0x22; 32].as_slice())
+            );
         }
     }
 

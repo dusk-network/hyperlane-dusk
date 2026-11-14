@@ -300,14 +300,12 @@ cmd_to_evm() {
     # Step 3: Read dispatched message
     step "Reading dispatched message from Dusk Mailbox..."
     local dispatched_msg_json dispatched_msg dispatched_len
-    dispatched_msg_json=$("$DUSK_TX" query \
+    dispatched_msg_json=$("$DUSK_TX" dispatched-message \
         --rues-url "$DUSK_RUES_URL" \
-        --contract "$DUSK_MAILBOX" \
-        --method dispatched_message \
-        --arg-u32 "$dusk_nonce_before" \
-        --return-type bytes 2>&1) || fail "Failed to read dispatched message"
+        --mailbox "$DUSK_MAILBOX" \
+        --nonce "$dusk_nonce_before" 2>&1) || fail "Failed to read dispatched message"
 
-    dispatched_msg=$(echo "$dispatched_msg_json" | jq -r '.value')
+    dispatched_msg=$(echo "$dispatched_msg_json" | jq -r '.message')
     dispatched_len=$(echo "$dispatched_msg_json" | jq -r '.length')
     ok "Dispatched message read (${dispatched_len} bytes)"
 

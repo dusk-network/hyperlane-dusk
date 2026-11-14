@@ -160,8 +160,17 @@ mod warp_drc20_collateral {
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpCollateral: register_account requires Moonlight TX");
-            let h = message::keccak256(&pk.to_bytes());
-            self.registered_accounts.insert(h, pk);
+            self.register_account_for(pk);
+        }
+
+        /// Register `account` so inbound transfers to `keccak256(account)`
+        /// are paid to it directly.
+        ///
+        /// Anyone can register any key: the mapping is fixed by the key
+        /// itself, so the caller chooses nothing but who pays the gas.
+        pub fn register_account_for(&mut self, account: AccountPublicKey) {
+            let h = message::keccak256(&account.to_bytes());
+            self.registered_accounts.insert(h, account);
             abi::emit(
                 events::AccountRegistered::TOPIC,
                 events::AccountRegistered { account_hash: h },
@@ -182,6 +191,17 @@ mod warp_drc20_collateral {
                 abi::public_sender().expect("WarpCollateral: claim_pending requires Moonlight TX");
             let h = message::keccak256(&pk.to_bytes());
             self.claim_pending_to(h, Account::moonlight(&pk));
+        }
+
+        /// Register `account` and pay it the tokens escrowed for
+        /// `keccak256(account)`.
+        ///
+        /// Anyone can call this and pay its gas, so a recipient that holds no
+        /// DUSK can still receive. The tokens only ever go to `account`.
+        pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
+            self.register_account_for(account);
+            let h = message::keccak256(&account.to_bytes());
+            self.claim_pending_to(h, Account::moonlight(&account));
         }
 
         /// Claim pending wrapped DRC20 tokens for the calling contract.
@@ -208,10 +228,11 @@ mod warp_drc20_collateral {
             self.pending_total
         }
 
-        /// Deployment compatibility version including dispatch-credit withdrawal.
+        /// Deployment compatibility version. Version 4 adds
+        /// `register_account_for` and `claim_pending_for`.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            3
+            4
         }
 
         // =================================================================

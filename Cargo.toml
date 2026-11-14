@@ -8,6 +8,7 @@ members = [
     "contracts/ism-multisig",
     "contracts/validator-announce",
     "contracts/test-recipient",
+    "contracts/plain-recipient",
     "contracts/test-mock",
     "contracts/reentrant-hook",
     "contracts/redteam-attacker",

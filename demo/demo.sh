@@ -553,14 +553,12 @@ ok "Dusk WarpDrc20 supply: $DUSK_SUPPLY_BURN (after burning 1 token)"
 
 # Read the dispatched message from Dusk Mailbox
 step "Dusk: Reading dispatched message from Mailbox..."
-DISPATCHED_MSG_JSON=$("$DUSK_TX" query \
+DISPATCHED_MSG_JSON=$("$DUSK_TX" dispatched-message \
     --rues-url "$DUSK_RUES_URL" \
-    --contract "$DUSK_MAILBOX" \
-    --method dispatched_message \
-    --arg-u32 "$DUSK_NONCE_BEFORE" \
-    --return-type bytes 2>/dev/null) || fail "Failed to read dispatched message"
+    --mailbox "$DUSK_MAILBOX" \
+    --nonce "$DUSK_NONCE_BEFORE" 2>/dev/null) || fail "Failed to read dispatched message"
 
-DISPATCHED_MSG=$(echo "$DISPATCHED_MSG_JSON" | jq -r '.value')
+DISPATCHED_MSG=$(echo "$DISPATCHED_MSG_JSON" | jq -r '.message')
 DISPATCHED_LEN=$(echo "$DISPATCHED_MSG_JSON" | jq -r '.length')
 ok "Dispatched message read (${DISPATCHED_LEN} bytes)"
 

@@ -408,33 +408,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Merkle tree count should be 1 after dispatch"
     );
 
-    // Test dispatched_message query (agent indexer path)
+    // The Mailbox stores the ID of each dispatched message; the message itself
+    // is in the Dispatch event (agent indexer path).
     let nonce_to_query: u32 = 0;
-    let dispatched_msg: Vec<u8> = client
-        .contract_query(&mailbox_bytes, "dispatched_message", &nonce_to_query)
+    let dispatched_id: [u8; 32] = client
+        .contract_query(&mailbox_bytes, "dispatched_id", &nonce_to_query)
         .await?;
-    println!("  dispatched_message(0): {} bytes", dispatched_msg.len());
-    assert!(
-        !dispatched_msg.is_empty(),
-        "Dispatched message should not be empty"
-    );
-
-    // Decode the message using hyperlane-dusk-types
-    if let Some(msg) = hyperlane_dusk_types::message::decode(&dispatched_msg) {
-        println!("  Decoded message:");
-        println!("    version: {}", msg.version);
-        println!("    nonce: {}", msg.nonce);
-        println!("    origin: {}", msg.origin);
-        println!("    sender: {}", hex::encode(&msg.sender[..8]));
-        println!("    destination: {}", msg.destination);
-        println!("    recipient: {}", hex::encode(&msg.recipient[..8]));
-        println!("    body length: {}", msg.body.len());
-        assert_eq!(msg.nonce, 0);
-        assert_eq!(msg.origin, local_domain);
-        assert_eq!(msg.destination, 1); // Ethereum
-    } else {
-        return Err("Failed to decode dispatched message".into());
-    }
+    println!("  dispatched_id(0): {}", hex::encode(dispatched_id));
+    assert_ne!(dispatched_id, [0u8; 32], "Dispatched ID should not be zero");
 
     // Test latest_checkpoint on merkle tree hook
     let checkpoint: ([u8; 32], u32) = client
@@ -492,27 +473,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert_eq!(new_nonce, 2, "Nonce should be 2 after second dispatch");
 
-    // Verify the second dispatched message
+    // The second dispatch is the latest one
     let nonce_to_query: u32 = 1;
-    let dispatched_msg2: Vec<u8> = client
-        .contract_query(&mailbox_bytes, "dispatched_message", &nonce_to_query)
+    let dispatched_id2: [u8; 32] = client
+        .contract_query(&mailbox_bytes, "dispatched_id", &nonce_to_query)
         .await?;
-    if let Some(msg) = hyperlane_dusk_types::message::decode(&dispatched_msg2) {
-        println!("  Decoded direct dispatch message:");
-        println!("    sender (keccak(BLS pk)): {}", hex::encode(&msg.sender));
-        println!("    destination: {}", msg.destination);
-        assert_eq!(msg.nonce, 1);
-        assert_eq!(msg.destination, 2);
-        // Sender should be keccak256 of the BLS public key, not a ContractId
-        assert_ne!(msg.sender, [0u8; 32], "Sender should be non-zero");
-        assert_ne!(
-            msg.sender,
-            test_recipient_id.to_bytes(),
-            "Sender should NOT be TestRecipient (this is a direct call)"
-        );
-    } else {
-        return Err("Failed to decode second dispatched message".into());
-    }
+    let latest: [u8; 32] = client
+        .contract_query(&mailbox_bytes, "latest_dispatched_id", &())
+        .await?;
+    assert_eq!(dispatched_id2, latest, "nonce 1 should be the latest dispatch");
 
     println!("\n=== ALL E2E TESTS PASSED ===");
     Ok(())

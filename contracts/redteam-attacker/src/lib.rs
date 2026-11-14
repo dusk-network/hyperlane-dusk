@@ -71,6 +71,8 @@ mod redteam_attacker {
         posts: u32,
         /// Native DUSK received through payment or escrow callbacks.
         received: u64,
+        /// Busy-loop rounds run by `interchain_security_module`.
+        ism_burn: u64,
     }
 
     impl RedteamAttacker {
@@ -86,6 +88,7 @@ mod redteam_attacker {
                 handled: 0,
                 posts: 0,
                 received: 0,
+                ism_burn: 0,
             }
         }
 
@@ -100,6 +103,12 @@ mod redteam_attacker {
         pub fn set_returns(&mut self, quote_fee: u64, ism: ContractId) {
             self.quote_fee = quote_fee;
             self.ism = ism;
+        }
+
+        /// Sets how many busy-loop rounds the ISM getter runs, to make it
+        /// expensive.
+        pub fn set_ism_burn(&mut self, rounds: u64) {
+            self.ism_burn = rounds;
         }
 
         /// Runs `actions` now, panicking if any call fails and `strict` is set.
@@ -152,6 +161,11 @@ mod redteam_attacker {
 
         /// Recipient ISM lookup callback.
         pub fn interchain_security_module(&mut self) -> ContractId {
+            let mut acc = 0u64;
+            for round in 0..self.ism_burn {
+                acc = core::hint::black_box(acc.wrapping_mul(31).wrapping_add(round));
+            }
+            core::hint::black_box(acc);
             self.fire(ISM_LOOKUP);
             self.ism
         }

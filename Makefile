@@ -11,7 +11,22 @@
 WASM_TARGET := wasm32-unknown-unknown
 CONTRACT_FEATURE := contract
 STACK_SIZE := 65536
-CONTRACTS := mailbox merkle-tree-hook aggregation-hook ism-multisig validator-announce test-recipient test-mock reentrant-hook redteam-attacker protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
+
+# Contract WASMs must be byte-for-byte reproducible: a contract ID is derived
+# from its bytecode, so anyone should be able to rebuild a release and check a
+# deployed ID. Panic locations embed source paths, so map the machine-specific
+# prefixes (Cargo home, the toolchain's library sources, the Rusk checkout and
+# this checkout) to fixed ones.
+CARGO_HOME ?= $(HOME)/.cargo
+RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
+RUSK_DIR := $(abspath $(CURDIR)/../../rusk-private)
+WASM_REMAP := \
+	--remap-path-prefix=$(CARGO_HOME)/registry/src/= \
+	--remap-path-prefix=$(CARGO_HOME)/git/checkouts/=git/ \
+	--remap-path-prefix=$(RUST_SYSROOT)/lib/rustlib/src/rust/=rust/ \
+	--remap-path-prefix=$(RUSK_DIR)/=rusk/ \
+	--remap-path-prefix=$(CURDIR)/=
+CONTRACTS := mailbox merkle-tree-hook aggregation-hook ism-multisig validator-announce test-recipient plain-recipient test-mock reentrant-hook redteam-attacker protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
 CONTRACT_CHECK_PACKAGES := $(addprefix -p hyperlane-dusk-,$(CONTRACTS))
 TARGET_DIR := target/contract
 PRODUCTION_CLIPPY_PACKAGES := \
@@ -27,8 +42,10 @@ PRODUCTION_CLIPPY_PACKAGES := \
 	-p hyperlane-dusk-warp-drc20-collateral \
 	-p hyperlane-dusk-warp-native
 
-# Build all contract WASMs. Symbols are stripped: the WASM name section is
-# debug-only, and deployment is charged per byte.
+# Build all contract WASMs. Symbols are stripped (the WASM name section is
+# debug-only, and deployment is charged per byte), and each contract is built
+# as one codegen unit with LTO, which is smaller and doesn't depend on how
+# the build is scheduled.
 .PHONY: all
 all: $(CONTRACTS)
 
@@ -42,8 +59,11 @@ $(CONTRACTS): rusk-version
 	@echo "Building $@..."
 	@CARGO_TARGET_DIR=$(TARGET_DIR) \
 		CARGO_PROFILE_RELEASE_STRIP=symbols \
-		RUSTFLAGS="$(RUSTFLAGS) -C link-args=-zstack-size=$(STACK_SIZE)" \
+		CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+		CARGO_PROFILE_RELEASE_LTO=true \
+		RUSTFLAGS="$(RUSTFLAGS) -C link-args=-zstack-size=$(STACK_SIZE) $(WASM_REMAP)" \
 		cargo build -Z build-std=core,alloc \
+			--locked \
 			--release \
 			--features $(CONTRACT_FEATURE) \
 			--target $(WASM_TARGET) \

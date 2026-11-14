@@ -48,7 +48,7 @@ mod mailbox {
     use alloc::vec::Vec;
 
     use dusk_bytes::Serializable;
-    use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
+    use dusk_core::abi::{self, ContractError, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
     use dusk_core::transfer::{
         ContractToAccount, ContractToContract, ReceiveFromContract, TRANSFER_CONTRACT,
@@ -65,6 +65,17 @@ mod mailbox {
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
+
+    /// Gas allowed for a recipient's `interchain_security_module` getter.
+    const RECIPIENT_ISM_LOOKUP_GAS: u64 = 1_000_000;
+
+    /// Size of a wasm32 memory page.
+    const WASM_PAGE_BYTES: u64 = 64 * 1024;
+
+    /// Memory size at which `dispatch` stops accepting messages: 3 GiB of
+    /// the 4 GiB a wasm32 contract can address. Memory never shrinks, so the
+    /// rest stays free for `process` and claims, which keep working.
+    const DISPATCH_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
 
     // =====================================================================
     // State
@@ -92,8 +103,10 @@ mod mailbox {
         owner: Option<H256>,
         /// Native DUSK fee credits keyed by encoded message sender identity.
         fee_credits: BTreeMap<H256, u64>,
-        /// Encoded messages indexed by nonce (for off-chain agent indexing).
-        dispatched_messages: Vec<Vec<u8>>,
+        /// Message IDs indexed by nonce (for off-chain agent indexing). The
+        /// message itself is only in the `Dispatch` event: storing every
+        /// message would let anyone fill this contract's memory cheaply.
+        dispatched_ids: Vec<MessageId>,
         /// Dispatch block heights indexed by nonce (for off-chain agent indexing).
         dispatched_block_heights: Vec<u64>,
         /// Message IDs in delivery order (for off-chain agent indexing).
@@ -120,7 +133,7 @@ mod mailbox {
                 delivered: BTreeMap::new(),
                 owner: None,
                 fee_credits: BTreeMap::new(),
-                dispatched_messages: Vec::new(),
+                dispatched_ids: Vec::new(),
                 dispatched_block_heights: Vec::new(),
                 processed_ids: Vec::new(),
                 processed_block_heights: Vec::new(),
@@ -320,6 +333,10 @@ mod mailbox {
                 "Mailbox: selected hook cannot equal required hook"
             );
             assert!(!self.dispatching, "Mailbox: dispatch reentrancy");
+            assert!(
+                Self::memory_bytes_used() < DISPATCH_MEMORY_LIMIT,
+                "Mailbox: storage full, dispatch is closed"
+            );
             self.dispatching = true;
 
             // Determine the sender: the contract that called us.
@@ -367,7 +384,7 @@ mod mailbox {
 
             // Effects
             self.latest_dispatched_id = id;
-            self.dispatched_messages.push(encoded.clone());
+            self.dispatched_ids.push(id);
             self.dispatched_block_heights.push(abi::block_height());
             self.nonce = self.nonce.checked_add(1).expect("Mailbox: nonce overflow");
 
@@ -524,11 +541,19 @@ mod mailbox {
             self.delivered.get(&id).map_or(0, |d| d.block_height)
         }
 
-        /// Returns the encoded dispatched message at the given nonce.
+        /// Returns the ID of the message dispatched at `nonce`. The message
+        /// itself is in that block's `Dispatch` event.
         ///
         /// Panics if the nonce is out of range.
-        pub fn dispatched_message(&self, nonce: u32) -> Vec<u8> {
-            self.dispatched_messages[nonce as usize].clone()
+        pub fn dispatched_id(&self, nonce: u32) -> MessageId {
+            self.dispatched_ids[nonce as usize]
+        }
+
+        /// Returns the size of this contract's memory in bytes. It only
+        /// grows; `dispatch` closes at [`DISPATCH_MEMORY_LIMIT`].
+        #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
+        pub fn memory_bytes(&self) -> u64 {
+            Self::memory_bytes_used()
         }
 
         /// Returns the block height at which the message at `nonce` was dispatched.
@@ -584,11 +609,12 @@ mod mailbox {
 
         /// Returns the deployment compatibility version expected by tooling.
         ///
-        /// Version 3 combines the dispatch reentrancy guard with the
-        /// dispatch-credit withdrawal ABI.
+        /// Version 4 stores message IDs instead of messages
+        /// (`dispatched_id` replaces `dispatched_message`) and bounds the
+        /// recipient ISM lookup.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            3
+            4
         }
 
         /// Compute a quote for dispatching a message.
@@ -821,20 +847,34 @@ mod mailbox {
                 .expect(payment_error);
         }
 
+        /// Current size of the contract's linear memory.
+        fn memory_bytes_used() -> u64 {
+            core::arch::wasm32::memory_size(0) as u64 * WASM_PAGE_BYTES
+        }
+
         /// Resolve the ISM for a recipient.
+        ///
+        /// The lookup runs with a fixed gas allowance. A failed inter-contract
+        /// call is charged its whole allowance, so an unbounded lookup on a
+        /// recipient without `interchain_security_module` would burn most of
+        /// the transaction's gas. A recipient that doesn't export the getter,
+        /// or whose getter panics, gets the default ISM, as in Solidity. One
+        /// that runs out of gas does not: falling back then would let the
+        /// submitter's gas limit choose the ISM.
         fn resolve_recipient_ism(&self, recipient: ContractId) -> ContractId {
-            // Try to query the recipient for its ISM.
-            let result: Result<ContractId, _> =
-                abi::call(recipient, "interchain_security_module", &());
-
-            if let Ok(ism) = result {
-                if ism != ZERO_CONTRACT {
-                    return ism;
+            let result: Result<ContractId, ContractError> = abi::call_with_limit(
+                recipient,
+                "interchain_security_module",
+                &(),
+                RECIPIENT_ISM_LOOKUP_GAS,
+            );
+            match result {
+                Ok(ism) if ism != ZERO_CONTRACT => ism,
+                Err(ContractError::OutOfGas) => {
+                    panic!("Mailbox: recipient ISM lookup ran out of gas")
                 }
+                _ => self.default_ism,
             }
-
-            // Fall back to default ISM.
-            self.default_ism
         }
 
         /// Panics if the caller is not the owner.

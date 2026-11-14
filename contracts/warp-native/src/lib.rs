@@ -149,8 +149,18 @@ mod warp_native {
         pub fn register_account(&mut self) {
             let pk =
                 abi::public_sender().expect("WarpNative: register_account requires Moonlight TX");
-            let h = message::keccak256(&pk.to_bytes());
-            self.registered_accounts.insert(h, pk);
+            self.register_account_for(pk);
+        }
+
+        /// Register `account` so inbound transfers to `keccak256(account)`
+        /// are paid to it directly.
+        ///
+        /// Anyone can register any key: the mapping is fixed by the key
+        /// itself, so the caller chooses nothing but who pays the gas. This
+        /// lets a sponsor set up a recipient that holds no DUSK yet.
+        pub fn register_account_for(&mut self, account: AccountPublicKey) {
+            let h = message::keccak256(&account.to_bytes());
+            self.registered_accounts.insert(h, account);
             abi::emit(
                 events::AccountRegistered::TOPIC,
                 events::AccountRegistered { account_hash: h },
@@ -168,6 +178,22 @@ mod warp_native {
         /// Transfers any escrowed DUSK to the caller's account.
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender().expect("WarpNative: claim_pending requires Moonlight TX");
+            self.claim_pending_to(pk);
+        }
+
+        /// Register `account` and pay it the DUSK escrowed for
+        /// `keccak256(account)`.
+        ///
+        /// Anyone can call this and pay its gas, so a recipient whose only
+        /// DUSK is in escrow can still receive it. The DUSK only ever goes to
+        /// `account`.
+        pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
+            self.register_account_for(account);
+            self.claim_pending_to(account);
+        }
+
+        /// Pay the DUSK escrowed for `keccak256(pk)` to `pk`.
+        fn claim_pending_to(&mut self, pk: AccountPublicKey) {
             let h = message::keccak256(&pk.to_bytes());
 
             let amount = self.pending_transfers.remove(&h).unwrap_or(0);
@@ -238,10 +264,11 @@ mod warp_native {
             self.pending_total
         }
 
-        /// Deployment compatibility version including dispatch-credit withdrawal.
+        /// Deployment compatibility version. Version 3 adds
+        /// `register_account_for` and `claim_pending_for`.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            2
+            3
         }
 
         // =================================================================
