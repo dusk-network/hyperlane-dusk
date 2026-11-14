@@ -49,14 +49,17 @@ implemented. The agents return an explicit error if a deployment points at one.
 - **Addresses.** A contract's 32-byte `ContractId` is used directly as its
   Hyperlane `H256` address. A user account is `keccak256` of its BLS public
   key.
-- **Receiving tokens.** A Dusk account must call `register_account` on a warp
-  route once, so the route can map the recipient hash back to a BLS key.
-  Transfers to an unregistered hash are held in escrow until that key
-  registers and calls `claim_pending`.
-- **Paying fees.** Dusk has no `msg.value`. Senders prepay Mailbox credit with
-  `fund_dispatch` (an exact Moonlight deposit), and each dispatch spends it.
-  Unused credit can be withdrawn by the payer. Warp routes expose an
-  owner-only withdrawal of their own credit.
+- **Receiving tokens.** A warp route has to map a recipient hash back to a
+  BLS key, so an account is registered on the route once. Transfers to an
+  unregistered hash wait in escrow until it is. Anyone can register an
+  account or claim its escrow for it (`register_account_for`,
+  `claim_pending_for`) and pay the gas, so a recipient with no DUSK yet can
+  still receive.
+- **Paying fees.** Dusk has no `msg.value`. A warp transfer's Moonlight
+  deposit includes the quoted dispatch fee (for native DUSK, the amount plus
+  the fee), and the route passes the fee on to the Mailbox. Contracts and
+  accounts that call `dispatch` directly prepay Mailbox credit with
+  `fund_dispatch` instead, and can withdraw what they don't use.
 - **Reentrancy.** The Dusk VM allows a callee to call back into its caller.
   The Mailbox holds an explicit guard across hook calls during dispatch, and
   marks a message delivered before any external call during `process`.

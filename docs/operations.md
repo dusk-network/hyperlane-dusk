@@ -55,13 +55,19 @@ bash scripts/secret-hygiene-check.sh <paths...>
 
 ## Dispatch fees
 
-Dusk has no `msg.value`, so every sender pays dispatch fees from credit
-prepaid to the Mailbox. Warp routes are senders too, and each route needs
-credit before users can send through it.
+Dusk has no `msg.value`. Warp routes charge each transfer its dispatch fee:
+`transfer_remote` takes the quoted fee in the sender's Moonlight deposit and
+passes it on to the Mailbox, and reverts if the route's own credit changes.
+`dusk-tx transfer-remote` quotes the fee and attaches it. Routes therefore
+need no prepaid credit.
+
+Senders that call the Mailbox's `dispatch` directly (for example
+TestRecipient, or an application contract) pay from credit prepaid to the
+Mailbox:
 
 ```bash
-# Prepay credit for a route (anyone can fund; the payer named owns the credit)
-dusk-tx fund-dispatch --mailbox <mailbox> --payer <route> --amount <lux>
+# Prepay credit (anyone can fund; the payer named owns the credit)
+dusk-tx fund-dispatch --mailbox <mailbox> --payer <sender> --amount <lux>
 
 # Withdraw your own unused credit, optionally to a treasury account
 dusk-tx withdraw-dispatch --target <mailbox> --amount <lux> \
@@ -71,8 +77,8 @@ dusk-tx withdraw-dispatch --target <mailbox> --amount <lux> \
 dusk-tx withdraw-dispatch --target <route> --amount <lux> --expected-chain-id <id>
 ```
 
-To decide before launch: who funds each route, the target balance, the
-low-credit alert threshold, and which treasury account receives withdrawals.
+Withdraw credit that is no longer needed, such as credit funded for a route
+by an older deployment script.
 
 ProtocolFee and IGP hold the DUSK they collect until the owner calls `claim`,
 which pays the configured beneficiary.

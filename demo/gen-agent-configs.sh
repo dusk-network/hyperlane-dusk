@@ -155,9 +155,10 @@ if [ "${AGENT_CONFIG_VALIDATE_ONLY:-0}" = "1" ]; then
     exit 0
 fi
 
-# Gas settings for Dusk tx submission (passed through to dusk-tx).
+# Gas settings for Dusk tx submission (passed through to dusk-tx). Calls
+# only need a gas price above zero; 2000 is the minimum for deploys only.
 DUSK_GAS_LIMIT="${DUSK_GAS_LIMIT:-30000000}"
-DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-2000}"
+DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-1}"
 
 # Keep the EVM relayer submitter and validator identities independently
 # configurable. Existing callers remain compatible, while the live E2E can

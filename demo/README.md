@@ -371,8 +371,9 @@ dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc2
     --igp-domain-config 31338:50000:10000000000:1 \
     --deploy-warp-native --warp-collateral-token warp-drc20
 
-# Pre-fund value-backed Mailbox dispatch fees for a route
-dusk-tx fund-dispatch --mailbox <hex> --payer <route-hex> --amount <lux>
+# Pre-fund Mailbox dispatch credit for a direct dispatcher (warp routes
+# charge each transfer's fee to its sender instead)
+dusk-tx fund-dispatch --mailbox <hex> --payer <sender-hex> --amount <lux>
 
 # Withdraw a Moonlight account's own unused credit to the signing account
 dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux> \

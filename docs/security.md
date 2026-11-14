@@ -18,6 +18,12 @@ and which design decisions are still open.
   `deposit` field is how DUSK moves from an account into a contract.
 - **Overflow.** The workspace sets `overflow-checks = true` for release
   builds. Security-relevant arithmetic also uses explicit checked operations.
+- **Failed transactions pay their whole gas limit**, and so does a failed
+  inter-contract call within a transaction. Bound calls into untrusted
+  contracts with `call_with_limit`, and check before submitting.
+- **Contract memory.** A wasm32 contract's state is its linear memory: at
+  most 4 GiB, and it never shrinks. Anything a caller can make a contract
+  store must be bounded or priced.
 - **Host queries.** All on-chain hashing uses the `keccak256` host query.
   `ism-multisig` and `validator-announce` use `secp256k1_recover`. Both must be
   active on the target network.
@@ -28,12 +34,15 @@ and which design decisions are still open.
 |---|---|
 | Caller identity | No `msg.sender`. A shared resolver maps a root Moonlight call to `keccak256(public_sender)` and a nested call to the caller's `ContractId`, both as `H256`. All owner checks use this. |
 | Native value | No `msg.value`. WarpNative and Mailbox fee funding check the exact Moonlight deposit through the transfer contract. Hook payments use authenticated contract-to-contract transfers. |
-| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`). The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. |
+| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. |
 | Account recipients | An account is `keccak256(bls_public_key)` and must `register_account` on a route before it can receive. Transfers to unregistered recipients go to escrow, claimable only by the matching key. |
 | Reverts | `assert!` and `expect(...)` panics instead of custom errors. |
 | Upgrades | None. Contract IDs are deterministic; an upgrade is a new deployment. Redeploying over existing state is refused. |
 | Multisig metadata | Stricter than Solidity: validators must be sorted, the threshold valid, and the signature section an exact multiple of 65 bytes. |
 | Default ISM | One MessageIdMultisig ISM verifies messages from every origin, since Routing ISMs are unsupported. Any origin whose checkpoints the configured validators sign is trusted by the Mailbox; warp routes still accept only their enrolled router per origin. |
+| Recipient ISM lookup | Runs with 1M gas. A recipient without `interchain_security_module`, or whose getter panics, gets the default ISM, as in Solidity. A getter that runs out of gas fails the delivery instead, so the submitter's gas limit can't pick the ISM. |
+| Dispatched messages | The Mailbox stores each message's ID and block height, not the message. Agents read the message from the finalized `Dispatch` event and check it against the stored ID. `dispatch` closes once the Mailbox's memory reaches 3 GiB of its 4 GiB; `process` and claims keep working. |
+| Escrow claims | Anyone can call `claim_pending_for(key)` or `register_account_for(key)` and pay the gas. The tokens only ever go to `key`, whose hash must be the escrowed recipient. |
 | Unsupported | Routing, Aggregation and CCIP-read ISMs; rate-limited hooks and ISMs. |
 
 ## Issues found and fixed
@@ -54,6 +63,12 @@ and which design decisions are still open.
 | MEDIUM-5 | TestRecipient, which `deploy-hyperlane` always deploys, let anyone set its ISM, for example to the always-true TestMock. Unsigned messages to it were then delivered by the real Mailbox. | The setter is removed; TestRecipient always uses the Mailbox's default ISM. |
 | LOW-3 | WarpDrc20 let holders transfer to Phoenix principals, which no call can ever spend from. | Phoenix recipients are rejected. |
 | LOW-2 | The multisig ISM and ValidatorAnnounce accepted signatures OpenZeppelin rejects (`v` of 0/1, high `s`), because the host query does. No double counting was possible. | Both require canonical signatures (`types::signature::is_canonical`). |
+| HIGH-7 | The Mailbox stored every dispatched message in its wasm32 memory, which is capped at 4 GiB and never shrinks. About 57k maximum-size dispatches (a few hundred DUSK) would fill it, after which `process` could not allocate either and the bridge stopped both ways. | Only the message ID is stored, and `dispatch` closes at 3 GiB (`memory_bytes` reports usage). |
+| MEDIUM-6 | The Mailbox looked up a recipient's ISM with an unbounded call. A recipient without the getter was charged about 93% of the remaining gas, roughly 26M of a 30M transaction. | 1M gas allowance; running out of it fails the delivery rather than falling back. |
+| MEDIUM-7 | A recipient whose only DUSK was in escrow couldn't pay gas to claim it, so every first-time Dusk user needed DUSK from elsewhere. | `claim_pending_for` / `register_account_for`, payable by anyone. |
+| MEDIUM-8 | Dusk charges a failed transaction its whole gas limit. The relayer submitted `process` without a pre-check, so a message whose delivery always fails (for example to the zero recipient) cost 30M gas on every retry. | The relayer simulates `process` as a read-only query first (hyperlane-monorepo). |
+| LOW-4 | Contract WASMs embedded the builder's absolute paths and weren't reproducible, so nobody could rebuild a release and check a deployed contract ID. | Paths remapped; one codegen unit with LTO (also 30–45% smaller). |
+| LOW-5 | `dusk-tx transfer-remote` accepted any 32-byte recipient. A right-padded EVM address passed Dusk's checks, the EVM token rejected it, and the DUSK stayed locked. | `dusk-tx` takes a 20-byte address and rejects non-zero upper bytes unless `--raw-recipient`. |
 
 The fixes have regression tests in `tests/tests/integration.rs`, except the
 overflow paths listed under known limitations. HIGH-5 and HIGH-6 use the
@@ -119,14 +134,33 @@ Accepted:
   synthetic with a 10-token supply is a demo only. Tests:
   `redteam_synthetic_*` (ignored).
 - **Contract IDs are predictable during deployment.** A contract ID depends on
-  bytecode, owner key and nonce, and `dusk-tx` starts at nonce 0. Some
-  contracts are initialised with the IDs of contracts deployed after them.
-  Someone who knows the release WASMs and the deployer's public key can
-  deploy first at one of those IDs. `dusk-tx` then aborts and the deployment
-  has to be redone with a new key: a denial of service, not a theft.
-- The Mailbox stores every dispatched message and processed ID, so its state
-  grows without bound. Agents read messages from it. This mirrors the
-  Solidity Mailbox.
+  bytecode, owner key and nonce, and Rusk doesn't check that the owner signed
+  the deploy. Some contracts are initialised with the IDs of contracts
+  deployed after them. Anyone who sees the deployer's first transaction can
+  deploy at the later IDs first; `dusk-tx` then aborts, and a new key can be
+  front-run the same way. A denial of service, not a theft. The fix for
+  mainnet is an owner-signed check in every `init`.
+- **Undeliverable messages lock funds.** A transfer whose delivery always
+  fails stays undelivered, as in Solidity Hyperlane. Examples: an EVM-side
+  transfer to the zero recipient; a Dusk-side transfer to a 32-byte recipient
+  the EVM token rejects. Tokens burned on the EVM side, or DUSK locked in the
+  route, then belong to nobody. Escrow under a hash that no key produces
+  (or for a contract that never calls `claim_pending_contract`) is locked the
+  same way. Nothing expires or refunds.
+- **Simulation is detectable.** The relayer simulates `process` as a query,
+  where `public_sender()` is `None`, the gas limit is the block's and the
+  height is the tip's. A hostile recipient can pass the simulation and fail
+  the real delivery, costing the relayer the transaction's gas limit, as gas
+  estimation can be fooled on EVM. Enforce IGP gas payments for Dusk
+  destinations on mainnet.
+- **Contracts can't bridge.** `transfer_remote` takes its DUSK and fees as the
+  transaction's deposit, which only the transaction's target contract can
+  claim. A smart wallet or router contract calling a warp route always
+  reverts.
+- The Mailbox keeps the ID and block height of every dispatched message and
+  every processed message ID, about 100 bytes per message, plus 72 bytes per
+  message in the Merkle hook. That is tens of millions of messages before the
+  3 GiB dispatch limit, but the limit is permanent: monitor `memory_bytes`.
 - `dispatch` is permissionless, as in Hyperlane. Security comes from the
   destination ISM.
 - Dispatch credit can only be withdrawn to Moonlight accounts, not to

@@ -6,8 +6,8 @@
 # Deploys the Dusk contract set plus a native DUSK warp route on Dusk, and on
 # an EVM chain that already runs Hyperlane core contracts (Sepolia by
 # default) deploys a synthetic DUSK token and the security module that checks
-# Dusk-origin messages. Then enrolls the routes with each other, funds the
-# route's dispatch credit and writes agent configs.
+# Dusk-origin messages. Then enrolls the routes with each other and writes
+# agent configs.
 #
 # Usage:
 #   cp deploy/testnet.env.example deploy/testnet.env   # then edit
@@ -30,6 +30,8 @@ ENV_FILE="${TESTNET_ENV:-$DUSK_DIR/deploy/testnet.env}"
 source "$ENV_FILE"
 
 DUSK_TX="${DUSK_TX:-$DUSK_DIR/target/release/dusk-tx}"
+AGENT_STATE_DIR="${AGENT_STATE_DIR:-/var/lib/hyperlane}"
+DUSK_SIGNER_KEY_FILE="${DUSK_SIGNER_KEY_FILE:-/run/secrets/dusk-signer.key}"
 WASM_DIR="${WASM_DIR:-$DUSK_DIR/target/contract/wasm32-unknown-unknown/release}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
 STATE="$OUT_DIR/deployment.json"
@@ -60,6 +62,14 @@ state_set() {
 }
 
 rues_post() { curl -sf -m 30 -X POST "${DUSK_RUES_URL%/}$1" ${2:+--data "$2"}; }
+# The chain ID transactions are signed for, from the transfer contract.
+# /on/node/info reports null on nodes started without a network ID.
+dusk_chain_id() {
+    local id
+    id="$(curl -sf -m 30 -X POST -H 'Content-Type: application/octet-stream' \
+        "${DUSK_RUES_URL%/}/on/contracts:$TRANSFER_CONTRACT/chain_id" | od -An -tu1 | tr -d ' \n')"
+    [[ "$id" =~ ^[0-9]+$ ]] && printf '%s' "$id"
+}
 dusk_query() { "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" "$@"; }
 dusk_tx() { DUSK_CONSENSUS_PASSWORD="$DUSK_CONSENSUS_PASSWORD" "$DUSK_TX" "$@"; }
 evm_call() { cast call "$@" --rpc-url "$EVM_RPC"; }
@@ -73,18 +83,20 @@ sorted_addresses() {
 
 preflight_dusk() {
     require DUSK_RUES_URL DUSK_EXPECTED_CHAIN_ID DUSK_DOMAIN
-    local info height
+    local info height chain_id
     info="$(rues_post /on/node/info)" || fail "Dusk node at $DUSK_RUES_URL is unreachable"
     height="$(rues_post /on/graphql/query 'query { block(height: -1) { header { height } } }' \
         | jq -er '.block.header.height')" || fail "Dusk node did not report a block height"
-    [ "$(jq -r '.chain_id' <<<"$info")" = "$DUSK_EXPECTED_CHAIN_ID" ] \
-        || fail "Dusk node reports chain ID $(jq -r '.chain_id' <<<"$info"), expected $DUSK_EXPECTED_CHAIN_ID"
+    chain_id="$(dusk_chain_id)" || fail "Dusk node did not return the transfer contract's chain ID"
+    [ "$chain_id" = "$DUSK_EXPECTED_CHAIN_ID" ] \
+        || fail "Dusk node is on chain ID $chain_id, expected $DUSK_EXPECTED_CHAIN_ID"
     ok "Dusk node $(jq -r '.version_build' <<<"$info"), chain ID $DUSK_EXPECTED_CHAIN_ID, height $height"
 
     # Feature values are an activation height, or a list of [from, to) ranges.
+    # Check them at the next block, where our transactions will run.
     python3 - "$height" "$(jq -c '.vm_config.features' <<<"$info")" <<'PY' || exit 1
 import json, sys
-height = int(sys.argv[1])
+height = int(sys.argv[1]) + 1
 features = json.loads(sys.argv[2])
 def active(name):
     value = features.get(name)
@@ -96,7 +108,7 @@ def active(name):
 errors = []
 for name in ("HQ_KECCAK256", "HQ_SECP256K1_RECOVER"):
     if not active(name):
-        errors.append(f"host query {name} is not active at height {height}")
+        errors.append(f"host query {name} is not active at the next block ({height})")
 for name in ("DISABLE_3RD_PARTY", "DISABLE_WASM32"):
     if active(name):
         errors.append(f"{name} is active: third-party wasm32 contracts can't be deployed")
@@ -146,7 +158,19 @@ preflight_evm() {
 preflight_keys() {
     require DUSK_KEYS DUSK_CONSENSUS_PASSWORD EVM_DEPLOYER_KEY DUSK_ORIGIN_VALIDATORS DUSK_ORIGIN_THRESHOLD
     [ -f "$DUSK_KEYS" ] || fail "DUSK_KEYS file $DUSK_KEYS not found"
-    local deployer balance n
+    [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
+    [ -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ] || fail "contract WASMs not built (run: make all)"
+    local deployer balance n account need
+    account="$(dusk_tx account --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS")" \
+        || fail "Can't read the Dusk deployer account: $(jq -r '.error // empty' <<<"$account" 2>/dev/null)"
+    # Deploying the contracts costs about 300 DUSK, and each deploy needs
+    # gas limit x gas price in the balance up front. Afterwards only cheap
+    # calls remain.
+    if [ -n "$(state_get '.dusk.mailbox')" ]; then need=1000000000; else need=$((400 * 1000000000)); fi
+    balance="$(jq -r '.balance' <<<"$account")"
+    [ "$balance" -ge "$need" ] \
+        || fail "Dusk deployer $(jq -r '.address' <<<"$account") has $(jq -r '.balance_dusk' <<<"$account") DUSK, needs at least $((need / 1000000000))"
+    ok "Dusk deployer $(jq -r '.address' <<<"$account") has $(jq -r '.balance_dusk' <<<"$account") DUSK"
     deployer="$(cast wallet address --private-key "$EVM_DEPLOYER_KEY")" || fail "EVM_DEPLOYER_KEY is not a valid key"
     balance="$(cast balance "$deployer" --rpc-url "$EVM_RPC" --ether)"
     ok "EVM deployer $deployer has $balance ETH"
@@ -156,8 +180,6 @@ preflight_keys() {
     n="$(tr ',' '\n' <<<"$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")" | grep -c .)"
     [ "$EVM_ORIGIN_THRESHOLD" -ge 1 ] && [ "$EVM_ORIGIN_THRESHOLD" -le "$n" ] \
         || fail "EVM_ORIGIN_THRESHOLD must be between 1 and the $n EVM-origin validators"
-    [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
-    [ -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ] || fail "contract WASMs not built (run: make all)"
 }
 
 cmd_preflight() {
@@ -264,25 +286,29 @@ enroll_routers() {
     ok "Routes enrolled with each other"
 }
 
-fund_dispatch_credit() {
-    local mailbox route credit
+# A state file from another network, or from before a network reset, would
+# make `deploy` skip steps whose contracts don't exist.
+check_state_matches_chain() {
+    local mailbox token domain
+    [ -f "$STATE" ] || return 0
+    [ "$(lower "$(state_get '.evm.mailbox')")" = "" ] || [ "$(lower "$(state_get '.evm.mailbox')")" = "$(lower "$EVM_MAILBOX")" ] \
+        || fail "$STATE was made for EVM Mailbox $(state_get '.evm.mailbox'), not $EVM_MAILBOX. Use another DEPLOY_NAME or move it aside."
     mailbox="$(state_get '.dusk.mailbox')"
-    route="$(state_get '.dusk.warp_native')"
-    credit="$(dusk_query --contract "$mailbox" --method fee_credit --return-type u64 \
-        --arg-bytes32 "$route" | jq -r '.value')"
-    if [ "$credit" -lt "$DUSK_DISPATCH_CREDIT" ]; then
-        info "Funding $((DUSK_DISPATCH_CREDIT - credit)) LUX of dispatch credit for the native route..."
-        dusk_tx fund-dispatch --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-            --mailbox "$mailbox" --payer "$route" --amount "$((DUSK_DISPATCH_CREDIT - credit))" >/dev/null \
-            || fail "Funding dispatch credit failed"
-        credit="$(dusk_query --contract "$mailbox" --method fee_credit --return-type u64 \
-            --arg-bytes32 "$route" | jq -r '.value')"
+    if [ -n "$mailbox" ]; then
+        domain="$(dusk_query --contract "$mailbox" --method local_domain --return-type u32 2>/dev/null | jq -r '.value // empty')"
+        [ "$domain" = "$DUSK_DOMAIN" ] \
+            || fail "$STATE records Dusk Mailbox $mailbox, but it isn't on this chain with domain $DUSK_DOMAIN. The network was reset or the state is from elsewhere; move it aside and redeploy."
     fi
-    ok "Native route dispatch credit: $credit LUX"
+    token="$(state_get '.evm.token')"
+    if [ -n "$token" ]; then
+        [ "$(cast code "$token" --rpc-url "$EVM_RPC")" != "0x" ] \
+            || fail "$STATE records EVM token $token, but there is no contract there; move the state aside and redeploy."
+    fi
 }
 
 cmd_deploy() {
     cmd_preflight
+    check_state_matches_chain
     state_set --arg n "$EVM_CHAIN_NAME" --argjson d "$EVM_DOMAIN" --arg m "$EVM_MAILBOX" \
         --arg h "$EVM_MERKLE_TREE_HOOK" --arg va "$EVM_VALIDATOR_ANNOUNCE" --arg igp "${EVM_IGP:-}" \
         '.evm_chain = $n | .evm_domain = $d | .evm.mailbox = $m | .evm.merkle_tree_hook = $h
@@ -291,7 +317,6 @@ cmd_deploy() {
     deploy_evm_ism
     deploy_evm_token
     enroll_routers
-    fund_dispatch_credit
     ok "Deployment complete: $STATE"
     info "Next: bash deploy/testnet.sh agent-configs"
 }
@@ -303,7 +328,7 @@ dusk_chain_json() {
     jq -n --arg url "$DUSK_RUES_URL" --argjson domain "$DUSK_DOMAIN" \
         --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --arg cursors "$cursor_dir" \
         --argjson gl "$DUSK_AGENT_GAS_LIMIT" --argjson gp "$DUSK_AGENT_GAS_PRICE" \
-        --slurpfile s "$STATE" '{
+        --arg key_file "$DUSK_SIGNER_KEY_FILE" --slurpfile s "$STATE" '{
           name: "dusk", protocol: "dusk", domainId: $domain, chainId: $chain,
           rpcUrls: [{http: $url}], eventCursorDir: $cursors,
           gasLimit: $gl, gasPrice: $gp,
@@ -312,7 +337,7 @@ dusk_chain_json() {
           validatorAnnounce: ("0x" + $s[0].dusk.validator_announce),
           merkleTreeHook: ("0x" + $s[0].dusk.merkle_tree_hook),
           submitter: "Classic",
-          signer: {type: "duskKey", keyFile: "/run/secrets/dusk-signer.key"}
+          signer: {type: "duskKey", keyFile: $key_file}
         }'
 }
 
@@ -338,10 +363,10 @@ cmd_agent_configs() {
     # The relayer only relays this deployment's route, in both directions, and
     # does not require gas payments (the IGPs are not priced for production).
     jq -n --arg evm "$EVM_CHAIN_NAME" --argjson evm_chain "$evm_chain" \
-        --argjson dusk_chain "$(dusk_chain_json /var/lib/hyperlane/relayer-dusk-events)" \
+        --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/relayer-dusk-events")" \
         --argjson ed "$EVM_DOMAIN" --argjson dd "$DUSK_DOMAIN" \
-        --arg token "0x$(pad32 "$token")" --arg route "0x$route" '{
-          db: "/var/lib/hyperlane/relayer-db",
+        --arg token "0x$(pad32 "$token")" --arg route "0x$route" --arg db "$AGENT_STATE_DIR/relayer-db" '{
+          db: $db,
           relayChains: ("dusk," + $evm),
           gasPaymentEnforcement: [{type: "none"}],
           whitelist: [
@@ -354,8 +379,9 @@ cmd_agent_configs() {
 
     # One Dusk-origin validator. Each validator operator copies this, sets its
     # own signing key and checkpoint bucket, and runs it on its own host.
-    jq -n --argjson dusk_chain "$(dusk_chain_json /var/lib/hyperlane/validator-dusk-events)" '{
-          db: "/var/lib/hyperlane/validator-db",
+    jq -n --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/validator-dusk-events")" \
+        --arg db "$AGENT_STATE_DIR/validator-db" '{
+          db: $db,
           originChainName: "dusk",
           interval: 5,
           checkpointSyncer: {type: "s3", bucket: "<bucket>", region: "<region>"},
@@ -367,11 +393,14 @@ cmd_agent_configs() {
     cat >&2 <<EOF
 Secrets are not in these files. Provide them when starting the agents:
   relayer:   HYP_CHAINS_$(tr '[:lower:]' '[:upper:]' <<<"$EVM_CHAIN_NAME")_SIGNER_KEY=0x...  (funded on $EVM_CHAIN_NAME)
-             a Dusk key file at /run/secrets/dusk-signer.key (funded on Dusk testnet)
+             a Dusk key file at $DUSK_SIGNER_KEY_FILE (funded on Dusk)
   validator: HYP_VALIDATOR_KEY=0x...  (one of DUSK_ORIGIN_VALIDATORS)
-             a Dusk key file at /run/secrets/dusk-signer.key (pays for its announcement)
+             a Dusk key file at $DUSK_SIGNER_KEY_FILE (pays for its announcement)
              AWS credentials for the checkpoint bucket
-Both need DUSK_TX_BIN pointing at dusk-tx. See docs/testnet.md.
+Write a Dusk key file from a rusk-wallet export with:
+  dusk-tx export-signer-key --keys <consensus.keys> --out $DUSK_SIGNER_KEY_FILE
+Run the agents from hyperlane-monorepo/rust/main with DUSK_TX_BIN pointing at
+dusk-tx. See docs/testnet.md.
 EOF
 }
 
