@@ -131,7 +131,6 @@ Accepted:
   destination ISM.
 - Dispatch credit can only be withdrawn to Moonlight accounts, not to
   contracts.
-- The live E2E runs a 1-of-1 multisig. 2-of-3 is covered by VM tests only.
 - Not tested in the VM: Mailbox nonce exhaustion (needs about 4 billion
   dispatches), and the WarpDrc20 and IGP checked-arithmetic panics, which are
   only reachable with an already-broken supply invariant or an absurd gas

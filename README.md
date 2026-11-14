@@ -151,7 +151,10 @@ bash demo/stop-env.sh
 ```
 
 `bash demo/e2e-agents.sh` runs the full agent flow (relayer plus validators)
-for both security modules. The other `demo/e2e-*.sh` scripts inject faults:
+for both security modules. With `--only messageIdMultisig --validators 3
+--threshold 2` it runs a 2-of-3 validator set on each chain and checks that
+messages deliver at the threshold, stall below it, and resume when a
+validator returns. The other `demo/e2e-*.sh` scripts inject faults:
 RPC outages, validator delay, corrupt checkpoint metadata, duplicate relayers,
 low signer balance and restart soak. See [demo/README.md](demo/README.md).
 
