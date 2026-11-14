@@ -10,9 +10,11 @@ Full local setup with Rusk (Dusk node), Anvil (EVM), and block explorers.
 ### Prerequisites
 
 - **Rusk** (Dusk node) built from the `rusk-private` checkout the contracts
-  build against (`../../rusk-private` from this repository)
-- **A Dusk consensus key** (`consensus.keys` plus its password) for a Moonlight
-  account funded in the local genesis state, at `e2e/consensus.keys` by default
+  build against (`../../rusk-private` from this repository, at the commit in
+  `RUSK_VERSION`)
+- **A Dusk consensus key** for a Moonlight account funded in the local genesis
+  state. The default is Rusk's `examples/consensus.keys` (password
+  `password`), which `examples/genesis.toml` funds
 - **Foundry** (anvil, forge, cast): `curl -L https://foundry.paradigm.xyz | bash && foundryup`
 - **Docker**: for Otterscan (EVM explorer)
 - **Node.js/npm**: for Dusk Explorer
@@ -21,14 +23,17 @@ Full local setup with Rusk (Dusk node), Anvil (EVM), and block explorers.
 ### One-Time Setup
 
 ```bash
-# 0. Create the local environment file, then set CONSENSUS_PASSWORD and
-#    ANVIL_PRIVATE_KEY in it
+# 0. Create the local environment file (the defaults work as they are)
 cp demo/bridge.env.example demo/.env.bridge
 
-# 1. Build Rusk
+# 1. Build Rusk at the RUSK_VERSION commit. The profile and genesis state go
+#    next to the rusk-private checkout, so ~/.dusk is left alone (Rusk's own
+#    `make prepare-dev` overwrites ~/.dusk/rusk/consensus.keys).
 cd ../../rusk-private
-make prepare-dev        # Generates circuit keys + genesis state (~10 min)
+export RUSK_PROFILE_PATH="$PWD/../.rusk-profile"
+make keys                                              # circuit keys (~10 min)
 cargo build --release -p dusk-rusk --features archive
+./target/release/rusk recovery state --init examples/genesis.toml -o ../example.state
 
 # 2. Build Hyperlane contracts + CLI
 cd -                    # back to this repository
@@ -295,8 +300,9 @@ handling.
 
 ### Troubleshooting
 
-**Rusk won't start**: Check `/tmp/rusk-dev.log`. Ensure genesis state exists at
-`/tmp/example.state` (run `make prepare-dev` in the Rusk repo).
+**Rusk won't start**: Check `/tmp/rusk-dev.log`. Ensure the genesis state
+exists at `RUSK_STATE` and the circuit keys at `RUSK_PROFILE_PATH` (see
+One-Time Setup).
 
 **Port conflict**: Change ports in `.env.bridge`. Note: if you change
 `RUSK_HTTP_PORT` from 8080, also update the Vite proxy target in
@@ -306,8 +312,8 @@ handling.
 which should work on WSL2. If not, replace with your WSL2 IP.
 
 **Deploy fails on Dusk**: Ensure the deployer account has sufficient balance (LUX).
-The consensus keys at `dusk/e2e/consensus.keys` must match a funded account on
-the local Rusk node.
+`CONSENSUS_KEYS` must belong to an account funded in the genesis state the
+node started from.
 
 **Redeploy fails with "Refusing to deploy"**: You are re-running `dusk-tx
 deploy-hyperlane` against a non-reset chain. Restart the demo environment

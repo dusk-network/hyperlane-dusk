@@ -27,7 +27,8 @@ PRODUCTION_CLIPPY_PACKAGES := \
 	-p hyperlane-dusk-warp-drc20-collateral \
 	-p hyperlane-dusk-warp-native
 
-# Build all contract WASMs
+# Build all contract WASMs. Symbols are stripped: the WASM name section is
+# debug-only, and deployment is charged per byte.
 .PHONY: all
 all: $(CONTRACTS)
 
@@ -40,6 +41,7 @@ rusk-version:
 $(CONTRACTS): rusk-version
 	@echo "Building $@..."
 	@CARGO_TARGET_DIR=$(TARGET_DIR) \
+		CARGO_PROFILE_RELEASE_STRIP=symbols \
 		RUSTFLAGS="$(RUSTFLAGS) -C link-args=-zstack-size=$(STACK_SIZE)" \
 		cargo build -Z build-std=core,alloc \
 			--release \

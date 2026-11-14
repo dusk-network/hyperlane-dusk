@@ -15,10 +15,11 @@ in `rust/main/chains/hyperlane-dusk`.
   relayer and validator agents. Synthetic DRC20, native DUSK and collateral
   DRC20 routes are exercised in both directions, under both the `TestMock` and
   `MessageIdMultisig` security modules.
-- Not yet deployed to Dusk testnet or mainnet.
-- The contracts need the `keccak256` and `secp256k1_recover` host queries.
-  Local and devnet Rusk enable both from genesis. Check the target network's
-  activation schedule before deploying anywhere else.
+- Built and tested against Rusk 1.7.3, the release testnet and mainnet run
+  (pinned in [`RUSK_VERSION`](RUSK_VERSION)). Both networks have the
+  `keccak256` and `secp256k1_recover` host queries the contracts need.
+- Not yet deployed to Dusk testnet or mainnet. [docs/testnet.md](docs/testnet.md)
+  covers deploying to testnet and connecting to Sepolia.
 - No external audit is recorded in this repository. See
   [docs/security.md](docs/security.md) for the internal review.
 
@@ -88,7 +89,9 @@ docs/            Security notes and operations guide
 ## Building
 
 The workspace builds against Dusk's private Rusk repository by relative path,
-so you need access to `dusk-network/rusk-private`. Lay out the checkouts like
+so you need access to `dusk-network/rusk-private`, checked out at the commit
+in [`RUSK_VERSION`](RUSK_VERSION). `make` refuses to build against any other
+commit (override with `ALLOW_RUSK_MISMATCH=1`). Lay out the checkouts like
 this:
 
 ```
@@ -97,6 +100,14 @@ this:
 └── hyperlane/
     ├── dusk/                this repository
     └── hyperlane-monorepo/  dusk-network/hyperlane-monorepo (for agents)
+```
+
+To keep an existing `rusk-private` checkout untouched, put the pinned commit
+in a worktree and build from a separate workspace directory:
+
+```bash
+git -C ~/rusk-private worktree add --detach <workspace>/rusk-private \
+    "$(sed -n 's/^RUSK_COMMIT=//p' RUSK_VERSION)"
 ```
 
 The Rust toolchain is pinned in `rust-toolchain.toml`. rustup installs it,
