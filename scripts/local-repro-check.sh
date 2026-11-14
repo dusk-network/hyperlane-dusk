@@ -50,7 +50,7 @@ Prerequisite:
   If --rusk-dir or RUSK_DIR points elsewhere, this script creates a temporary
   compatible checkout layout and reruns itself from there.
 
-This script does not replace E2E/fault-injection runs in TEST_REPORT.md.
+This script does not run the E2E or fault-injection scripts in demo/.
 EOF
 }
 
