@@ -303,11 +303,12 @@ run_quorum_check() {
     stop_validator anvil "$((m - 1))"
     stop_validator dusk "$((m - 1))"
     info "Quorum check: $((m - 1)) of $n validators per origin running, expecting no delivery for ${QUORUM_STALL_SECS}s..."
+    # Each send burns on its source chain, so take the snapshot afterwards.
     local supply_before balance_before
-    supply_before="$(dusk_supply)"
-    balance_before="$(evm_balance)"
     send_to_dusk
     send_to_evm
+    supply_before="$(dusk_supply)"
+    balance_before="$(evm_balance)"
     local start
     start="$(date +%s)"
     while [ $(( $(date +%s) - start )) -lt "$QUORUM_STALL_SECS" ]; do

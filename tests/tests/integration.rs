@@ -1823,21 +1823,22 @@ fn test_recipient_ism_override() {
         .data;
     assert_eq!(ism, ContractId::from_bytes([0u8; 32]));
 
-    // Set ISM override
-    s.session
+    // There is no setter: anyone could otherwise point the deployed
+    // TestRecipient at TestMock and have unsigned messages delivered.
+    assert!(s
+        .session
         .direct_call::<_, ()>(
             TEST_RECIPIENT_ID,
             "set_interchain_security_module",
             &(TEST_MOCK_ID,),
         )
-        .expect("set_ism should succeed");
-
+        .is_err());
     let ism: ContractId = s
         .session
         .direct_call::<_, ContractId>(TEST_RECIPIENT_ID, "interchain_security_module", &())
         .expect("query should succeed")
         .data;
-    assert_eq!(ism, TEST_MOCK_ID);
+    assert_eq!(ism, ContractId::from_bytes([0u8; 32]));
 }
 
 // =============================================================================
@@ -6569,9 +6570,10 @@ fn redteam_held_same_signer_two_encodings_not_double_counted() {
     for twin in [redteam_malleate_high_s(&signature), raw_v] {
         let mut metadata = single.clone();
         metadata.extend_from_slice(&twin);
+        // Non-canonical twins are now rejected outright, before counting.
         assert_contract_panic(
             session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message.clone())),
-            "MultisigISM: insufficient valid signatures",
+            "MultisigISM: non-canonical signature",
         );
     }
 }

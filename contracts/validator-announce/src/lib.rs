@@ -35,7 +35,7 @@ mod validator_announce {
 
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message::keccak256;
-    use hyperlane_dusk_types::EthAddress;
+    use hyperlane_dusk_types::{signature, EthAddress};
 
     /// Zero contract ID.
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -279,6 +279,12 @@ mod validator_announce {
 
         let mut sig_arr = [0u8; 65];
         sig_arr.copy_from_slice(sig);
+        // Accept exactly what OpenZeppelin's ECDSA.recover accepts: the host
+        // query would also take v of 0/1 and high-s twins.
+        assert!(
+            signature::is_canonical(&sig_arr),
+            "ValidatorAnnounce: non-canonical signature"
+        );
 
         let pubkey =
             abi::secp256k1_recover(*digest, sig_arr).expect("ValidatorAnnounce: ecrecover failed");
