@@ -111,7 +111,7 @@ struct AccountInputJson {
     account: Vec<u8>,
 }
 
-/// `register_account_for` and `claim_pending_for` take one account public key.
+/// `claim_pending_for` takes one account public key.
 fn encode_account_input(json: &str) -> Result<Vec<u8>, Error> {
     let input: AccountInputJson = serde_json::from_str(json)?;
     let account_bytes: [u8; 96] = input.account.try_into().map_err(|bytes: Vec<u8>| {
@@ -177,7 +177,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "get_announced_storage_locations_for_validator" => json_to_rkyv::<(EthAddress,)>(json),
             "get_announced_storage_locations" => json_to_rkyv::<(Vec<EthAddress>,)>(json),
             "withdraw_dispatch_credit" => encode_withdrawal_input(json),
-            "register_account_for" | "claim_pending_for" => encode_account_input(json),
+            "claim_pending_for" => encode_account_input(json),
             // Hook queries
             "hook_type" | "total_gas_payments" | "collected_fees" | "protocol_fee"
             | "max_protocol_fee" | "beneficiary" => json_to_rkyv::<()>(json),
@@ -256,7 +256,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "get_announced_storage_locations_for_validator" => rkyv_to_json::<(EthAddress,)>(rkyv),
             "get_announced_storage_locations" => rkyv_to_json::<(Vec<EthAddress>,)>(rkyv),
             "withdraw_dispatch_credit" => decode_withdrawal_input(rkyv),
-            "register_account_for" | "claim_pending_for" => decode_account_input(rkyv),
+            "claim_pending_for" => decode_account_input(rkyv),
             "quote_dispatch" | "quote_dispatch_for_contract" => {
                 rkyv_to_json::<(u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
                     .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv))
@@ -710,6 +710,31 @@ mod tests {
                 .unwrap(),
             bytes
         );
+    }
+
+    /// Routes no longer export `register_account_for`; only a claim
+    /// registers a key on someone else's behalf.
+    #[test]
+    fn sponsored_claim_input_round_trips_and_registration_for_is_gone() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x434c_4149);
+        let account = AccountPublicKey::from(&AccountSecretKey::random(&mut rng));
+        let json = serde_json::json!({ "account": account.to_bytes().to_vec() });
+        let bytes = HyperlaneDataDriver
+            .encode_input_fn("claim_pending_for", &json.to_string())
+            .expect("claim input should encode");
+        assert_eq!(
+            HyperlaneDataDriver
+                .decode_input_fn("claim_pending_for", &bytes)
+                .expect("claim input should decode"),
+            json
+        );
+
+        assert!(HyperlaneDataDriver
+            .encode_input_fn("register_account_for", &json.to_string())
+            .is_err());
+        assert!(HyperlaneDataDriver
+            .decode_input_fn("register_account_for", &bytes)
+            .is_err());
     }
 
     #[test]

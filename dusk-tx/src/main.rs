@@ -407,11 +407,6 @@ enum Command {
         /// Warp route contract ID (64 hex chars).
         #[arg(long, name = "warp-contract")]
         warp_contract: String,
-        /// Register this account instead of the signer's: a base58 Moonlight
-        /// address or a 96-byte public key in hex. Anyone can register any
-        /// account; the signer only pays the gas.
-        #[arg(long = "for")]
-        for_account: Option<String>,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -444,7 +439,9 @@ enum Command {
         /// account; the signer only pays the gas.
         #[arg(long = "for")]
         for_account: Option<String>,
-        #[arg(long, default_value = "30000000")]
+        /// The route decodes the account's public key on chain, so a claim
+        /// costs about 59M gas.
+        #[arg(long, default_value = "80000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
         #[arg(long, default_value = "1")]
@@ -867,7 +864,6 @@ async fn main() {
             secret_key,
             warp_contract,
             secret_key_stdin,
-            for_account,
             gas_limit,
             gas_price,
         } => {
@@ -878,7 +874,6 @@ async fn main() {
                 secret_key,
                 secret_key_stdin,
                 &warp_contract,
-                for_account.as_deref(),
                 gas_limit,
                 gas_price,
             )
@@ -1161,6 +1156,26 @@ mod tests {
     use std::time::Duration;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Routes register an account for someone else only by claiming its
+    /// escrow, so only `claim-pending` takes another account.
+    #[test]
+    fn only_claim_pending_takes_another_account() {
+        let route = "11".repeat(32);
+        let account = "22".repeat(96);
+        let register = ["dusk-tx", "register-account", "--warp-contract", &route];
+        assert!(Cli::try_parse_from(register).is_ok());
+        assert!(Cli::try_parse_from(register.into_iter().chain(["--for", &account])).is_err());
+        assert!(Cli::try_parse_from([
+            "dusk-tx",
+            "claim-pending",
+            "--warp-contract",
+            &route,
+            "--for",
+            &account,
+        ])
+        .is_ok());
+    }
 
     #[test]
     fn signing_chain_id_must_match_the_configured_endpoint_identity() {
@@ -3457,31 +3472,25 @@ async fn cmd_register_account(
     secret_key_hex: Option<String>,
     secret_key_stdin: bool,
     warp_contract_hex: &str,
-    for_account: Option<&str>,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
-    let account = for_account.map(parse_account_arg).transpose()?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let client = RuesClient::new(rues_url)?;
 
     let warp_bytes = parse_bytes32(warp_contract_hex)?;
     let warp_id = ContractId::from_bytes(warp_bytes);
 
-    // Without --for the contract registers the transaction signer.
-    let (fn_name, args, target) = match account {
-        Some(account) => ("register_account_for", rkyv_serialize(&(account,)), account),
-        None => ("register_account", Vec::new(), pk),
-    };
-
+    // The route registers the transaction signer. Only a claim registers an
+    // account for someone else (claim-pending --for).
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
         &sk,
         warp_id,
-        fn_name,
-        args,
+        "register_account",
+        Vec::new(),
         gas_limit,
         gas_price,
         next_moonlight_nonce(nonce)?,
@@ -3491,15 +3500,15 @@ async fn cmd_register_account(
     let tx_id = hex::encode(tx.hash().to_bytes());
     propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
-    let h256 = hyperlane_dusk_types::message::keccak256(&target.to_bytes());
+    let h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
     let pending: u64 = client
         .contract_query(&warp_bytes, "pending_balance", &(h256,))
         .await
         .unwrap_or(0);
 
-    let mut output = account_identity(&target);
+    let mut output = account_identity(&pk);
     output["success"] = json!(true);
-    output["fn_name"] = json!(fn_name);
+    output["fn_name"] = json!("register_account");
     output["warp_contract"] = json!(warp_contract_hex);
     output["pending"] = json!(pending.to_string());
     output["tx_id"] = json!(tx_id);

@@ -51,10 +51,10 @@ implemented. The agents return an explicit error if a deployment points at one.
   key.
 - **Receiving tokens.** A warp route has to map a recipient hash back to a
   BLS key, so an account is registered on the route once. Transfers to an
-  unregistered hash wait in escrow until it is. Anyone can register an
-  account or claim its escrow for it (`register_account_for`,
-  `claim_pending_for`) and pay the gas, so a recipient with no DUSK yet can
-  still receive.
+  unregistered hash wait in escrow until it is. Anyone can claim an escrow
+  for its recipient (`claim_pending_for`), which also registers it, and pay
+  the gas, so a recipient with no DUSK yet can still receive. The route
+  decodes the key it is given and pays the account that signs with it.
 - **Paying fees.** Dusk has no `msg.value`. A warp transfer's Moonlight
   deposit includes the quoted dispatch fee (for native DUSK, the amount plus
   the fee), and the route passes the fee on to the Mailbox. Contracts and

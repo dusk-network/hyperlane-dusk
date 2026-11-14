@@ -44,7 +44,7 @@ payments, and relays only this deployment's routes.
 
 | Key | Network | Needs | Used for |
 |---|---|---|---|
-| Deployer | Dusk testnet | about 400 DUSK | Contract deploys, about 210 DUSK (a local rehearsal spent 207.4 DUSK on 11 transactions). Each deploy also needs its gas limit times the deploy gas price, 100 DUSK, in the balance when it is submitted. `preflight` checks the balance. |
+| Deployer | Dusk testnet | about 400 DUSK | Contract deploys, about 220 DUSK (a local rehearsal spent 207.4 DUSK on 11 transactions; the native route has since grown by 48 KB, about 10 DUSK). Each deploy also needs its gas limit times the deploy gas price, 100 DUSK, in the balance when it is submitted. `preflight` checks the balance. |
 | Deployer | Sepolia | about 0.05 ETH | ISM, token and enrollment transactions. |
 | Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each. |
 | Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. |
@@ -59,13 +59,16 @@ Gas on Dusk:
 
 - Deployments are charged 100 gas per WASM byte, at the network's minimum
   deploy gas price of 2000 LUX. The Mailbox is about 176 KB, so 17.6M gas
-  (35 DUSK), the native warp route 124 KB (25 DUSK), and each other contract
+  (35 DUSK), the native warp route 172 KB (34 DUSK), and each other contract
   27–94 KB (5–19 DUSK). Initialisation adds a little to each.
 - Ordinary transactions only need a gas price above zero. `dusk-tx` uses
   1 LUX for everything except `deploy-hyperlane`, and the agent configs use
   `DUSK_AGENT_GAS_PRICE` (1 LUX). A relayed `process` takes about 2.2M gas
   with one validator signature and about 0.22M more per extra signature:
   0.0022 DUSK at 1 LUX.
+- An escrow claim (`claim-pending`) takes about 59M gas, because the route
+  decodes the recipient's public key on chain. `dusk-tx` gives it an 80M
+  limit, so the signer needs 0.08 DUSK at 1 LUX.
 - The gas limit times the gas price must be in the balance when a
   transaction is submitted. A successful transaction is refunded the gas it
   didn't use; **a failed one is charged its whole gas limit.** `dusk-tx`
@@ -237,8 +240,9 @@ zero: no EVM route can deliver to it, and the DUSK would stay locked on Dusk.
 
 **Escrow.** A transfer to a Dusk account that hasn't registered on the route
 waits in escrow. A recipient whose only DUSK is in that escrow can't pay gas
-to claim it, so anyone can claim it for them. The DUSK only ever goes to the
-recipient:
+to claim it, so anyone can claim it for them. The route decodes the public
+key the claimant names and pays the account that signs with it, whose hash
+the escrow is under. The claimant only pays the gas:
 
 ```bash
 # What's waiting, and whether the account is registered
@@ -246,9 +250,12 @@ target/release/dusk-tx account --rues-url $DUSK --address <base58 address> --war
 # Claim your own escrow, or someone else's with --for; either also registers the account
 target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
   [--for <base58 address>]
-# Register an account in advance (also with --for), so transfers arrive directly
+# Register your own account in advance, so transfers arrive directly
 target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE
 ```
+
+Nobody can register an account for someone else in advance: only a claim of
+an existing escrow registers another account.
 
 **Undeliverable messages.** Some transfers can never be delivered. A
 transfer to the zero recipient is one example, and so is anything that

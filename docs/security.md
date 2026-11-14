@@ -14,8 +14,16 @@ and which design decisions are still open.
 - **Cross-contract calls** (`abi::call`) are synchronous and return a result.
   Unhandled failures revert the whole transaction.
 - **Moonlight transactions** are public, BLS-signed transactions.
-  `abi::public_sender()` returns the signer's BLS key, and the transaction's
-  `deposit` field is how DUSK moves from an account into a contract.
+  `abi::public_sender()` returns the signer's BLS key (and panics outside a
+  transaction, see Known limitations), and the transaction's `deposit` field
+  is how DUSK moves from an account into a contract.
+- **Public keys in arguments are unchecked.** The archive check accepts any
+  limbs in a BLS `PublicKey`. Its compressed encoding (`to_bytes`), which
+  recipient hashes cover, depends only on x reduced mod p, the infinity flag
+  and the sign of y. The transfer contract and DRC20 balances key accounts by
+  the raw limbs (`to_raw_bytes`). A forged key can therefore share an
+  account's hash and still pay somewhere else. Decode a caller's key from its
+  compressed bytes before hashing, storing or paying it.
 - **Overflow.** The workspace sets `overflow-checks = true` for release
   builds. Security-relevant arithmetic also uses explicit checked operations.
 - **Failed transactions pay their whole gas limit**, and so does a failed
@@ -35,14 +43,14 @@ and which design decisions are still open.
 | Caller identity | No `msg.sender`. A shared resolver maps a root Moonlight call to `keccak256(public_sender)` and a nested call to the caller's `ContractId`, both as `H256`. All owner checks use this. |
 | Native value | No `msg.value`. WarpNative and Mailbox fee funding check the exact Moonlight deposit through the transfer contract. Hook payments use authenticated contract-to-contract transfers. |
 | Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. |
-| Account recipients | An account is `keccak256(bls_public_key)` and must `register_account` on a route before it can receive. Transfers to unregistered recipients go to escrow, claimable only by the matching key. |
+| Account recipients | An account is `keccak256(bls_public_key)` and must be registered on a route before it can receive. Transfers to unregistered recipients go to escrow, which is only ever paid to the key with that hash. |
 | Reverts | `assert!` and `expect(...)` panics instead of custom errors. |
 | Upgrades | None. Contract IDs are deterministic; an upgrade is a new deployment. Redeploying over existing state is refused. |
 | Multisig metadata | Stricter than Solidity: validators must be sorted, the threshold valid, and the signature section an exact multiple of 65 bytes. |
 | Default ISM | One MessageIdMultisig ISM verifies messages from every origin, since Routing ISMs are unsupported. Any origin whose checkpoints the configured validators sign is trusted by the Mailbox; warp routes still accept only their enrolled router per origin. |
 | Recipient ISM lookup | Runs with 1M gas. A recipient without `interchain_security_module`, or whose getter panics, gets the default ISM, as in Solidity. A getter that runs out of gas fails the delivery instead, so the submitter's gas limit can't pick the ISM. |
 | Dispatched messages | The Mailbox stores each message's ID and block height, not the message. Agents read the message from the finalized `Dispatch` event and check it against the stored ID. `dispatch` closes once the Mailbox's memory reaches 3 GiB of its 4 GiB; `process` and claims keep working. |
-| Escrow claims | Anyone can call `claim_pending_for(key)` or `register_account_for(key)` and pay the gas. The tokens only ever go to `key`, whose hash must be the escrowed recipient. |
+| Escrow claims | Anyone can call `claim_pending_for(key)` and pay the gas. The route decodes `key` from its compressed encoding and reverts if that isn't a valid key; the escrow lookup, the registration and the payout all use the decoded key, the one the recipient signs with. A claim with nothing in escrow reverts, so it can't be used to register arbitrary keys, and routes have no other call that registers someone else. The decoding costs about 57M gas, so a claim takes about 59M. |
 | Unsupported | Routing, Aggregation and CCIP-read ISMs; rate-limited hooks and ISMs. |
 
 ## Issues found and fixed
@@ -65,10 +73,12 @@ and which design decisions are still open.
 | LOW-2 | The multisig ISM and ValidatorAnnounce accepted signatures OpenZeppelin rejects (`v` of 0/1, high `s`), because the host query does. No double counting was possible. | Both require canonical signatures (`types::signature::is_canonical`). |
 | HIGH-7 | The Mailbox stored every dispatched message in its wasm32 memory, which is capped at 4 GiB and never shrinks. About 57k maximum-size dispatches (a few hundred DUSK) would fill it, after which `process` could not allocate either and the bridge stopped both ways. | Only the message ID is stored, and `dispatch` closes at 3 GiB (`memory_bytes` reports usage). |
 | MEDIUM-6 | The Mailbox looked up a recipient's ISM with an unbounded call. A recipient without the getter was charged about 93% of the remaining gas, roughly 26M of a 30M transaction. | 1M gas allowance; running out of it fails the delivery rather than falling back. |
-| MEDIUM-7 | A recipient whose only DUSK was in escrow couldn't pay gas to claim it, so every first-time Dusk user needed DUSK from elsewhere. | `claim_pending_for` / `register_account_for`, payable by anyone. |
+| MEDIUM-7 | A recipient whose only DUSK was in escrow couldn't pay gas to claim it, so every first-time Dusk user needed DUSK from elsewhere. | `claim_pending_for`, payable by anyone. |
 | MEDIUM-8 | Dusk charges a failed transaction its whole gas limit. The relayer submitted `process` without a pre-check, so a message whose delivery always fails (for example to the zero recipient) cost 30M gas on every retry. | The relayer simulates `process` as a read-only query first (hyperlane-monorepo). |
 | LOW-4 | Contract WASMs embedded the builder's absolute paths and weren't reproducible, so nobody could rebuild a release and check a deployed contract ID. | Paths remapped; one codegen unit with LTO (also 30–45% smaller). |
 | LOW-5 | `dusk-tx transfer-remote` accepted any 32-byte recipient. A right-padded EVM address passed Dusk's checks, the EVM token rejected it, and the DUSK stayed locked. | `dusk-tx` takes a 20-byte address and rejects non-zero upper bytes unless `--raw-recipient`. |
+| CRITICAL-1 | `claim_pending_for` and `register_account_for` used the caller's `PublicKey` as given. A twin of the recipient's key (a changed y limb, or x.c0 stored as x.c0 + p, which even passes `is_valid`) has the recipient's hash but other raw bytes, so anyone could pay an escrow, or every later transfer to a registered account, into an account nobody can spend from. On all three routes. | Routes decode the key from its compressed encoding and use only the decoded key. |
+| MEDIUM-9 | `register_account_for` registered any key for about 39k gas, enough to fill a route's 4 GiB of memory for about 500 DUSK, after which new escrow entries couldn't be allocated. | Removed. Only `register_account` (the signer) and a claim of existing escrow register keys. |
 
 The fixes have regression tests in `tests/tests/integration.rs`, except the
 overflow paths listed under known limitations. HIGH-5 and HIGH-6 use the
@@ -101,11 +111,16 @@ Accepted:
   the effective payer can withdraw it, and only to a Moonlight account. Warp
   routes expose an owner-only withdrawal of their own credit. There is no
   global drain by the Mailbox owner.
-- **No admin recovery of escrow.** Pending transfers can only be claimed by
-  the matching BLS key. If a user loses that key, the funds stay locked. An
-  admin drain would add a path to seize user funds.
-- **Immutable registration** (issue #5). Registrations can't be removed or
-  remapped. A new key produces a new recipient hash anyway, and remapping
+- **No admin recovery of escrow.** Pending transfers are only ever paid to
+  the matching BLS key, though anyone can pay the gas to claim them for it.
+  If a user loses that key, the funds stay locked. An admin drain would add
+  a path to seize user funds.
+- **Immutable registration** (issue #5). No call removes a registration or
+  points it at another key. Registering again overwrites the entry, but with
+  the same key: every key a route stores is canonical, either the
+  transaction's sender, which the node decodes from its compressed encoding,
+  or a key `claim_pending_for` has decoded, and only one canonical key has a
+  given hash. A new key produces a new recipient hash anyway, and remapping
   would give an admin control over where user funds go.
 - **Sender resolution through the transfer contract** (issue #4). A frame
   whose only caller is the transfer contract (call-stack depth 1) is a
@@ -147,12 +162,21 @@ Accepted:
   route, then belong to nobody. Escrow under a hash that no key produces
   (or for a contract that never calls `claim_pending_contract`) is locked the
   same way. Nothing expires or refunds.
-- **Simulation is detectable.** The relayer simulates `process` as a query,
-  where `public_sender()` is `None`, the gas limit is the block's and the
-  height is the tip's. A hostile recipient can pass the simulation and fail
-  the real delivery, costing the relayer the transaction's gas limit, as gas
-  estimation can be fooled on EVM. Enforce IGP gas payments for Dusk
-  destinations on mainnet.
+- **Simulation is detectable.** The relayer simulates `process` as an
+  unsigned query, where the gas limit is the block's, the height is the
+  tip's and there is no transaction: `abi::public_sender()` panics, because
+  Rusk 1.7.3 only sets the sender for a transaction
+  (`rusk-private/core/src/abi.rs`). A hostile recipient can pass the
+  simulation and fail the real delivery, costing the relayer the
+  transaction's gas limit, as gas estimation can be fooled on EVM.
+  Enforce IGP gas payments for Dusk destinations on mainnet.
+- **Recipients must not read `public_sender()`.** A recipient's `handle`,
+  its `interchain_security_module` getter and any ISM it uses run inside the
+  relayer's simulation, where `public_sender()` panics. If `handle` or an
+  ISM calls it, every simulation fails and the relayer never submits the
+  message. If the getter calls it, the simulation and the delivery can
+  verify with different ISMs, and the delivery fails after the relayer has
+  paid for it.
 - **Contracts can't bridge.** `transfer_remote` takes its DUSK and fees as the
   transaction's deposit, which only the transaction's target contract can
   claim. A smart wallet or router contract calling a warp route always

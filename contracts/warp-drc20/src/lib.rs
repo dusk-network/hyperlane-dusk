@@ -95,7 +95,9 @@ mod warp_drc20 {
         /// External Dusk accounts use 96-byte BLS public keys that don't
         /// fit in a 32-byte H256. Users must call `register_account` once
         /// so that inbound transfers can look up the full key and mint
-        /// to their External account.
+        /// to their External account; `claim_pending_for` also registers
+        /// the key it mints to. Every stored key is canonical (see
+        /// [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Inbound synthetic balances waiting for an authenticated recipient.
         ///
@@ -180,26 +182,13 @@ mod warp_drc20 {
         /// can resolve the H256 recipient to a full account key and mint
         /// to an External account.
         ///
-        /// Reads the sender from `abi::public_sender()` (Moonlight TX).
-        /// Stores `keccak256(pk.to_bytes()) → pk`.
+        /// Reads the sender from `abi::public_sender()` (Moonlight TX), which
+        /// the node decodes from the transaction's compressed encoding, so
+        /// it is already canonical. Stores `keccak256(pk.to_bytes()) → pk`.
         pub fn register_account(&mut self) {
             let pk =
                 abi::public_sender().expect("WarpDrc20: register_account requires Moonlight TX");
-            self.register_account_for(pk);
-        }
-
-        /// Register `account` so inbound transfers to `keccak256(account)`
-        /// are minted to it directly.
-        ///
-        /// Anyone can register any key: the mapping is fixed by the key
-        /// itself, so the caller chooses nothing but who pays the gas.
-        pub fn register_account_for(&mut self, account: AccountPublicKey) {
-            let h = message::keccak256(&account.to_bytes());
-            self.registered_accounts.insert(h, account);
-            abi::emit(
-                events::AccountRegistered::TOPIC,
-                events::AccountRegistered { account_hash: h },
-            );
+            self.register(pk);
         }
 
         /// Check whether an H256 has a registered account.
@@ -221,9 +210,15 @@ mod warp_drc20 {
         /// `keccak256(account)`.
         ///
         /// Anyone can call this and pay its gas, so a recipient that holds no
-        /// DUSK can still receive. The tokens only ever go to `account`.
+        /// DUSK can still receive. `account` is decoded to its canonical form
+        /// first, and the escrow lookup, the registration and the mint all
+        /// use that key: the one its owner signs with, whatever limbs the
+        /// caller sends. A key that doesn't decode to a valid public key
+        /// reverts, and so does a call with nothing in escrow, so this can't
+        /// register a key nobody has sent tokens to.
         pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
-            self.register_account_for(account);
+            let account = canonical_account(&account);
+            self.register(account);
             let h = message::keccak256(&account.to_bytes());
             self.claim_pending_to(h, Account::moonlight(&account));
         }
@@ -253,7 +248,7 @@ mod warp_drc20 {
         }
 
         /// Deployment compatibility version. Version 5 adds
-        /// `register_account_for` and `claim_pending_for`.
+        /// `claim_pending_for`.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
             5
@@ -579,6 +574,17 @@ mod warp_drc20 {
         // Internal helpers
         // =================================================================
 
+        /// Map `keccak256(pk)` to `pk`. `pk` must be canonical: the
+        /// transaction's public sender, or a key from [`canonical_account`].
+        fn register(&mut self, pk: AccountPublicKey) {
+            let h = message::keccak256(&pk.to_bytes());
+            self.registered_accounts.insert(h, pk);
+            abi::emit(
+                events::AccountRegistered::TOPIC,
+                events::AccountRegistered { account_hash: h },
+            );
+        }
+
         /// Query the route's current Mailbox credit.
         fn dispatch_credit(&self) -> u64 {
             abi::call(self.mailbox, "fee_credit", &(abi::self_id().to_bytes(),))
@@ -755,5 +761,29 @@ mod warp_drc20 {
                     .insert(spender, value);
             }
         }
+    }
+
+    /// Decode a caller-supplied account key to the key its owner signs with.
+    ///
+    /// The archive check accepts any limbs in a public key. A recipient hash
+    /// covers only the compressed encoding (`to_bytes`): x reduced mod p, the
+    /// infinity flag and the sign of y. A Moonlight principal holds the raw
+    /// limbs (`to_raw_bytes`). So a forged key can share a recipient's hash
+    /// and still be minted to a principal nobody can sign for. Decoding the
+    /// compressed bytes gives the one canonical key with that hash.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the encoding isn't a valid public key, including the
+    /// identity, which nobody can sign for.
+    fn canonical_account(account: &AccountPublicKey) -> AccountPublicKey {
+        AccountPublicKey::from_bytes(&account.to_bytes())
+            .ok()
+            // `from_bytes` checks that the point is on the curve and in G2,
+            // so `is_valid` would only add the identity check, at the cost
+            // of a second subgroup check (about 22M gas). The default key is
+            // the identity.
+            .filter(|pk| *pk != AccountPublicKey::default())
+            .expect("WarpDrc20: invalid account public key")
     }
 }

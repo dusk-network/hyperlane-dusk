@@ -7430,34 +7430,62 @@ fn test_warp_native_sponsor_claims_escrow_for_unfunded_recipient() {
     assert_contract_panic(again, "WarpNative: no pending transfers");
 }
 
-/// A sponsor can register a recipient up front, so its first transfer is
-/// paid out directly instead of going to escrow.
+/// A sponsor can't register a recipient up front: only a claim of existing
+/// escrow registers someone else's key, so nobody can fill a route's memory
+/// with registrations. The first transfer waits in escrow; claiming it for
+/// the recipient registers them, and the next transfer is paid out directly.
 #[test]
-fn test_warp_native_sponsor_registration_enables_direct_delivery() {
+fn test_warp_native_sponsor_registers_recipient_only_by_claiming_escrow() {
     let (mut session, remote_router) = session_with_warp_native_flow();
     let amount = 400_000u64;
-    fund_warp_native(&mut session, amount);
+    fund_warp_native(&mut session, 2 * amount);
+    let register = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_NATIVE_ID,
+        "register_account_for",
+        &(*FRESH_PK,),
+    );
+    assert!(
+        register.is_err(),
+        "routes don't export register_account_for"
+    );
+    assert!(!route_is_registered(
+        &mut session,
+        WARP_NATIVE_ID,
+        *FRESH_ID
+    ));
+
+    let deliver = |session: &mut TestSession, nonce| {
+        session
+            .direct_call::<_, ()>(
+                MAILBOX_ID,
+                "process",
+                &(
+                    Vec::<u8>::new(),
+                    inbound_transfer(WARP_NATIVE_ID, remote_router, nonce, *FRESH_ID, amount),
+                ),
+            )
+            .expect("inbound transfer should be delivered");
+    };
+    deliver(&mut session, 0);
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), 0);
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        amount
+    );
+
     session
         .call_public::<_, ()>(
             &RELAYER_SK,
             WARP_NATIVE_ID,
-            "register_account_for",
+            "claim_pending_for",
             &(*FRESH_PK,),
         )
-        .expect("anyone can register any key");
+        .expect("anyone can claim escrow on the recipient's behalf");
     assert!(route_is_registered(&mut session, WARP_NATIVE_ID, *FRESH_ID));
 
-    session
-        .direct_call::<_, ()>(
-            MAILBOX_ID,
-            "process",
-            &(
-                Vec::<u8>::new(),
-                inbound_transfer(WARP_NATIVE_ID, remote_router, 0, *FRESH_ID, amount),
-            ),
-        )
-        .expect("a transfer to a registered recipient is paid out");
-    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), amount);
+    deliver(&mut session, 1);
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), 2 * amount);
     assert_eq!(
         route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
         0
@@ -7565,6 +7593,299 @@ fn test_warp_collateral_sponsor_claims_escrow_for_unfunded_recipient() {
         WARP_DRC20_COLLATERAL_ID,
         *FRESH_ID
     ));
+}
+
+// =============================================================================
+// Forged account keys in sponsored claims
+// =============================================================================
+//
+// A `PublicKey` argument passes the archive check with any limbs. Routes find
+// a recipient by `keccak256(key.to_bytes())`, the compressed encoding, while
+// the transfer contract and DRC20 balances pay `key.to_raw_bytes()`. A forged
+// key can share the recipient's compressed bytes but not its raw bytes. These
+// tests check that every payment still reaches the recipient's real key.
+
+/// The BLS12-381 base field modulus p, as little-endian 64-bit limbs.
+const BLS12_381_P: [u64; 6] = [
+    0xb9fe_ffff_ffff_aaab,
+    0x1eab_fffe_b153_ffff,
+    0x6730_d2a0_f6b0_f624,
+    0x6477_4b84_f385_12bf,
+    0x4b1b_a7b6_434b_acd7,
+    0x1a01_11ea_397f_e69a,
+];
+
+/// `pk` with one limb of y changed. The point is off the curve, so nobody
+/// can sign for it, but its compressed encoding is still `pk`'s.
+fn off_curve_twin(pk: &AccountPublicKey) -> AccountPublicKey {
+    let mut raw = pk.to_raw_bytes();
+    // Change the lowest byte of y.c0.
+    raw[96] ^= 0x01;
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    unsafe { AccountPublicKey::from_slice_unchecked(&raw) }
+}
+
+/// `pk`'s own point with x.c0 stored as x.c0 + p. It passes `is_valid()`
+/// and has `pk`'s compressed encoding, but not `pk`'s raw bytes.
+fn unreduced_twin(pk: &AccountPublicKey) -> AccountPublicKey {
+    let mut raw = pk.to_raw_bytes();
+    let mut carry = 0u128;
+    for (limb, p) in raw[..48].chunks_exact_mut(8).zip(BLS12_381_P) {
+        let sum = u128::from(u64::from_le_bytes(limb.try_into().unwrap())) + u128::from(p) + carry;
+        limb.copy_from_slice(&(sum as u64).to_le_bytes());
+        carry = sum >> 64;
+    }
+    assert_eq!(carry, 0, "x.c0 + p fits in six limbs");
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    unsafe { AccountPublicKey::from_slice_unchecked(&raw) }
+}
+
+/// Both forged forms of `pk`.
+fn forged_twins(pk: &AccountPublicKey) -> [(&'static str, AccountPublicKey); 2] {
+    [
+        ("off-curve y", off_curve_twin(pk)),
+        ("unreduced x", unreduced_twin(pk)),
+    ]
+}
+
+fn account_key(seed: u64) -> AccountPublicKey {
+    AccountPublicKey::from(&AccountSecretKey::random(&mut StdRng::seed_from_u64(seed)))
+}
+
+/// The premise of the attack: each twin has the recipient's hash but other
+/// raw bytes, and `is_valid()` alone doesn't tell the unreduced one apart.
+#[test]
+fn test_forged_account_keys_share_the_recipient_hash() {
+    for (name, twin) in forged_twins(&FRESH_PK) {
+        assert_eq!(twin.to_bytes(), FRESH_PK.to_bytes(), "{name}");
+        assert_eq!(message::keccak256(&twin.to_bytes()), *FRESH_ID, "{name}");
+        assert_ne!(twin.to_raw_bytes(), FRESH_PK.to_raw_bytes(), "{name}");
+        let decoded = AccountPublicKey::from_bytes(&twin.to_bytes()).unwrap();
+        assert_eq!(decoded.to_raw_bytes(), FRESH_PK.to_raw_bytes(), "{name}");
+    }
+    assert!(!off_curve_twin(&FRESH_PK).is_valid());
+    assert!(unreduced_twin(&FRESH_PK).is_valid());
+}
+
+/// The three warp routes, each with custody for inbound transfers.
+#[derive(Clone, Copy)]
+enum Route {
+    Native,
+    Synthetic,
+    Collateral,
+}
+
+impl Route {
+    fn id(self) -> ContractId {
+        match self {
+            Route::Native => WARP_NATIVE_ID,
+            Route::Synthetic => WARP_DRC20_ID,
+            Route::Collateral => WARP_DRC20_COLLATERAL_ID,
+        }
+    }
+
+    /// The prefix of the route's panic messages.
+    fn name(self) -> &'static str {
+        match self {
+            Route::Native => "WarpNative",
+            Route::Synthetic => "WarpDrc20",
+            Route::Collateral => "WarpCollateral",
+        }
+    }
+
+    /// A session with the route deployed and able to pay out `custody`.
+    fn session(self, custody: u64) -> (TestSession, H256) {
+        match self {
+            Route::Native => {
+                let (mut session, remote_router) = session_with_warp_native_flow();
+                fund_warp_native(&mut session, custody);
+                (session, remote_router)
+            }
+            Route::Synthetic => session_with_warp_drc20_flow(),
+            Route::Collateral => {
+                assert!(custody <= 10_000_000, "the fixture locks 10M");
+                session_with_warp_collateral_funded_flow()
+            }
+        }
+    }
+
+    /// What `pk`'s raw account holds: DUSK for WarpNative, otherwise the
+    /// token balance of its Moonlight principal.
+    fn paid_to(self, session: &mut TestSession, pk: &AccountPublicKey) -> u64 {
+        match self {
+            Route::Native => moonlight_balance(session, pk),
+            Route::Synthetic | Route::Collateral => {
+                warp_drc20_balance_of(session, Drc20Account::moonlight(pk))
+            }
+        }
+    }
+
+    fn deliver(
+        self,
+        session: &mut TestSession,
+        remote_router: H256,
+        nonce: u32,
+        recipient: H256,
+        amount: u64,
+    ) {
+        session
+            .direct_call::<_, ()>(
+                MAILBOX_ID,
+                "process",
+                &(
+                    Vec::<u8>::new(),
+                    inbound_transfer(self.id(), remote_router, nonce, recipient, amount),
+                ),
+            )
+            .expect("inbound transfer should be delivered");
+    }
+
+    fn pending(self, session: &mut TestSession, recipient: H256) -> u64 {
+        route_u64(session, self.id(), "pending_balance", recipient)
+    }
+
+    fn claim_for(
+        self,
+        session: &mut TestSession,
+        key: &AccountPublicKey,
+    ) -> Result<CallReceipt<()>, ContractError> {
+        session.call_public::<_, ()>(&RELAYER_SK, self.id(), "claim_pending_for", &(*key,))
+    }
+}
+
+/// `claim_pending_for` with a forged twin of the recipient's key pays the
+/// recipient's real account and registers its real key. Keys that don't
+/// decode to a valid key revert and leave their escrow alone.
+fn assert_sponsored_claim_pays_the_decoded_key(route: Route) {
+    let amount = 300_000u64;
+    let (mut session, remote_router) = route.session(6 * amount);
+    let invalid_message = format!("{}: invalid account public key", route.name());
+
+    // The identity decodes but nobody can sign for it. Changing x moves the
+    // point off the curve or out of the subgroup, so it doesn't decode.
+    let identity = AccountPublicKey::default();
+    let mut raw = FRESH_PK.to_raw_bytes();
+    // Change the lowest byte of x.c0.
+    raw[0] ^= 0x01;
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    let undecodable = unsafe { AccountPublicKey::from_slice_unchecked(&raw) };
+    assert!(AccountPublicKey::from_bytes(&undecodable.to_bytes()).is_err());
+    for (nonce, key) in [(100, identity), (101, undecodable)] {
+        let h = message::keccak256(&key.to_bytes());
+        route.deliver(&mut session, remote_router, nonce, h, amount);
+        assert_contract_panic(route.claim_for(&mut session, &key), &invalid_message);
+        assert_eq!(route.pending(&mut session, h), amount);
+        assert!(!route_is_registered(&mut session, route.id(), h));
+    }
+
+    // One victim per forged form.
+    let victims = [*FRESH_PK, account_key(0xF2E5_4001)];
+    let forged = [
+        ("off-curve y", off_curve_twin(&victims[0])),
+        ("unreduced x", unreduced_twin(&victims[1])),
+    ];
+    for ((nonce, victim), (name, twin)) in (102..).zip(&victims).zip(forged) {
+        let h = message::keccak256(&victim.to_bytes());
+        route.deliver(&mut session, remote_router, nonce, h, amount);
+        route.claim_for(&mut session, &twin).unwrap_or_else(|e| {
+            panic!("{name}: claim for a forged key should pay the real one: {e}")
+        });
+        assert_eq!(route.paid_to(&mut session, victim), amount, "{name}");
+        assert_eq!(route.paid_to(&mut session, &twin), 0, "{name}");
+        assert_eq!(route.pending(&mut session, h), 0, "{name}");
+        assert!(route_is_registered(&mut session, route.id(), h), "{name}");
+    }
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(route.id(), "pending_total", &())
+            .unwrap()
+            .data,
+        2 * amount,
+        "only the invalid keys' escrow is left"
+    );
+
+    // The registrations hold the real keys: later transfers reach them.
+    for (nonce, victim) in (110..).zip(&victims) {
+        let h = message::keccak256(&victim.to_bytes());
+        route.deliver(&mut session, remote_router, nonce, h, amount);
+        assert_eq!(route.paid_to(&mut session, victim), 2 * amount);
+        assert_eq!(route.pending(&mut session, h), 0);
+        for (name, twin) in forged_twins(victim) {
+            assert_eq!(route.paid_to(&mut session, &twin), 0, "{name}");
+        }
+    }
+}
+
+/// A recipient that registered itself keeps that registration. Routes have
+/// no call that registers someone else's key outright, and a forged key
+/// passed to `claim_pending_for` decodes to the recipient's own key, so
+/// neither the escrow waiting from before registration nor later transfers
+/// can be diverted.
+fn assert_forged_key_cannot_redirect_registered_account(route: Route) {
+    let amount = 400_000u64;
+    let (mut session, remote_router) = route.session(3 * amount);
+    route.deliver(&mut session, remote_router, 100, *OWNER_ID, amount);
+    session
+        .call_public::<_, ()>(&OWNER_SK, route.id(), "register_account", &())
+        .expect("register_account should succeed");
+    assert!(route_is_registered(&mut session, route.id(), *OWNER_ID));
+    assert_eq!(route.pending(&mut session, *OWNER_ID), amount);
+    let before = route.paid_to(&mut session, &OWNER_PK);
+
+    for (name, twin) in forged_twins(&OWNER_PK) {
+        let overwrite =
+            session.call_public::<_, ()>(&RELAYER_SK, route.id(), "register_account_for", &(twin,));
+        assert!(
+            overwrite.is_err(),
+            "{name}: routes don't export register_account_for"
+        );
+    }
+    let [(_, first), (_, second)] = forged_twins(&OWNER_PK);
+    route
+        .claim_for(&mut session, &first)
+        .expect("a claim with a forged key pays the real key");
+    assert_eq!(route.paid_to(&mut session, &OWNER_PK) - before, amount);
+    assert_contract_panic(
+        route.claim_for(&mut session, &second),
+        &format!("{}: no pending transfers", route.name()),
+    );
+
+    route.deliver(&mut session, remote_router, 101, *OWNER_ID, amount);
+    assert_eq!(route.paid_to(&mut session, &OWNER_PK) - before, 2 * amount);
+    assert_eq!(route.pending(&mut session, *OWNER_ID), 0);
+    for (name, twin) in forged_twins(&OWNER_PK) {
+        assert_eq!(route.paid_to(&mut session, &twin), 0, "{name}");
+    }
+}
+
+#[test]
+fn test_warp_native_sponsored_claim_pays_the_decoded_key() {
+    assert_sponsored_claim_pays_the_decoded_key(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_sponsored_claim_pays_the_decoded_key() {
+    assert_sponsored_claim_pays_the_decoded_key(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_sponsored_claim_pays_the_decoded_key() {
+    assert_sponsored_claim_pays_the_decoded_key(Route::Collateral);
+}
+
+#[test]
+fn test_warp_native_forged_key_cannot_redirect_registered_account() {
+    assert_forged_key_cannot_redirect_registered_account(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_forged_key_cannot_redirect_registered_account() {
+    assert_forged_key_cannot_redirect_registered_account(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_forged_key_cannot_redirect_registered_account() {
+    assert_forged_key_cannot_redirect_registered_account(Route::Collateral);
 }
 
 /// A recipient without `interchain_security_module` gets the default ISM.
