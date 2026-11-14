@@ -10,6 +10,7 @@ members = [
     "contracts/test-recipient",
     "contracts/test-mock",
     "contracts/reentrant-hook",
+    "contracts/redteam-attacker",
     "contracts/protocol-fee",
     "contracts/igp",
     "contracts/warp-drc20",

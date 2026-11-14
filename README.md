@@ -38,8 +38,8 @@ in `rust/main/chains/hyperlane-dusk`.
 | `warp-drc20-collateral` | `HypERC20Collateral` | Locks and unlocks an existing DRC20 token. |
 | `warp-native` | `HypNative` | Bridges native DUSK. |
 
-`test-recipient`, `test-mock` (a pass-through ISM plus a no-op hook) and
-`reentrant-hook` exist for tests and demos only.
+`test-recipient`, `test-mock` (a pass-through ISM plus a no-op hook),
+`reentrant-hook` and `redteam-attacker` exist for tests and demos only.
 
 Routing, Aggregation and CCIP-read ISMs and rate-limited hooks or ISMs are not
 implemented. The agents return an explicit error if a deployment points at one.

@@ -6798,3 +6798,494 @@ fn redteam_synthetic_rejects_unspendable_phoenix_recipient() {
         "WarpDrc20 moved {stranded} units to a Phoenix principal that no call can ever spend"
     );
 }
+
+// =============================================================================
+// Red team: attacker-controlled callbacks (hook, recipient, nominated ISM,
+// native escrow claimant, route-nominated hook)
+// =============================================================================
+
+const REDTEAM_ATTACKER_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_redteam_attacker.wasm"
+);
+const REDTEAM_ID: ContractId = ContractId::from_bytes([40; 32]);
+
+/// Callback points understood by the red-team attacker contract.
+const RT_QUOTE: u8 = 0;
+const RT_POST: u8 = 1;
+const RT_PAYMENT: u8 = 2;
+const RT_ISM_LOOKUP: u8 = 3;
+const RT_VERIFY: u8 = 4;
+const RT_HANDLE: u8 = 5;
+const RT_NATIVE_PENDING: u8 = 6;
+
+type RtAction = (ContractId, String, Vec<u8>);
+
+fn rt_action<A>(target: ContractId, fn_name: &str, args: &A) -> RtAction
+where
+    A: for<'b> rkyv::Serialize<dusk_core::abi::StandardBufSerializer<'b>>,
+    A::Archived: for<'b> bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    (
+        target,
+        String::from(fn_name),
+        test_session::rkyv_serialize(args),
+    )
+}
+
+fn rt_deploy(session: &mut TestSession) {
+    session
+        .deploy(
+            REDTEAM_ATTACKER_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(REDTEAM_ID),
+        )
+        .expect("Deploying the red-team attacker should succeed");
+}
+
+fn rt_configure(session: &mut TestSession, point: u8, actions: Vec<RtAction>, panic_after: bool) {
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "configure", &(point, actions, panic_after))
+        .expect("attacker configuration should succeed");
+}
+
+fn rt_set_returns(session: &mut TestSession, quote_fee: u64, ism: ContractId) {
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "set_returns", &(quote_fee, ism))
+        .expect("attacker return configuration should succeed");
+}
+
+fn rt_results(session: &mut TestSession) -> Vec<bool> {
+    session
+        .direct_call::<_, Vec<bool>>(REDTEAM_ID, "results", &())
+        .expect("results query should succeed")
+        .data
+}
+
+/// Returns `(handled, posts, received)`.
+fn rt_counters(session: &mut TestSession) -> (u32, u32, u64) {
+    session
+        .direct_call::<_, (u32, u32, u64)>(REDTEAM_ID, "counters", &())
+        .expect("counters query should succeed")
+        .data
+}
+
+fn rt_u32(session: &mut TestSession, contract: ContractId, fn_name: &str) -> u32 {
+    session
+        .direct_call::<_, u32>(contract, fn_name, &())
+        .unwrap_or_else(|e| panic!("{fn_name} query failed: {e}"))
+        .data
+}
+
+fn rt_delivered(session: &mut TestSession, id: MessageId) -> bool {
+    session
+        .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+        .expect("delivered query should succeed")
+        .data
+}
+
+fn rt_fee_credit(session: &mut TestSession, payer: H256) -> u64 {
+    session
+        .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+        .expect("fee_credit query should succeed")
+        .data
+}
+
+/// A recipient's ISM lookup may fail and the Mailbox then falls back to the
+/// default ISM. The attacker uses that tolerated failure for speculative work:
+/// a nested dispatch, a nested delivery of someone else's message and a
+/// same-message replay, then panics. None of it may survive, and the honest
+/// message must remain deliverable afterwards.
+#[test]
+fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+
+    let attacker_msg = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"attacker inbound",
+    );
+    let honest_msg = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        b"honest inbound",
+    );
+    rt_configure(
+        &mut s.session,
+        RT_ISM_LOOKUP,
+        vec![
+            rt_action(
+                MAILBOX_ID,
+                "dispatch_default",
+                &(REMOTE_DOMAIN, [0xEEu8; 32], b"speculative".to_vec()),
+            ),
+            rt_action(
+                MAILBOX_ID,
+                "process",
+                &(Vec::<u8>::new(), honest_msg.clone()),
+            ),
+            rt_action(
+                MAILBOX_ID,
+                "process",
+                &(Vec::<u8>::new(), attacker_msg.clone()),
+            ),
+        ],
+        true,
+    );
+
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), attacker_msg.clone())
+        .expect("outer delivery falls back to the default ISM");
+
+    assert_eq!(rt_counters(&mut s.session).0, 1, "delivered exactly once");
+    assert_eq!(s.mailbox_nonce(), 0, "speculative dispatch must roll back");
+    assert_eq!(
+        s.merkle_count(),
+        0,
+        "speculative tree insert must roll back"
+    );
+    assert!(!rt_delivered(&mut s.session, message::id(&honest_msg)));
+    assert_eq!(s.recipient_handled_count(), 0);
+    assert_eq!(s.mailbox_processed_count(), 1);
+    assert_eq!(s.mailbox_processed_at_index(0), message::id(&attacker_msg));
+    // Piecrust keeps the rolled-back events in the receipt but flags them;
+    // the Dusk agent skips flagged events and cross-checks contract state.
+    for event in &receipt.events {
+        if event.topic == events::Dispatch::TOPIC
+            || event.topic == events::DispatchId::TOPIC
+            || event.topic == events::InsertedIntoTree::TOPIC
+        {
+            assert!(
+                event.reverted,
+                "speculative {} must be flagged",
+                event.topic
+            );
+        }
+    }
+    assert_eq!(
+        receipt
+            .events
+            .iter()
+            .filter(|event| event.topic == events::ProcessId::TOPIC && !event.reverted)
+            .count(),
+        1
+    );
+
+    s.mailbox_process_via_tx(Vec::new(), honest_msg.clone())
+        .expect("the honest message must stay deliverable");
+    assert_eq!(s.recipient_handled_count(), 1);
+    assert_eq!(s.mailbox_processed_count(), 2);
+}
+
+/// A recipient nominates itself as ISM and replays the message from both
+/// `verify` and `handle`. The delivery reservation must reject both.
+#[test]
+fn redteam_nominated_ism_and_handle_replay_rejected() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    rt_set_returns(&mut s.session, 0, REDTEAM_ID);
+
+    let msg = message::encode(
+        VERSION,
+        7,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"replay me",
+    );
+    let replay = rt_action(MAILBOX_ID, "process", &(Vec::<u8>::new(), msg.clone()));
+    rt_configure(&mut s.session, RT_VERIFY, vec![replay.clone()], false);
+    rt_configure(&mut s.session, RT_HANDLE, vec![replay], false);
+
+    s.mailbox_process_via_tx(Vec::new(), msg.clone())
+        .expect("outer delivery succeeds");
+
+    assert_eq!(rt_results(&mut s.session), vec![false, false]);
+    assert_eq!(rt_counters(&mut s.session).0, 1);
+    assert_eq!(s.mailbox_processed_count(), 1);
+}
+
+/// The attacker contract is both the dispatch sender and its own hook, and
+/// tries to withdraw its credit from each hook callback. If the Mailbox read
+/// the credit before the quote callbacks, it would pay the hooks out of other
+/// payers' pooled DUSK.
+#[test]
+fn redteam_hook_callbacks_cannot_double_spend_dispatch_credit() {
+    // Production-like hooks: required = Aggregation(Merkle, ProtocolFee 1000),
+    // default = IGP. The helper also funds 100_000_000 of TestRecipient credit,
+    // which sits in the same Mailbox pool.
+    let mut session = session_with_hooks();
+    rt_deploy(&mut session);
+    let hook_fee = 500u64;
+    let total_fee = 1000 + hook_fee;
+    rt_set_returns(&mut session, hook_fee, ContractId::from_bytes([0; 32]));
+    session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(REDTEAM_ID.to_bytes(), total_fee),
+            total_fee,
+        )
+        .expect("funding the attacker's own credit should succeed");
+    let pool_before = session.contract_balance(&MAILBOX_ID).unwrap();
+    let relayer_before = session.account(&RELAYER_PK).unwrap().balance;
+
+    let dispatch = rt_action(
+        MAILBOX_ID,
+        "dispatch",
+        &(
+            REMOTE_DOMAIN,
+            [0xA1u8; 32],
+            b"pay with withdrawn credit".to_vec(),
+            Vec::<u8>::new(),
+            REDTEAM_ID,
+        ),
+    );
+    let withdraw_all = rt_action(
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, total_fee),
+    );
+    let withdraw_one = rt_action(MAILBOX_ID, "withdraw_dispatch_credit", &(*RELAYER_PK, 1u64));
+
+    // 1. Withdraw everything during the quote, before the Mailbox charges.
+    rt_configure(&mut session, RT_QUOTE, vec![withdraw_all], false);
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            REDTEAM_ID,
+            "run",
+            &(vec![dispatch.clone()], false),
+        )
+        .expect("attacker transaction itself succeeds");
+    assert_eq!(rt_results(&mut session), vec![false], "dispatch must fail");
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 0);
+    assert_eq!(
+        rt_fee_credit(&mut session, REDTEAM_ID.to_bytes()),
+        total_fee
+    );
+    assert_eq!(session.contract_balance(&MAILBOX_ID).unwrap(), pool_before);
+    assert_eq!(
+        session.account(&RELAYER_PK).unwrap().balance,
+        relayer_before
+    );
+
+    // 2. Withdraw again from post-dispatch and payment, after the charge.
+    rt_configure(&mut session, RT_QUOTE, Vec::new(), false);
+    rt_configure(&mut session, RT_POST, vec![withdraw_one.clone()], false);
+    rt_configure(&mut session, RT_PAYMENT, vec![withdraw_one], false);
+    session
+        .call_public::<_, ()>(&OWNER_SK, REDTEAM_ID, "run", &(vec![dispatch], true))
+        .expect("honest-priced dispatch succeeds");
+    assert_eq!(rt_results(&mut session), vec![false, false, false, true]);
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 1);
+    assert_eq!(rt_u32(&mut session, MERKLE_TREE_HOOK_ID, "count"), 1);
+    assert_eq!(rt_fee_credit(&mut session, REDTEAM_ID.to_bytes()), 0);
+    assert_eq!(
+        session.contract_balance(&MAILBOX_ID).unwrap(),
+        pool_before - total_fee,
+        "only the attacker's own credit may leave the pool"
+    );
+    assert_eq!(
+        rt_fee_credit(&mut session, TEST_RECIPIENT_ID.to_bytes()),
+        100_000_000
+    );
+    assert_eq!(
+        session.account(&RELAYER_PK).unwrap().balance,
+        relayer_before
+    );
+    assert_eq!(rt_counters(&mut session).2, hook_fee);
+    assert_eq!(session.contract_balance(&PROTOCOL_FEE_ID).unwrap(), 1000);
+}
+
+/// A contract claimant of native escrow re-enters the route from the
+/// transfer-contract callback: a second claim, a nested inbound delivery that
+/// escrows more DUSK to itself, and a claim of that. It must receive exactly
+/// what was escrowed, and the route's custody must still cover its liability.
+#[test]
+fn redteam_native_escrow_callback_cannot_double_release() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    rt_deploy(&mut session);
+    let custody = 3_000_000u64;
+    let first = 1_000_000u64;
+    let second = 700_000u64;
+    fund_warp_native(&mut session, custody);
+
+    let inbound = |nonce: u32, amount: u64| {
+        message::encode(
+            VERSION,
+            nonce,
+            REMOTE_DOMAIN,
+            remote_router,
+            LOCAL_DOMAIN,
+            WARP_NATIVE_ID.to_bytes(),
+            &hyperlane_dusk_types::token_message::encode(REDTEAM_ID.to_bytes(), amount),
+        )
+    };
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(Vec::<u8>::new(), inbound(1, first)),
+        )
+        .expect("first escrow");
+
+    let claim = rt_action(WARP_NATIVE_ID, "claim_pending_contract", &());
+    rt_configure(
+        &mut session,
+        RT_NATIVE_PENDING,
+        vec![
+            claim.clone(),
+            rt_action(
+                MAILBOX_ID,
+                "process",
+                &(Vec::<u8>::new(), inbound(2, second)),
+            ),
+            claim.clone(),
+        ],
+        false,
+    );
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![claim], true))
+        .expect("outer claim succeeds");
+
+    assert_eq!(rt_results(&mut session), vec![false, true, true, true]);
+    assert_eq!(rt_counters(&mut session).2, first + second);
+    assert_eq!(
+        session.contract_balance(&REDTEAM_ID).unwrap(),
+        first + second
+    );
+    assert_eq!(
+        session.contract_balance(&WARP_NATIVE_ID).unwrap(),
+        custody - first - second
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_total", &())
+            .unwrap()
+            .data,
+        0
+    );
+}
+
+/// A route owner nominates a third-party hook. Its quote callback runs before
+/// the route takes the user's deposit, re-enters `transfer_remote` with a
+/// matching amount, takes the deposit and bridges it to the attacker. The
+/// outer transfer must then fail, rolling back the nested one.
+#[test]
+fn redteam_route_hook_cannot_steal_native_deposit_during_quote() {
+    let (mut session, _remote_router) = session_with_warp_native_flow();
+    rt_deploy(&mut session);
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "set_hook", &(REDTEAM_ID,))
+        .expect("route owner nominates the hook");
+    let amount = 1_000_000_000u64; // larger than the maximum gas charge
+    rt_configure(
+        &mut session,
+        RT_QUOTE,
+        vec![rt_action(
+            WARP_NATIVE_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xAAu8; 32], amount),
+        )],
+        false,
+    );
+    let user_before = session.account(&OWNER_PK).unwrap().balance;
+
+    let result = session.call_public_with_deposit::<_, MessageId>(
+        &OWNER_SK,
+        WARP_NATIVE_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0xDDu8; 32], amount),
+        amount,
+    );
+    assert!(result.is_err(), "outer transfer must not succeed");
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 0);
+    assert_eq!(rt_u32(&mut session, MERKLE_TREE_HOOK_ID, "count"), 0);
+    assert_eq!(session.contract_balance(&WARP_NATIVE_ID).unwrap(), 0);
+    assert!(
+        user_before - session.account(&OWNER_PK).unwrap().balance < amount,
+        "the user's deposit must be refunded"
+    );
+}
+
+/// The attacker's hook delivers an inbound message to itself from
+/// `post_dispatch`; its `handle` then tries to dispatch while the outer
+/// dispatch is still running. Nonces, stored messages and the tree must stay
+/// aligned, and the guard must be clear afterwards.
+#[test]
+fn redteam_hook_process_during_dispatch_keeps_indexes_aligned() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    let inbound = message::encode(
+        VERSION,
+        3,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"delivered mid-dispatch",
+    );
+    rt_configure(
+        &mut s.session,
+        RT_POST,
+        vec![rt_action(
+            MAILBOX_ID,
+            "process",
+            &(Vec::<u8>::new(), inbound.clone()),
+        )],
+        false,
+    );
+    rt_configure(
+        &mut s.session,
+        RT_HANDLE,
+        vec![rt_action(
+            MAILBOX_ID,
+            "dispatch_default",
+            &(REMOTE_DOMAIN, [0xEEu8; 32], b"nested".to_vec()),
+        )],
+        false,
+    );
+
+    let body = b"outer".to_vec();
+    let receipt = s
+        .session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "dispatch",
+            &(
+                REMOTE_DOMAIN,
+                [0xD5u8; 32],
+                body.clone(),
+                Vec::<u8>::new(),
+                REDTEAM_ID,
+            ),
+        )
+        .expect("outer dispatch succeeds");
+
+    assert_eq!(rt_results(&mut s.session), vec![false, true]);
+    assert_eq!(rt_counters(&mut s.session).0, 1);
+    assert!(rt_delivered(&mut s.session, message::id(&inbound)));
+    assert_eq!(s.mailbox_nonce(), 1);
+    assert_eq!(s.merkle_count(), 1);
+    let stored = s.mailbox_dispatched_message(0);
+    assert_eq!(message::decode(&stored).unwrap().body, body);
+    assert_eq!(receipt.data, message::id(&stored));
+
+    s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xD5u8; 32], b"later".to_vec())
+        .expect("guard must be clear");
+    assert_eq!(s.mailbox_nonce(), 2);
+    assert_eq!(s.merkle_count(), 2);
+}
