@@ -1,0 +1,6 @@
+# The rusk-private release this repository builds and tests against. Testnet
+# and mainnet both run it (check with `curl -X POST <node>/on/node/info`).
+# Contracts, VM tests, dusk-tx and the local demo node must all come from a
+# rusk-private checkout at RUSK_COMMIT. `make` refuses any other checkout.
+RUSK_TAG=dusk-rusk-1.7.3
+RUSK_COMMIT=21fb02514ea2a1c96d82346d160a33de797e4b56

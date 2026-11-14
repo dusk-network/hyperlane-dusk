@@ -2446,7 +2446,8 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
         decoded["recipient"],
         dusk_data_driver::to_json(message::keccak256(&RELAYER_PK.to_bytes())).unwrap()
     );
-    assert_eq!(decoded["amount"].as_u64(), Some(partial));
+    // The data driver encodes u64 as decimal strings so JavaScript keeps them exact.
+    assert_eq!(decoded["amount"].as_str(), Some(partial.to_string().as_str()));
     let relayer_balance_after = s
         .session
         .account(&RELAYER_PK)
@@ -6287,8 +6288,9 @@ fn test_igp_credits_the_overhead_in_paid_gas() {
     let decoded = HyperlaneDataDriver
         .decode_event(&event.topic, &event.data)
         .unwrap();
-    assert_eq!(decoded["gas_limit"].as_u64(), Some(150_000));
-    assert_eq!(decoded["payment"].as_u64(), Some(150_000));
+    // The data driver encodes u64 as decimal strings so JavaScript keeps them exact.
+    assert_eq!(decoded["gas_limit"].as_str(), Some("150000"));
+    assert_eq!(decoded["payment"].as_str(), Some("150000"));
     session
         .call_public::<_, ()>(
             &OWNER_SK,

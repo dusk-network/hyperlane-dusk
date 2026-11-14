@@ -772,8 +772,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen"
 version = "0.107.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ee7fde5cd9173f00ce02c491ee9e306d64740f4b1a697946e0474f389999e13"
+source = "git+https://github.com/dusk-network/dusk-wasmtime-private.git?rev=dd04ee067813e0a2bb84f4fadf5eb1ad218a6f4e#dd04ee067813e0a2bb84f4fadf5eb1ad218a6f4e"
 dependencies = [
  "bumpalo",
  "cranelift-bforest 0.107.2",
@@ -1007,8 +1006,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 [[package]]
 name = "crumbles"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f3476b7dda7a457e938e4b958aa7b8db66eb3f6bc72894454a86f99bab3dea2"
+source = "git+https://github.com/dusk-network/piecrust-private.git?rev=9dee46aadc6f8eeca5b5e48731f93f3791905721#9dee46aadc6f8eeca5b5e48731f93f3791905721"
 dependencies = [
  "libc",
  "rangemap",
@@ -2857,8 +2855,7 @@ dependencies = [
 [[package]]
 name = "piecrust"
 version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ed0a77c613cd5beeee545aacd29fbd2d7518616e53b757b26595039e7b51777"
+source = "git+https://github.com/dusk-network/piecrust-private.git?rev=9dee46aadc6f8eeca5b5e48731f93f3791905721#9dee46aadc6f8eeca5b5e48731f93f3791905721"
 dependencies = [
  "blake3",
  "bytecheck",
@@ -2875,6 +2872,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
+ "wasmparser 0.202.0",
 ]
 
 [[package]]
@@ -3370,11 +3368,11 @@ dependencies = [
  "console",
  "dirs",
  "hex",
- "semver",
  "serde",
  "sha2 0.10.9",
  "toml 1.1.0+spec-1.1.0",
  "tracing",
+ "version_check",
 ]
 
 [[package]]

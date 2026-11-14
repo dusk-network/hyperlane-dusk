@@ -17,6 +17,13 @@
 #   bash demo/e2e-agents.sh
 #   bash demo/e2e-agents.sh --only testMock
 #   bash demo/e2e-agents.sh --only messageIdMultisig
+#   bash demo/e2e-agents.sh --only messageIdMultisig --validators 3 --threshold 2
+#
+# In the messageIdMultisig case the script runs one validator per key and
+# origin chain (--validators, default 1, at most 5), with the given multisig
+# threshold on both chains. After the route checks it runs a quorum check:
+# with exactly `threshold` validators per origin messages still deliver, with
+# one fewer they stall, and they deliver once a validator is restarted.
 #
 
 set -euo pipefail
@@ -30,6 +37,18 @@ source "$SCRIPT_DIR/.env.bridge"
 E2E_ANVIL_RELAYER_PRIVATE_KEY="${E2E_ANVIL_RELAYER_PRIVATE_KEY:-0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}"
 E2E_ANVIL_VALIDATOR_PRIVATE_KEY="${E2E_ANVIL_VALIDATOR_PRIVATE_KEY:-0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a}"
 E2E_ANVIL_VALIDATOR="${E2E_ANVIL_VALIDATOR:-0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC}"
+# Validator i uses Anvil account #(2 + i). Account #2 is the historical single
+# validator above.
+E2E_VALIDATOR_KEYS_ALL=(
+    "$E2E_ANVIL_VALIDATOR_PRIVATE_KEY"
+    0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6
+    0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a
+    0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba
+    0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e
+)
+VALIDATOR_COUNT="${E2E_VALIDATOR_COUNT:-1}"
+VALIDATOR_THRESHOLD="${E2E_VALIDATOR_THRESHOLD:-1}"
+QUORUM_STALL_SECS="${QUORUM_STALL_SECS:-60}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[INFO] $*" >&2; }
@@ -39,11 +58,15 @@ AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-3}" # whole tokens
 AMOUNT_TO_EVM="${AMOUNT_TO_EVM:-1}"   # whole tokens
 TIMEOUT_SECS="${TIMEOUT_SECS:-240}"
 
-# PIDs of the currently running agents (used by the EXIT trap).
+# PIDs of the currently running agents (used by the EXIT trap). Validator i
+# of each origin sits at index i; a deliberately stopped validator has "".
 CURRENT_RELAYER_PID=""
-CURRENT_VALIDATOR_PID=""
-CURRENT_DUSK_VALIDATOR_PID=""
-CURRENT_DUSK_VALIDATOR_LOG=""
+VALIDATOR_PIDS=()
+VALIDATOR_LOGS=()
+VALIDATOR_CFGS=()
+DUSK_VALIDATOR_PIDS=()
+DUSK_VALIDATOR_LOGS=()
+DUSK_VALIDATOR_CFGS=()
 GENERATED_DUSK_SIGNER_KEY_FILES=()
 GENERATED_AGENT_CONFIG_FILES=()
 GENERATED_AGENT_RUN_DIRS=()
@@ -58,9 +81,23 @@ while [ "$#" -gt 0 ]; do
             AMOUNT_TO_EVM="${2:-}"; shift 2 ;;
         --timeout)
             TIMEOUT_SECS="${2:-}"; shift 2 ;;
+        --validators)
+            VALIDATOR_COUNT="${2:-}"; shift 2 ;;
+        --threshold)
+            VALIDATOR_THRESHOLD="${2:-}"; shift 2 ;;
         *)
             fail "Unknown argument: $1" ;;
     esac
+done
+
+[[ "$VALIDATOR_COUNT" =~ ^[1-5]$ ]] || fail "--validators must be 1 to 5"
+[[ "$VALIDATOR_THRESHOLD" =~ ^[1-5]$ ]] && [ "$VALIDATOR_THRESHOLD" -le "$VALIDATOR_COUNT" ] \
+    || fail "--threshold must be between 1 and --validators"
+E2E_VALIDATOR_KEYS=("${E2E_VALIDATOR_KEYS_ALL[@]:0:$VALIDATOR_COUNT}")
+E2E_VALIDATOR_ADDRESSES=()
+for key in "${E2E_VALIDATOR_KEYS[@]}"; do
+    E2E_VALIDATOR_ADDRESSES+=("$(cast wallet address --private-key "$key")") \
+        || fail "cannot derive validator address"
 done
 
 to_wei() {
@@ -102,11 +139,19 @@ kill_pid() {
     fi
 }
 
+kill_all_validators() {
+    local pid
+    for pid in "${VALIDATOR_PIDS[@]}" "${DUSK_VALIDATOR_PIDS[@]}"; do
+        kill_pid "$pid"
+    done
+    VALIDATOR_PIDS=()
+    DUSK_VALIDATOR_PIDS=()
+}
+
 cleanup() {
     # Best-effort cleanup on failures/timeouts.
     kill_pid "$CURRENT_RELAYER_PID"
-    kill_pid "$CURRENT_VALIDATOR_PID"
-    kill_pid "$CURRENT_DUSK_VALIDATOR_PID"
+    kill_all_validators
     if [ "${#GENERATED_DUSK_SIGNER_KEY_FILES[@]}" -gt 0 ]; then
         rm -f "${GENERATED_DUSK_SIGNER_KEY_FILES[@]}" 2>/dev/null || true
     fi
@@ -121,43 +166,164 @@ cleanup() {
 
 trap cleanup EXIT
 
+# Usage: tail_logs_on_fail <relayer_log> [ignored...]. Tails the relayer and
+# every validator log of the current case.
 tail_logs_on_fail() {
-    local relayer_log="$1"
-    local validator_log="${2:-}"
-    local dusk_validator_log="${3:-$CURRENT_DUSK_VALIDATOR_LOG}"
+    local relayer_log="$1" log lines=120
+    [ "${#VALIDATOR_LOGS[@]}" -le 1 ] || lines=60
     echo "" >&2
     echo "=== relayer log (tail) ===" >&2
     tail -n 120 "$relayer_log" 2>/dev/null || true
-    if [ -n "$validator_log" ]; then
+    for log in "${VALIDATOR_LOGS[@]}" "${DUSK_VALIDATOR_LOGS[@]}"; do
         echo "" >&2
-        echo "=== validator log (tail) ===" >&2
-        tail -n 120 "$validator_log" 2>/dev/null || true
+        echo "=== $(basename "$log") (tail) ===" >&2
+        tail -n "$lines" "$log" 2>/dev/null || true
+    done
+}
+
+# Usage: assert_agents_alive <relayer_pid> <ignored> <relayer_log> [ignored].
+# Checks the relayer and every validator that has not been deliberately
+# stopped.
+assert_agents_alive() {
+    local relayer_pid="$1" relayer_log="$3" i
+
+    if ! kill -0 "$relayer_pid" 2>/dev/null; then
+        tail_logs_on_fail "$relayer_log"
+        fail "relayer exited unexpectedly"
     fi
-    if [ -n "$dusk_validator_log" ]; then
-        echo "" >&2
-        echo "=== Dusk-origin validator log (tail) ===" >&2
-        tail -n 120 "$dusk_validator_log" 2>/dev/null || true
+    for i in "${!VALIDATOR_PIDS[@]}"; do
+        if [ -n "${VALIDATOR_PIDS[$i]}" ] && ! kill -0 "${VALIDATOR_PIDS[$i]}" 2>/dev/null; then
+            tail_logs_on_fail "$relayer_log"
+            fail "EVM-origin validator $i exited unexpectedly"
+        fi
+    done
+    for i in "${!DUSK_VALIDATOR_PIDS[@]}"; do
+        if [ -n "${DUSK_VALIDATOR_PIDS[$i]}" ] && ! kill -0 "${DUSK_VALIDATOR_PIDS[$i]}" 2>/dev/null; then
+            tail_logs_on_fail "$relayer_log"
+            fail "Dusk-origin validator $i exited unexpectedly"
+        fi
+    done
+}
+
+# start_validator <anvil|dusk> <index>: start (or restart) one validator.
+# Dusk-origin validators announce with the shared demo Moonlight signer, so
+# wait for each announcement before starting the next to avoid nonce races.
+start_validator() {
+    local kind="$1" i="$2" cfg log pid
+    if [ "$kind" = "anvil" ]; then
+        cfg="${VALIDATOR_CFGS[$i]}"; log="${VALIDATOR_LOGS[$i]}"
+    else
+        cfg="${DUSK_VALIDATOR_CFGS[$i]}"; log="${DUSK_VALIDATOR_LOGS[$i]}"
+    fi
+    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
+      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" ./target/debug/validator \
+      >>"$log" 2>&1) &
+    pid="$!"
+    if [ "$kind" = "anvil" ]; then VALIDATOR_PIDS[i]="$pid"; else DUSK_VALIDATOR_PIDS[i]="$pid"; fi
+    sleep 2
+    kill -0 "$pid" 2>/dev/null || { tail_logs_on_fail /dev/null; fail "$kind-origin validator $i failed to start"; }
+}
+
+stop_validator() {
+    local kind="$1" i="$2"
+    if [ "$kind" = "anvil" ]; then
+        kill_pid "${VALIDATOR_PIDS[$i]}"; VALIDATOR_PIDS[i]=""
+    else
+        kill_pid "${DUSK_VALIDATOR_PIDS[$i]}"; DUSK_VALIDATOR_PIDS[i]=""
     fi
 }
 
-assert_agents_alive() {
-    local relayer_pid="$1"
-    local validator_pid="$2"
-    local relayer_log="$3"
-    local validator_log="$4"
+wait_for_dusk_announcements() {
+    local va="$1" want="$2" start count
+    start="$(date +%s)"
+    while true; do
+        count="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$va" \
+          --method announced_validator_count --return-type u32 2>/dev/null | jq -r '.value // 0')"
+        [ "${count:-0}" -ge "$want" ] && return 0
+        [ $(( $(date +%s) - start )) -le 120 ] \
+          || { tail_logs_on_fail /dev/null; fail "timeout waiting for $want Dusk validator announcement(s) (have ${count:-0})"; }
+        sleep 3
+    done
+}
 
-    if ! kill -0 "$relayer_pid" 2>/dev/null; then
-        tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
-        fail "relayer exited unexpectedly"
+# Prove the live multisig threshold on both chains: deliveries succeed with
+# exactly `threshold` validators per origin, stall with one fewer, and resume
+# when a validator comes back.
+run_quorum_check() {
+    local relayer_pid="$1" relayer_log="$2" evm_token="$3" dusk_warp="$4"
+    local dusk_domain="$5" evm_domain="$6" account_h256="$7" evm_recipient="$8"
+    local n="$VALIDATOR_COUNT" m="$VALIDATOR_THRESHOLD" i one
+    one="$(to_wei 1)"
+
+    dusk_supply() {
+        "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_warp" \
+          --method total_supply --return-type u64 2>/dev/null | jq -r '.value // 0'
+    }
+    evm_balance() {
+        cast call "$evm_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" \
+          --rpc-url "$ANVIL_RPC" | awk '{print $1}'
+    }
+    send_to_dusk() {
+        cast send "$evm_token" "transferRemote(uint32,bytes32,uint256)" \
+          "$dusk_domain" "0x${account_h256}" "$one" \
+          --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
+    }
+    send_to_evm() {
+        DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
+          --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
+          --warp-contract "$dusk_warp" --destination "$evm_domain" \
+          --recipient "$evm_recipient" --amount "$one" >/dev/null
+    }
+    # wait_value <label> <getter> <target>
+    wait_value() {
+        local label="$1" getter="$2" target="$3" start
+        start="$(date +%s)"
+        until [ "$($getter)" = "$target" ]; do
+            [ $(( $(date +%s) - start )) -le "$TIMEOUT_SECS" ] \
+              || { tail_logs_on_fail "$relayer_log"; fail "quorum check: timeout waiting for $label"; }
+            assert_agents_alive "$relayer_pid" "" "$relayer_log"
+            sleep 3
+        done
+    }
+    add() { python3 -c 'import sys; print(int(sys.argv[1]) + int(sys.argv[2]))' "$1" "$2"; }
+
+    local supply_target balance_target
+    if [ "$n" -gt "$m" ]; then
+        for ((i = m; i < n; i++)); do stop_validator anvil "$i"; stop_validator dusk "$i"; done
+        info "Quorum check: $m of $n validators per origin running, expecting delivery..."
+        supply_target="$(add "$(dusk_supply)" "$one")"
+        send_to_dusk
+        wait_value "EVM->Dusk delivery at threshold" dusk_supply "$supply_target"
+        balance_target="$(add "$(evm_balance)" "$one")"
+        send_to_evm
+        wait_value "Dusk->EVM delivery at threshold" evm_balance "$balance_target"
+        info "Delivered in both directions with exactly $m signatures available."
     fi
-    if [ -n "$validator_pid" ] && ! kill -0 "$validator_pid" 2>/dev/null; then
-        tail_logs_on_fail "$relayer_log" "$validator_log"
-        fail "validator exited unexpectedly"
-    fi
-    if [ -n "$CURRENT_DUSK_VALIDATOR_PID" ] && ! kill -0 "$CURRENT_DUSK_VALIDATOR_PID" 2>/dev/null; then
-        tail_logs_on_fail "$relayer_log" "$validator_log" "$CURRENT_DUSK_VALIDATOR_LOG"
-        fail "Dusk-origin validator exited unexpectedly"
-    fi
+
+    stop_validator anvil "$((m - 1))"
+    stop_validator dusk "$((m - 1))"
+    info "Quorum check: $((m - 1)) of $n validators per origin running, expecting no delivery for ${QUORUM_STALL_SECS}s..."
+    local supply_before balance_before
+    supply_before="$(dusk_supply)"
+    balance_before="$(evm_balance)"
+    send_to_dusk
+    send_to_evm
+    local start
+    start="$(date +%s)"
+    while [ $(( $(date +%s) - start )) -lt "$QUORUM_STALL_SECS" ]; do
+        assert_agents_alive "$relayer_pid" "" "$relayer_log"
+        [ "$(dusk_supply)" = "$supply_before" ] || fail "quorum check: EVM->Dusk delivered below threshold"
+        [ "$(evm_balance)" = "$balance_before" ] || fail "quorum check: Dusk->EVM delivered below threshold"
+        sleep 5
+    done
+    info "Nothing delivered below threshold."
+
+    info "Quorum check: restarting validator $((m - 1)) on both origins..."
+    start_validator anvil "$((m - 1))"
+    start_validator dusk "$((m - 1))"
+    wait_value "stalled EVM->Dusk delivery after restart" dusk_supply "$(add "$supply_before" "$one")"
+    wait_value "stalled Dusk->EVM delivery after restart" evm_balance "$(add "$balance_before" "$one")"
+    info "Quorum check OK: stalled messages delivered once the threshold was met again."
 }
 
 run_case() {
@@ -186,7 +352,8 @@ run_case() {
     local deploy_log="/tmp/hyperlane-deploy-${ism}-${run_id}.log"
     if [ "$ism" = "messageIdMultisig" ]; then
         bash "$SCRIPT_DIR/deploy.sh" --reset --dusk-ism messageIdMultisig \
-          --multisig-validators "$E2E_ANVIL_VALIDATOR" --multisig-threshold 1 >"$deploy_log" 2>&1 || {
+          --multisig-validators "$(IFS=,; echo "${E2E_VALIDATOR_ADDRESSES[*]}")" \
+          --multisig-threshold "$VALIDATOR_THRESHOLD" >"$deploy_log" 2>&1 || {
             tail -n 200 "$deploy_log" >&2 || true
             fail "deploy.sh failed (log: $deploy_log)"
           }
@@ -219,13 +386,20 @@ run_case() {
     cfg_json="$(
         ANVIL_RELAYER_PRIVATE_KEY="$E2E_ANVIL_RELAYER_PRIVATE_KEY" \
         ANVIL_VALIDATOR_PRIVATE_KEY="$E2E_ANVIL_VALIDATOR_PRIVATE_KEY" \
+        ANVIL_VALIDATOR_PRIVATE_KEYS="$(IFS=,; echo "${E2E_VALIDATOR_KEYS[*]}")" \
         bash "$SCRIPT_DIR/gen-agent-configs.sh" --ism "$ism" --run-id "$run_id"
     )"
     GENERATED_AGENT_RUN_DIRS+=("$expected_run_dir")
     GENERATED_AGENT_CONFIG_FILES+=("$expected_relayer_cfg")
     if [ "$ism" = "messageIdMultisig" ]; then
-        GENERATED_AGENT_CONFIG_FILES+=("$expected_validator_cfg")
-        GENERATED_AGENT_CONFIG_FILES+=("$expected_dusk_validator_cfg")
+        mapfile -t VALIDATOR_CFGS < <(echo "$cfg_json" | jq -r '.validators[]')
+        mapfile -t DUSK_VALIDATOR_CFGS < <(echo "$cfg_json" | jq -r '.duskValidators[]')
+        [ "${#VALIDATOR_CFGS[@]}" -eq "$VALIDATOR_COUNT" ] && [ "${#DUSK_VALIDATOR_CFGS[@]}" -eq "$VALIDATOR_COUNT" ] \
+          || fail "generator returned the wrong number of validator configs"
+        GENERATED_AGENT_CONFIG_FILES+=("${VALIDATOR_CFGS[@]}" "${DUSK_VALIDATOR_CFGS[@]}")
+    else
+        VALIDATOR_CFGS=()
+        DUSK_VALIDATOR_CFGS=()
     fi
     GENERATED_DUSK_SIGNER_KEY_FILES+=("$dusk_signer_key_file")
     relayer_cfg="$(echo "$cfg_json" | jq -r '.relayer')"
@@ -298,26 +472,28 @@ run_case() {
 
     local relayer_pid="" validator_pid="" dusk_validator_pid=""
 
-    # Start validator first (needed for messageIdMultisig metadata).
+    # Start validators first (needed for messageIdMultisig metadata).
+    VALIDATOR_PIDS=(); DUSK_VALIDATOR_PIDS=(); VALIDATOR_LOGS=(); DUSK_VALIDATOR_LOGS=()
     if [ "$ism" = "messageIdMultisig" ]; then
-        info "Starting validator..."
-        (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-          exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$validator_cfg" ./target/debug/validator \
-          >"$validator_log" 2>&1) &
-        validator_pid="$!"
-        CURRENT_VALIDATOR_PID="$validator_pid"
-        sleep 2
-        kill -0 "$validator_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "$validator_log"; fail "validator failed to start"; }
-
-        info "Starting Dusk-origin validator..."
-        (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-          exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$dusk_validator_cfg" ./target/debug/validator \
-          >"$dusk_validator_log" 2>&1) &
-        dusk_validator_pid="$!"
-        CURRENT_DUSK_VALIDATOR_PID="$dusk_validator_pid"
-        CURRENT_DUSK_VALIDATOR_LOG="$dusk_validator_log"
-        sleep 2
-        kill -0 "$dusk_validator_pid" 2>/dev/null || { tail_logs_on_fail "$relayer_log" "$validator_log" "$dusk_validator_log"; fail "Dusk-origin validator failed to start"; }
+        local i dusk_va
+        dusk_va="$(jq -r '.dusk.validator_announce' "$BRIDGE_STATE_FILE")"
+        for i in "${!VALIDATOR_CFGS[@]}"; do
+            VALIDATOR_LOGS[i]="/tmp/hyperlane-validator-${ism}-${run_id}-$i.log"
+            DUSK_VALIDATOR_LOGS[i]="/tmp/hyperlane-validator-dusk-${ism}-${run_id}-$i.log"
+        done
+        validator_log="${VALIDATOR_LOGS[0]}"
+        dusk_validator_log="${DUSK_VALIDATOR_LOGS[0]}"
+        for i in "${!VALIDATOR_CFGS[@]}"; do
+            info "Starting EVM-origin validator $i (${E2E_VALIDATOR_ADDRESSES[$i]})..."
+            start_validator anvil "$i"
+        done
+        for i in "${!DUSK_VALIDATOR_CFGS[@]}"; do
+            info "Starting Dusk-origin validator $i (${E2E_VALIDATOR_ADDRESSES[$i]})..."
+            start_validator dusk "$i"
+            wait_for_dusk_announcements "$dusk_va" "$((i + 1))"
+        done
+        validator_pid="${VALIDATOR_PIDS[0]}"
+        dusk_validator_pid="${DUSK_VALIDATOR_PIDS[0]}"
     fi
 
     info "Starting relayer..."
@@ -576,25 +752,20 @@ PY_CHECK
           node "$SCRIPT_DIR/../ts-sdk/tests/live.mjs"
     fi
 
+    if [ "$ism" = "messageIdMultisig" ]; then
+        run_quorum_check "$relayer_pid" "$relayer_log" "$evm_token" "$dusk_warp" \
+          "$dusk_domain" "$evm_domain" "$account_h256" "$evm_recipient_pad32"
+    fi
+
     # Cleanup agents + env.
     info "Stopping agents..."
     kill_pid "$relayer_pid"
-    kill_pid "$validator_pid"
-    kill_pid "$dusk_validator_pid"
+    kill_all_validators
     CURRENT_RELAYER_PID=""
-    CURRENT_VALIDATOR_PID=""
-    CURRENT_DUSK_VALIDATOR_PID=""
-    CURRENT_DUSK_VALIDATOR_LOG=""
     if [ -n "$dusk_signer_key_file" ]; then
         rm -f "$dusk_signer_key_file" 2>/dev/null || true
     fi
-    rm -f "$relayer_cfg" 2>/dev/null || true
-    if [ -n "$validator_cfg" ]; then
-        rm -f "$validator_cfg" 2>/dev/null || true
-    fi
-    if [ -n "$dusk_validator_cfg" ]; then
-        rm -f "$dusk_validator_cfg" 2>/dev/null || true
-    fi
+    rm -f "$relayer_cfg" "${VALIDATOR_CFGS[@]}" "${DUSK_VALIDATOR_CFGS[@]}" 2>/dev/null || true
 
     info "Stopping environment..."
     bash "$SCRIPT_DIR/stop-env.sh" --force >/dev/null 2>&1 || true

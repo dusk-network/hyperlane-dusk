@@ -163,8 +163,16 @@ DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-2000}"
 # configurable. Existing callers remain compatible, while the live E2E can
 # isolate them from the operator account and from each other to avoid nonce
 # races between concurrently running processes.
+#
+# ANVIL_VALIDATOR_PRIVATE_KEYS (comma-separated) runs a validator set: one
+# validator per key for each origin chain. It defaults to the single
+# ANVIL_VALIDATOR_PRIVATE_KEY.
 ANVIL_RELAYER_PRIVATE_KEY="${ANVIL_RELAYER_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
 ANVIL_VALIDATOR_PRIVATE_KEY="${ANVIL_VALIDATOR_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
+ANVIL_VALIDATOR_PRIVATE_KEYS="${ANVIL_VALIDATOR_PRIVATE_KEYS:-$ANVIL_VALIDATOR_PRIVATE_KEY}"
+IFS=',' read -r -a VALIDATOR_KEYS <<<"$ANVIL_VALIDATOR_PRIVATE_KEYS"
+[ "${#VALIDATOR_KEYS[@]}" -ge 1 ] && [ "${#VALIDATOR_KEYS[@]}" -le 8 ] \
+    || fail "ANVIL_VALIDATOR_PRIVATE_KEYS must list 1 to 8 keys"
 if [ "$ISM" = "messageIdMultisig" ]; then
     DUSK_MULTISIG_POLICY="$(jq -ce '.dusk.multisig_policy | {
         validators: ([.validators[] | ascii_downcase] | sort),
@@ -172,13 +180,15 @@ if [ "$ISM" = "messageIdMultisig" ]; then
     }' "$STATE_FILE")" \
         || fail "Deployment state lacks the validated Dusk multisig policy"
     DUSK_MULTISIG_THRESHOLD="$(jq -er '.threshold' <<<"$DUSK_MULTISIG_POLICY")"
-    [ "$DUSK_MULTISIG_THRESHOLD" -eq 1 ] \
-        || fail "The generated single-validator demo requires Dusk multisig threshold 1 (live threshold: $DUSK_MULTISIG_THRESHOLD)"
-    GENERATED_VALIDATOR_ADDRESS="$(cast wallet address --private-key "$ANVIL_VALIDATOR_PRIVATE_KEY" | tr '[:upper:]' '[:lower:]')" \
-        || fail "Cannot derive the configured validator address"
-    jq -e --arg validator "$GENERATED_VALIDATOR_ADDRESS" \
-        '.validators | index($validator) != null' <<<"$DUSK_MULTISIG_POLICY" >/dev/null \
-        || fail "Configured validator $GENERATED_VALIDATOR_ADDRESS is not authorized by the live Dusk multisig policy"
+    [ "${#VALIDATOR_KEYS[@]}" -ge "$DUSK_MULTISIG_THRESHOLD" ] \
+        || fail "Configured ${#VALIDATOR_KEYS[@]} validator key(s), fewer than the live Dusk multisig threshold $DUSK_MULTISIG_THRESHOLD"
+    for key in "${VALIDATOR_KEYS[@]}"; do
+        GENERATED_VALIDATOR_ADDRESS="$(cast wallet address --private-key "$key" | tr '[:upper:]' '[:lower:]')" \
+            || fail "Cannot derive a configured validator address"
+        jq -e --arg validator "$GENERATED_VALIDATOR_ADDRESS" \
+            '.validators | index($validator) != null' <<<"$DUSK_MULTISIG_POLICY" >/dev/null \
+            || fail "Configured validator $GENERATED_VALIDATOR_ADDRESS is not authorized by the live Dusk multisig policy"
+    done
 fi
 
 # ── Decrypt Dusk Deployer Key (consensus.keys) ──────────────────────────────
@@ -276,19 +286,39 @@ cat > "$RELAYER_CONFIG" <<JSON
 }
 JSON
 
-# ── Write Validator Config (only for MessageIdMultisig) ─────────────────────
+# ── Write Validator Configs (only for MessageIdMultisig) ────────────────────
+#
+# One validator per key and origin chain. Validator 0 keeps the historical
+# file names; validator i > 0 gets an "-<i>" suffix and its own database,
+# checkpoint directory, event cursors and metrics port.
+
+VALIDATOR_CONFIGS=()
+VALIDATOR_DUSK_CONFIGS=()
 
 if [ "$ISM" = "messageIdMultisig" ]; then
-    mkdir -p "$CHECKPOINT_DIR" "$CHECKPOINT_DUSK_DIR"
+    for i in "${!VALIDATOR_KEYS[@]}"; do
+        key="${VALIDATOR_KEYS[$i]}"
+        sfx=""
+        [ "$i" -eq 0 ] || sfx="-$i"
+        anvil_db="$VALIDATOR_DB$sfx"
+        dusk_db="$VALIDATOR_DUSK_DB$sfx"
+        anvil_ckpt="$CHECKPOINT_DIR$sfx"
+        dusk_ckpt="$CHECKPOINT_DUSK_DIR$sfx"
+        dusk_cursors="$DUSK_VALIDATOR_EVENT_CURSOR_DIR$sfx"
+        anvil_cfg="$RUN_DIR/validator-anvil$sfx.json"
+        dusk_cfg="$RUN_DIR/validator-dusk$sfx.json"
+        anvil_port=$((19093 + 2 * i))
+        dusk_port=$((19094 + 2 * i))
+        mkdir -p "$anvil_ckpt" "$dusk_ckpt"
 
-    cat > "$VALIDATOR_CONFIG" <<JSON
+        cat > "$anvil_cfg" <<JSON
 {
-  "metricsPort": 19093,
+  "metricsPort": ${anvil_port},
   "log": { "level": "debug", "format": "pretty" },
-  "db": "${VALIDATOR_DB}",
+  "db": "${anvil_db}",
   "originChainName": "anvil",
-  "validator": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" },
-  "checkpointSyncer": { "type": "localStorage", "path": "${CHECKPOINT_DIR}" },
+  "validator": { "type": "hexKey", "key": "${key}" },
+  "checkpointSyncer": { "type": "localStorage", "path": "${anvil_ckpt}" },
   "interval": 2,
   "chains": {
     "anvil": {
@@ -303,27 +333,27 @@ if [ "$ISM" = "messageIdMultisig" ]; then
       "validatorAnnounce": "${EVM_VALIDATOR_ANNOUNCE}",
       "merkleTreeHook": "${EVM_MERKLE_TREE_HOOK}",
       "submitter": "Classic",
-      "signer": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" }
+      "signer": { "type": "hexKey", "key": "${key}" }
     }
   }
 }
 JSON
 
-    cat > "$VALIDATOR_DUSK_CONFIG" <<JSON
+        cat > "$dusk_cfg" <<JSON
 {
-  "metricsPort": 19094,
+  "metricsPort": ${dusk_port},
   "log": { "level": "debug", "format": "pretty" },
-  "db": "${VALIDATOR_DUSK_DB}",
+  "db": "${dusk_db}",
   "originChainName": "dusk",
-  "validator": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" },
-  "checkpointSyncer": { "type": "localStorage", "path": "${CHECKPOINT_DUSK_DIR}" },
+  "validator": { "type": "hexKey", "key": "${key}" },
+  "checkpointSyncer": { "type": "localStorage", "path": "${dusk_ckpt}" },
   "interval": 2,
   "chains": {
     "dusk": {
       "name": "dusk",
       "domainId": ${DUSK_DOMAIN},
       "chainId": ${DUSK_CHAIN_ID},
-      "eventCursorDir": "${DUSK_VALIDATOR_EVENT_CURSOR_DIR}",
+      "eventCursorDir": "${dusk_cursors}",
       "protocol": "dusk",
       "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
       "gasLimit": ${DUSK_GAS_LIMIT},
@@ -338,6 +368,9 @@ JSON
   }
 }
 JSON
+        VALIDATOR_CONFIGS+=("$anvil_cfg")
+        VALIDATOR_DUSK_CONFIGS+=("$dusk_cfg")
+    done
 fi
 
 # ── Print Paths as JSON ─────────────────────────────────────────────────────
@@ -351,7 +384,9 @@ if [ "$ISM" = "messageIdMultisig" ]; then
       --arg run_dir "$RUN_DIR" \
       --arg deployment_snapshot "$STATE_SNAPSHOT" \
       --arg run_id "$RUN_ID" \
-      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, validator: $validator, duskValidator: $dusk_validator, duskSignerKeyFile: $dusk_signer_key_file}')"
+      --argjson validators "$(printf '%s\n' "${VALIDATOR_CONFIGS[@]}" | jq -R . | jq -s .)" \
+      --argjson dusk_validators "$(printf '%s\n' "${VALIDATOR_DUSK_CONFIGS[@]}" | jq -R . | jq -s .)" \
+      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, validator: $validator, duskValidator: $dusk_validator, validators: $validators, duskValidators: $dusk_validators, duskSignerKeyFile: $dusk_signer_key_file}')"
 else
     output_json="$(jq -n \
       --arg relayer "$RELAYER_CONFIG" \

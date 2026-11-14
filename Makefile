@@ -31,8 +31,13 @@ PRODUCTION_CLIPPY_PACKAGES := \
 .PHONY: all
 all: $(CONTRACTS)
 
+# Refuse to build against a rusk-private checkout other than RUSK_VERSION.
+.PHONY: rusk-version
+rusk-version:
+	@bash scripts/check-rusk-version.sh
+
 .PHONY: $(CONTRACTS)
-$(CONTRACTS):
+$(CONTRACTS): rusk-version
 	@echo "Building $@..."
 	@CARGO_TARGET_DIR=$(TARGET_DIR) \
 		RUSTFLAGS="$(RUSTFLAGS) -C link-args=-zstack-size=$(STACK_SIZE)" \
@@ -45,7 +50,7 @@ $(CONTRACTS):
 
 # Check all contracts compile
 .PHONY: check
-check:
+check: rusk-version
 	cargo check --target $(WASM_TARGET) --features $(CONTRACT_FEATURE) \
 		-p hyperlane-dusk-types $(CONTRACT_CHECK_PACKAGES)
 
@@ -55,13 +60,13 @@ check:
 # dependencies pull wasm-unsupported getrandom paths before reaching the
 # production contracts.
 .PHONY: clippy-contracts
-clippy-contracts:
+clippy-contracts: rusk-version
 	cargo clippy --target $(WASM_TARGET) --features $(CONTRACT_FEATURE) \
 		$(PRODUCTION_CLIPPY_PACKAGES)
 
 # Run types crate unit tests
 .PHONY: test-types
-test-types:
+test-types: rusk-version
 	cargo test -p hyperlane-dusk-types --features drc20
 
 # Run integration tests (requires WASMs to be built first)
@@ -77,7 +82,7 @@ test-integration: all canonical-drc20-fixture
 # NOTE: Uses separate target dir and NO -Z build-std because data-driver
 # depends on serde_json (std) which conflicts with rebuilt core/alloc.
 .PHONY: data-driver
-data-driver:
+data-driver: rusk-version
 	@echo "Building data-driver WASM..."
 	@CARGO_TARGET_DIR=target/data-driver \
 		cargo build \
@@ -89,7 +94,7 @@ data-driver:
 
 # Build dusk-tx CLI tool
 .PHONY: dusk-tx
-dusk-tx:
+dusk-tx: rusk-version
 	cargo build -p dusk-tx --release
 
 # Run all tests

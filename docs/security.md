@@ -66,18 +66,21 @@ Accepted:
 - **No admin recovery of escrow.** Pending transfers can only be claimed by
   the matching BLS key. If a user loses that key, the funds stay locked. An
   admin drain would add a path to seize user funds.
-
-Recommended, not yet confirmed:
-
-- **Immutable registration.** Registrations can't be removed or remapped. A
-  new key produces a new recipient hash anyway, and remapping would give an
-  admin control over where user funds go.
-- **Sender resolution through the transfer contract.** When `dispatch` is
-  reached from a Moonlight transaction (via the transfer contract), the sender
-  is `keccak256(public_sender)`; any other caller is its `ContractId`. This
-  is correct only if the transfer contract never calls user contracts on its
-  own initiative with an unrelated `public_sender`. That needs confirming with
-  the Rusk maintainers.
+- **Immutable registration** (issue #5). Registrations can't be removed or
+  remapped. A new key produces a new recipient hash anyway, and remapping
+  would give an admin control over where user funds go.
+- **Sender resolution through the transfer contract** (issue #4). A frame
+  whose only caller is the transfer contract (call-stack depth 1) is a
+  Moonlight transaction's own top-level call, and its sender is
+  `keccak256(public_sender)`. Any deeper frame resolves to its immediate
+  caller's `ContractId`. Checked against the Rusk 1.7.3 transfer contract
+  (`contracts/genesis/transfer/src/state.rs`): `spend_and_execute` is the only
+  place it calls a contract chosen by the transaction, and it calls only
+  `tx.call`. Its other outbound calls (`contract_to_contract`,
+  `mint_to_contract`) are themselves nested calls, so the receiving contract
+  sees depth 2 or more and resolves the sender to the transfer contract, never
+  to a user. Phoenix transactions have no public sender and are rejected.
+  Re-check this if a Rusk upgrade changes how the transfer contract calls out.
 
 ## Known limitations
 
