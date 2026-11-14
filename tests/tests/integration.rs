@@ -6663,3 +6663,138 @@ fn redteam_held_announcement_bound_to_domain_and_mailbox() {
         "ValidatorAnnounce: replay",
     );
 }
+
+// =============================================================================
+// Red team: economics
+// =============================================================================
+
+/// Encode a Hyperlane TokenMessage body exactly as an EVM `TokenRouter` does:
+/// `recipient (32) || uint256 amount (32, big-endian)`.
+fn redteam_evm_token_body(recipient: H256, amount: u128) -> Vec<u8> {
+    let mut body = recipient.to_vec();
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&amount.to_be_bytes());
+    body.extend_from_slice(&word);
+    body
+}
+
+fn redteam_inbound_synthetic(
+    session: &mut TestSession,
+    remote_router: H256,
+    nonce: u32,
+    recipient: H256,
+    amount: u128,
+) -> (MessageId, Result<CallReceipt<()>, ContractError>) {
+    let encoded = message::encode(
+        VERSION,
+        nonce,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &redteam_evm_token_body(recipient, amount),
+    );
+    let id = message::id(&encoded);
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
+    (id, result)
+}
+
+/// One whole token at the 18 decimals the synthetic route and its EVM
+/// HypERC20 counterpart use (`TOKEN_DECIMALS=18`, scale 1/1 in deploy.sh).
+const REDTEAM_WAD: u128 = 1_000_000_000_000_000_000;
+
+/// An EVM user burns 20 tokens on the remote HypERC20 router. The Dusk side
+/// must be able to deliver them; otherwise the burned value is unrecoverable
+/// (no refund path, the message stays undeliverable forever).
+#[test]
+#[ignore = "known limitation (docs/security.md): u64 amounts cap an 18-decimal synthetic at ~18.4 tokens; synthetic routes must carry at most 9 decimals"]
+fn redteam_synthetic_inbound_above_u64_is_deliverable() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let recipient = message::keccak256(&OWNER_PK.to_bytes());
+
+    let amount = 20 * REDTEAM_WAD; // 2e19 > u64::MAX (~1.8447e19)
+    let (id, result) = redteam_inbound_synthetic(&mut session, remote_router, 0, recipient, amount);
+    if let Err(error) = &result {
+        panic!("20 tokens burned on EVM cannot be delivered on Dusk: {error}");
+    }
+    assert!(
+        session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+            .unwrap()
+            .data
+    );
+}
+
+/// An attacker with ~18.4 tokens parks them in an escrow key that no BLS key
+/// or contract can ever claim. The route's u64 supply-plus-pending capacity
+/// is then exhausted, so every later EVM->Dusk transfer from other users is
+/// burned on EVM and can never be delivered.
+#[test]
+#[ignore = "known limitation (docs/security.md): u64 amounts cap an 18-decimal synthetic at ~18.4 tokens; synthetic routes must carry at most 9 decimals"]
+fn redteam_synthetic_supply_cap_cannot_freeze_inbound() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+
+    let unclaimable_sink: H256 = [0xEE; 32];
+    let attacker_amount = 18 * REDTEAM_WAD + 400_000_000_000_000_000; // 18.4 tokens
+    let (_, result) = redteam_inbound_synthetic(
+        &mut session,
+        remote_router,
+        0,
+        unclaimable_sink,
+        attacker_amount,
+    );
+    result.expect("attacker's 18.4-token transfer fits in u64 and is escrowed");
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let victim = message::keccak256(&OWNER_PK.to_bytes());
+    let victim_amount = REDTEAM_WAD / 10; // 0.1 token
+    let (id, result) =
+        redteam_inbound_synthetic(&mut session, remote_router, 1, victim, victim_amount);
+    if let Err(error) = &result {
+        panic!("victim's 0.1-token transfer is frozen by the attacker's escrow: {error}");
+    }
+    assert!(
+        session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+            .unwrap()
+            .data
+    );
+}
+
+/// WarpDrc20 accepts the canonical `Phoenix` principal as a transfer target,
+/// but unlike the canonical DRC20 it has no signed-authorization path, and
+/// `sender_account()` never resolves to a Phoenix principal. Tokens sent there
+/// can never be transferred, approved, or bridged back.
+#[test]
+fn redteam_synthetic_rejects_unspendable_phoenix_recipient() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let holder = message::keccak256(&OWNER_PK.to_bytes());
+    let amount = 1_000_000u64;
+    let (_, result) =
+        redteam_inbound_synthetic(&mut session, remote_router, 0, holder, u128::from(amount));
+    result.expect("mint to the registered holder should succeed");
+
+    let phoenix = Drc20Account::Phoenix([0x07; 32]);
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        WARP_DRC20_ID,
+        "transfer",
+        &hyperlane_dusk_types::drc20::TransferCall {
+            to: phoenix,
+            amount,
+        },
+    );
+    let stranded = warp_drc20_balance_of(&mut session, phoenix);
+    assert!(
+        result.is_err() && stranded == 0,
+        "WarpDrc20 moved {stranded} units to a Phoenix principal that no call can ever spend"
+    );
+}

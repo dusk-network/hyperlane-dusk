@@ -622,6 +622,12 @@ mod warp_drc20 {
 
         /// Transfer tokens between accounts.
         fn do_transfer(&mut self, from: Account, to: Account, value: u64) {
+            // No call ever resolves to a Phoenix principal, so tokens sent to
+            // one could never be spent again.
+            assert!(
+                !matches!(to, Account::Phoenix(_)),
+                "WarpDrc20: Phoenix recipients are not supported"
+            );
             let from_balance = self.balances.get(&from).copied().unwrap_or(0);
             assert!(from_balance >= value, "WarpDrc20: insufficient balance");
             if value > 0 && from != to {

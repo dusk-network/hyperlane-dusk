@@ -52,11 +52,31 @@ and which design decisions are still open.
 | MEDIUM-4 | IGP gas-payment records left out the overhead that was quoted and charged. | Records the full gas plus overhead (PR #11). |
 | LOW-1 | WarpDrc20 accepted zero-amount transfers. | Rejected. |
 | MEDIUM-5 | TestRecipient, which `deploy-hyperlane` always deploys, let anyone set its ISM, for example to the always-true TestMock. Unsigned messages to it were then delivered by the real Mailbox. | The setter is removed; TestRecipient always uses the Mailbox's default ISM. |
+| LOW-3 | WarpDrc20 let holders transfer to Phoenix principals, which no call can ever spend from. | Phoenix recipients are rejected. |
 | LOW-2 | The multisig ISM and ValidatorAnnounce accepted signatures OpenZeppelin rejects (`v` of 0/1, high `s`), because the host query does. No double counting was possible. | Both require canonical signatures (`types::signature::is_canonical`). |
 
 The fixes have regression tests in `tests/tests/integration.rs`, except the
 overflow paths listed under known limitations. HIGH-5 and HIGH-6 use the
 `reentrant-hook` contract to attempt the real nested call.
+
+## Owner powers
+
+`dusk-tx deploy-hyperlane` makes the deployer key the owner, fee beneficiary
+and router admin of every contract. Whoever holds that key can:
+
+- **Mint or release funds** by setting the Mailbox default ISM, the multisig
+  validator set, a route's ISM or a route's enrolled routers. That drains
+  WarpNative and collateral custody (except what is reserved for escrow) and
+  mints synthetic tokens.
+- **Freeze transfers** by removing the Merkle hook from the Mailbox's required
+  hook (Dusk-origin messages become unprovable) or installing a reverting or
+  overpriced hook or IGP quote.
+- **Take fees**: unclaimed and future ProtocolFee and IGP fees, and each
+  route's dispatch credit.
+
+They can't touch users' own dispatch credit, pending escrow, or existing
+WarpDrc20 balances. On testnet one deployer key is acceptable. Mainnet needs
+the owner role on a multisig or equivalent custody.
 
 ## Design decisions
 
@@ -87,6 +107,23 @@ Accepted:
 
 ## Known limitations
 
+- **Synthetic amounts are u64.** DRC20 balances are u64, so a WarpDrc20
+  synthetic of an 18-decimal token can never hold more than about 18.4
+  tokens. Inbound amounts above u64 are rejected, not truncated, which leaves
+  them undeliverable after the EVM side has burned them. An attacker can also
+  fill the supply cap by escrowing transfers to a recipient nobody can claim,
+  freezing inbound transfers for everyone. Synthetic routes must therefore
+  carry at most 9 decimals on Dusk, with the EVM side scaling (HypERC20's
+  scale parameters). The native DUSK route is not affected: both sides use 9
+  decimals and supply is bounded by DUSK custody. The demo's 18-decimal
+  synthetic with a 10-token supply is a demo only. Tests:
+  `redteam_synthetic_*` (ignored).
+- **Contract IDs are predictable during deployment.** A contract ID depends on
+  bytecode, owner key and nonce, and `dusk-tx` starts at nonce 0. Some
+  contracts are initialised with the IDs of contracts deployed after them.
+  Someone who knows the release WASMs and the deployer's public key can
+  deploy first at one of those IDs. `dusk-tx` then aborts and the deployment
+  has to be redone with a new key: a denial of service, not a theft.
 - The Mailbox stores every dispatched message and processed ID, so its state
   grows without bound. Agents read messages from it. This mirrors the
   Solidity Mailbox.
