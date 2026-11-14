@@ -214,6 +214,37 @@ impl RuesClient {
         parse_transaction_status_response(&body).map_err(TransactionStatusQueryError::Terminal)
     }
 
+    /// Contract events emitted in the block at `height`, from the node's
+    /// archive. Each item has `source` (contract ID hex), `topic`, `data`
+    /// (hex) and `reverted`.
+    pub async fn block_events(&self, height: u64) -> Result<Vec<Value>, String> {
+        let url = self.endpoint("/graphql");
+        let query = format!("query {{ contractEvents(height: {height}) {{ json }} }}");
+        let response = self
+            .client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({ "query": query }))
+                    .expect("GraphQL request serialization should not fail"),
+            )
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {}", e.without_url()))?;
+        let status = response.status();
+        let body = read_response_body(response, MAX_CONTRACT_QUERY_RESPONSE_BYTES, "block events")
+            .await
+            .map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!(
+                "Block events query failed ({status}): {}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        parse_block_events_response(&body)
+    }
+
     /// Returns whether a contract exists on-chain, using VM metadata.
     ///
     /// This does **not** invoke contract code.
@@ -341,6 +372,25 @@ fn append_bounded_chunk(
     body.extend_from_slice(chunk);
     Ok(())
 }
+fn parse_block_events_response(body: &[u8]) -> Result<Vec<Value>, String> {
+    let payload: Value =
+        serde_json::from_slice(body).map_err(|e| format!("Invalid block events response: {e}"))?;
+    if let Some(errors) = payload.get("errors").filter(|e| !e.is_null()) {
+        return Err(format!(
+            "Block events query returned errors (the node needs the archive): {errors}"
+        ));
+    }
+    let json = payload
+        .pointer("/data/contractEvents/json")
+        .ok_or_else(|| "Block events response is missing data.contractEvents.json".to_string())?;
+    let events = json.get("events").unwrap_or(json);
+    match events {
+        Value::Array(items) => Ok(items.clone()),
+        Value::Null => Ok(Vec::new()),
+        _ => Err("Block events response is not a list".into()),
+    }
+}
+
 fn transaction_status_query(tx_id: &str) -> String {
     format!(r#"query {{ tx(hash: "{tx_id}") {{ err }} }}"#)
 }

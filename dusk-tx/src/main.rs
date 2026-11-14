@@ -8,6 +8,9 @@
 //!   process            Process an inbound message on the Mailbox
 //!   encode-message     Encode a Hyperlane message (no TX, pure encoding)
 //!   enroll-router      Enroll a remote router on a warp route
+//!   transfer-remote    Send tokens or native DUSK through a warp route
+//!   account            Show an account's address, recipient hash and balance
+//!   export-signer-key  Write an agent signer key file from consensus.keys
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -59,7 +62,7 @@ struct Cli {
 enum Command {
     /// Call a contract method via Moonlight transaction.
     Call {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         /// Read the RUES URL from the first stdin line. When combined with
         /// --secret-key-stdin, the key follows on the next line.
@@ -68,9 +71,10 @@ enum Command {
         /// Path to encrypted consensus.keys file.
         #[arg(long)]
         keys: Option<PathBuf>,
-        /// Password for consensus.keys.
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         /// Raw BLS secret key hex (alternative to --keys).
         #[arg(long)]
         secret_key: Option<String>,
@@ -89,8 +93,8 @@ enum Command {
         /// Gas limit.
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        /// Gas price in LUX.
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
         /// Expected native Dusk chain ID. The endpoint must match before the
         /// signer is read or a transaction is constructed.
@@ -102,14 +106,15 @@ enum Command {
     },
     /// Deploy the full Hyperlane contract stack.
     DeployHyperlane {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         /// Path to encrypted consensus.keys file.
         #[arg(long)]
         keys: Option<PathBuf>,
-        /// Password for consensus.keys.
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         /// Raw BLS secret key hex (alternative to --keys).
         #[arg(long)]
         secret_key: Option<String>,
@@ -122,7 +127,8 @@ enum Command {
         /// Gas limit per transaction.
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        /// Gas price in LUX.
+        /// Gas price in LUX per unit of gas. Deploys must pay at least the
+        /// network's minimum deployment gas price (2000 on testnet and mainnet).
         #[arg(long, default_value = "2000")]
         gas_price: u64,
         /// Directory with compiled WASM contracts.
@@ -168,7 +174,7 @@ enum Command {
     },
     /// Query contract state via RUES (read-only, no transaction).
     Query {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         /// Contract ID (64 hex chars).
         #[arg(long)]
@@ -201,12 +207,14 @@ enum Command {
     },
     /// Deposit native DUSK into a Mailbox dispatch-fee credit.
     FundDispatch {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         /// Read raw BLS secret key hex from stdin.
@@ -223,17 +231,20 @@ enum Command {
         amount: u64,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
     },
     /// Withdraw unused dispatch-fee credit to a Moonlight account.
     WithdrawDispatch {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         /// Read raw BLS secret key hex from stdin.
@@ -254,17 +265,20 @@ enum Command {
         expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
     },
     /// Dispatch a message via TestRecipient proxy.
     Dispatch {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
@@ -287,17 +301,20 @@ enum Command {
         body: String,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
     },
     /// Process an inbound message on the Dusk Mailbox.
     Process {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
@@ -314,7 +331,8 @@ enum Command {
         metadata: String,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
     },
     /// Encode a Hyperlane message (no transaction, pure encoding).
@@ -343,12 +361,14 @@ enum Command {
     },
     /// Enroll a remote router on a warp route contract.
     EnrollRouter {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
@@ -365,17 +385,20 @@ enum Command {
         router: String,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
     },
     /// Register the caller's BLS key on a warp route contract.
     RegisterAccount {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
@@ -384,19 +407,59 @@ enum Command {
         /// Warp route contract ID (64 hex chars).
         #[arg(long, name = "warp-contract")]
         warp_contract: String,
+        /// Register this account instead of the signer's: a base58 Moonlight
+        /// address or a 96-byte public key in hex. Anyone can register any
+        /// account; the signer only pays the gas.
+        #[arg(long = "for")]
+        for_account: Option<String>,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
+        gas_price: u64,
+    },
+    /// Claim tokens held in escrow on a warp route because they arrived before
+    /// the recipient registered.
+    ClaimPending {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// Warp route contract ID (64 hex chars).
+        #[arg(long, name = "warp-contract")]
+        warp_contract: String,
+        /// Claim for this account instead of the signer: a base58 Moonlight
+        /// address or a 96-byte public key in hex. The tokens go to that
+        /// account; the signer only pays the gas.
+        #[arg(long = "for")]
+        for_account: Option<String>,
+        #[arg(long, default_value = "30000000")]
+        gas_limit: u64,
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
     },
     /// Approve a DRC20 contract spender using the current Dusk ABI.
     Drc20Approve {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         #[arg(long)]
@@ -409,17 +472,20 @@ enum Command {
         amount: u64,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
     },
     /// Query a DRC20 balance for a Moonlight or contract account.
     Drc20Balance {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         #[arg(long)]
@@ -430,14 +496,17 @@ enum Command {
         #[arg(long)]
         account_contract: Option<String>,
     },
-    /// Call transfer_remote on a WarpDrc20 contract.
+    /// Call transfer_remote on a warp route. The quoted dispatch fee is
+    /// attached as a native DUSK deposit.
     TransferRemote {
-        #[arg(long, default_value = "http://localhost:18090/")]
+        #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
         #[arg(long)]
         keys: Option<PathBuf>,
-        #[arg(long, default_value = "password")]
-        password: String,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
         #[arg(long)]
         secret_key: Option<String>,
         /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
@@ -449,19 +518,86 @@ enum Command {
         /// Destination domain.
         #[arg(long)]
         destination: u32,
-        /// Recipient H256 (64 hex chars).
+        /// Recipient on the destination chain: a 20-byte EVM address (40 hex
+        /// chars), or 32 bytes (64 hex chars) as Hyperlane encodes it.
         #[arg(long)]
         recipient: String,
-        /// Amount (decimal).
+        /// Accept a 32-byte recipient whose first 12 bytes aren't zero. Only
+        /// for non-EVM destinations: an EVM route can never deliver to it, and
+        /// the tokens would be locked.
+        #[arg(long)]
+        raw_recipient: bool,
+        /// Amount in the token's smallest unit (LUX for DUSK: 1 DUSK = 1000000000).
         #[arg(long)]
         amount: u64,
-        /// Attach `amount` as a native DUSK deposit for WarpNative.
+        /// Bridge native DUSK through WarpNative: the deposit is `amount` plus the
+        /// quoted dispatch fee.
         #[arg(long)]
         native: bool,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
-        #[arg(long, default_value = "2000")]
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
         gas_price: u64,
+    },
+    /// Print the message the Mailbox dispatched at a nonce. The Mailbox stores
+    /// only the message ID; the message comes from that block's Dispatch
+    /// event, so the node must serve the archive.
+    DispatchedMessage {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Mailbox contract ID (64 hex chars).
+        #[arg(long)]
+        mailbox: String,
+        /// Dispatch nonce.
+        #[arg(long)]
+        nonce: u32,
+    },
+    /// Show a Moonlight account: its address, the recipient hash warp routes
+    /// deliver to, and its balance and nonce.
+    Account {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// Look up this Moonlight address (base58) instead of a key you hold.
+        #[arg(long, conflicts_with_all = ["keys", "secret_key", "secret_key_stdin", "public_key"])]
+        address: Option<String>,
+        /// Look up this 96-byte BLS public key (hex) instead of a key you hold.
+        #[arg(long, conflicts_with_all = ["keys", "secret_key", "secret_key_stdin"])]
+        public_key: Option<String>,
+        /// Also show whether the account is registered on this warp route
+        /// and how much is waiting for it in escrow.
+        #[arg(long, name = "warp-contract")]
+        warp_contract: Option<String>,
+        /// Only print the address and recipient hash; don't query the node.
+        #[arg(long, conflicts_with = "warp-contract")]
+        offline: bool,
+    },
+    /// Write the BLS secret key from an encrypted consensus.keys file to a new
+    /// file (mode 0600), as the Hyperlane agents' `duskKey` signer reads it.
+    ExportSignerKey {
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: PathBuf,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// File to create. It must not exist yet.
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -490,7 +626,7 @@ async fn main() {
                 &rues_url,
                 rues_url_stdin,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &contract,
@@ -527,7 +663,7 @@ async fn main() {
             cmd_deploy_hyperlane(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 domain,
@@ -586,7 +722,7 @@ async fn main() {
             cmd_fund_dispatch(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &mailbox,
@@ -613,7 +749,7 @@ async fn main() {
             cmd_withdraw_dispatch(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &target,
@@ -642,7 +778,7 @@ async fn main() {
             cmd_dispatch(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &mailbox,
@@ -670,7 +806,7 @@ async fn main() {
             cmd_process(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &mailbox,
@@ -713,7 +849,7 @@ async fn main() {
             cmd_enroll_router(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &warp_contract,
@@ -731,16 +867,42 @@ async fn main() {
             secret_key,
             warp_contract,
             secret_key_stdin,
+            for_account,
             gas_limit,
             gas_price,
         } => {
             cmd_register_account(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &warp_contract,
+                for_account.as_deref(),
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
+        Command::ClaimPending {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            warp_contract,
+            for_account,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_claim_pending(
+                &rues_url,
+                keys,
+                password.as_deref().unwrap_or_default(),
+                secret_key,
+                secret_key_stdin,
+                &warp_contract,
+                for_account.as_deref(),
                 gas_limit,
                 gas_price,
             )
@@ -761,7 +923,7 @@ async fn main() {
             cmd_drc20_approve(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &token,
@@ -784,7 +946,7 @@ async fn main() {
             cmd_drc20_balance(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &token,
@@ -801,6 +963,7 @@ async fn main() {
             secret_key_stdin,
             destination,
             recipient,
+            raw_recipient,
             amount,
             native,
             gas_limit,
@@ -809,12 +972,13 @@ async fn main() {
             cmd_transfer_remote(
                 &rues_url,
                 keys,
-                &password,
+                password.as_deref().unwrap_or_default(),
                 secret_key,
                 secret_key_stdin,
                 &warp_contract,
                 destination,
                 &recipient,
+                raw_recipient,
                 amount,
                 native,
                 gas_limit,
@@ -822,6 +986,45 @@ async fn main() {
             )
             .await
         }
+        Command::Account {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            address,
+            public_key,
+            warp_contract,
+            offline,
+        } => {
+            let account = if let Some(address) = address {
+                parse_moonlight_address(&address)
+            } else if let Some(public_key) = public_key {
+                parse_account_public_key(&public_key)
+            } else {
+                load_keys(
+                    keys,
+                    password.as_deref().unwrap_or_default(),
+                    secret_key,
+                    secret_key_stdin,
+                )
+                .map(|(_, pk)| pk)
+            };
+            match account {
+                Ok(pk) => cmd_account(&rues_url, &pk, warp_contract.as_deref(), offline).await,
+                Err(e) => Err(e),
+            }
+        }
+        Command::DispatchedMessage {
+            rues_url,
+            mailbox,
+            nonce,
+        } => cmd_dispatched_message(&rues_url, &mailbox, nonce).await,
+        Command::ExportSignerKey {
+            keys,
+            password,
+            out,
+        } => cmd_export_signer_key(keys, password.as_deref().unwrap_or_default(), &out),
     };
 
     if let Err(e) = result {
@@ -900,7 +1103,14 @@ fn read_secret_key_hex(reader: impl Read) -> Result<String, String> {
     Ok(buf.trim().to_string())
 }
 
+/// Resolve the consensus.keys password: an explicit `--password` first, then
+/// `DUSK_CONSENSUS_PASSWORD_FILE`, then `DUSK_CONSENSUS_PASSWORD` (or the
+/// legacy `DUSK_CONSENSUS_KEYS_PASS`), then the development default
+/// `password`. An empty `cli_password` means `--password` wasn't given.
 fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
+    if !cli_password.is_empty() {
+        return Ok(cli_password.to_string());
+    }
     if let Ok(path) = env::var("DUSK_CONSENSUS_PASSWORD_FILE") {
         let file = fs::File::open(&path)
             .map_err(|e| format!("Failed to open DUSK_CONSENSUS_PASSWORD_FILE {path}: {e}"))?;
@@ -929,7 +1139,7 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
         return Ok(password);
     }
 
-    Ok(cli_password.to_string())
+    Ok(String::from("password"))
 }
 
 #[cfg(test)]
@@ -1092,6 +1302,100 @@ mod tests {
     }
 
     #[test]
+    fn account_identity_round_trips_the_moonlight_address() {
+        let (_, public_key) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let identity = super::account_identity(&public_key);
+        let address = identity["address"].as_str().unwrap();
+        assert_eq!(super::parse_moonlight_address(address).unwrap(), public_key);
+        assert_eq!(
+            identity["account_h256"].as_str().unwrap(),
+            hex::encode(hyperlane_dusk_types::message::keccak256(
+                &public_key.to_bytes()
+            ))
+        );
+        assert!(super::parse_moonlight_address("0OIl")
+            .unwrap_err()
+            .contains("Invalid Moonlight address"));
+        assert!(
+            super::parse_moonlight_address(&bs58::encode([1u8; 32]).into_string())
+                .unwrap_err()
+                .contains("Moonlight address must decode to 96 bytes, got 32")
+        );
+    }
+
+    #[test]
+    fn recipients_are_padded_evm_addresses_unless_raw() {
+        let address = "23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f";
+        let padded = super::parse_recipient(&format!("0x{address}"), false).unwrap();
+        assert_eq!(&padded[..12], &[0u8; 12]);
+        assert_eq!(hex::encode(&padded[12..]), address.to_lowercase());
+        assert_eq!(
+            super::parse_recipient(&format!("000000000000000000000000{address}"), false).unwrap(),
+            padded
+        );
+
+        // A right-padded address is the bridger's real mistake: rejected
+        // unless explicitly raw.
+        let right_padded = format!("{address}000000000000000000000000");
+        assert!(super::parse_recipient(&right_padded, false)
+            .unwrap_err()
+            .contains("isn't an EVM address"));
+        assert!(super::parse_recipient(&right_padded, true).is_ok());
+
+        assert!(super::parse_recipient(&"00".repeat(32), true)
+            .unwrap_err()
+            .contains("cannot be zero"));
+        assert!(super::parse_recipient("abcd", false)
+            .unwrap_err()
+            .contains("20-byte address or 32 bytes"));
+    }
+
+    #[test]
+    fn accounts_parse_from_address_or_public_key() {
+        let (_, public_key) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let identity = super::account_identity(&public_key);
+        let address = identity["address"].as_str().unwrap();
+        let hex_key = identity["public_key"].as_str().unwrap();
+        assert_eq!(super::parse_account_arg(address).unwrap(), public_key);
+        assert_eq!(super::parse_account_arg(hex_key).unwrap(), public_key);
+        assert_eq!(
+            super::parse_account_arg(&format!("0x{hex_key}")).unwrap(),
+            public_key
+        );
+    }
+
+    #[test]
+    fn dusk_amounts_keep_all_decimals() {
+        assert_eq!(super::format_dusk(0), "0.000000000");
+        assert_eq!(super::format_dusk(1), "0.000000001");
+        assert_eq!(super::format_dusk(99_701_351_464_000), "99701.351464000");
+    }
+
+    #[test]
+    fn signer_key_file_is_private_and_never_overwritten() {
+        let (secret_key, _) = crate::keys::load_from_hex(&"22".repeat(32)).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "dusk-tx-signer-key-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        super::write_signer_key_file(&path, &secret_key).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, format!("0x{}\n", "22".repeat(32)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert!(super::write_signer_key_file(&path, &secret_key)
+            .unwrap_err()
+            .contains("Failed to create"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn dispatch_call_arguments_are_bounded_before_signer_access() {
         let id = "11".repeat(32);
         let recipient = "22".repeat(32);
@@ -1194,24 +1498,30 @@ mod tests {
         std::env::set_var("DUSK_CONSENSUS_PASSWORD_FILE", &path);
         std::env::set_var("DUSK_CONSENSUS_PASSWORD", "from-env");
 
-        let password = resolve_keys_password("from-cli").unwrap();
+        let from_file = resolve_keys_password("").unwrap();
+        let explicit = resolve_keys_password("from-cli").unwrap();
 
         clear_password_env();
         let _ = std::fs::remove_file(path);
-        assert_eq!(password, "from-file");
+        assert_eq!(from_file, "from-file");
+        assert_eq!(explicit, "from-cli", "an explicit --password wins");
     }
 
     #[test]
-    fn password_env_has_precedence_over_cli() {
+    fn password_env_is_used_without_an_explicit_password() {
         let _guard = ENV_LOCK.lock().unwrap();
         clear_password_env();
         std::env::set_var("DUSK_CONSENSUS_KEYS_PASS", "from-legacy-env");
         std::env::set_var("DUSK_CONSENSUS_PASSWORD", "from-env");
 
-        let password = resolve_keys_password("from-cli").unwrap();
-
+        let from_env = resolve_keys_password("").unwrap();
+        let explicit = resolve_keys_password("from-cli").unwrap();
         clear_password_env();
-        assert_eq!(password, "from-env");
+        let fallback = resolve_keys_password("").unwrap();
+
+        assert_eq!(from_env, "from-env");
+        assert_eq!(explicit, "from-cli", "an explicit --password wins");
+        assert_eq!(fallback, "password", "the development default");
     }
 
     #[test]
@@ -1226,7 +1536,7 @@ mod tests {
         std::fs::write(&path, vec![b'x'; MAX_PASSWORD_FILE_BYTES + 1]).unwrap();
         std::env::set_var("DUSK_CONSENSUS_PASSWORD_FILE", &path);
 
-        let error = resolve_keys_password("from-cli").unwrap_err();
+        let error = resolve_keys_password("").unwrap_err();
 
         clear_password_env();
         let _ = std::fs::remove_file(path);
@@ -1234,7 +1544,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_cli_password() {
+    fn uses_cli_password_without_environment() {
         let _guard = ENV_LOCK.lock().unwrap();
         clear_password_env();
 
@@ -3147,16 +3457,22 @@ async fn cmd_register_account(
     secret_key_hex: Option<String>,
     secret_key_stdin: bool,
     warp_contract_hex: &str,
+    for_account: Option<&str>,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
+    let account = for_account.map(parse_account_arg).transpose()?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let client = RuesClient::new(rues_url)?;
 
-    let warp_id = ContractId::from_bytes(parse_bytes32(warp_contract_hex)?);
+    let warp_bytes = parse_bytes32(warp_contract_hex)?;
+    let warp_id = ContractId::from_bytes(warp_bytes);
 
-    // No args — the contract reads the sender via abi::public_sender()
-    let register_args = vec![];
+    // Without --for the contract registers the transaction signer.
+    let (fn_name, args, target) = match account {
+        Some(account) => ("register_account_for", rkyv_serialize(&(account,)), account),
+        None => ("register_account", Vec::new(), pk),
+    };
 
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
@@ -3164,8 +3480,8 @@ async fn cmd_register_account(
     let tx = moonlight_call(
         &sk,
         warp_id,
-        "register_account",
-        register_args,
+        fn_name,
+        args,
         gas_limit,
         gas_price,
         next_moonlight_nonce(nonce)?,
@@ -3175,17 +3491,85 @@ async fn cmd_register_account(
     let tx_id = hex::encode(tx.hash().to_bytes());
     propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
-    // Compute the H256 = keccak256(pk.to_bytes()) for display
-    let pk_bytes = pk.to_bytes();
-    let h256 = hyperlane_dusk_types::message::keccak256(&pk_bytes);
+    let h256 = hyperlane_dusk_types::message::keccak256(&target.to_bytes());
+    let pending: u64 = client
+        .contract_query(&warp_bytes, "pending_balance", &(h256,))
+        .await
+        .unwrap_or(0);
 
-    let output = json!({
-        "success": true,
-        "fn_name": "register_account",
-        "warp_contract": warp_contract_hex,
-        "account_h256": hex::encode(h256),
-        "tx_id": tx_id,
-    });
+    let mut output = account_identity(&target);
+    output["success"] = json!(true);
+    output["fn_name"] = json!(fn_name);
+    output["warp_contract"] = json!(warp_contract_hex);
+    output["pending"] = json!(pending.to_string());
+    output["tx_id"] = json!(tx_id);
+    if pending > 0 {
+        output["next"] =
+            json!("Tokens are waiting in escrow for this account: run dusk-tx claim-pending");
+    }
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+// ── cmd_claim_pending ─────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_claim_pending(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    warp_contract_hex: &str,
+    for_account: Option<&str>,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    let account = for_account.map(parse_account_arg).transpose()?;
+    let client = RuesClient::new(rues_url)?;
+    let warp_bytes = parse_bytes32(warp_contract_hex)?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let target = account.unwrap_or(pk);
+    let identity = account_identity(&target);
+
+    // Check first: a call that fails on chain is charged its whole gas limit.
+    let h256 = hyperlane_dusk_types::message::keccak256(&target.to_bytes());
+    let pending: u64 = client
+        .contract_query(&warp_bytes, "pending_balance", &(h256,))
+        .await
+        .map_err(|e| {
+            format!("Can't read the escrow of {warp_contract_hex} (is it a warp route?): {e}")
+        })?;
+    if pending == 0 {
+        return Err(format!(
+            "Nothing is in escrow for {} on this route",
+            identity["address"].as_str().unwrap_or_default()
+        ));
+    }
+
+    // claim_pending_for also registers the account, so later transfers to it
+    // are paid out directly.
+    let chain_id = client.query_chain_id().await?;
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        ContractId::from_bytes(warp_bytes),
+        "claim_pending_for",
+        rkyv_serialize(&(target,)),
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+
+    let mut output = identity;
+    output["success"] = json!(true);
+    output["fn_name"] = json!("claim_pending_for");
+    output["warp_contract"] = json!(warp_contract_hex);
+    output["claimed"] = json!(pending.to_string());
+    output["tx_id"] = json!(tx_id);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -3282,7 +3666,8 @@ async fn cmd_transfer_remote(
     secret_key_stdin: bool,
     warp_contract_hex: &str,
     destination: u32,
-    recipient_hex: &str,
+    recipient_arg: &str,
+    raw_recipient: bool,
     amount: u64,
     native: bool,
     gas_limit: u64,
@@ -3290,8 +3675,42 @@ async fn cmd_transfer_remote(
 ) -> Result<(), String> {
     let warp_bytes = parse_bytes32(warp_contract_hex)?;
     let warp_id = ContractId::from_bytes(warp_bytes);
-    let recipient = parse_bytes32(recipient_hex)?;
+    let recipient = parse_recipient(recipient_arg, raw_recipient)?;
+    if amount == 0 {
+        return Err("Amount must be greater than zero".into());
+    }
     let client = RuesClient::new(rues_url)?;
+
+    // Check the route before signing anything: a transaction that fails on
+    // chain is charged its whole gas limit, and the node reports a failed
+    // quote only as "Internal server error".
+    let router: [u8; 32] = client
+        .contract_query(&warp_bytes, "enrolled_router", &(destination,))
+        .await
+        .map_err(|e| format!("Can't query {warp_contract_hex} (is it a warp route?): {e}"))?;
+    if router == [0u8; 32] {
+        return Err(format!(
+            "The route has no router enrolled for destination domain {destination}"
+        ));
+    }
+    let bridges_token = client
+        .contract_query::<_, String>(&warp_bytes, "name", &())
+        .await
+        .is_ok()
+        || client
+            .contract_query::<_, [u8; 32]>(&warp_bytes, "wrapped_token", &())
+            .await
+            .is_ok();
+    if native && bridges_token {
+        return Err("This route bridges a DRC20 token, not native DUSK: drop --native".into());
+    }
+    if !native && !bridges_token {
+        return Err(
+            "This route bridges native DUSK: add --native so the amount goes with the transaction"
+                .into(),
+        );
+    }
+    let recipient_hex = hex::encode(recipient);
 
     // Quote before loading signing material. The transfer call repeats the
     // quote and checks its Mailbox credit is unchanged, so a changed quote
@@ -3348,4 +3767,226 @@ async fn cmd_transfer_remote(
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+// ── cmd_account ───────────────────────────────────────────────────────────
+
+const LUX_PER_DUSK: u64 = 1_000_000_000;
+
+/// Parse a base58 Moonlight address (a 96-byte BLS public key).
+fn parse_moonlight_address(value: &str) -> Result<BlsPublicKey, String> {
+    let bytes = bs58::decode(value.trim())
+        .into_vec()
+        .map_err(|error| format!("Invalid Moonlight address: {error}"))?;
+    if bytes.len() != 96 {
+        return Err(format!(
+            "Moonlight address must decode to 96 bytes, got {}",
+            bytes.len()
+        ));
+    }
+    parse_account_public_key(&hex::encode(bytes))
+        .map_err(|error| error.replace("Recipient public key", "Moonlight address"))
+}
+
+/// Parse an account given as a base58 Moonlight address or as a 96-byte
+/// public key in hex.
+fn parse_account_arg(value: &str) -> Result<BlsPublicKey, String> {
+    let hex_part = value.strip_prefix("0x").unwrap_or(value);
+    if hex_part.len() == 192 && hex_part.bytes().all(|b| b.is_ascii_hexdigit()) {
+        parse_account_public_key(value)
+    } else {
+        parse_moonlight_address(value)
+    }
+}
+
+/// Parse a transfer recipient: a 20-byte EVM address, left-padded to 32 bytes
+/// as Hyperlane encodes it, or 32 bytes as given. A 32-byte value whose first
+/// 12 bytes aren't zero needs `raw`, because an EVM route can't deliver to it
+/// and the tokens would stay locked.
+fn parse_recipient(value: &str, raw: bool) -> Result<[u8; 32], String> {
+    let hex_part = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    let bytes = hex::decode(hex_part).map_err(|e| format!("Invalid recipient hex: {e}"))?;
+    let recipient: [u8; 32] = match bytes.len() {
+        20 => {
+            let mut padded = [0u8; 32];
+            padded[12..].copy_from_slice(&bytes);
+            padded
+        }
+        32 => bytes.try_into().expect("length checked"),
+        n => {
+            return Err(format!(
+                "Recipient must be a 20-byte address or 32 bytes, got {n} bytes"
+            ))
+        }
+    };
+    if recipient == [0u8; 32] {
+        return Err("Recipient cannot be zero".into());
+    }
+    if !raw && recipient[..12] != [0u8; 12] {
+        return Err(
+            "Recipient's first 12 bytes aren't zero, so it isn't an EVM address and an \
+                    EVM route would never deliver it. Pass the 20-byte address, or \
+                    --raw-recipient for a non-EVM destination."
+                .into(),
+        );
+    }
+    Ok(recipient)
+}
+
+/// Format a LUX amount as DUSK with all nine decimals.
+fn format_dusk(lux: u64) -> String {
+    format!("{}.{:09}", lux / LUX_PER_DUSK, lux % LUX_PER_DUSK)
+}
+
+/// The account's address and the recipient hash warp routes deliver to:
+/// `keccak256` of the 96-byte public key, which `register_account` maps back
+/// to the account.
+fn account_identity(pk: &BlsPublicKey) -> serde_json::Value {
+    let pk_bytes = pk.to_bytes();
+    json!({
+        "address": bs58::encode(pk_bytes).into_string(),
+        "public_key": hex::encode(pk_bytes),
+        "account_h256": hex::encode(hyperlane_dusk_types::message::keccak256(&pk_bytes)),
+    })
+}
+
+async fn cmd_account(
+    rues_url: &str,
+    pk: &BlsPublicKey,
+    warp_contract_hex: Option<&str>,
+    offline: bool,
+) -> Result<(), String> {
+    let mut output = account_identity(pk);
+    output["success"] = json!(true);
+    if !offline {
+        let client = RuesClient::new(rues_url)?;
+        let chain_id = client.query_chain_id().await?;
+        let (nonce, balance) = client.query_account(pk).await?;
+        output["chain_id"] = json!(chain_id);
+        output["balance"] = json!(balance.to_string());
+        output["balance_dusk"] = json!(format_dusk(balance));
+        output["nonce"] = json!(nonce.to_string());
+        if let Some(warp_contract_hex) = warp_contract_hex {
+            let warp_bytes = parse_bytes32(warp_contract_hex)?;
+            let h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
+            let registered: bool = client
+                .contract_query(&warp_bytes, "is_registered", &(h256,))
+                .await
+                .map_err(|e| {
+                    format!("Can't query {warp_contract_hex} (is it a warp route?): {e}")
+                })?;
+            let pending: u64 = client
+                .contract_query(&warp_bytes, "pending_balance", &(h256,))
+                .await?;
+            output["route"] = json!({
+                "warp_contract": warp_contract_hex,
+                "registered": registered,
+                "pending": pending.to_string(),
+            });
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+// ── cmd_export_signer_key ─────────────────────────────────────────────────
+
+/// Create `path` (which must not exist) with mode 0600 and write the secret
+/// key as `0x`-prefixed hex.
+fn write_signer_key_file(path: &std::path::Path, sk: &BlsSecretKey) -> Result<(), String> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("Failed to create {}: {e}", path.display()))?;
+    writeln!(file, "0x{}", hex::encode(sk.to_bytes()))
+        .map_err(|e| format!("Failed to write {}: {e}", path.display()))
+}
+
+fn cmd_export_signer_key(
+    keys_path: PathBuf,
+    password: &str,
+    out: &std::path::Path,
+) -> Result<(), String> {
+    let (sk, pk) = load_keys(Some(keys_path), password, None, false)?;
+    write_signer_key_file(out, &sk)?;
+    let mut output = account_identity(&pk);
+    output["success"] = json!(true);
+    output["out"] = json!(out.display().to_string());
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+// ── cmd_dispatched_message ────────────────────────────────────────────────
+
+async fn cmd_dispatched_message(rues_url: &str, mailbox_hex: &str, nonce: u32) -> Result<(), String> {
+    use hyperlane_dusk_types::events::Dispatch;
+    use hyperlane_dusk_types::message;
+
+    let client = RuesClient::new(rues_url)?;
+    let mailbox = parse_bytes32(mailbox_hex)?;
+    let count: u32 = client.contract_query(&mailbox, "nonce", &()).await?;
+    if nonce >= count {
+        return Err(format!(
+            "The Mailbox has dispatched {count} messages; nonce {nonce} doesn't exist yet"
+        ));
+    }
+    let id: [u8; 32] = client
+        .contract_query(&mailbox, "dispatched_id", &(nonce,))
+        .await?;
+    let height: u64 = client
+        .contract_query(&mailbox, "dispatched_block_height", &(nonce,))
+        .await?;
+
+    // The archive can trail the block by a moment.
+    for attempt in 0..15 {
+        for event in client.block_events(height).await? {
+            let field = |name: &str| event.get(name).and_then(serde_json::Value::as_str);
+            let from_mailbox = field("source")
+                .is_some_and(|s| s.trim_start_matches("0x").eq_ignore_ascii_case(mailbox_hex));
+            let reverted = event
+                .get("reverted")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if !from_mailbox || reverted || field("topic") != Some(Dispatch::TOPIC) {
+                continue;
+            }
+            let Some(data) = field("data").and_then(|d| hex::decode(d.trim_start_matches("0x")).ok())
+            else {
+                continue;
+            };
+            let Ok(dispatch) = rues::rkyv_deserialize::<Dispatch>(&data) else {
+                continue;
+            };
+            if message::id(&dispatch.message) != id {
+                continue;
+            }
+            let output = json!({
+                "success": true,
+                "nonce": nonce,
+                "message_id": hex::encode(id),
+                "block_height": height,
+                "message": hex::encode(&dispatch.message),
+                "length": dispatch.message.len(),
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            return Ok(());
+        }
+        if attempt < 14 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    }
+    Err(format!(
+        "No Dispatch event with message ID {} in block {height}; the node may not serve the archive",
+        hex::encode(id)
+    ))
 }

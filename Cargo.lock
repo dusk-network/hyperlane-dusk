@@ -507,6 +507,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1349,6 +1358,7 @@ dependencies = [
  "base64",
  "blake2b_simd",
  "blake3",
+ "bs58",
  "clap",
  "constant_time_eq",
  "dusk-bytes",
@@ -2105,6 +2115,15 @@ dependencies = [
 
 [[package]]
 name = "hyperlane-dusk-merkle-tree-hook"
+version = "0.1.0"
+dependencies = [
+ "dusk-core 1.7.1",
+ "dusk-forge",
+ "hyperlane-dusk-types",
+]
+
+[[package]]
+name = "hyperlane-dusk-plain-recipient"
 version = "0.1.0"
 dependencies = [
  "dusk-core 1.7.1",
