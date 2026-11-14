@@ -221,3 +221,18 @@ help:
 	@echo "                     Fail while machine-checkable production blockers remain"
 	@echo "  demo               Run cross-chain demo (Dusk <-> EVM)"
 	@echo "  clean              Remove build artifacts"
+
+# Build the actual JavaScript/WASM interface and run its ABI/HTTP regressions.
+# Requires Node.js/npm and wasm-bindgen-cli matching Cargo.lock (0.2.108).
+.PHONY: test-sdk
+test-sdk:
+	CARGO_TARGET_DIR=target/wasm-bindings cargo build --locked --release \
+		--target $(WASM_TARGET) -p hyperlane-dusk-wasm-bindings
+	wasm-bindgen --target nodejs --out-dir wasm-bindings/pkg \
+		target/wasm-bindings/$(WASM_TARGET)/release/hyperlane_dusk_wasm_bindings.wasm
+	cd ts-sdk && npm ci --ignore-scripts && npm test
+
+# Isolated process fixtures; does not require the bridge network or signers.
+.PHONY: test-demo-lifecycle
+test-demo-lifecycle:
+	python3 -B scripts/test-demo-lifecycle.py

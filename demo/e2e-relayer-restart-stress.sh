@@ -334,6 +334,13 @@ dusk_supply_final="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
     --contract "$dusk_warp" --method total_supply --return-type u64 \
     2>/dev/null | jq -r '.value // 0')"
 
+# A completed round trip must restore both sides, not merely grow from a
+# potentially incorrect intermediate EVM balance.
+[ "$evm_balance_final" = "$evm_balance_before" ] \
+    || fail "EVM balance did not return exactly to its pre-burst value"
+[ "$dusk_supply_final" = "$dusk_supply_before" ] \
+    || fail "Dusk supply did not return exactly to its pre-burst value"
+
 info "Stress result:"
 info "  EVM balance before: $evm_balance_before"
 info "  EVM balance final:  $evm_balance_final"

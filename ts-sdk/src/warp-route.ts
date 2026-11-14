@@ -12,9 +12,9 @@ import type { HexBytes32 } from "./types.js";
  */
 export class DuskWarpRoute {
   constructor(
-    private readonly rues: RuesClient,
-    private readonly contractId: Uint8Array,
-    private readonly wasm: WasmBindings
+    protected readonly rues: RuesClient,
+    protected readonly contractId: Uint8Array,
+    protected readonly wasm: WasmBindings
   ) {}
 
   /** Get the Mailbox contract ID. */
@@ -75,9 +75,7 @@ export class DuskWarpDrc20 extends DuskWarpRoute {
       "name",
       args
     );
-    // String is rkyv-serialized as a Vec<u8> of UTF-8 bytes
-    const bytes = this.wasm.rkyv_deserialize_bytes(result);
-    return new TextDecoder().decode(bytes);
+    return this.wasm.rkyv_deserialize_string(result);
   }
 
   /** Get the token symbol. */
@@ -88,8 +86,7 @@ export class DuskWarpDrc20 extends DuskWarpRoute {
       "symbol",
       args
     );
-    const bytes = this.wasm.rkyv_deserialize_bytes(result);
-    return new TextDecoder().decode(bytes);
+    return this.wasm.rkyv_deserialize_string(result);
   }
 
   /** Get the number of decimals. */
@@ -100,19 +97,18 @@ export class DuskWarpDrc20 extends DuskWarpRoute {
       "decimals",
       args
     );
-    // u8 is deserialized via the u32 helper (rkyv pads to aligned size)
-    return this.wasm.rkyv_deserialize_u32(result);
+    return this.wasm.rkyv_deserialize_u8(result);
   }
 
   /** Get the total token supply. */
-  async totalSupply(): Promise<number> {
+  async totalSupply(): Promise<bigint> {
     const args = this.wasm.rkyv_serialize_unit();
     const result = await this.rues.contractQuery(
       this.contractId,
       "total_supply",
       args
     );
-    return Number(this.wasm.rkyv_deserialize_u64(result));
+    return this.wasm.rkyv_deserialize_u64(result);
   }
 }
 

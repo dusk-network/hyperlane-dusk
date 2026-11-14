@@ -41,9 +41,11 @@ pub fn load_from_file(
     let salt = b64
         .decode(&encrypted.salt)
         .map_err(|e| format!("Failed to decode salt: {e}"))?;
-    let iv = b64
+    let iv: [u8; 12] = b64
         .decode(&encrypted.iv)
-        .map_err(|e| format!("Failed to decode IV: {e}"))?;
+        .map_err(|e| format!("Failed to decode IV: {e}"))?
+        .try_into()
+        .map_err(|_| "Invalid IV length: expected 12 bytes".to_string())?;
 
     let mut aes_key = [0u8; 32];
     pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ROUNDS, &mut aes_key);
@@ -92,4 +94,67 @@ pub fn load_from_hex(secret_key_hex: &str) -> Result<(BlsSecretKey, BlsPublicKey
     let pk = BlsPublicKey::from(&sk);
 
     Ok((sk, pk))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+
+    struct KeyFile(PathBuf);
+
+    impl KeyFile {
+        fn with_iv_length(length: usize) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "dusk-tx-key-input-{}-{}.json",
+                std::process::id(),
+                NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            let b64 = base64::engine::general_purpose::STANDARD;
+            let input = serde_json::json!({
+                "salt": b64.encode([0u8; 16]),
+                "iv": b64.encode(vec![0u8; length]),
+                "key_pair": [],
+            });
+            file.write_all(input.to_string().as_bytes()).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for KeyFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn malformed_key_file_iv_returns_error_without_panicking() {
+        for length in [0, 11, 13, 16, 32] {
+            let file = KeyFile::with_iv_length(length);
+            let result = std::panic::catch_unwind(|| {
+                load_from_file(file.0.to_str().unwrap(), "synthetic-fixture-password")
+            });
+            assert!(result.is_ok(), "IV length {length} must not panic");
+            let error = result.unwrap().err().expect("invalid IV must fail");
+            assert!(error.contains("IV"), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn valid_iv_length_reaches_authenticated_decryption() {
+        let file = KeyFile::with_iv_length(12);
+        let error = load_from_file(file.0.to_str().unwrap(), "synthetic-fixture-password")
+            .err()
+            .expect("empty ciphertext must fail authentication");
+        assert!(error.contains("Failed to decrypt keys"));
+    }
 }

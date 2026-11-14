@@ -15,7 +15,7 @@ const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 
 pub struct RuesClient {
     client: reqwest::Client,
-    base_url: String,
+    base_url: reqwest::Url,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,14 +64,22 @@ impl core::fmt::Display for TransactionStatusQueryError {
 
 impl RuesClient {
     pub fn new(base_url: &str) -> Result<Self, String> {
+        let base_url = reqwest::Url::parse(base_url).map_err(|_| "Invalid RUES URL".to_owned())?;
+        if !matches!(base_url.scheme(), "http" | "https") {
+            return Err("RUES URL must use HTTP or HTTPS".into());
+        }
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .map_err(|e| format!("Failed to build RUES HTTP client: {e}"))?;
-        Ok(Self {
-            client,
-            base_url: base_url.trim_end_matches('/').to_string(),
-        })
+            .map_err(|e| format!("Failed to build RUES HTTP client: {}", e.without_url()))?;
+        Ok(Self { client, base_url })
+    }
+
+    fn endpoint(&self, path: &str) -> reqwest::Url {
+        let mut url = self.base_url.clone();
+        url.set_path(&format!("{}{path}", url.path().trim_end_matches('/')));
+        url.set_fragment(None);
+        url
     }
 
     /// Query chain_id from the transfer contract.
@@ -120,15 +128,15 @@ impl RuesClient {
     /// Preverify then propagate a serialized transaction.
     pub async fn propagate_tx(&self, tx_bytes: &[u8]) -> Result<(), String> {
         // Preverify first
-        let url = format!("{}/on/transactions/preverify", self.base_url);
+        let url = self.endpoint("/on/transactions/preverify");
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/octet-stream")
             .body(tx_bytes.to_vec())
             .send()
             .await
-            .map_err(|e| format!("Preverify failed before propagation: {e}"))?;
+            .map_err(|e| format!("Preverify failed before propagation: {}", e.without_url()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -142,15 +150,15 @@ impl RuesClient {
         }
 
         // Propagate
-        let url = format!("{}/on/transactions/propagate", self.base_url);
+        let url = self.endpoint("/on/transactions/propagate");
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/octet-stream")
             .body(tx_bytes.to_vec())
             .send()
             .await
-            .map_err(|e| format!("Propagation outcome unknown: {e}"))?;
+            .map_err(|e| format!("Propagation outcome unknown: {}", e.without_url()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -167,11 +175,11 @@ impl RuesClient {
         &self,
         tx_id: &str,
     ) -> Result<TransactionStatus, TransactionStatusQueryError> {
-        let url = format!("{}/graphql", self.base_url);
+        let url = self.endpoint("/graphql");
         let query = transaction_status_query(tx_id);
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .body(
@@ -180,7 +188,9 @@ impl RuesClient {
             )
             .send()
             .await
-            .map_err(|e| TransactionStatusQueryError::Retryable(format!("HTTP error: {e}")))?;
+            .map_err(|e| {
+                TransactionStatusQueryError::Retryable(format!("HTTP error: {}", e.without_url()))
+            })?;
 
         let status = response.status();
         let body = read_response_body(
@@ -209,15 +219,15 @@ impl RuesClient {
     /// This does **not** invoke contract code.
     pub async fn contract_exists(&self, contract_hex: &str) -> Result<bool, String> {
         // RUES requires a non-empty topic; "owner" is conventional here.
-        let url = format!("{}/on/contract_owner:{}/owner", self.base_url, contract_hex);
+        let url = self.endpoint(&format!("/on/contract_owner:{contract_hex}/owner"));
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/octet-stream")
             .body(Vec::new())
             .send()
             .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+            .map_err(|e| format!("HTTP error: {}", e.without_url()))?;
 
         let status = response.status();
         if status.is_success() {
@@ -251,15 +261,15 @@ impl RuesClient {
         method: &str,
         body: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let url = format!("{}/on/contracts:{}/{}", self.base_url, contract_hex, method);
+        let url = self.endpoint(&format!("/on/contracts:{contract_hex}/{method}"));
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/octet-stream")
             .body(body.to_vec())
             .send()
             .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+            .map_err(|e| format!("HTTP error: {}", e.without_url()))?;
 
         let status = response.status();
         let max_bytes = if status.is_success() {
@@ -307,7 +317,10 @@ async fn read_response_body(
             .min(max_bytes as u64) as usize,
     );
     while let Some(chunk) = response.chunk().await.map_err(|e| {
-        ResponseBodyError::Transport(format!("Failed to read {context} response: {e}"))
+        ResponseBodyError::Transport(format!(
+            "Failed to read {context} response: {}",
+            e.without_url()
+        ))
     })? {
         append_bounded_chunk(&mut body, &chunk, max_bytes, context)?;
     }
@@ -392,11 +405,127 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn request_routes_preserve_path_query_and_ignore_fragment() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+        for suffix in [
+            "/rpc",
+            "/rpc/",
+            "/rpc?token=fixture%2Fvalue",
+            "/rpc#label",
+            "/rpc/?token=fixture%2Fvalue#label",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let worker = std::thread::spawn(move || {
+                let mut paths = Vec::new();
+                for body in [
+                    vec![7],
+                    br#"{"data":{"tx":{"err":null}}}"#.to_vec(),
+                    vec![],
+                    vec![],
+                    vec![],
+                ] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                        .unwrap();
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut first = String::new();
+                    reader.read_line(&mut first).unwrap();
+                    paths.push(first.split_whitespace().nth(1).unwrap().to_owned());
+                    let mut length = 0;
+                    loop {
+                        let mut header = String::new();
+                        assert_ne!(reader.read_line(&mut header).unwrap(), 0);
+                        if header == "\r\n" {
+                            break;
+                        }
+                        if let Some(value) =
+                            header.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    let mut input = vec![0; length];
+                    reader.read_exact(&mut input).unwrap();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+                paths
+            });
+            let client = super::RuesClient::new(&format!("http://{address}{suffix}")).unwrap();
+            assert_eq!(client.query_chain_id().await.unwrap(), 7);
+            assert_eq!(
+                client
+                    .query_transaction_status(&"ab".repeat(32))
+                    .await
+                    .unwrap(),
+                super::TransactionStatus::Executed
+            );
+            assert!(client.contract_exists(&"02".repeat(32)).await.unwrap());
+            client.propagate_tx(&[1]).await.unwrap();
+            let query = if suffix.contains('?') {
+                "?token=fixture%2Fvalue"
+            } else {
+                ""
+            };
+            assert_eq!(worker.join().unwrap(), vec![
+                format!("/rpc/on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id{query}"),
+                format!("/rpc/graphql{query}"),
+                format!("/rpc/on/contract_owner:{}/owner{query}", "02".repeat(32)),
+                format!("/rpc/on/transactions/preverify{query}"),
+                format!("/rpc/on/transactions/propagate{query}"),
+            ], "base suffix: {suffix}");
+        }
+    }
+
     use super::{
         append_bounded_chunk, parse_transaction_status_response, propagation_status_error,
         transaction_status_query, ResponseBodyError, TransactionStatus,
         MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
     };
+
+    #[tokio::test]
+    async fn transport_errors_do_not_expose_rpc_credentials_or_paths() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client = super::RuesClient::new(&format!(
+            "http://rpc-user:rpc-password@{address}/rpc-path-sentinel?key=query-sentinel"
+        ))
+        .unwrap();
+        let errors = [
+            client.query_chain_id().await.unwrap_err(),
+            client.contract_exists(&"02".repeat(32)).await.unwrap_err(),
+            client.propagate_tx(&[0]).await.unwrap_err(),
+            client
+                .query_transaction_status(&"ab".repeat(32))
+                .await
+                .unwrap_err()
+                .to_string(),
+        ];
+        for error in errors {
+            for secret in [
+                "rpc-user",
+                "rpc-password",
+                "rpc-path-sentinel",
+                "query-sentinel",
+            ] {
+                assert!(
+                    !error.contains(secret),
+                    "RPC diagnostic retained {secret}: {error}"
+                );
+            }
+            assert!(!error.contains("http://"));
+        }
+    }
 
     #[test]
     fn every_propagation_non_success_remains_outcome_unknown() {

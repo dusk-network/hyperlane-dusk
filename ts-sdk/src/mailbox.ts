@@ -3,7 +3,7 @@
 // Mailbox contract interface for TypeScript.
 
 import type { RuesClient } from "./rues-client.js";
-import type { HexBytes32, MailboxState } from "./types.js";
+import type { DecodedMessage, HexBytes32, MailboxState } from "./types.js";
 
 /**
  * Provides a TypeScript interface to query the Hyperlane Mailbox contract
@@ -63,15 +63,15 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_bool(result);
   }
 
-  /** Get the block height at which a message was delivered. Returns 0 if not delivered. */
-  async deliveredAt(messageId: Uint8Array): Promise<number> {
+  /** Get the block height at which a message was delivered. Returns 0n if not delivered. */
+  async deliveredAt(messageId: Uint8Array): Promise<bigint> {
     const args = this.wasm.rkyv_serialize_bytes32(messageId);
     const result = await this.rues.contractQuery(
       this.contractId,
       "delivered_at",
       args
     );
-    return Number(this.wasm.rkyv_deserialize_u64(result));
+    return this.wasm.rkyv_deserialize_u64(result);
   }
 
   /** Get the default ISM contract ID. */
@@ -129,17 +129,37 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_u32(result);
   }
 
-  /** Get the full mailbox state in a single batch of queries. */
+  /**
+   * Query mailbox fields, keeping the nonce and latest message ID consistent.
+   * Configuration fields are independent current-state reads, not a snapshot.
+   */
   async getState(): Promise<MailboxState> {
-    const [localDomain, nonce, latestId, ism, hook, requiredHook] =
+    const [localDomain, nonce, ism, hook, requiredHook] =
       await Promise.all([
         this.localDomain(),
         this.nonce(),
-        this.latestDispatchedId(),
         this.defaultIsm(),
         this.defaultHook(),
         this.requiredHook(),
       ]);
+    // Dispatched messages are immutable. Derive the ID at the observed nonce
+    // so a concurrent dispatch cannot pair an old nonce with a newer ID.
+    let latestId = "00".repeat(32);
+    if (nonce > 0) {
+      const message = await this.dispatchedMessage(nonce - 1);
+      const decoded = this.wasm.decode_message(message);
+      if (decoded === undefined) {
+        throw new Error("Invalid dispatched message");
+      }
+      const { nonce: messageNonce, origin } = JSON.parse(decoded) as DecodedMessage;
+      if (messageNonce !== nonce - 1 || origin !== localDomain) {
+        throw new Error("Dispatched message does not match mailbox state");
+      }
+      latestId = Array.from(
+        this.wasm.message_id(message),
+        byte => byte.toString(16).padStart(2, "0")
+      ).join("");
+    }
     return {
       localDomain,
       nonce,
@@ -158,11 +178,13 @@ export class DuskMailbox {
 export interface WasmBindings {
   rkyv_serialize_unit(): Uint8Array;
   rkyv_serialize_u32(value: number): Uint8Array;
-  rkyv_serialize_u64(value: bigint | number): Uint8Array;
+  rkyv_serialize_u64(value: bigint): Uint8Array;
   rkyv_serialize_bool(value: boolean): Uint8Array;
   rkyv_serialize_bytes32(data: Uint8Array): Uint8Array;
+  rkyv_deserialize_string(data: Uint8Array): string;
+  rkyv_deserialize_u8(data: Uint8Array): number;
   rkyv_deserialize_u32(data: Uint8Array): number;
-  rkyv_deserialize_u64(data: Uint8Array): bigint | number;
+  rkyv_deserialize_u64(data: Uint8Array): bigint;
   rkyv_deserialize_bool(data: Uint8Array): boolean;
   rkyv_deserialize_bytes32(data: Uint8Array): string;
   rkyv_deserialize_bytes(data: Uint8Array): Uint8Array;
@@ -175,9 +197,9 @@ export interface WasmBindings {
     recipient: Uint8Array,
     body: Uint8Array
   ): Uint8Array;
-  decode_message(encoded: Uint8Array): string | null;
+  decode_message(encoded: Uint8Array): string | undefined;
   message_id(encoded: Uint8Array): Uint8Array;
-  encode_token_message(recipient: Uint8Array, amount: bigint | number): Uint8Array;
-  decode_token_message(body: Uint8Array): string | null;
+  encode_token_message(recipient: Uint8Array, amount: bigint): Uint8Array;
+  decode_token_message(body: Uint8Array): string | undefined;
   keccak256(data: Uint8Array): Uint8Array;
 }

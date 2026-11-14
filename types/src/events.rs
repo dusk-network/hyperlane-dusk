@@ -487,7 +487,7 @@ impl ProtocolFeePaid {
 pub struct GasPayment {
     /// The message ID for which gas was paid.
     pub message_id: MessageId,
-    /// The gas limit used in the calculation.
+    /// The destination gas amount paid for, including configured overhead.
     pub gas_limit: u64,
     /// The computed payment amount (in LUX).
     pub payment: u64,

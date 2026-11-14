@@ -150,7 +150,7 @@ pub struct GasPaymentRecord {
     pub message_id: MessageId,
     /// Destination domain paid for.
     pub destination: u32,
-    /// The gas amount paid for.
+    /// The destination gas amount paid for, including configured overhead.
     pub gas_limit: u64,
     /// Payment amount (in LUX).
     pub payment: u64,

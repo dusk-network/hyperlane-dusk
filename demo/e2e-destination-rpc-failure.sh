@@ -20,7 +20,11 @@ info() { echo "[INFO] $*" >&2; }
 TIMEOUT_SECS="${TIMEOUT_SECS:-300}"
 RPC_FAILURE_SECS="${RPC_FAILURE_SECS:-35}"
 AMOUNT_TO_DUSK="${AMOUNT_TO_DUSK:-1}"
-BAD_DUSK_RPC="${BAD_DUSK_RPC:-http://127.0.0.1:18080}"
+# Port zero cannot be a listening TCP endpoint and cannot collide with the
+# operator's alternate local service ports.
+BAD_DUSK_RPC="${BAD_DUSK_RPC:-http://127.0.0.1:0}"
+[ "${BAD_DUSK_RPC%/}" != "${DUSK_RUES_URL%/}" ] \
+    || fail "Fault RPC must differ from the healthy destination RPC"
 
 CURRENT_RELAYER_PID=""
 GENERATED_DUSK_SIGNER_KEY_FILES=()

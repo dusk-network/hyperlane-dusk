@@ -10,6 +10,11 @@ demo keys are not production keys.
 - Use `DUSK_CONSENSUS_PASSWORD` or `DUSK_CONSENSUS_KEYS_PASS` only on trusted
   local runners where environment variables are not collected as artifacts.
 - Use `--secret-key-stdin` when a raw BLS secret key is unavoidable.
+- For an authenticated RPC URL, `dusk-tx call --rues-url-stdin` reads a bounded
+  URL line from stdin instead of exposing it in process arguments. With
+  `--secret-key-stdin`, the key follows on the next line. Updated agents require
+  a helper version supporting this flag. Explicit `--rues-url` remains available
+  for public URLs.
 - Do not commit or upload generated Hyperlane agent configs. Local demo configs
   point at Dusk key files and still contain Anvil signer material.
 - Do not upload `/tmp/hyperlane-relayer-*.json`,

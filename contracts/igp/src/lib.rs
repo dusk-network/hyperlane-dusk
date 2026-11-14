@@ -155,6 +155,11 @@ mod igp {
             if payment == 0 {
                 return;
             }
+            // Credit the full destination gas purchased by the quote, including
+            // overhead, and retain it independently of later oracle updates.
+            let gas_limit = gas_limit
+                .checked_add(self.domain_gas_configs[&destination].gas_overhead)
+                .expect("IGP: adjusted gas exceeds u64");
             let message_id = message::id(&encoded_message);
             self.pending_payment = Some(GasPaymentRecord {
                 message_id,
@@ -236,7 +241,11 @@ mod igp {
                 .domain_gas_configs
                 .get(&destination)
                 .expect("IGP: destination is not configured");
-            let adjusted_gas = u128::from(gas_limit) + u128::from(config.gas_overhead);
+            let adjusted_gas = u128::from(
+                gas_limit
+                    .checked_add(config.gas_overhead)
+                    .expect("IGP: adjusted gas exceeds u64"),
+            );
             let cost = adjusted_gas
                 .checked_mul(u128::from(config.gas_price))
                 .expect("IGP: gas price overflow")
@@ -401,6 +410,10 @@ mod igp {
         }
 
         fn validate_domain_gas_config(config: DomainGasConfig) {
+            assert!(
+                config.gas_overhead.checked_add(MAX_GAS_LIMIT).is_some(),
+                "IGP: configured adjusted gas exceeds u64"
+            );
             assert!(config.gas_price > 0, "IGP: gas price cannot be zero");
             assert!(
                 config.token_exchange_rate > 0,

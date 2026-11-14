@@ -18,36 +18,30 @@ use hyperlane_dusk_types::{message, token_message, VERSION};
 /// Returns the raw encoded message bytes.
 #[wasm_bindgen]
 pub fn encode_message(
-    version: u8,
-    nonce: u32,
-    origin: u32,
+    #[wasm_bindgen(unchecked_param_type = "number")] version: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] nonce: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] origin: JsValue,
     sender: &[u8],
-    destination: u32,
+    #[wasm_bindgen(unchecked_param_type = "number")] destination: JsValue,
     recipient: &[u8],
     body: &[u8],
-) -> Vec<u8> {
-    let mut sender_h256 = [0u8; 32];
-    let len = sender.len().min(32);
-    sender_h256[..len].copy_from_slice(&sender[..len]);
-
-    let mut recipient_h256 = [0u8; 32];
-    let len = recipient.len().min(32);
-    recipient_h256[..len].copy_from_slice(&recipient[..len]);
-
-    message::encode(
-        version,
-        nonce,
-        origin,
+) -> Result<Vec<u8>, String> {
+    let sender_h256 = checked_bytes32(sender)?;
+    let recipient_h256 = checked_bytes32(recipient)?;
+    Ok(message::encode(
+        u8::try_from(checked_u32(version)?).map_err(|_| "Version must fit in u8")?,
+        checked_u32(nonce)?,
+        checked_u32(origin)?,
         sender_h256,
-        destination,
+        checked_u32(destination)?,
         recipient_h256,
         body,
-    )
+    ))
 }
 
 /// Decode a Hyperlane message and return it as a JSON string.
 ///
-/// Returns null if the message is invalid.
+/// Returns undefined if the message is invalid.
 #[wasm_bindgen]
 pub fn decode_message(encoded: &[u8]) -> Option<String> {
     let msg = message::decode(encoded)?;
@@ -77,14 +71,20 @@ pub fn protocol_version() -> u8 {
 
 /// Extract the destination domain from an encoded message.
 #[wasm_bindgen]
-pub fn message_destination(encoded: &[u8]) -> u32 {
-    message::destination(encoded)
+pub fn message_destination(encoded: &[u8]) -> Result<u32, String> {
+    if encoded.len() < message::MIN_MESSAGE_LENGTH {
+        return Err("Encoded message is shorter than its header".into());
+    }
+    Ok(message::destination(encoded))
 }
 
 /// Extract the nonce from an encoded message.
 #[wasm_bindgen]
-pub fn message_nonce(encoded: &[u8]) -> u32 {
-    message::nonce(encoded)
+pub fn message_nonce(encoded: &[u8]) -> Result<u32, String> {
+    if encoded.len() < message::MIN_MESSAGE_LENGTH {
+        return Err("Encoded message is shorter than its header".into());
+    }
+    Ok(message::nonce(encoded))
 }
 
 // =============================================================================
@@ -93,22 +93,26 @@ pub fn message_nonce(encoded: &[u8]) -> u32 {
 
 /// Encode a token message body (recipient + amount).
 #[wasm_bindgen]
-pub fn encode_token_message(recipient: &[u8], amount: u64) -> Vec<u8> {
-    let mut recipient_h256 = [0u8; 32];
-    let len = recipient.len().min(32);
-    recipient_h256[..len].copy_from_slice(&recipient[..len]);
-    token_message::encode(recipient_h256, amount)
+pub fn encode_token_message(
+    recipient: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "bigint")] amount: JsValue,
+) -> Result<Vec<u8>, String> {
+    Ok(token_message::encode(
+        checked_bytes32(recipient)?,
+        checked_u64(amount)?,
+    ))
 }
 
 /// Decode a token message body and return it as a JSON string.
 ///
-/// Returns null if the body is too short.
+/// Amounts are decimal strings to preserve all u64 values in JavaScript.
+/// Returns undefined if the body is invalid.
 #[wasm_bindgen]
 pub fn decode_token_message(body: &[u8]) -> Option<String> {
     let msg = token_message::decode(body)?;
     let json = serde_json::json!({
         "recipient": hex::encode(&msg.recipient),
-        "amount": msg.amount,
+        "amount": msg.amount.to_string(),
         "metadata": hex::encode(msg.metadata),
     });
     Some(json.to_string())
@@ -130,18 +134,22 @@ pub fn keccak256(data: &[u8]) -> Vec<u8> {
 
 /// Serialize a u32 value using rkyv (for contract query arguments).
 #[wasm_bindgen]
-pub fn rkyv_serialize_u32(value: u32) -> Vec<u8> {
-    rkyv::to_bytes::<_, 256>(&value)
+pub fn rkyv_serialize_u32(
+    #[wasm_bindgen(unchecked_param_type = "number")] value: JsValue,
+) -> Result<Vec<u8>, String> {
+    Ok(rkyv::to_bytes::<_, 256>(&checked_u32(value)?)
         .expect("u32 serialization should not fail")
-        .to_vec()
+        .to_vec())
 }
 
 /// Serialize a u64 value using rkyv.
 #[wasm_bindgen]
-pub fn rkyv_serialize_u64(value: u64) -> Vec<u8> {
-    rkyv::to_bytes::<_, 256>(&value)
+pub fn rkyv_serialize_u64(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] value: JsValue,
+) -> Result<Vec<u8>, String> {
+    Ok(rkyv::to_bytes::<_, 256>(&checked_u64(value)?)
         .expect("u64 serialization should not fail")
-        .to_vec()
+        .to_vec())
 }
 
 /// Serialize a bool value using rkyv.
@@ -154,13 +162,10 @@ pub fn rkyv_serialize_bool(value: bool) -> Vec<u8> {
 
 /// Serialize a bytes32 (H256) value using rkyv.
 #[wasm_bindgen]
-pub fn rkyv_serialize_bytes32(data: &[u8]) -> Vec<u8> {
-    let mut h256 = [0u8; 32];
-    let len = data.len().min(32);
-    h256[..len].copy_from_slice(&data[..len]);
-    rkyv::to_bytes::<_, 256>(&h256)
+pub fn rkyv_serialize_bytes32(data: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(rkyv::to_bytes::<_, 256>(&checked_bytes32(data)?)
         .expect("H256 serialization should not fail")
-        .to_vec()
+        .to_vec())
 }
 
 /// Serialize an empty tuple () using rkyv (for no-argument queries).
@@ -171,44 +176,60 @@ pub fn rkyv_serialize_unit() -> Vec<u8> {
         .to_vec()
 }
 
+/// Deserialize a u8 from rkyv bytes (for token decimals).
+#[wasm_bindgen]
+pub fn rkyv_deserialize_u8(data: &[u8]) -> Result<u8, String> {
+    rkyv::check_archived_root::<u8>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv u8 data".into())
+}
+
+/// Deserialize a String, including rkyv's inline short-string representation.
+#[wasm_bindgen]
+pub fn rkyv_deserialize_string(data: &[u8]) -> Result<String, String> {
+    rkyv::check_archived_root::<String>(data)
+        .map(|archived| archived.as_str().to_owned())
+        .map_err(|_| "Invalid rkyv String data".into())
+}
+
 /// Deserialize a u32 from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_u32(data: &[u8]) -> u32 {
-    let archived = rkyv::check_archived_root::<u32>(data)
-        .expect("invalid rkyv u32 data");
-    *archived
+pub fn rkyv_deserialize_u32(data: &[u8]) -> Result<u32, String> {
+    rkyv::check_archived_root::<u32>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv u32 data".into())
 }
 
 /// Deserialize a u64 from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_u64(data: &[u8]) -> u64 {
-    let archived = rkyv::check_archived_root::<u64>(data)
-        .expect("invalid rkyv u64 data");
-    *archived
+pub fn rkyv_deserialize_u64(data: &[u8]) -> Result<u64, String> {
+    rkyv::check_archived_root::<u64>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv u64 data".into())
 }
 
 /// Deserialize a bool from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_bool(data: &[u8]) -> bool {
-    let archived = rkyv::check_archived_root::<bool>(data)
-        .expect("invalid rkyv bool data");
-    *archived
+pub fn rkyv_deserialize_bool(data: &[u8]) -> Result<bool, String> {
+    rkyv::check_archived_root::<bool>(data)
+        .copied()
+        .map_err(|_| "Invalid rkyv bool data".into())
 }
 
 /// Deserialize a bytes32 (H256) from rkyv bytes, returned as hex string.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_bytes32(data: &[u8]) -> String {
-    let archived = rkyv::check_archived_root::<[u8; 32]>(data)
-        .expect("invalid rkyv H256 data");
-    hex::encode(archived)
+pub fn rkyv_deserialize_bytes32(data: &[u8]) -> Result<String, String> {
+    rkyv::check_archived_root::<[u8; 32]>(data)
+        .map(|archived| hex::encode(archived))
+        .map_err(|_| "Invalid rkyv H256 data".into())
 }
 
 /// Deserialize raw bytes (Vec<u8>) from rkyv bytes.
 #[wasm_bindgen]
-pub fn rkyv_deserialize_bytes(data: &[u8]) -> Vec<u8> {
-    let archived = rkyv::check_archived_root::<Vec<u8>>(data)
-        .expect("invalid rkyv Vec<u8> data");
-    archived.to_vec()
+pub fn rkyv_deserialize_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
+    rkyv::check_archived_root::<Vec<u8>>(data)
+        .map(|archived| archived.to_vec())
+        .map_err(|_| "Invalid rkyv Vec<u8> data".into())
 }
 
 // =============================================================================
@@ -225,5 +246,48 @@ mod hex {
             s.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
         }
         s
+    }
+}
+
+/// Preserve the JavaScript value until range validation; a native WASM u64
+/// parameter would already have wrapped negative or overflowing bigints.
+fn checked_u64(value: JsValue) -> Result<u64, String> {
+    u64::try_from(value).map_err(|_| "Expected a bigint in the u64 range".to_owned())
+}
+
+/// Native WASM u32 arguments coerce and truncate before entering Rust.
+fn checked_u32(value: JsValue) -> Result<u32, String> {
+    value
+        .as_f64()
+        .filter(|number| number.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(number))
+        .map(|number| number as u32)
+        .ok_or_else(|| "Expected an integer number in the u32 range".to_owned())
+}
+
+/// Validate addresses before encoding; truncation or padding changes identity.
+fn checked_bytes32(data: &[u8]) -> Result<[u8; 32], String> {
+    data.try_into()
+        .map_err(|_| "Expected exactly 32 bytes".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rkyv_string_decoder_handles_inline_and_allocated_strings() {
+        for value in ["", "wDUSK", "Wrapped Dusk", "Dusk 🌘"] {
+            let encoded = rkyv::to_bytes::<_, 256>(&value.to_owned()).unwrap();
+            assert_eq!(rkyv_deserialize_string(&encoded).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn decimals_use_the_one_byte_rkyv_representation() {
+        for value in [0u8, 9, 18, 255] {
+            let encoded = rkyv::to_bytes::<_, 256>(&value).unwrap();
+            assert_eq!(encoded.len(), 1);
+            assert_eq!(rkyv_deserialize_u8(&encoded).unwrap(), value);
+        }
     }
 }

@@ -415,3 +415,50 @@ dusk-tx dispatch --mailbox <hex> --test-recipient <hex> \
 `--metadata` may be omitted only when the selected ISM accepts empty metadata,
 such as the explicit local `TestMock` deployment. MessageIdMultisig processing
 requires checkpoint and signature metadata.
+
+### TypeScript SDK verification
+
+With Node.js/npm and `wasm-bindgen-cli` 0.2.108 (matching `Cargo.lock`) on
+`PATH`, run `make test-sdk` from the repository root. This builds the actual
+WASM bindings, checks that their generated declarations match the SDK, and
+runs binary RUES, address validation, and exact u64 amount regressions.
+
+Run `E2E_SDK_CHECK=true bash demo/e2e-agents.sh` after that build to exercise
+all SDK query methods against the completed live three-route deployment in
+both ISM modes. This checks short and long rkyv strings, one-byte decimals,
+message IDs and delivery heights, route wiring, and exact token supply.
+
+The SDK returns `bigint` for `totalSupply()` and `deliveredAt()`. The WASM
+JSON token decoder returns the amount as a decimal string; convert it with
+`BigInt` when doing arithmetic. Address encoders require exactly 32 bytes and
+reject shorter or longer inputs instead of changing the address silently.
+Numeric encoders reject negative, fractional, or out-of-range values before
+WASM conversion; u64 inputs must be `bigint`, and u8/u32 inputs must be integer
+JavaScript numbers.
+
+The RUES client bounds each request, including its response body, to 30 seconds
+by default. `new RuesClient(url, { timeoutMs, maxResponseBytes,
+maxErrorResponseBytes })` configures the deadline and the 4 MiB successful-query
+and 64 KiB error-body defaults. `contractQuery` and `propagateTx` accept a final
+`{ signal }` option for cancellation. A propagation timeout or cancellation leaves
+its outcome uncertain: reconcile the signed transaction before retrying it.
+
+Data-driver JSON uses decimal strings for all u64 fields, including nested gas
+configurations, event amounts and block heights. Use `BigInt(value)` when arithmetic
+is needed. Quote and withdrawal inputs accept decimal strings and legacy unsigned
+JSON integers; JavaScript callers should send strings or W3sper bigints so values
+are exact before serialization. `DomainGasConfig` SDK fields are `bigint`.
+
+
+The lifecycle helpers require Python 3. Teardown identifies Rusk by the exact
+state argument on Linux and macOS, and stops only recorded service PIDs or
+process groups. An occupied explorer port is refused before its configuration
+is changed. Only this run's recorded explorer configuration is restored or
+removed at shutdown; unrelated backups and external configuration are preserved.
+`make test-demo-lifecycle` exercises these rules with isolated
+fixture processes.
+
+RPC-outage scenarios default their fault endpoint to `http://127.0.0.1:0`,
+which cannot collide with a listening local service when ports are customized.
+`BAD_ANVIL_RPC` and `BAD_DUSK_RPC` overrides must point to an unreachable endpoint;
+an identical healthy/fault URL is rejected before deployment.
