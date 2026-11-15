@@ -442,12 +442,21 @@ runs binary RUES, address validation, and exact u64 amount regressions.
 Run `E2E_SDK_CHECK=true bash demo/e2e-agents.sh` after that build to exercise
 all SDK query methods against the completed live three-route deployment in
 both ISM modes. This checks short and long rkyv strings, one-byte decimals,
-message IDs and delivery heights, route wiring, and exact token supply.
+dispatched message IDs and the `delivered` check, the dispatch quote, route
+wiring, and exact token supply.
 
-The SDK returns `bigint` for `totalSupply()` and `deliveredAt()`. The WASM
-JSON token decoder returns the amount as a decimal string; convert it with
-`BigInt` when doing arithmetic. Address encoders require exactly 32 bytes and
-reject shorter or longer inputs instead of changing the address silently.
+The Mailbox stores no delivery heights and no list of deliveries, so the SDK
+has no query for them. To find when a message was delivered, index the
+Mailbox's `process_id` events (`ProcessId { message_id }`) from finalized
+blocks, skipping any the receipt flags as reverted: the event's block is the
+delivery height. `delivered(id)` checks a single message
+([docs/storage.md](../docs/storage.md#mailbox)).
+
+The SDK returns `bigint` for `totalSupply()` and `quoteDispatchForSender()`.
+The WASM JSON token decoder returns the amount as a decimal string; convert
+it with `BigInt` when doing arithmetic. Address encoders require exactly 32
+bytes and reject shorter or longer inputs instead of changing the address
+silently.
 Numeric encoders reject negative, fractional, or out-of-range values before
 WASM conversion; u64 inputs must be `bigint`, and u8/u32 inputs must be integer
 JavaScript numbers.

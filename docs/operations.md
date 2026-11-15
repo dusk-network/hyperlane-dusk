@@ -116,9 +116,11 @@ they only act on finalized events and reconcile their own transactions.
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request: workflow lint,
-whitespace, shell syntax, the demo lifecycle tests and the secret-hygiene scan.
-It can't build the contracts, because they depend on the private Rusk
-repository.
+whitespace, shell syntax, the demo lifecycle tests, the deploy script tests
+(`make test-deploy-scripts`: `deploy/testnet.sh` and
+`demo/gen-agent-configs.sh` against a stubbed `dusk-tx`) and the
+secret-hygiene scan. It can't build the contracts, because they depend on
+the private Rusk repository.
 
 `.github/workflows/manual-repro-check.yml` runs the full build and test suite
 (`make repro-check-agent`) on demand against exact commits of this repository,
