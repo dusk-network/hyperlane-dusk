@@ -23,6 +23,9 @@ export interface RuesRequestOptions {
  * Every request has a deadline and bounded response buffering. Aborting or
  * timing out transaction propagation does not prove it was not accepted;
  * callers must reconcile their signed transaction before retrying.
+ *
+ * Errors never quote the URL, whose path or query may carry an access token.
+ * A URL with a username or password is refused.
  */
 export class RuesClient {
   private readonly baseUrl: URL;
@@ -30,7 +33,16 @@ export class RuesClient {
 
   constructor(url: string, options: RuesClientOptions = {}) {
     const browserBase = globalThis.document?.baseURI ?? globalThis.location?.href;
-    this.baseUrl = new URL(url, browserBase);
+    try {
+      this.baseUrl = new URL(url, browserBase);
+    } catch {
+      // The parser's error keeps the whole input, credentials included.
+      throw new RuesError("Invalid RUES URL");
+    }
+    if (this.baseUrl.username !== "" || this.baseUrl.password !== "") {
+      // fetch() would reject it with an error that quotes the whole URL.
+      throw new RuesError("RUES URL must not contain a username or password");
+    }
     if (!["http:", "https:"].includes(this.baseUrl.protocol)) {
       throw new Error("RUES URL must use HTTP or HTTPS");
     }
@@ -128,12 +140,16 @@ export class RuesClient {
         : this.options.maxErrorResponseBytes;
       const body = await readBoundedBody(response, limit);
       if (!response.ok) {
-        throw new Error(`${description} failed (${response.status}): ${new TextDecoder().decode(body)}`);
+        throw new RuesError(`${description} failed (${response.status}): ${new TextDecoder().decode(body)}`);
       }
       return body;
     } catch (error) {
       if (controller.signal.aborted) throw controller.signal.reason;
-      throw error;
+      // fetch() and the body stream can quote the request URL, path and
+      // query included, in an error or its cause. Keep only a known code.
+      if (error instanceof RuesError) throw error;
+      const code = errorCode(error);
+      throw new RuesError(`${description} failed: network error${code ? ` (${code})` : ""}`);
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
@@ -141,8 +157,22 @@ export class RuesClient {
   }
 }
 
+/** An error this client raised itself, which names no part of the URL. */
+class RuesError extends Error {}
+
+/** The first error code such as ECONNREFUSED in an error's cause chain. */
+function errorCode(error: unknown): string | undefined {
+  let current = error;
+  for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth++) {
+    const { code, cause } = current as { code?: unknown; cause?: unknown };
+    if (typeof code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(code)) return code;
+    current = cause;
+  }
+  return undefined;
+}
+
 async function readBoundedBody(response: Response, limit: number): Promise<Uint8Array> {
-  const tooLarge = () => new Error(`RUES response exceeds ${limit} bytes`);
+  const tooLarge = () => new RuesError(`RUES response exceeds ${limit} bytes`);
   const declared = response.headers.get("Content-Length");
   if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) {
     await response.body?.cancel();

@@ -28,6 +28,7 @@
 
 ### Fixed
 
+- `RuesClient` refuses a URL with a username or password, which `fetch` would reject with an error quoting the whole URL. Its errors never include the URL: a URL that doesn't parse gives `Invalid RUES URL`, and a network failure gives `<request> failed: network error (<code>)`.
 - RUES routes preserve base-path prefixes and query parameters while omitting URL fragments ([#11]).
 
 - Mailbox views reject malformed dispatched messages and nonce/domain mismatches ([#11]).
