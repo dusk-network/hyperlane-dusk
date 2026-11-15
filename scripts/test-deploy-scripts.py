@@ -250,6 +250,12 @@ class TestnetDeployedIsmChecks(unittest.TestCase):
         self.queries[f"{MAILBOX}/default_ism"] = {"value": TEST_MOCK}
         self.assert_both_commands(False, "only counts when DUSK_RUES_URL and EVM_RPC are both",
                                   LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1)
+        # Local-looking userinfo in front of a remote host doesn't count.
+        for url in ["http://localhost:8080@node.invalid/", "http://127.0.0.1.node.invalid/"]:
+            with self.subTest(url=url):
+                self.assert_both_commands(False, "only counts when DUSK_RUES_URL and EVM_RPC are both",
+                                          LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1, DUSK_RUES_URL=url,
+                                          EVM_RPC="http://127.0.0.1:8545")
 
     def test_local_rehearsal_flag_allows_test_mock(self):
         self.queries[f"{MAILBOX}/default_ism"] = {"value": TEST_MOCK}

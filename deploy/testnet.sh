@@ -299,7 +299,9 @@ allows_test_mock_ism() {
     is_local_url "$DUSK_RUES_URL" && is_local_url "$EVM_RPC" \
         || fail "LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1 only counts when DUSK_RUES_URL and EVM_RPC are both http://localhost or http://127.0.0.1"
 }
-is_local_url() { [[ "$1" =~ ^http://(localhost|127\.0\.0\.1)[:/] ]]; }
+# The host, and an optional port, must be followed by the path or nothing, so
+# that userinfo such as http://localhost:8080@node.example/ doesn't count.
+is_local_url() { [[ "$1" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]+)?(/|$) ]]; }
 
 cmd_preflight() {
     for tool in jq cast forge curl python3; do
