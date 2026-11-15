@@ -290,10 +290,11 @@ Accepted:
   paid for it.
 - **Collateral routes need exact transfers.** WarpDrc20Collateral checks
   that every `transfer_from` and `transfer` moves exactly the amount asked
-  for. With a token that takes a fee on transfers, or rebases, every
-  transfer that pays a fee reverts, so only fee-free amounts can be bridged
-  and inbound transfers that would pay one stay undelivered. Don't deploy a
-  collateral route for such a token.
+  for. With a token that takes a fee on transfers, every transfer that pays
+  one reverts, so only amounts too small to pay a fee can be bridged, and an
+  inbound transfer that would pay one stays undelivered. A token whose
+  balances change by themselves, such as a rebasing token, fails the same
+  checks. Don't deploy a collateral route for either.
 - **Contracts can't bridge.** `transfer_remote` takes its DUSK and fees as the
   transaction's deposit, which only the transaction's target contract can
   claim. A smart wallet or router contract calling a warp route always
