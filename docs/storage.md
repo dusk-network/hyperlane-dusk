@@ -229,8 +229,8 @@ ValidatorAnnounce figure divides 4 GiB by the 110 bytes measured above.
 | Mailbox, deliveries to a recipient that is its own ISM | dispatch closed at 31M, about 991 DUSK; `process` failed at 33.5M, "capacity overflow" in the processed list, about 1,074 DUSK | dispatch closes at about 122M, about 4,300 DUSK; `process` fails at about 163M, the full 4 GiB, about 5,700 DUSK |
 | Mailbox, dispatches | 33.5M; "capacity overflow"; about 10,500 DUSK, and the 3 GiB limit never fired | about 100M, when dispatch closes at 3 GiB; about 15,500 DUSK of gas and, at the testnet protocol fee of 0.001 DUSK, 100,000 DUSK of fees |
 | MerkleTreeHook | 33.5M dispatches, with the Mailbox | 134M; the Mailbox closes dispatch first |
-| IGP | 16.8M payments; about 5,600 DUSK plus IGP fees | about 67M payments; about 12,100 DUSK plus IGP fees |
-| ValidatorAnnounce, new keys | 3.5M announcements of 1 KiB locations; about 1,257 DUSK | about 39M; about 17,400 DUSK |
+| IGP | 16.8M payments; about 5,600 DUSK plus IGP fees | about 67M payments; about 12,100 DUSK of gas plus, at the testnet fees, 67,000 DUSK of protocol fees and 1,700 DUSK of IGP fees |
+| ValidatorAnnounce, new keys | 3.5M announcements of 1 KiB locations; about 1,257 DUSK | about 39M; about 17,400 DUSK with 1 KiB locations, about 10,100 with 1-byte ones ([costs.md](costs.md#attack-costs)) |
 | WarpDrc20, new holders | 14.3M; about 227 DUSK | about 70M; about 4,000 DUSK, plus a token unit each |
 | WarpDrc20, approvals of new spenders | 14.3M; about 156 DUSK | about 70M; about 3,700 DUSK |
 | Warp route registry | 12.7M registrations; 23,500 to 46,900 DUSK | unchanged |
@@ -404,3 +404,7 @@ Each measurement prints a `cost|operation|metric|value` line. Set
 commit to measure those instead; the harness only makes calls both versions
 have. A run takes about 8 minutes, and longer for contracts that compute a
 root on every dispatch.
+
+[costs.md](costs.md) has the cost of every entry point, the budgets the
+tests hold them to, and the memory per entry of every path anyone can grow,
+from `tests/tests/cost_profile.rs`.

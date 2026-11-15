@@ -423,7 +423,9 @@ Testnet runs on trust choices and tooling that mainnet can't:
   needs a deliberately chosen set for both directions.
 - **Gas payments.** Price the Dusk IGP for the EVM destination, get Dusk
   pricing into the EVM side's hook, and turn on gas-payment enforcement in the
-  relayer.
+  relayer. As deployed, the relayer pays for every message in both
+  directions ([costs.md](costs.md#fee-coverage) has what each costs and the
+  settings that would charge it).
 - **Storage.** Anyone can add to most contracts' storage for good, paying
   gas and, for messages, fees. [storage.md](storage.md#ceilings) lists what
   filling each contract costs: about 3,700 DUSK for a WarpDrc20's

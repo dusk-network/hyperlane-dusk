@@ -77,7 +77,8 @@ implemented. The agents return an explicit error if a deployment points at one.
   store only what they check: message IDs, not messages; 16 bytes of each
   delivered message's ID; hashes of validator locations. Agents read the
   rest from finalized events. [docs/storage.md](docs/storage.md) has the
-  layouts, what filling each contract costs, and what agents read.
+  layouts, what filling each contract costs, and what agents read;
+  [docs/costs.md](docs/costs.md) what every call costs.
 - **Finality.** Agents only index finalized events, and validators only
   checkpoint finalized Merkle state.
 
@@ -99,7 +100,7 @@ data-driver/     Data driver that lets the Dusk explorer decode these contracts
 demo/            Local bridge environment, deploy scripts and E2E/fault tests
 e2e/             Rust E2E test against a running node
 scripts/         Build and check helpers
-docs/            Security notes, storage design and operations guide
+docs/            Security notes, storage design, costs and operations guide
 ```
 
 ## Building
