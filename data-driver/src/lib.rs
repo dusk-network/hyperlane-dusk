@@ -127,6 +127,42 @@ fn encode_account_input(json: &str) -> Result<Vec<u8>, Error> {
         .map_err(|error| Error::Rkyv(format!("cannot serialize account input: {error}")))
 }
 
+#[derive(Deserialize)]
+struct PayForGasInputJson {
+    message_id: MessageId,
+    destination: u32,
+    #[serde(deserialize_with = "deserialize_u64")]
+    gas_amount: u64,
+    #[serde(deserialize_with = "deserialize_u64")]
+    deposit: u64,
+}
+
+/// The IGP's `pay_for_gas(message_id, destination, gas_amount, deposit)`,
+/// from an object that names them. `deposit` must be the transaction's
+/// deposit.
+fn encode_pay_for_gas_input(json: &str) -> Result<Vec<u8>, Error> {
+    let input: PayForGasInputJson = serde_json::from_str(json)?;
+    rkyv::to_bytes::<_, 1024>(&(
+        input.message_id,
+        input.destination,
+        input.gas_amount,
+        input.deposit,
+    ))
+    .map(|bytes| bytes.to_vec())
+    .map_err(|error| Error::Rkyv(format!("cannot serialize pay_for_gas input: {error}")))
+}
+
+fn decode_pay_for_gas_input(rkyv: &[u8]) -> Result<JsonValue, Error> {
+    let (message_id, destination, gas_amount, deposit): (MessageId, u32, u64, u64) =
+        from_rkyv(rkyv)?;
+    Ok(serde_json::json!({
+        "message_id": message_id.to_vec(),
+        "destination": destination,
+        "gas_amount": alloc::string::ToString::to_string(&gas_amount),
+        "deposit": alloc::string::ToString::to_string(&deposit),
+    }))
+}
+
 fn decode_account_input(rkyv: &[u8]) -> Result<JsonValue, Error> {
     let account: AccountPublicKey = from_rkyv(rkyv)?;
     Ok(serde_json::json!({ "account": account.to_bytes().to_vec() }))
@@ -187,7 +223,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
                     .or_else(|_| json_to_rkyv::<(Vec<u8>, Vec<u8>)>(json))
             }
             "quote_transfer_remote" => encode_quote_transfer_input(json),
-            "quote_gas_payment" => encode_quote_gas_input(json),
+            "quote_gas_payment" | "quote_pay_for_gas" => encode_quote_gas_input(json),
+            "pay_for_gas" => encode_pay_for_gas_input(json),
             "domain_gas_config" => json_to_rkyv::<(u32,)>(json),
             // Warp route queries
             "mailbox"
@@ -258,7 +295,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
                     .or_else(|_| rkyv_to_json::<(Vec<u8>, Vec<u8>)>(rkyv))
             }
             "quote_transfer_remote" => rkyv_to_json::<(u32, H256, u64)>(rkyv),
-            "quote_gas_payment" => rkyv_to_json::<(u32, u64)>(rkyv),
+            "quote_gas_payment" | "quote_pay_for_gas" => rkyv_to_json::<(u32, u64)>(rkyv),
+            "pay_for_gas" => decode_pay_for_gas_input(rkyv),
             "domain_gas_config" | "enrolled_router" => rkyv_to_json::<(u32,)>(rkyv),
             "is_registered" | "pending_balance" => rkyv_to_json::<(H256,)>(rkyv),
             "balance_of" => rkyv_to_json::<BalanceOf>(rkyv),
@@ -327,6 +365,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "quote_dispatch_for_contract"
             | "quote_dispatch_for_sender"
             | "quote_gas_payment"
+            | "quote_pay_for_gas"
             | "quote_transfer_remote" => rkyv_to_json_u64(rkyv),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
         }
@@ -818,6 +857,102 @@ mod tests {
         }
     }
 
+    /// The IGP's `pay_for_gas` takes `(message_id, destination, gas_amount,
+    /// deposit)`; the driver names them, takes the u64s as integers or
+    /// decimal strings, and gives them back as decimal strings.
+    #[test]
+    fn pay_for_gas_input_round_trips_through_the_driver() {
+        let driver = HyperlaneDataDriver;
+        let id = [0x5Au8; 32];
+        for value in [1u64, 42, 9_007_199_254_740_993, u64::MAX] {
+            let expected = serde_json::json!({
+                "message_id": id.as_slice(),
+                "destination": 11_155_111,
+                "gas_amount": value.to_string(),
+                "deposit": value.to_string(),
+            });
+            let mut numbers = expected.clone();
+            numbers["gas_amount"] = serde_json::json!(value);
+            numbers["deposit"] = serde_json::json!(value);
+            let encoded = driver
+                .encode_input_fn("pay_for_gas", &expected.to_string())
+                .expect("pay_for_gas input should encode");
+            assert_eq!(
+                encoded,
+                rkyv::to_bytes::<_, 1024>(&(id, 11_155_111u32, value, value))
+                    .unwrap()
+                    .to_vec()
+            );
+            assert_eq!(
+                driver
+                    .encode_input_fn("pay_for_gas", &numbers.to_string())
+                    .unwrap(),
+                encoded
+            );
+            let decoded = driver.decode_input_fn("pay_for_gas", &encoded).unwrap();
+            assert_eq!(decoded, expected);
+            assert_eq!(
+                driver
+                    .encode_input_fn("pay_for_gas", &decoded.to_string())
+                    .unwrap(),
+                encoded
+            );
+        }
+        let short_id = [1u8; 31];
+        let valid = serde_json::json!({
+            "message_id": id.as_slice(),
+            "destination": 1,
+            "gas_amount": "1",
+            "deposit": "1",
+        });
+        for (field, bad) in [
+            ("message_id", serde_json::json!(short_id.as_slice())),
+            ("destination", serde_json::json!(-1)),
+            ("gas_amount", serde_json::json!("-1")),
+            ("deposit", serde_json::json!(1.5)),
+            ("deposit", serde_json::json!(null)),
+        ] {
+            let mut input = valid.clone();
+            input[field] = bad;
+            assert!(
+                driver
+                    .encode_input_fn("pay_for_gas", &input.to_string())
+                    .is_err(),
+                "{input}"
+            );
+        }
+        let quote = rkyv::to_bytes::<_, 1024>(&u64::MAX).unwrap();
+        assert_eq!(
+            driver
+                .decode_output_fn("quote_pay_for_gas", &quote)
+                .unwrap(),
+            serde_json::json!(u64::MAX.to_string())
+        );
+
+        // The bytes the JavaScript bindings produce (ts-sdk/tests): rkyv lays
+        // the tuple out in rustc's field order, the gas amount before the
+        // destination, the same here as in the wasm32 contract.
+        let pinned = |args: &[u8]| -> alloc::string::String {
+            args.iter().map(|b| format!("{b:02x}")).collect()
+        };
+        let call = rkyv::to_bytes::<_, 1024>(&(
+            [0x11u8; 32],
+            0x0102_0304u32,
+            0x0a0b_0c0d_0e0f_1011u64,
+            0x2122_2324_2526_2728u64,
+        ))
+        .unwrap();
+        assert_eq!(
+            pinned(&call),
+            "11".repeat(32) + "11100f0e0d0c0b0a" + "0403020100000000" + "2827262524232221"
+        );
+        let quote = rkyv::to_bytes::<_, 1024>(&(0x0102_0304u32, 0x0a0b_0c0d_0e0f_1011u64)).unwrap();
+        assert_eq!(
+            pinned(&quote),
+            alloc::string::String::from("0403020100000000") + "11100f0e0d0c0b0a"
+        );
+    }
+
     #[test]
     fn quote_inputs_accept_decimal_strings_and_preserve_binary_round_trips() {
         for value in [0u64, 42, 9_007_199_254_740_993, u64::MAX] {
@@ -825,6 +960,12 @@ mod tests {
             for (name, number, decimal, index) in [
                 (
                     "quote_gas_payment",
+                    serde_json::json!([4242, value]),
+                    serde_json::json!([4242, value.to_string()]),
+                    1,
+                ),
+                (
+                    "quote_pay_for_gas",
                     serde_json::json!([4242, value]),
                     serde_json::json!([4242, value.to_string()]),
                     1,

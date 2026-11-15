@@ -193,6 +193,44 @@ pub fn rkyv_serialize_quote_dispatch_for_sender(
         .to_vec())
 }
 
+/// Serialize the arguments of the IGP's
+/// `pay_for_gas(message_id, destination, gas_amount, deposit)`. `deposit` is
+/// the most the payer pays and must be the deposit of the Moonlight
+/// transaction that makes the call: the IGP keeps its price when the
+/// transaction runs and sends the rest back to the signer.
+#[wasm_bindgen]
+pub fn rkyv_serialize_pay_for_gas(
+    message_id: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "number")] destination: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] gas_amount: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] deposit: JsValue,
+) -> Result<Vec<u8>, String> {
+    let args = (
+        checked_bytes32(message_id)?,
+        checked_u32(destination)?,
+        checked_u64(gas_amount)?,
+        checked_u64(deposit)?,
+    );
+    Ok(rkyv::to_bytes::<_, 256>(&args)
+        .expect("pay_for_gas arguments serialization should not fail")
+        .to_vec())
+}
+
+/// Serialize the arguments of the IGP's
+/// `quote_pay_for_gas(destination, gas_amount)`, what `pay_for_gas` charges.
+/// `quote_gas_payment(destination, gas_limit)`, a dispatch's quote, takes
+/// the same.
+#[wasm_bindgen]
+pub fn rkyv_serialize_quote_pay_for_gas(
+    #[wasm_bindgen(unchecked_param_type = "number")] destination: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] gas_amount: JsValue,
+) -> Result<Vec<u8>, String> {
+    let args = (checked_u32(destination)?, checked_u64(gas_amount)?);
+    Ok(rkyv::to_bytes::<_, 256>(&args)
+        .expect("quote arguments serialization should not fail")
+        .to_vec())
+}
+
 /// Serialize an empty tuple () using rkyv (for no-argument queries).
 #[wasm_bindgen]
 pub fn rkyv_serialize_unit() -> Vec<u8> {

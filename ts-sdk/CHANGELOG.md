@@ -5,6 +5,7 @@
 ### Added
 
 - `DuskMailbox.quoteDispatchForSender()` quotes the dispatch fee for an explicit sender as a read-only query, and the `rkyv_serialize_quote_dispatch_for_sender` binding encodes its arguments.
+- `DuskIgp` for the InterchainGasPaymaster (`state_version` 4): `quotePayForGas()` quotes a top-up, `payForGasCall()` encodes `pay_for_gas` with the deposit a wallet signs it with, and `quoteGasPayment()`, `gasPaymentCount()` and `stateVersion()` read the rest. The `rkyv_serialize_pay_for_gas` and `rkyv_serialize_quote_pay_for_gas` bindings encode the arguments.
 
 ### Removed
 

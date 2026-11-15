@@ -34,6 +34,19 @@ export interface DomainGasConfig {
   gasPrice: bigint;
 }
 
+/**
+ * A contract call for a wallet to sign as the target of a Moonlight
+ * transaction, with the transaction's deposit.
+ */
+export interface PayForGasCall {
+  contractId: Uint8Array;
+  fnName: "pay_for_gas";
+  /** The rkyv-serialized `(message_id, destination, gas_amount, deposit)`. */
+  args: Uint8Array;
+  /** The transaction's deposit, in LUX: the most the payer pays. */
+  deposit: bigint;
+}
+
 /** RUES contract query request. */
 export interface ContractQuery {
   contractId: Uint8Array;

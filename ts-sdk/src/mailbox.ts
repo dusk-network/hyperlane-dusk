@@ -186,6 +186,16 @@ export interface WasmBindings {
     metadata: Uint8Array,
     hook: Uint8Array
   ): Uint8Array;
+  rkyv_serialize_pay_for_gas(
+    messageId: Uint8Array,
+    destination: number,
+    gasAmount: bigint,
+    deposit: bigint
+  ): Uint8Array;
+  rkyv_serialize_quote_pay_for_gas(
+    destination: number,
+    gasAmount: bigint
+  ): Uint8Array;
   rkyv_deserialize_string(data: Uint8Array): string;
   rkyv_deserialize_u8(data: Uint8Array): number;
   rkyv_deserialize_u32(data: Uint8Array): number;
