@@ -136,6 +136,14 @@ bash deploy/testnet.sh evm-igp --apply      # owner transactions on Sepolia
 The dry runs print the pricing on chain and the new one, each with what a
 warp transfer pays under it, and send nothing. `preflight` and
 `agent-configs` stop while an IGP's pricing differs from the settings.
+
+`evm-igp` first checks that the Sepolia IGP reads Dusk's pricing from the
+StorageGasOracle `deploy` recorded, and stops before sending anything when it
+reads from another one: only the owner key can have changed that, so find
+out why first. `--apply` prices the recorded oracle and reads it back before
+it points the IGP at it, so the IGP never reads from an oracle without the
+settings' pricing; an oracle with no pricing for Dusk would quote delivery
+at zero.
 After changing `OPERATOR_MARGIN_BPS`, `EVM_IGP_GAS_OVERHEAD` or
 `DUSK_RELAYER_GAS_LIMIT`, run `agent-configs` again and restart the
 relayer: its requirements follow them.

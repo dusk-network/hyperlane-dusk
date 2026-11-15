@@ -752,12 +752,68 @@ evm_igp_pricing() {
     oracle="$(sed -n 1p <<<"$config")"
     data="0 0"
     if [ "$(lower "$oracle")" != "$ZERO_ADDRESS" ]; then
-        data="$(evm_call "$oracle" "remoteGasData(uint32)(uint128,uint128)" "$DUSK_DOMAIN" | awk '{print $1}' | paste -sd' ')" \
-            || fail "Can't read the gas oracle $oracle's data for domain $DUSK_DOMAIN"
+        data="$(evm_oracle_data "$oracle")" || exit 1
     fi
     jq -cn --arg oracle "$oracle" --arg overhead "$(sed -n 2p <<<"$config" | awk '{print $1}')" \
         --arg data "$data" '($data | split(" ")) as $d | {
           oracle: $oracle, gas_overhead: $overhead, token_exchange_rate: $d[0], gas_price: $d[1]}'
+}
+
+# A gas oracle's token exchange rate and gas price for Dusk, as "RATE PRICE".
+evm_oracle_data() {
+    local data
+    data="$(evm_call "$1" "remoteGasData(uint32)(uint128,uint128)" "$DUSK_DOMAIN" | awk '{print $1}' | paste -sd' ')" \
+        && [[ "$data" =~ ^[0-9]+\ [0-9]+$ ]] \
+        || { echo "[FAIL] Can't read the gas oracle $1's data for domain $DUSK_DOMAIN" >&2; return 1; }
+    printf '%s' "$data"
+}
+
+# The EVM IGP reads Dusk's pricing from the StorageGasOracle the state
+# records, or, until deploy points it there, from none. Any other oracle got
+# there through the owner key, and nothing here changes the IGP until that is
+# looked at: pricing the recorded oracle and pointing the IGP back at it
+# would replace whatever pricing is live with one nobody has checked.
+check_evm_igp_oracle() {
+    local active oracle
+    active="$(lower "$(jq -r .oracle <<<"$1")")" oracle="$(state_get '.evm.storage_gas_oracle')"
+    [ "$active" = "$ZERO_ADDRESS" ] || [ "$active" = "$(lower "$oracle")" ] \
+        || fail "The EVM IGP $(state_get '.evm.igp') reads domain $DUSK_DOMAIN's pricing from $active, not the StorageGasOracle $oracle recorded in $STATE. Nothing was sent: find out who changed it, then point it back with setDestinationGasConfigs, or record that oracle in $STATE."
+}
+
+# Price the StorageGasOracle the state records for Dusk, then point the EVM
+# IGP at it with the settings' overhead, in that order: the IGP only ever
+# reads from an oracle that has just been read back with the settings'
+# pricing. An oracle without pricing for Dusk prices it at zero, and the
+# relayer would deliver every message to Dusk for nothing. In `deploy` mode
+# only what isn't set yet is set: a pricing already on chain stays, and
+# preflight reports how it differs; `apply` sets everything the settings say.
+configure_evm_igp_pricing() {
+    local mode="$1" deployer igp oracle current active data wanted overhead
+    deployer="$(evm_deployer)"
+    igp="$(state_get '.evm.igp')" oracle="$(state_get '.evm.storage_gas_oracle')"
+    current="$(evm_igp_pricing)" || exit 1
+    check_evm_igp_oracle "$current"
+    [ "$(lower "$(evm_call "$oracle" "owner()(address)")")" = "$(lower "$deployer")" ] \
+        || fail "The StorageGasOracle $oracle isn't owned by the EVM deployer $deployer"
+    wanted="$(fee .evm_igp.token_exchange_rate) $(fee .evm_igp.gas_price)"
+    overhead="$(fee .evm_igp.gas_overhead)"
+    active="$(lower "$(jq -r .oracle <<<"$current")")"
+    data="$(evm_oracle_data "$oracle")" || exit 1
+    # Until the IGP reads from the oracle, nothing quotes from it.
+    if [ "$data" != "$wanted" ] && { [ "$mode" = apply ] || [ "$data" = "0 0" ] || [ "$active" = "$ZERO_ADDRESS" ]; }; then
+        info "Pricing domain $DUSK_DOMAIN in the StorageGasOracle $oracle..."
+        evm_send "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])" "[($DUSK_DOMAIN,${wanted/ /,})]"
+        data="$(evm_oracle_data "$oracle")" || exit 1
+        [ "$data" = "$wanted" ] \
+            || fail "The StorageGasOracle $oracle prices domain $DUSK_DOMAIN at $data after the update, not $wanted"
+    fi
+    if [ "$active" = "$ZERO_ADDRESS" ] \
+        || { [ "$mode" = apply ] && [ "$(jq -r .gas_overhead <<<"$current")" != "$overhead" ]; }; then
+        [ "$data" = "$wanted" ] \
+            || fail "Not pointing the EVM IGP $igp at the StorageGasOracle $oracle, which prices domain $DUSK_DOMAIN at $data, not the settings' $wanted. Price it with: bash deploy/testnet.sh evm-igp --apply"
+        info "Pointing the EVM IGP at the oracle for domain $DUSK_DOMAIN, with a gas overhead of $overhead..."
+        evm_send "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])" "[($DUSK_DOMAIN,($oracle,$overhead))]"
+    fi
 }
 
 # The Dusk IGP must charge what the settings say: agent-configs sets the
@@ -956,7 +1012,7 @@ forget_hyperlane_igp() {
 # payments. A configuration already on chain is left as it is: preflight
 # stops when it differs from the settings, and evm-igp --apply changes it.
 deploy_evm_igp() {
-    local deployer beneficiary oracle igp owner current wanted init
+    local deployer beneficiary oracle igp owner init
     deployer="$(evm_deployer)"
     beneficiary="${EVM_IGP_BENEFICIARY:-$deployer}"
     forget_hyperlane_igp
@@ -992,17 +1048,7 @@ deploy_evm_igp() {
     beneficiary="$(evm_call "$igp" "beneficiary()(address)")" || fail "Can't read the EVM IGP's beneficiary"
     state_set --arg b "$beneficiary" '.evm.igp_beneficiary = $b'
 
-    current="$(evm_igp_pricing)" || exit 1
-    if [ "$(jq '.token_exchange_rate == "0" and .gas_price == "0"' <<<"$current")" = true ]; then
-        info "Pricing domain $DUSK_DOMAIN in the StorageGasOracle..."
-        evm_send "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])" \
-            "[($DUSK_DOMAIN,$(fee .evm_igp.token_exchange_rate),$(fee .evm_igp.gas_price))]"
-    fi
-    if [ "$(lower "$(jq -r .oracle <<<"$current")")" = "$ZERO_ADDRESS" ]; then
-        info "Pointing the EVM IGP at the oracle for domain $DUSK_DOMAIN, with a gas overhead of $(fee .evm_igp.gas_overhead)..."
-        evm_send "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])" \
-            "[($DUSK_DOMAIN,($oracle,$(fee .evm_igp.gas_overhead)))]"
-    fi
+    configure_evm_igp_pricing deploy
     check_evm_igp_pricing
     ok "EVM IGP $igp (owner $deployer, beneficiary $beneficiary)"
 }
@@ -1234,6 +1280,7 @@ cmd_evm_igp() {
     [ -n "$igp" ] && [ -n "$oracle" ] || fail "No EVM IGP recorded in $STATE; run deploy first"
     check_evm_creations
     current="$(evm_igp_pricing)" || exit 1
+    check_evm_igp_oracle "$current"
     chain_quote="none"
     if [ "$(jq '.gas_price != "0" and .token_exchange_rate != "0"' <<<"$current")" = true ] \
         && [ "$(lower "$(jq -r .oracle <<<"$current")")" != "$ZERO_ADDRESS" ]; then
@@ -1259,16 +1306,7 @@ cmd_evm_igp() {
         return
     fi
     require EVM_DEPLOYER_KEY
-    if [ "$(jq -r '"\(.token_exchange_rate) \(.gas_price)"' <<<"$current")" \
-        != "$(fee '"\(.evm_igp.token_exchange_rate) \(.evm_igp.gas_price)"')" ]; then
-        evm_send "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])" \
-            "[($DUSK_DOMAIN,$(fee .evm_igp.token_exchange_rate),$(fee .evm_igp.gas_price))]"
-    fi
-    if [ "$(jq -r .gas_overhead <<<"$current")" != "$(fee .evm_igp.gas_overhead)" ] \
-        || [ "$(lower "$(jq -r .oracle <<<"$current")")" != "$(lower "$oracle")" ]; then
-        evm_send "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])" \
-            "[($DUSK_DOMAIN,($oracle,$(fee .evm_igp.gas_overhead)))]"
-    fi
+    configure_evm_igp_pricing apply
     check_evm_igp_pricing
     token="$(state_get '.evm.token')"
     if [ -n "$token" ]; then

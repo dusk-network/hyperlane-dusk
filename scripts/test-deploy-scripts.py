@@ -1175,6 +1175,36 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)],
                          [self.oracle, 2390000])
 
+    def test_evm_igp_never_points_the_igp_at_an_unpriced_oracle(self):
+        # The IGP reads from oracle B, priced as the settings say, but the
+        # state records oracle A, which prices nothing. Before, --apply saw
+        # B's pricing match and left A as it was, pointed the IGP at A and
+        # only then failed: the IGP quoted delivery to Dusk at zero.
+        other = "0x" + "67" * 20
+        contracts = self.evm["contracts"]
+        contracts[other] = {"type": "oracle", "owner": DEPLOYER, "data": dict(contracts[self.oracle]["data"])}
+        contracts[self.oracle]["data"] = {}
+        contracts[self.evm_igp]["configs"][str(DUSK_DOMAIN)][0] = other
+        for command in (["evm-igp"], ["evm-igp", "--apply"]):
+            with self.subTest(command=command):
+                self.assert_fails(self.run_script(*command), f"reads domain {DUSK_DOMAIN}'s pricing from {other}, "
+                                                             f"not the StorageGasOracle {self.oracle}")
+                self.assertEqual(self.traced("cast send"), [])
+                self.assertEqual(self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)][0], other)
+
+    def test_evm_igp_apply_prices_the_oracle_before_the_igp_reads_from_it(self):
+        # The IGP reads from no oracle yet, and the recorded one has an old
+        # pricing.
+        self.evm["contracts"][self.evm_igp]["configs"] = {}
+        self.evm["contracts"][self.oracle]["data"] = {str(DUSK_DOMAIN): [1, 1]}
+        self.assert_ok(self.run_script("evm-igp", "--apply"))
+        sent = self.traced("cast send")
+        self.assertEqual([line.split()[3].split("(")[0] for line in sent],
+                         ["setRemoteGasDataConfigs", "setDestinationGasConfigs"])
+        self.assertEqual(sent[0].split()[2], self.oracle)
+        self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], [600000000000000, 1])
+        self.assertEqual(self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)], [self.oracle, 2170000])
+
     def test_claim_collects_both_chains(self):
         self.queries[f"{IGP}/claimable_fees"] = {"value": 6000000000}
         self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 1000000}
