@@ -182,6 +182,15 @@ Everything the contracts used before failed with the memory still mostly
 free, and nothing could recover it: the contracts can't be upgraded, so the
 Mailbox and its routes would have to be redeployed.
 
+## Third review
+
+A third internal review, of the operator tooling and the collateral route
+before the public testnet, found:
+
+| ID | Issue | Status |
+|---|---|---|
+| MEDIUM-12 | The LOW-10 check failed open. `deploy/testnet.sh` treated a `module_type` query that failed or returned nothing, and every module type but 5, TestMock's 6 (an ISM that accepts every message) included, as an ISM with no signatures to check, and fell back to `EVM_ORIGIN_THRESHOLD`. With the threshold raised to 20 on chain and that one query failing, `preflight` and `agent-configs` passed a 5M relayer gas limit; a 20-signature `process` needs 9.5M with the margin, so every delivery would have failed and paid the whole limit. The deployed validator set wasn't compared at all. | Fixed. Every query must succeed. The ISM the route uses, its own or else the Mailbox's default, must be a MessageIdMultisig ISM whose validators and threshold are exactly `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`, or `preflight`, `deploy` and `agent-configs` stop. A TestMock ISM passes only in a local rehearsal (`LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1` with local endpoints). `scripts/test-deploy-scripts.py` runs both commands against a stubbed `dusk-tx`. |
+
 ## Owner powers
 
 `dusk-tx deploy-hyperlane` makes the deployer key the owner, fee beneficiary

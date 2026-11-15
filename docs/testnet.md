@@ -78,11 +78,13 @@ Gas on Dusk:
   every route at threshold 6 in a transaction whose limit is 5M, and the
   costliest, a payout from a collateral route locking the upstream DRC20,
   takes 3.27M. `preflight` and `agent-configs` refuse a limit below 1.5
-  times the cost at `EVM_ORIGIN_THRESHOLD` or, once the contracts are
-  deployed, at the threshold of the ISM the route uses on chain, whichever
-  is higher. The owner can raise that threshold after deploying, so raise
-  the relayer's limit with it. Validators keep `DUSK_AGENT_GAS_LIMIT` (30M)
-  for their one-time announcement.
+  times the cost at `EVM_ORIGIN_THRESHOLD`. Once the contracts are
+  deployed, they also stop unless the ISM the route uses on chain has
+  exactly that threshold (see below), so the limit is checked against what
+  the chain enforces. The owner can raise the threshold after deploying;
+  then set `EVM_ORIGIN_THRESHOLD` to match and raise the relayer's limit
+  with it. Validators keep `DUSK_AGENT_GAS_LIMIT` (30M) for their one-time
+  announcement.
 - Withdrawing dispatch credit (`withdraw-dispatch`) takes about 59M gas,
   because the Mailbox decodes the recipient's public key, and `dusk-tx`
   gives it an 80M limit.
@@ -161,7 +163,14 @@ bash deploy/testnet.sh agent-configs
   a dispatch to the Dusk domain can be quoted;
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
-  chain, and its contracts are at this checkout's `state_version`s.
+  chain, and its contracts are at this checkout's `state_version`s;
+- the ISM the recorded route uses on chain, its own or else the Mailbox's
+  default, is a MessageIdMultisig ISM whose validators and threshold are
+  `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`. `deploy` checks it
+  again when it finishes, and `agent-configs` before it writes anything.
+  Any other module type stops them, a TestMock ISM (which accepts every
+  message) included, and so does a query that fails. If the owner changes
+  the validators or the threshold on chain, update both settings.
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
 skips steps already recorded there. If it stops halfway, fix the cause and run
@@ -318,6 +327,11 @@ The deploy takes about four minutes. Then run the commands from
 `31338`, the rehearsal's keys (`rusk-private/examples/consensus.keys`,
 password `password`) and Anvil account #0 as the EVM user. Transfers arrive
 in about 30 seconds.
+
+The rehearsal deploys a MessageIdMultisig ISM, as on testnet. A route or
+Mailbox pointed at TestMock instead is refused unless
+`LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1` is set, and `deploy/testnet.sh` only
+honours that when `DUSK_RUES_URL` and `EVM_RPC` are both local.
 
 In the rehearsal:
 

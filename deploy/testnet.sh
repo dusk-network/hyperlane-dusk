@@ -18,7 +18,9 @@
 #
 # State goes to deploy/out/<DEPLOY_NAME>/deployment.json. Re-running `deploy`
 # skips every step the state file records as done and re-checks it on chain.
-# See docs/testnet.md.
+# Once the Dusk contracts are deployed, every command checks that the ISM the
+# route uses on chain is a MessageIdMultisig ISM with EVM_ORIGIN_VALIDATORS and
+# EVM_ORIGIN_THRESHOLD. See docs/testnet.md.
 
 set -euo pipefail
 umask 077
@@ -49,9 +51,13 @@ CORE_STATE_VERSIONS="mailbox=5 merkle_tree_hook=2 igp=3 validator_announce=2"
 # register a recipient that claims its own escrow. WarpDrc20 7 keys balances
 # by account ID (docs/storage.md).
 ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=7 warp_drc20_collateral=5"
+# Module types the Dusk ISMs report (Hyperlane's IsmType).
+MESSAGE_ID_MULTISIG_ISM=5
+TEST_MOCK_ISM=6
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
+warn() { echo "[WARN] $*" >&2; }
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 
 require() {
@@ -83,6 +89,19 @@ dusk_chain_id() {
     [[ "$id" =~ ^[0-9]+$ ]] && printf '%s' "$id"
 }
 dusk_query() { "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" "$@"; }
+# The value a Dusk contract query returns, as a string (JSON for a list or
+# object). Stops the script if the query fails or returns nothing: a check
+# that can't read the chain must not pass. `fail` in a command substitution
+# only ends the substitution, so call it as `x="$(dusk_value ...)" || exit 1`.
+dusk_value() {
+    local label="$1" out value
+    shift
+    out="$(dusk_query "$@" 2>/dev/null)" \
+        || fail "Can't read $label: $(jq -r '.error // "the query failed"' <<<"$out" 2>/dev/null)"
+    value="$(jq -er '.value | select(. != null) | tostring' <<<"$out" 2>/dev/null)" \
+        || fail "Can't read $label: the query returned no value"
+    printf '%s' "$value"
+}
 dusk_tx() { DUSK_CONSENSUS_PASSWORD="$DUSK_CONSENSUS_PASSWORD" "$DUSK_TX" "$@"; }
 evm_call() { cast call "$@" --rpc-url "$EVM_RPC"; }
 evm_send() { cast send "$@" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" >/dev/null; }
@@ -189,54 +208,97 @@ preflight_keys() {
     n="$(tr ',' '\n' <<<"$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")" | grep -c .)"
     [ "$DUSK_ORIGIN_THRESHOLD" -ge 1 ] && [ "$DUSK_ORIGIN_THRESHOLD" -le "$n" ] \
         || fail "DUSK_ORIGIN_THRESHOLD must be between 1 and the $n Dusk-origin validators"
-    n="$(tr ',' '\n' <<<"$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")" | grep -c .)"
-    [ "$EVM_ORIGIN_THRESHOLD" -ge 1 ] && [ "$EVM_ORIGIN_THRESHOLD" -le "$n" ] \
+    check_evm_origin_policy
+}
+
+# The validators the Dusk side is meant to trust for EVM-origin messages.
+check_evm_origin_policy() {
+    require EVM_ORIGIN_VALIDATORS EVM_ORIGIN_THRESHOLD
+    local n
+    n="$(tr ',' '\n' <<<"$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")" | grep -c . || true)"
+    [[ "$EVM_ORIGIN_THRESHOLD" =~ ^[1-9][0-9]*$ ]] && [ "$EVM_ORIGIN_THRESHOLD" -le "$n" ] \
         || fail "EVM_ORIGIN_THRESHOLD must be between 1 and the $n EVM-origin validators"
-    check_relayer_gas_limit
 }
 
 # A relayed `process` costs about 1.95M gas plus 0.22M per signature the
 # Dusk ISM checks (test_relayed_process_fits_the_relayer_gas_limit). Below
 # that every delivery runs out of gas and pays the whole limit, which the
-# relayer's simulation can't catch, so insist on 1.5 times the cost. Once the
-# contracts are deployed, the threshold that counts is the one on chain, which
-# the owner can change after deploying: check the larger of the two.
+# relayer's simulation can't catch, so insist on 1.5 times the cost.
+# check_deployed_ism makes sure the deployed ISM's threshold is
+# EVM_ORIGIN_THRESHOLD; the larger of the two is checked all the same.
 check_relayer_gas_limit() {
-    local threshold="$EVM_ORIGIN_THRESHOLD" basis="EVM_ORIGIN_THRESHOLD" deployed need
-    deployed="$(deployed_ism_threshold)" || exit 1
-    if [ -n "$deployed" ] && [ "$deployed" -gt "$threshold" ]; then
-        threshold="$deployed" basis="the deployed ISM's threshold"
+    local threshold="$EVM_ORIGIN_THRESHOLD" basis="EVM_ORIGIN_THRESHOLD" need
+    if [ -n "$DEPLOYED_ISM_THRESHOLD" ] && [ "$DEPLOYED_ISM_THRESHOLD" -gt "$threshold" ]; then
+        threshold="$DEPLOYED_ISM_THRESHOLD" basis="the deployed ISM's threshold"
     fi
     need=$(((1950000 + 220000 * threshold) * 3 / 2))
     [ "$DUSK_RELAYER_GAS_LIMIT" -ge "$need" ] \
         || fail "DUSK_RELAYER_GAS_LIMIT is $DUSK_RELAYER_GAS_LIMIT; with $basis of $threshold it must be at least $need"
 }
 
-# The threshold of the ISM that checks messages to the deployed route: the
-# route's own ISM if it has one, otherwise the Mailbox's default. Prints
-# nothing before the Dusk contracts are deployed, or if that ISM isn't a
-# multisig ISM (module type 5) and so checks no signatures.
-deployed_ism_threshold() {
-    local route mailbox ism type threshold
+# Check the ISM that verifies messages to the deployed route: the route's
+# own ISM if it has one, otherwise the Mailbox's default. It must be a
+# MessageIdMultisig ISM whose validators and threshold are
+# EVM_ORIGIN_VALIDATORS and EVM_ORIGIN_THRESHOLD, so that the agent configs,
+# and the relayer's gas limit, are made for what the chain enforces. The owner
+# can change either on chain after deploying. A TestMock ISM accepts every
+# message; only a local rehearsal can allow it (allows_test_mock_ism). Every
+# query must succeed. Sets DEPLOYED_ISM_THRESHOLD. Before the Dusk contracts
+# are deployed there is nothing to check.
+DEPLOYED_ISM_THRESHOLD=""
+check_deployed_ism() {
+    local route mailbox ism which type policy validators threshold expected
+    DEPLOYED_ISM_THRESHOLD=""
     route="$(state_get '.dusk.warp_native')"
     mailbox="$(state_get '.dusk.mailbox')"
     [ -n "$route" ] && [ -n "$mailbox" ] || return 0
-    ism="$(dusk_query --contract "$route" --method interchain_security_module \
-        --return-type bytes32 2>/dev/null | jq -r '.value // empty')" || true
+    check_evm_origin_policy
+    ism="$(dusk_value "the ISM of the Dusk route $route recorded in $STATE (if the network was reset, move $OUT_DIR aside and deploy again)" \
+        --contract "$route" --method interchain_security_module --return-type bytes32)" || exit 1
+    which="its own ISM"
     if [ "$ism" = "$ZERO_ID" ]; then
-        ism="$(dusk_query --contract "$mailbox" --method default_ism \
-            --return-type bytes32 2>/dev/null | jq -r '.value // empty')" || true
+        ism="$(dusk_value "the default ISM of the Dusk Mailbox $mailbox" \
+            --contract "$mailbox" --method default_ism --return-type bytes32)" || exit 1
+        which="the Mailbox's default ISM"
     fi
-    [ -n "$ism" ] && [ "$ism" != "$ZERO_ID" ] \
-        || fail "Can't read the ISM of the Dusk route $route recorded in $STATE. If the network was reset, move $OUT_DIR aside and deploy again."
-    type="$(dusk_query --contract "$ism" --method module_type --return-type u8 2>/dev/null \
-        | jq -r '.value // empty')" || true
-    [ "$type" = 5 ] || return 0
-    threshold="$(dusk_query --contract "$ism" --method threshold --return-type u8 2>/dev/null \
-        | jq -r '.value // empty')" || true
-    [[ "$threshold" =~ ^[0-9]+$ ]] || fail "Can't read the threshold of the Dusk multisig ISM $ism"
-    printf '%s' "$threshold"
+    [[ "$ism" =~ ^[0-9a-f]{64}$ ]] && [ "$ism" != "$ZERO_ID" ] \
+        || fail "The Dusk route uses $which, which is not set ('$ism')"
+    which="$which, $ism,"
+    type="$(dusk_value "the module type of the Dusk ISM $ism" \
+        --contract "$ism" --method module_type --return-type u8)" || exit 1
+    case "$type" in
+        "$MESSAGE_ID_MULTISIG_ISM") ;;
+        "$TEST_MOCK_ISM")
+            allows_test_mock_ism \
+                || fail "The Dusk route uses $which a TestMock ISM that accepts every message. Point it at a MessageIdMultisig ISM."
+            warn "The Dusk route uses $which a TestMock ISM that accepts every message. Allowed for this local rehearsal only."
+            return 0 ;;
+        *) fail "The Dusk route uses $which of module type $type; it must be a MessageIdMultisig ISM ($MESSAGE_ID_MULTISIG_ISM)" ;;
+    esac
+    policy="$(dusk_value "the validators and threshold of the Dusk ISM $ism" \
+        --contract "$ism" --method validators_and_threshold --return-type validators-and-threshold)" || exit 1
+    validators="$(jq -er '.validators | join(",")' <<<"$policy")" \
+        && threshold="$(jq -er '.threshold' <<<"$policy")" && [[ "$threshold" =~ ^[0-9]+$ ]] \
+        || fail "The Dusk ISM $ism returned a malformed validator set"
+    validators="$(sorted_addresses "$validators")"
+    expected="$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")"
+    [ "$validators" = "$expected" ] \
+        || fail "The Dusk route uses $which which trusts [$validators], but EVM_ORIGIN_VALIDATORS is [$expected]. Set EVM_ORIGIN_VALIDATORS to what the chain has, or change the ISM."
+    [ "$threshold" -eq "$EVM_ORIGIN_THRESHOLD" ] \
+        || fail "The Dusk route uses $which which needs $threshold signatures, but EVM_ORIGIN_THRESHOLD is $EVM_ORIGIN_THRESHOLD. Set EVM_ORIGIN_THRESHOLD, and a DUSK_RELAYER_GAS_LIMIT that covers it, to what the chain has, or change the ISM."
+    DEPLOYED_ISM_THRESHOLD="$threshold"
+    ok "The Dusk route uses $which a MessageIdMultisig ISM: $threshold of [$validators]"
 }
+
+# LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1 lets a local rehearsal's route use a
+# TestMock ISM. It counts only when both endpoints are local. The rehearsal
+# deploys a MessageIdMultisig ISM, so it doesn't need this by default.
+allows_test_mock_ism() {
+    [ "${LOCAL_REHEARSAL_ALLOW_TEST_MOCK:-0}" = 1 ] || return 1
+    is_local_url "$DUSK_RUES_URL" && is_local_url "$EVM_RPC" \
+        || fail "LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1 only counts when DUSK_RUES_URL and EVM_RPC are both http://localhost or http://127.0.0.1"
+}
+is_local_url() { [[ "$1" =~ ^http://(localhost|127\.0\.0\.1)[:/] ]]; }
 
 cmd_preflight() {
     for tool in jq cast forge curl python3; do
@@ -246,6 +308,8 @@ cmd_preflight() {
     preflight_evm
     preflight_keys
     check_state_matches_chain
+    check_deployed_ism
+    check_relayer_gas_limit
 }
 
 # ── Deploy steps ─────────────────────────────────────────────────────────────
@@ -402,6 +466,7 @@ cmd_deploy() {
     deploy_evm_ism
     deploy_evm_token
     enroll_routers
+    check_deployed_ism
     ok "Deployment complete: $STATE"
     info "Next: bash deploy/testnet.sh agent-configs"
 }
@@ -430,6 +495,7 @@ cmd_agent_configs() {
     [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
     check_state_versions
+    check_deployed_ism
     check_relayer_gas_limit
     local evm_chain token route
     token="$(state_get '.evm.token')"

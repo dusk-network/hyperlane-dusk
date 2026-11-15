@@ -174,6 +174,8 @@ help:
 	@echo "  test-sdk           Build the JS bindings and run the TypeScript SDK tests"
 	@echo "  test-demo-lifecycle"
 	@echo "                     Run the demo process-lifecycle tests (no network needed)"
+	@echo "  test-deploy-scripts"
+	@echo "                     Run the deploy-script tests against stubbed tools"
 	@echo "  secret-hygiene     Check source secret-handling guardrails"
 	@echo "  repro-check        Build and test everything in a clean layout"
 	@echo "  repro-check-agent  repro-check plus a cargo check of the Hyperlane agents"
@@ -195,3 +197,9 @@ test-sdk:
 .PHONY: test-demo-lifecycle
 test-demo-lifecycle:
 	python3 -B scripts/test-demo-lifecycle.py
+
+# deploy/testnet.sh against stubbed tools. Needs no network, chain or Rust
+# build.
+.PHONY: test-deploy-scripts
+test-deploy-scripts:
+	python3 -B scripts/test-deploy-scripts.py

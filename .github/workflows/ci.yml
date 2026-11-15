@@ -39,6 +39,9 @@ jobs:
       - name: Demo lifecycle tests
         run: python3 -B scripts/test-demo-lifecycle.py
 
+      - name: Deploy script tests
+        run: python3 -B scripts/test-deploy-scripts.py
+
       - name: Secret hygiene
         run: |
           set -euo pipefail
