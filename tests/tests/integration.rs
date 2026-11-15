@@ -2824,7 +2824,7 @@ fn test_igp_init() {
         .direct_call::<_, u32>(IGP_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 
     let total: u64 = session
         .direct_call::<_, u64>(IGP_ID, "total_gas_payments", &())

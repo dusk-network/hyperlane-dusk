@@ -40,6 +40,7 @@ mod igp {
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::metadata;
+    use hyperlane_dusk_types::storage::ChunkedLog;
     use hyperlane_dusk_types::DomainGasConfig;
     use hyperlane_dusk_types::GasPaymentRecord;
     use hyperlane_dusk_types::H256;
@@ -51,6 +52,8 @@ mod igp {
     const TOKEN_EXCHANGE_RATE_SCALE: u128 = 10_000_000_000;
     /// Maximum destination gas limit accepted by this u64-priced route.
     const MAX_GAS_LIMIT: u64 = 1_000_000_000;
+    /// Most records one `gas_payments` query returns.
+    const MAX_PAGE_SIZE: u32 = 256;
 
     /// InterchainGasPaymaster contract state.
     pub struct InterchainGasPaymaster {
@@ -64,8 +67,9 @@ mod igp {
         domain_gas_configs: BTreeMap<u32, DomainGasConfig>,
         /// Total gas payments recorded (accounting).
         total_gas_payments: u64,
-        /// Stored gas payment records (for off-chain indexing).
-        gas_payments: Vec<GasPaymentRecord>,
+        /// Gas payment records in payment order, for agents. A record takes
+        /// 64 bytes, 1024 to a chunk.
+        gas_payments: ChunkedLog<GasPaymentRecord>,
         /// Native DUSK collected and not yet claimed by the beneficiary.
         claimable_fees: u64,
         /// Payment prepared by Mailbox and awaiting its authenticated native
@@ -82,7 +86,7 @@ mod igp {
                 beneficiary: [0u8; 32],
                 domain_gas_configs: BTreeMap::new(),
                 total_gas_payments: 0,
-                gas_payments: Vec::new(),
+                gas_payments: ChunkedLog::new(),
                 claimable_fees: 0,
                 pending_payment: None,
             }
@@ -218,9 +222,12 @@ mod igp {
         }
 
         /// Returns the persisted state layout version expected by deployment tooling.
+        ///
+        /// Version 3 stores payment records in chunks; the queries are
+        /// unchanged.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            2
+            3
         }
 
         // =================================================================
@@ -291,28 +298,26 @@ mod igp {
 
         /// Returns the number of gas payment records stored.
         pub fn gas_payment_count(&self) -> u32 {
-            u32::try_from(self.gas_payments.len()).expect("IGP: gas payment count overflow")
+            self.gas_payments.len()
         }
 
         /// Returns the Nth gas payment record.
         ///
         /// Panics if the index is out of range.
         pub fn gas_payment_at(&self, index: u32) -> GasPaymentRecord {
-            self.gas_payments[index as usize]
+            self.gas_payments
+                .get(index)
+                .expect("IGP: gas payment index out of bounds")
         }
 
         /// Returns a bounded consecutive page of gas-payment records.
         pub fn gas_payments(&self, start: u32, limit: u32) -> Vec<GasPaymentRecord> {
-            const MAX_PAGE_SIZE: usize = 256;
-            let start = start as usize;
             assert!(
                 start <= self.gas_payments.len(),
                 "IGP: gas payment index out of bounds"
             );
-            let limit = usize::try_from(limit).expect("IGP: page size overflow");
             assert!(limit <= MAX_PAGE_SIZE, "IGP: page too large");
-            let end = start.saturating_add(limit).min(self.gas_payments.len());
-            self.gas_payments[start..end].to_vec()
+            self.gas_payments.page(start, limit)
         }
 
         /// Returns collected native DUSK not yet claimed by the beneficiary.
