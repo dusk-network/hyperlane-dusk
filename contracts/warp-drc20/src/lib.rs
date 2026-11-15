@@ -93,11 +93,11 @@ mod warp_drc20 {
         /// Registry of external accounts: keccak256(pk.to_bytes()) → pk.
         ///
         /// External Dusk accounts use 96-byte BLS public keys that don't
-        /// fit in a 32-byte H256. Users must call `register_account` once
-        /// so that inbound transfers can look up the full key and mint
-        /// to their External account; `claim_pending_for` also registers
-        /// the key it mints to. Every stored key is canonical (see
-        /// [`canonical_account`]).
+        /// fit in a 32-byte H256. An account is registered by
+        /// `register_account`, or when its escrow is claimed with
+        /// `claim_pending` or `claim_pending_for`, so that inbound transfers
+        /// can look up the full key and mint to its External account.
+        /// Every stored key is canonical (see [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Inbound synthetic balances waiting for an authenticated recipient.
         ///
@@ -196,13 +196,18 @@ mod warp_drc20 {
             self.registered_accounts.contains_key(&h)
         }
 
-        /// Claim pending synthetic tokens for the calling Moonlight account.
+        /// Register the transaction's sender and mint it the tokens escrowed
+        /// for its hash.
         ///
         /// The H256 recipient is derived from the authenticated public sender,
         /// so an arbitrary account cannot claim another recipient's balance.
+        /// The sender is already canonical (see [`Self::register_account`]).
+        /// Registering it means later transfers to it are minted directly,
+        /// as after [`Self::claim_pending_for`]. A call with nothing in
+        /// escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender().expect("WarpDrc20: claim_pending requires Moonlight TX");
-            let h = message::keccak256(&pk.to_bytes());
+            let h = self.register(pk);
             self.claim_pending_to(h, Account::moonlight(&pk));
         }
 
@@ -218,8 +223,7 @@ mod warp_drc20 {
         /// register a key nobody has sent tokens to.
         pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
             let account = canonical_account(&account);
-            self.register(account);
-            let h = message::keccak256(&account.to_bytes());
+            let h = self.register(account);
             self.claim_pending_to(h, Account::moonlight(&account));
         }
 
@@ -574,15 +578,17 @@ mod warp_drc20 {
         // Internal helpers
         // =================================================================
 
-        /// Map `keccak256(pk)` to `pk`. `pk` must be canonical: the
-        /// transaction's public sender, or a key from [`canonical_account`].
-        fn register(&mut self, pk: AccountPublicKey) {
+        /// Map `keccak256(pk)` to `pk` and return the hash. `pk` must be
+        /// canonical: the transaction's public sender, or a key from
+        /// [`canonical_account`].
+        fn register(&mut self, pk: AccountPublicKey) -> H256 {
             let h = message::keccak256(&pk.to_bytes());
             self.registered_accounts.insert(h, pk);
             abi::emit(
                 events::AccountRegistered::TOPIC,
                 events::AccountRegistered { account_hash: h },
             );
+            h
         }
 
         /// Query the route's current Mailbox credit.

@@ -7672,12 +7672,18 @@ fn test_forged_account_keys_share_the_recipient_hash() {
     assert!(unreduced_twin(&FRESH_PK).is_valid());
 }
 
-/// The three warp routes, each with custody for inbound transfers.
-#[derive(Clone, Copy)]
+/// The three warp routes, the collateral one over two tokens, each with
+/// custody for inbound transfers.
+#[derive(Clone, Copy, Debug)]
 enum Route {
     Native,
     Synthetic,
+    /// WarpDrc20Collateral locking a WarpDrc20 token.
     Collateral,
+    /// WarpDrc20Collateral locking the pinned upstream DRC20, the kind of
+    /// token a real collateral route locks. Its transfers cost more than
+    /// the WarpDrc20 token's.
+    CanonicalCollateral,
 }
 
 impl Route {
@@ -7685,7 +7691,7 @@ impl Route {
         match self {
             Route::Native => WARP_NATIVE_ID,
             Route::Synthetic => WARP_DRC20_ID,
-            Route::Collateral => WARP_DRC20_COLLATERAL_ID,
+            Route::Collateral | Route::CanonicalCollateral => WARP_DRC20_COLLATERAL_ID,
         }
     }
 
@@ -7694,7 +7700,7 @@ impl Route {
         match self {
             Route::Native => "WarpNative",
             Route::Synthetic => "WarpDrc20",
-            Route::Collateral => "WarpCollateral",
+            Route::Collateral | Route::CanonicalCollateral => "WarpCollateral",
         }
     }
 
@@ -7711,6 +7717,33 @@ impl Route {
                 assert!(custody <= 10_000_000, "the fixture locks 10M");
                 session_with_warp_collateral_funded_flow()
             }
+            Route::CanonicalCollateral => {
+                // The owner locks `custody` tokens and keeps as many, so a
+                // payout to it updates a balance, which costs more than
+                // creating one.
+                let (mut session, remote_router) =
+                    session_with_canonical_drc20_collateral(2 * custody);
+                session
+                    .call_public::<_, ()>(
+                        &OWNER_SK,
+                        WARP_DRC20_ID,
+                        "approve",
+                        &Drc20ApproveCall {
+                            spender: Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+                            amount: custody,
+                        },
+                    )
+                    .expect("the owner approves the route");
+                session
+                    .call_public::<_, MessageId>(
+                        &OWNER_SK,
+                        WARP_DRC20_COLLATERAL_ID,
+                        "transfer_remote",
+                        &(REMOTE_DOMAIN, [0xAB; 32], custody),
+                    )
+                    .expect("the route locks the owner's tokens");
+                (session, remote_router)
+            }
         }
     }
 
@@ -7721,6 +7754,9 @@ impl Route {
             Route::Native => moonlight_balance(session, pk),
             Route::Synthetic | Route::Collateral => {
                 warp_drc20_balance_of(session, Drc20Account::moonlight(pk))
+            }
+            Route::CanonicalCollateral => {
+                canonical_drc20_balance_of(session, Drc20Account::moonlight(pk))
             }
         }
     }
@@ -7891,6 +7927,104 @@ fn test_warp_drc20_forged_key_cannot_redirect_registered_account() {
 #[test]
 fn test_warp_collateral_forged_key_cannot_redirect_registered_account() {
     assert_forged_key_cannot_redirect_registered_account(Route::Collateral);
+}
+
+// =============================================================================
+// Self claims
+// =============================================================================
+
+/// `dusk-tx claim-pending`'s default gas limit when the signer claims its own
+/// escrow (`claim_pending`). A failed transaction pays its whole limit, so
+/// the limit stays near the cost of a claim.
+const SELF_CLAIM_GAS_LIMIT: u64 = 3_000_000;
+
+/// A recipient that claims its own escrow with `claim_pending` is registered,
+/// as one claimed for with `claim_pending_for` is, so its next transfer is
+/// paid out directly instead of waiting in escrow again. The claim succeeds
+/// with `dusk-tx claim-pending`'s default gas limit, and costs at most two
+/// thirds of it.
+fn assert_self_claim_registers_the_sender(route: Route) {
+    let amount = 300_000u64;
+    let (mut session, remote_router) = route.session(2 * amount);
+    route.deliver(&mut session, remote_router, 100, *OWNER_ID, amount);
+    assert!(!route_is_registered(&mut session, route.id(), *OWNER_ID));
+    let before = route.paid_to(&mut session, &OWNER_PK);
+
+    let claim = session
+        .call_public_with_gas_limit::<_, ()>(
+            &OWNER_SK,
+            route.id(),
+            "claim_pending",
+            &(),
+            SELF_CLAIM_GAS_LIMIT,
+        )
+        .unwrap_or_else(|e| panic!("{route:?}: a recipient claims its own escrow: {e}"));
+    assert!(
+        claim.gas_spent * 3 / 2 <= SELF_CLAIM_GAS_LIMIT,
+        "{route:?}: claim_pending took {} gas, too close to {SELF_CLAIM_GAS_LIMIT}",
+        claim.gas_spent
+    );
+    // A WarpNative claimer receives DUSK and pays its gas from the same
+    // balance, at 1 LUX.
+    let gas_paid = match route {
+        Route::Native => claim.gas_spent,
+        _ => 0,
+    };
+    assert_eq!(
+        route.paid_to(&mut session, &OWNER_PK) + gas_paid,
+        before + amount
+    );
+    assert_eq!(route.pending(&mut session, *OWNER_ID), 0);
+    assert!(route_is_registered(&mut session, route.id(), *OWNER_ID));
+
+    // The next transfer is paid out directly.
+    route.deliver(&mut session, remote_router, 101, *OWNER_ID, amount);
+    assert_eq!(
+        route.paid_to(&mut session, &OWNER_PK) + gas_paid,
+        before + 2 * amount
+    );
+    assert_eq!(route.pending(&mut session, *OWNER_ID), 0);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(route.id(), "pending_total", &())
+            .unwrap()
+            .data,
+        0
+    );
+}
+
+/// A self-claim with nothing in escrow for the sender reverts, and the
+/// revert takes the registration with it, so `claim_pending` can't register
+/// a key nobody sent anything to. Escrow for someone else stays.
+fn assert_self_claim_without_escrow_registers_nothing(route: Route) {
+    let amount = 300_000u64;
+    let (mut session, remote_router) = route.session(amount);
+    route.deliver(&mut session, remote_router, 100, *FRESH_ID, amount);
+
+    let claim = session.call_public::<_, ()>(&OWNER_SK, route.id(), "claim_pending", &());
+    assert_contract_panic(claim, &format!("{}: no pending transfers", route.name()));
+    assert!(!route_is_registered(&mut session, route.id(), *OWNER_ID));
+    assert_eq!(route.pending(&mut session, *FRESH_ID), amount);
+}
+
+#[test]
+fn test_warp_native_self_claim_registers_the_sender() {
+    assert_self_claim_registers_the_sender(Route::Native);
+    assert_self_claim_without_escrow_registers_nothing(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_self_claim_registers_the_sender() {
+    assert_self_claim_registers_the_sender(Route::Synthetic);
+    assert_self_claim_without_escrow_registers_nothing(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_self_claim_registers_the_sender() {
+    for route in [Route::Collateral, Route::CanonicalCollateral] {
+        assert_self_claim_registers_the_sender(route);
+        assert_self_claim_without_escrow_registers_nothing(route);
+    }
 }
 
 // =============================================================================

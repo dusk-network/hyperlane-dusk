@@ -73,14 +73,15 @@ mod warp_native {
         /// Registry of external accounts: keccak256(pk) → pk.
         ///
         /// External Dusk accounts use 96-byte BLS public keys that don't
-        /// fit in a 32-byte H256. Users must call `register_account` once
-        /// so that inbound transfers can look up the full key;
-        /// `claim_pending_for` also registers the key it pays. Every stored
-        /// key is canonical (see [`canonical_account`]).
+        /// fit in a 32-byte H256. An account is registered by
+        /// `register_account`, or when its escrow is claimed with
+        /// `claim_pending` or `claim_pending_for`, so that inbound transfers
+        /// can look up the full key. Every stored key is canonical (see
+        /// [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Pending transfers for recipients who haven't registered yet.
-        /// The recipient can call `claim_pending` after registering to
-        /// receive their DUSK.
+        /// `claim_pending` (the recipient) or `claim_pending_for` (anyone)
+        /// pays them out and registers the recipient.
         pending_transfers: BTreeMap<H256, u64>,
         /// Aggregate DUSK liability reserved for pending recipients.
         pending_total: u64,
@@ -160,13 +161,17 @@ mod warp_native {
             self.registered_accounts.contains_key(&h)
         }
 
-        /// Claim pending DUSK that arrived before the caller registered.
+        /// Register the transaction's sender and pay it the DUSK escrowed for
+        /// its hash.
         ///
-        /// The caller must have previously called `register_account`.
-        /// Transfers any escrowed DUSK to the caller's account.
+        /// The sender is already canonical (see [`Self::register_account`]).
+        /// Registering it means later transfers to it are paid out directly,
+        /// as after [`Self::claim_pending_for`]. A call with nothing in
+        /// escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender().expect("WarpNative: claim_pending requires Moonlight TX");
-            self.claim_pending_to(pk);
+            let h = self.register(pk);
+            self.claim_pending_to(h, pk);
         }
 
         /// Register `account` and pay it the DUSK escrowed for
@@ -181,14 +186,12 @@ mod warp_native {
         /// escrow, so this can't register a key nobody has sent DUSK to.
         pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
             let account = canonical_account(&account);
-            self.register(account);
-            self.claim_pending_to(account);
+            let h = self.register(account);
+            self.claim_pending_to(h, account);
         }
 
-        /// Pay the DUSK escrowed for `keccak256(pk)` to `pk`.
-        fn claim_pending_to(&mut self, pk: AccountPublicKey) {
-            let h = message::keccak256(&pk.to_bytes());
-
+        /// Pay the DUSK escrowed for `h`, the hash of `pk`, to `pk`.
+        fn claim_pending_to(&mut self, h: H256, pk: AccountPublicKey) {
             let amount = self.pending_transfers.remove(&h).unwrap_or(0);
             assert!(amount > 0, "WarpNative: no pending transfers");
             self.pending_total = self
@@ -396,8 +399,8 @@ mod warp_native {
                 let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
                     .expect("WarpNative: contract_to_account failed");
             } else {
-                // Recipient not registered — hold funds in escrow.
-                // They can call `claim_pending` after registering.
+                // Recipient not registered — hold funds in escrow until
+                // `claim_pending` or `claim_pending_for` pays them out.
                 let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
                 *pending = pending
                     .checked_add(msg.amount)
@@ -525,15 +528,17 @@ mod warp_native {
         // Internal helpers
         // =================================================================
 
-        /// Map `keccak256(pk)` to `pk`. `pk` must be canonical: the
-        /// transaction's public sender, or a key from [`canonical_account`].
-        fn register(&mut self, pk: AccountPublicKey) {
+        /// Map `keccak256(pk)` to `pk` and return the hash. `pk` must be
+        /// canonical: the transaction's public sender, or a key from
+        /// [`canonical_account`].
+        fn register(&mut self, pk: AccountPublicKey) -> H256 {
             let h = message::keccak256(&pk.to_bytes());
             self.registered_accounts.insert(h, pk);
             abi::emit(
                 events::AccountRegistered::TOPIC,
                 events::AccountRegistered { account_hash: h },
             );
+            h
         }
 
         /// Query the route's current Mailbox credit.
