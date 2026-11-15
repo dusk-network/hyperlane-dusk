@@ -9019,6 +9019,63 @@ fn test_delivered_set_keys_on_the_first_16_id_bytes() {
     assert!(!s.mailbox_delivered(other_prefix));
 }
 
+/// A read-only query has no caller, so `quote_dispatch`, which quotes for
+/// its caller, fails there. `quote_dispatch_for_sender` takes the sender
+/// instead, and quotes what `dispatch` then charges it, through the deployed
+/// hook set (MerkleTreeHook and ProtocolFee required, IGP by default).
+#[test]
+fn test_quote_dispatch_for_sender_works_without_a_signer() {
+    let mut session = session_with_hooks();
+    let sender = TEST_RECIPIENT_ID.to_bytes();
+    let recipient = [0xBBu8; 32];
+    let body = b"quoted without a signer".to_vec();
+    let no_hook = ContractId::from_bytes([0u8; 32]);
+
+    assert_contract_panic(
+        session.direct_call::<_, u64>(
+            MAILBOX_ID,
+            "quote_dispatch",
+            &(
+                REMOTE_DOMAIN,
+                recipient,
+                body.clone(),
+                Vec::<u8>::new(),
+                no_hook,
+            ),
+        ),
+        "Hyperlane: caller unavailable in query context",
+    );
+    let quote: u64 = query(
+        &mut session,
+        MAILBOX_ID,
+        "quote_dispatch_for_sender",
+        &(
+            sender,
+            REMOTE_DOMAIN,
+            recipient,
+            body.clone(),
+            Vec::<u8>::new(),
+            no_hook,
+        ),
+    );
+    assert!(
+        quote > 1000,
+        "the protocol fee and the IGP's quote: {quote}"
+    );
+
+    let credit_before: u64 = query(&mut session, MAILBOX_ID, "fee_credit", &(sender,));
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(MAILBOX_ID, REMOTE_DOMAIN, recipient, body),
+        )
+        .expect("dispatch should succeed");
+    let credit_after: u64 = query(&mut session, MAILBOX_ID, "fee_credit", &(sender,));
+    assert_eq!(credit_before - credit_after, quote);
+}
+
 /// LOW-7: the Mailbox decodes a withdrawal's recipient key. A payer who names
 /// a forged twin of the recipient's key, which has the recipient's
 /// compressed encoding but other raw limbs, pays the recipient's real

@@ -617,17 +617,22 @@ mod mailbox {
         /// Version 5 keeps only the first 16 bytes of delivered message IDs,
         /// drops the processed-message log (`processed_count`,
         /// `processed_at_index`, `processed_block_height_at_index`) and
-        /// `delivered_at`, and stores dispatched IDs in chunks and their
-        /// block heights once per block. Version 4 stored message IDs instead
-        /// of messages and bounded the recipient ISM lookup.
+        /// `delivered_at`, stores dispatched IDs in chunks and their block
+        /// heights once per block, pays withdrawals to the decoded recipient
+        /// key, and adds `quote_dispatch_for_sender`. Version 4 stored
+        /// message IDs instead of messages and bounded the recipient ISM
+        /// lookup.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
             5
         }
 
-        /// Compute a quote for dispatching a message.
+        /// Compute a quote for dispatching a message from the caller.
         ///
         /// Returns the total fee required (required_hook quote + hook quote).
+        /// The sender is resolved as `dispatch` resolves it, so this works
+        /// only inside a transaction; a read-only query has no caller. Use
+        /// [`Self::quote_dispatch_for_sender`] there.
         pub fn quote_dispatch(
             &self,
             destination: u32,
@@ -674,8 +679,15 @@ mod mailbox {
             )
         }
 
-        /// Compute a quote for a resolved sender.
-        fn quote_dispatch_for_sender(
+        /// Compute a dispatch quote for an explicit `sender`.
+        ///
+        /// Returns what [`Self::dispatch`] would charge `sender` for this
+        /// message right now: the required hook's quote plus the selected
+        /// hook's (zero selects the default hook). A read-only query can call
+        /// it, since it doesn't resolve a caller. Quotes depend on the
+        /// current nonce and hook configuration, which can change before a
+        /// dispatch.
+        pub fn quote_dispatch_for_sender(
             &self,
             sender: H256,
             destination: u32,
