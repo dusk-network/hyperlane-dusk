@@ -471,6 +471,7 @@ Anvil standing in for Sepolia:
 
 ```bash
 SKIP_OTTERSCAN=true SKIP_DUSK_EXPLORER=true bash demo/start-env.sh
+export DUSK_MULTICALL_WASM=/path/to/dusk_multicall.wasm   # optional, see below
 bash deploy/local-evm-core.sh            # Hyperlane core on Anvil; writes deploy/local.env
 TESTNET_ENV=deploy/local.env bash deploy/testnet.sh deploy
 TESTNET_ENV=deploy/local.env bash deploy/testnet.sh agent-configs
@@ -510,6 +511,15 @@ In the rehearsal:
   Dusk-origin validators (2 of 3), and #1 is the relayer's EVM key.
 - Checkpoints go to local directories under
   `deploy/out/local-rehearsal/agents/`, with logs and PID files.
+- The local genesis has no Multicall for Dusk. With `DUSK_MULTICALL_WASM`
+  set to its v0.1.0 Wasm (a dusk-multicall release asset, or `make wasm`
+  there; SHA-256 `65f77a27…`), `local-evm-core.sh` deploys it with
+  `dusk-tx deploy-wasm`, with deploy nonce 0 and the published owner, so it
+  lands at the ID it has on testnet. `deploy-wasm` checks the Wasm, nonce
+  and owner give that ID before it sends anything; the deploy takes about
+  6.9M gas. The agents then batch their contract reads through it, as on
+  testnet. Without it, `local.env` sets `DUSK_MULTICALL` empty and they make
+  single queries.
 - `local-agents.sh` starts each agent with only `PATH`, `HOME`,
   `DUSK_TX_BIN`, its config and its keys. Hyperlane applies every `HYP_*`
   variable over the config files, so one left in your shell would

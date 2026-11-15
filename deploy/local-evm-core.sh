@@ -28,6 +28,12 @@
 #   #2           stands in for Hyperlane's Sepolia validator (EVM origin)
 #   #3, #4, #5   Dusk-origin validators, threshold 2
 # Their private keys are Anvil's well-known development keys.
+#
+# With DUSK_MULTICALL_WASM set to Multicall for Dusk's v0.1.0 Wasm (a release
+# asset of dusk-multicall, or its `make wasm`), the local Rusk node gets the
+# multicall too, which its genesis lacks: deployed with nonce 0 and the
+# published owner, it lands at the ID it has on testnet and mainnet, and the
+# rehearsal's agents batch their contract reads through it as testnet's do.
 
 set -euo pipefail
 
@@ -37,6 +43,13 @@ source "$DUSK_DIR/demo/.env.bridge"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[OK]   $*" >&2; }
+warn() { echo "[WARN] $*" >&2; }
+
+# Multicall for Dusk v0.1.0: its Wasm's SHA-256, its published owner and
+# the ID they give with deploy nonce 0 on any chain.
+MULTICALL_SHA256=65f77a27c5bf6c7bf78797071dadca102ca3a67e5112c42af0242660e03693d9
+MULTICALL_OWNER=r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW
+MULTICALL_ID=93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4
 
 cast block-number --rpc-url "$ANVIL_RPC" >/dev/null 2>&1 || fail "Anvil is not running at $ANVIL_RPC (run demo/start-env.sh)"
 # The chain ID transactions are signed for. /on/node/info reports null on a
@@ -46,6 +59,22 @@ DUSK_CHAIN_ID="$(curl -sf -m 10 -X POST -H 'Content-Type: application/octet-stre
     | od -An -tu1 | tr -d ' \n')"
 [[ "$DUSK_CHAIN_ID" =~ ^[0-9]+$ ]] || fail "Rusk is not running at $DUSK_RUES_URL"
 EVM_CHAIN_ID="$(cast chain-id --rpc-url "$ANVIL_RPC")"
+
+DUSK_MULTICALL=""
+if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
+    [ "$(sha256sum "$DUSK_MULTICALL_WASM" 2>/dev/null | awk '{print $1}')" = "$MULTICALL_SHA256" ] \
+        || fail "DUSK_MULTICALL_WASM ($DUSK_MULTICALL_WASM) isn't Multicall for Dusk v0.1.0, whose Wasm has SHA-256 $MULTICALL_SHA256"
+    # dusk-tx checks the Wasm, nonce and owner give the published ID before
+    # it sends anything, and reports a multicall already there.
+    multicall="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-wasm --rues-url "$DUSK_RUES_URL" \
+        --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" --owner "$MULTICALL_OWNER" --deploy-nonce 0 \
+        --expected-id "$MULTICALL_ID" --expected-chain-id "$DUSK_CHAIN_ID")" \
+        || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' <<<"$multicall" 2>/dev/null)"
+    DUSK_MULTICALL="$MULTICALL_ID"
+    ok "Multicall for Dusk at $MULTICALL_ID: $(jq -r 'if .deployed then "deployed, \(.gas_spent) gas" else "already there" end' <<<"$multicall")"
+else
+    warn "DUSK_MULTICALL_WASM is not set: the local chain has no Multicall for Dusk, and the rehearsal's agents make single contract queries"
+fi
 
 deploy() {
     local contract="$1"; shift
@@ -105,5 +134,7 @@ DUSK_ORIGIN_THRESHOLD=2
 SOLIDITY_DIR=$SOLIDITY_DIR
 AGENT_STATE_DIR="\$DUSK_DIR/deploy/out/local-rehearsal/agents/state"
 DUSK_SIGNER_KEY_FILE="\$DUSK_DIR/deploy/out/local-rehearsal/agents/dusk-signer.key"
+# Multicall for Dusk on the local chain, or empty without one.
+DUSK_MULTICALL=$DUSK_MULTICALL
 EOF
 ok "Wrote deploy/local.env. Next: TESTNET_ENV=deploy/local.env bash deploy/testnet.sh deploy"

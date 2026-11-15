@@ -149,6 +149,11 @@ if args[0] == "deploy-hyperlane":
     set_pricing(contracts["igp"], opt("--igp-domain-config"))
     save()
     out({"success": True, "contracts": contracts})
+if args[0] == "deploy-wasm":
+    contract = opt("--expected-id")
+    queries[f"{contract}/version"] = {"value": 1}
+    save()
+    out({"success": True, "contract_id": contract, "deployed": True, "gas_spent": 6899157, "tx_id": "dd" * 32})
 if args[0] == "enroll-router":
     queries[f"{opt('--warp-contract')}/enrolled_router/{opt('--domain')}"] = {"value": opt("--router")}
     save()
@@ -1639,6 +1644,11 @@ class TestnetDeploy(TestnetScript):
                 self.assertEqual(self.traced("forge"), [])
 
 SOLIDITY_DIR = Path(os.environ.get("HYPERLANE_SOLIDITY_DIR", ROOT.parent / "hyperlane-monorepo" / "solidity"))
+# Multicall for Dusk's v0.1.0 Wasm, if one is at hand: the Anvil tests then
+# have deploy/local-evm-core.sh deploy it to the stubbed Dusk chain.
+MULTICALL_WASM = os.environ.get("HYPERLANE_MULTICALL_WASM", "")
+MULTICALL_OWNER = ("r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25"
+                   "HUFvCwQJm3Ud8q6KLW")
 # Anvil's development keys and accounts: #0 deploys, #2 stands in for
 # Hyperlane's Sepolia validator, #9 attacks.
 ANVIL_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -1740,7 +1750,8 @@ class AnvilEvmDeploy(unittest.TestCase):
         (cls.root / "demo" / ".env.bridge").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in {
             "ANVIL_RPC": cls.rpc, "DUSK_RUES_URL": "http://localhost:8080/", "SOLIDITY_DIR": SOLIDITY_DIR,
             "ANVIL_PRIVATE_KEY": ANVIL_KEY, "ANVIL_DEPLOYER": ANVIL_DEPLOYER,
-            "CONSENSUS_KEYS": keys, "CONSENSUS_PASSWORD": "fixture"}.items()))
+            "CONSENSUS_KEYS": keys, "CONSENSUS_PASSWORD": "fixture", "DUSK_TX": cls.bin / "dusk-tx",
+            "DUSK_MULTICALL_WASM": MULTICALL_WASM}.items()))
         cls.chain = cls.root / "chain.json"
         cls.trace = cls.root / "tools.trace"
         queries = dusk_queries()
@@ -1771,7 +1782,8 @@ class AnvilEvmDeploy(unittest.TestCase):
 
     @classmethod
     def deploy_core_and_route(cls):
-        cls.run_tool(str(cls.root / "deploy" / "local-evm-core.sh"), check=True)
+        cls.core_output = cls.run_tool(str(cls.root / "deploy" / "local-evm-core.sh"), check=True)
+        cls.core_trace = cls.trace.read_text()
         env_file = cls.root / "deploy" / "local.env"
         # Let a test deploy under another name, with the same chains.
         env_file.write_text(env_file.read_text()
@@ -1903,6 +1915,39 @@ class AnvilEvmDeploy(unittest.TestCase):
         result = self.run_tool(str(self.root / "deploy" / "testnet.sh"), "preflight", deploy_name="foreign-proxy")
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("wasn't initialized in the transaction that created it", result.stderr)
+
+    def test_the_local_chain_gets_the_multicall(self):
+        local_env = (self.root / "deploy" / "local.env").read_text()
+        deploys = [line for line in self.core_trace.splitlines() if line.startswith("dusk-tx deploy-wasm")]
+        configs = self.run_tool(str(self.root / "deploy" / "testnet.sh"), "agent-configs", check=True)
+        relayer = json.loads((self.root / "deploy" / "out" / "local-rehearsal" / "relayer.json").read_text())
+        if MULTICALL_WASM:
+            # At the ID it has on every chain: nonce 0 and the published owner.
+            [deploy] = deploys
+            for part in (f"--wasm {MULTICALL_WASM}", f"--owner {MULTICALL_OWNER}", "--deploy-nonce 0",
+                         f"--expected-id {MULTICALL}", "--expected-chain-id 2"):
+                self.assertIn(part, deploy)
+            self.assertIn(f"DUSK_MULTICALL={MULTICALL}\n", local_env)
+            self.assertEqual(relayer["chains"]["dusk"]["batchContractAddress"], "0x" + MULTICALL)
+        else:
+            self.assertEqual(deploys, [])
+            self.assertIn("DUSK_MULTICALL_WASM is not set", self.core_output.stderr)
+            self.assertIn("DUSK_MULTICALL=\n", local_env)
+            self.assertIn("DUSK_MULTICALL is empty", configs.stderr)
+            self.assertNotIn("batchContractAddress", relayer["chains"]["dusk"])
+
+    def test_another_multicall_wasm_is_refused(self):
+        wasm = self.root / "other.wasm"
+        wasm.write_bytes(b"\0asm\x01\0\0\0")
+        bridge = self.root / "demo" / ".env.bridge"
+        saved = bridge.read_text()
+        bridge.write_text(saved + f"DUSK_MULTICALL_WASM={wasm}\n")
+        try:
+            result = self.run_tool(str(self.root / "deploy" / "local-evm-core.sh"))
+        finally:
+            bridge.write_text(saved)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("isn't Multicall for Dusk v0.1.0", result.stderr)
 
     def test_a_quote_signer_is_refused(self):
         igp = self.state["evm"]["igp"]

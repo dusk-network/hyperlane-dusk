@@ -3,6 +3,7 @@
 //! Subcommands:
 //!   call               Call a contract method via Moonlight TX
 //!   deploy-hyperlane   Deploy the full Hyperlane contract stack
+//!   deploy-wasm        Deploy one contract, at the ID its Wasm, nonce and owner give
 //!   query              Query contract state via RUES
 //!   dispatch           Dispatch a message via TestRecipient proxy
 //!   process            Process an inbound message on the Mailbox
@@ -242,6 +243,54 @@ enum Command {
         /// Threshold (m-of-n) for `messageIdMultisig`.
         #[arg(long, default_value = "0")]
         multisig_threshold: u8,
+    },
+    /// Deploy one contract from its Wasm, with a deploy nonce and an owner
+    /// that need not be the signer. A contract ID is BLAKE2b-256 of the
+    /// Wasm, the nonce (8 bytes, little-endian) and the owner's key, and of
+    /// nothing else, so the same three give the same ID on any chain. The ID
+    /// is computed, and checked against --expected-id, before anything is
+    /// sent; a contract already at that ID is reported, not deployed again.
+    DeployWasm {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// The contract's Wasm.
+        #[arg(long)]
+        wasm: PathBuf,
+        /// The owner: a base58 Moonlight address or a 96-byte public key in
+        /// hex. Defaults to the signer.
+        #[arg(long)]
+        owner: Option<String>,
+        /// The deploy nonce, part of the contract ID.
+        #[arg(long, default_value = "0")]
+        deploy_nonce: u64,
+        /// The contract ID the Wasm, nonce and owner must give (64 hex
+        /// chars). Nothing is sent if they give another.
+        #[arg(long)]
+        expected_id: Option<String>,
+        /// Expected native Dusk chain ID, checked before the signer is read.
+        #[arg(long)]
+        expected_chain_id: Option<u8>,
+        /// Gas limit. Defaults to the bytecode charge, 100 gas per Wasm
+        /// byte, plus 10M.
+        #[arg(long)]
+        gas_limit: Option<u64>,
+        /// Gas price in LUX per unit of gas. Deploys must pay at least the
+        /// network's minimum deployment gas price (2000 on testnet and mainnet).
+        #[arg(long, default_value = "2000")]
+        gas_price: u64,
     },
     /// Query contract state via RUES (read-only, no transaction).
     Query {
@@ -942,6 +991,36 @@ async fn main() {
                 &igp_domain_configs,
                 &multisig_validators,
                 multisig_threshold,
+            )
+            .await
+        }
+        Command::DeployWasm {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            wasm,
+            owner,
+            deploy_nonce,
+            expected_id,
+            expected_chain_id,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_deploy_wasm(
+                &rues_url,
+                keys,
+                password.as_deref().unwrap_or_default(),
+                secret_key,
+                secret_key_stdin,
+                &wasm,
+                owner.as_deref(),
+                deploy_nonce,
+                expected_id.as_deref(),
+                expected_chain_id,
+                gas_limit,
+                gas_price,
             )
             .await
         }
@@ -2512,6 +2591,79 @@ mod tests {
                 "{command} asked for nothing but the chain ID"
             );
         }
+    }
+
+    /// `deploy-wasm` computes the contract ID as Rusk does, from the Wasm,
+    /// the deploy nonce and the owner, which need not be the signer; with
+    /// the owner given it checks the ID against `--expected-id` before it
+    /// asks the node anything, and reports a contract already there without
+    /// reading a key.
+    #[tokio::test]
+    async fn deploy_wasm_checks_the_contract_id_before_anything_is_sent() {
+        // Multicall for Dusk's published owner.
+        const OWNER: &str = "r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW";
+        // BLAKE2b-256(Wasm, nonce as 8 bytes LE, owner key), worked out
+        // independently for nonces 0 and 7.
+        const ID_0: &str = "01f65d8939a6c50847df38fe73558052aa8e3f6aea2666add3f82bc279ff36e2";
+        const ID_7: &str = "497ea159f075a1ffade355beddc1fbe3f153fb19c81ffe057a15c1143e018a74";
+        let bytecode = b"\0asm\x01\0\0\0".to_vec();
+        let owner = super::parse_account_arg(OWNER).unwrap();
+        let id_0 = super::parse_bytes32(ID_0).unwrap();
+        assert_eq!(super::check_deploy_id(&bytecode, 0, &owner, &id_0), Ok(id_0));
+        let error = super::check_deploy_id(&bytecode, 7, &owner, &id_0).unwrap_err();
+        assert!(error.contains(&format!("give the contract ID {ID_7}, not {ID_0}")), "{error}");
+
+        let dir = std::env::temp_dir().join(format!("dusk-tx-deploy-wasm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wasm = dir.join("contract.wasm");
+        std::fs::write(&wasm, &bytecode).unwrap();
+        let no_keys = || Some(std::path::PathBuf::from("/nonexistent/dusk-tx-test.keys"));
+
+        // Another expected ID: nothing reaches the node.
+        let (url, server) = mock_rues(vec![]);
+        let error = super::cmd_deploy_wasm(
+            &url,
+            no_keys(),
+            "",
+            None,
+            false,
+            &wasm,
+            Some(OWNER),
+            0,
+            Some(ID_7),
+            Some(0),
+            None,
+            2000,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("nothing was sent"), "{error}");
+        assert!(server.join().unwrap().is_empty());
+
+        // The contract is there already: reported, and no key is read.
+        let (url, server) = mock_rues(vec![("/chain_id", 200, vec![0]), ("/owner", 200, Vec::new())]);
+        super::cmd_deploy_wasm(
+            &url,
+            no_keys(),
+            "",
+            None,
+            false,
+            &wasm,
+            Some(OWNER),
+            0,
+            Some(ID_0),
+            Some(0),
+            None,
+            2000,
+        )
+        .await
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].0.contains(ID_0), "{}", requests[1].0);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(super::deploy_wasm_gas_limit(50_745), 15_074_500);
     }
 
     /// `top_up_quote` is the IGP's `quote_pay_for_gas`: gas x price x rate
@@ -4413,6 +4565,130 @@ async fn deploy_one(
     eprintln!("  {name} TX {tx_id} executed");
     deployed.push((tx_id, inclusion));
     Ok(())
+}
+
+/// The gas a deploy of `bytecode_len` bytes is charged for its bytecode,
+/// 100 a byte, plus 10M for the rest.
+fn deploy_wasm_gas_limit(bytecode_len: usize) -> u64 {
+    (bytecode_len as u64)
+        .saturating_mul(100)
+        .saturating_add(10_000_000)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_deploy_wasm(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    wasm: &std::path::Path,
+    owner_arg: Option<&str>,
+    deploy_nonce: u64,
+    expected_id: Option<&str>,
+    expected_chain_id: Option<u8>,
+    gas_limit: Option<u64>,
+    gas_price: u64,
+) -> Result<(), String> {
+    let bytecode =
+        fs::read(wasm).map_err(|e| format!("Can't read the Wasm {}: {e}", wasm.display()))?;
+    let expected_id = expected_id.map(parse_bytes32).transpose()?;
+    let owner = owner_arg.map(parse_account_arg).transpose()?;
+    // With the owner given, the ID is checked before anything else.
+    if let (Some(owner), Some(expected)) = (&owner, &expected_id) {
+        check_deploy_id(&bytecode, deploy_nonce, owner, expected)?;
+    }
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = match expected_chain_id {
+        Some(expected) => bind_chain_id(&client, expected).await?,
+        None => client.query_chain_id().await?,
+    };
+    let signer = match &owner {
+        Some(_) => None,
+        None => Some(load_keys(
+            keys_path.clone(),
+            password,
+            secret_key_hex.clone(),
+            secret_key_stdin,
+        )?),
+    };
+    let owner = owner.unwrap_or_else(|| signer.as_ref().expect("loaded without an owner").1);
+    let contract_id = match expected_id {
+        Some(expected) => check_deploy_id(&bytecode, deploy_nonce, &owner, &expected)?,
+        None => gen_contract_id(&bytecode, deploy_nonce, &owner.to_bytes()).to_bytes(),
+    };
+    let contract_hex = hex::encode(contract_id);
+    let mut output = json!({
+        "success": true,
+        "contract_id": contract_hex,
+        "owner": account_identity(&owner)["address"].clone(),
+        "deploy_nonce": deploy_nonce,
+        "wasm_bytes": bytecode.len(),
+    });
+    // Whoever deploys a Wasm with a nonce and an owner first takes the ID,
+    // and the same contract is there whoever it was.
+    if client.contract_exists(&contract_hex).await? {
+        output["deployed"] = json!(false);
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+
+    let (sk, pk) = match signer {
+        Some(signer) => signer,
+        None => load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?,
+    };
+    let gas_limit = gas_limit.unwrap_or_else(|| deploy_wasm_gas_limit(bytecode.len()));
+    let (account_nonce, balance) = client.query_account(&pk).await?;
+    let gas = gas_limit
+        .checked_mul(gas_price)
+        .ok_or("The gas limit at its gas price doesn't fit a u64")?;
+    if balance < gas {
+        return Err(format!(
+            "The signer holds {balance} LUX, less than the {gas} the deploy's gas limit needs up front"
+        ));
+    }
+    let tx = moonlight_deployment(
+        &sk,
+        bytecode,
+        &owner,
+        Vec::new(),
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(account_nonce)?,
+        deploy_nonce,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    if !client.contract_exists(&contract_hex).await? {
+        return Err(format!(
+            "Transaction {tx_id} was included, but there is no contract at {contract_hex}"
+        ));
+    }
+    output["deployed"] = json!(true);
+    output["tx_id"] = json!(tx_id);
+    confirmation.record(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// The ID a deploy of `bytecode` with `nonce` and `owner` gives, which must
+/// be `expected`.
+fn check_deploy_id(
+    bytecode: &[u8],
+    nonce: u64,
+    owner: &BlsPublicKey,
+    expected: &[u8; 32],
+) -> Result<[u8; 32], String> {
+    let id = gen_contract_id(bytecode, nonce, &owner.to_bytes()).to_bytes();
+    if &id != expected {
+        return Err(format!(
+            "The Wasm, deploy nonce {nonce} and owner give the contract ID {}, not {}: nothing was sent",
+            hex::encode(id),
+            hex::encode(expected)
+        ));
+    }
+    Ok(id)
 }
 
 /// Parse a 32-byte hex string into a fixed-size array.

@@ -703,6 +703,13 @@ validate_saved_deployment() {
     expected_children="$(jq -cn --arg merkle "${dusk_merkle,,}" --arg fee "${dusk_protocol_fee,,}" '[$merkle, $fee]')"
     [ "$(query_dusk_contract_id_list "$dusk_aggregation_hook" hooks "Dusk aggregation hook children")" = "$expected_children" ] \
         || fail "Running Dusk aggregation hook children differ from the saved topology; redeploy"
+    # Multicall for Dusk, when the deployment has one: the agents batch their
+    # reads through it.
+    dusk_multicall="$(jq -r '.dusk.multicall // ""' "$BRIDGE_STATE_FILE")"
+    if [ -n "$dusk_multicall" ]; then
+        [ "$(query_dusk_u32 "$dusk_multicall" version "Multicall for Dusk version")" = "1" ] \
+            || fail "Running Multicall for Dusk at $dusk_multicall doesn't answer version 1; redeploy"
+    fi
 }
 
 # ── Check for existing deployment ────────────────────────────────────────────
@@ -945,6 +952,28 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "${DUSK_DEPLOY_CMD[@]}" > "$DUSK_D
     }
 ok "Dusk contracts deployed"
 
+# Multicall for Dusk, which the local genesis lacks, at the ID it has on
+# testnet and mainnet: its v0.1.0 Wasm, deploy nonce 0 and its published
+# owner give that ID on any chain, and dusk-tx checks they do before it sends
+# anything. Without DUSK_MULTICALL_WASM the agents make single queries.
+DUSK_MULTICALL=""
+if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
+    step "Deploying Multicall for Dusk..."
+    [ "$(sha256sum "$DUSK_MULTICALL_WASM" 2>/dev/null | awk '{print $1}')" \
+        = 65f77a27c5bf6c7bf78797071dadca102ca3a67e5112c42af0242660e03693d9 ] \
+        || fail "DUSK_MULTICALL_WASM ($DUSK_MULTICALL_WASM) isn't Multicall for Dusk v0.1.0"
+    MULTICALL_OUT="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-wasm \
+        --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" \
+        --owner r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW \
+        --deploy-nonce 0 --expected-id 93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4 \
+        --expected-chain-id "$((16#$DUSK_CHAIN_ID))")" \
+        || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' <<<"$MULTICALL_OUT" 2>/dev/null)"
+    DUSK_MULTICALL="$(jq -r '.contract_id' <<<"$MULTICALL_OUT")"
+    ok "Multicall for Dusk at $DUSK_MULTICALL"
+else
+    info "DUSK_MULTICALL_WASM is not set: no Multicall for Dusk, so the agents make single contract queries"
+fi
+
 # Parse deployment output
 DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_FILE")
 DUSK_MERKLE=$(jq -r '.contracts.merkle_tree_hook' "$DUSK_DEPLOY_FILE")
@@ -1129,7 +1158,8 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         },
         "protocol_fee": "$DUSK_PROTOCOL_FEE",
         "aggregation_hook": "$DUSK_AGGREGATION_HOOK",
-        "test_recipient": "$DUSK_TEST_RECIPIENT"
+        "test_recipient": "$DUSK_TEST_RECIPIENT",
+        "multicall": "$DUSK_MULTICALL"
     },
     "account_h256": "$DUSK_ACCOUNT_H256",
     "evm_domain": $EVM_DOMAIN,
