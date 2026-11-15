@@ -77,9 +77,11 @@ Gas on Dusk:
   6. `agent-configs` refuses a limit below 1.5 times the cost at
   `EVM_ORIGIN_THRESHOLD`, so raise it with the threshold. Validators keep
   `DUSK_AGENT_GAS_LIMIT` (30M) for their one-time announcement.
-- An escrow claim (`claim-pending`) takes about 59M gas, because the route
-  decodes the recipient's public key on chain. `dusk-tx` gives it an 80M
-  limit, so the signer needs 0.08 DUSK at 1 LUX.
+- Claiming your own escrow (`claim-pending`) takes about 1.9M gas, and
+  `dusk-tx` gives it a 3M limit. Claiming someone else's
+  (`claim-pending --for`) takes about 59M, because the route decodes their
+  public key on chain, so `dusk-tx` gives it an 80M limit and the signer
+  needs 0.08 DUSK at 1 LUX. `--gas-limit` overrides either.
 - The gas limit times the gas price must be in the balance when a
   transaction is submitted. A successful transaction is refunded the gas it
   didn't use; **a failed one is charged its whole gas limit.** `dusk-tx`

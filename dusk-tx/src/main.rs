@@ -48,6 +48,14 @@ const MAX_CALL_ARGS_BYTES: usize = 60 * 1024;
 const MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS: usize = 2;
 const IGP_TOKEN_EXCHANGE_RATE_SCALE: u128 = 10_000_000_000;
 const IGP_MAX_GAS_LIMIT: u64 = 1_000_000_000;
+/// Default gas limit for claiming the signer's own escrow (`claim_pending`).
+/// The costliest route's claim measures 1.91M gas in the VM tests, which
+/// check this limit has 1.5 times that.
+const CLAIM_PENDING_GAS_LIMIT: u64 = 3_000_000;
+/// Default gas limit for claiming another account's escrow
+/// (`claim_pending_for`): decoding the account's key costs about 57M gas, so
+/// a claim takes about 59M.
+const CLAIM_PENDING_FOR_GAS_LIMIT: u64 = 80_000_000;
 
 // ── CLI definition ──────────────────────────────────────────────────────────
 
@@ -439,10 +447,13 @@ enum Command {
         /// account; the signer only pays the gas.
         #[arg(long = "for")]
         for_account: Option<String>,
-        /// The route decodes the account's public key on chain, so a claim
-        /// costs about 59M gas.
-        #[arg(long, default_value = "80000000")]
-        gas_limit: u64,
+        /// Gas limit. Defaults to 3M for the signer's own claim
+        /// (`claim_pending`, about 1.9M gas) and 80M for another account's
+        /// (`claim_pending_for`, about 59M, because the route decodes the
+        /// account's public key on chain). A failed claim pays its whole
+        /// limit.
+        #[arg(long)]
+        gas_limit: Option<u64>,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
         #[arg(long, default_value = "1")]
         gas_price: u64,
@@ -1226,6 +1237,57 @@ mod tests {
             &account,
         ])
         .is_ok());
+    }
+
+    /// The signer's own escrow is claimed with `claim_pending` and its small
+    /// default gas limit, also when `--for` names the signer, by address or
+    /// by key. Only another account's escrow needs `claim_pending_for` and
+    /// its 80M default. An explicit `--gas-limit` wins either way.
+    #[test]
+    fn claim_pending_call_and_gas_limit_follow_whose_escrow_is_claimed() {
+        let (_, signer) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let (_, other) = crate::keys::load_from_hex(&"22".repeat(32)).unwrap();
+        let identity = super::account_identity(&signer);
+        let by_address = super::parse_account_arg(identity["address"].as_str().unwrap()).unwrap();
+        let by_key = super::parse_account_arg(identity["public_key"].as_str().unwrap()).unwrap();
+
+        for named in [None, Some(signer), Some(by_address), Some(by_key)] {
+            let call = super::claim_call(&signer, named, None);
+            assert_eq!(call.fn_name, "claim_pending");
+            assert!(call.args.is_empty());
+            assert_eq!(call.account, signer);
+            assert_eq!(call.gas_limit, super::CLAIM_PENDING_GAS_LIMIT);
+        }
+
+        let call = super::claim_call(&signer, Some(other), None);
+        assert_eq!(call.fn_name, "claim_pending_for");
+        assert_eq!(call.args, super::rkyv_serialize(&(other,)));
+        assert_eq!(call.account, other);
+        assert_eq!(call.gas_limit, super::CLAIM_PENDING_FOR_GAS_LIMIT);
+
+        for named in [None, Some(signer), Some(other)] {
+            assert_eq!(
+                super::claim_call(&signer, named, Some(4_000_000)).gas_limit,
+                4_000_000
+            );
+        }
+    }
+
+    #[test]
+    fn claim_pending_gas_limit_is_optional() {
+        let route = "11".repeat(32);
+        let gas_limit = |extra: &[&str]| {
+            let args = ["dusk-tx", "claim-pending", "--warp-contract", &route];
+            match Cli::try_parse_from(args.iter().chain(extra))
+                .unwrap()
+                .command
+            {
+                super::Command::ClaimPending { gas_limit, .. } => gas_limit,
+                _ => unreachable!("parsed claim-pending"),
+            }
+        };
+        assert_eq!(gas_limit(&[]), None);
+        assert_eq!(gas_limit(&["--gas-limit", "5000000"]), Some(5_000_000));
     }
 
     #[test]
@@ -3573,6 +3635,45 @@ async fn cmd_register_account(
 
 // ── cmd_claim_pending ─────────────────────────────────────────────────────
 
+/// The route call a claim makes.
+#[derive(Debug, PartialEq)]
+struct ClaimCall {
+    /// `claim_pending` or `claim_pending_for`.
+    fn_name: &'static str,
+    /// The call's rkyv-encoded arguments.
+    args: Vec<u8>,
+    /// The account paid, whose escrow is claimed.
+    account: BlsPublicKey,
+    gas_limit: u64,
+}
+
+/// The signer's own escrow is claimed with `claim_pending`, which pays and
+/// registers the transaction's sender and costs about 1.9M gas. Only
+/// another account's needs `claim_pending_for`, whose on-chain key decoding
+/// takes about 59M. `for_account` naming the signer counts as the signer's
+/// own claim: both keys are decoded, so equal compressed bytes are the same
+/// key. An explicit `gas_limit` overrides either default.
+fn claim_call(
+    signer: &BlsPublicKey,
+    for_account: Option<BlsPublicKey>,
+    gas_limit: Option<u64>,
+) -> ClaimCall {
+    match for_account {
+        Some(account) if account.to_bytes() != signer.to_bytes() => ClaimCall {
+            fn_name: "claim_pending_for",
+            args: rkyv_serialize(&(account,)),
+            account,
+            gas_limit: gas_limit.unwrap_or(CLAIM_PENDING_FOR_GAS_LIMIT),
+        },
+        _ => ClaimCall {
+            fn_name: "claim_pending",
+            args: Vec::new(),
+            account: *signer,
+            gas_limit: gas_limit.unwrap_or(CLAIM_PENDING_GAS_LIMIT),
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_claim_pending(
     rues_url: &str,
@@ -3582,14 +3683,15 @@ async fn cmd_claim_pending(
     secret_key_stdin: bool,
     warp_contract_hex: &str,
     for_account: Option<&str>,
-    gas_limit: u64,
+    gas_limit: Option<u64>,
     gas_price: u64,
 ) -> Result<(), String> {
     let account = for_account.map(parse_account_arg).transpose()?;
     let client = RuesClient::new(rues_url)?;
     let warp_bytes = parse_bytes32(warp_contract_hex)?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let target = account.unwrap_or(pk);
+    let claim = claim_call(&pk, account, gas_limit);
+    let target = claim.account;
     let identity = account_identity(&target);
 
     // Check first: a call that fails on chain is charged its whole gas limit.
@@ -3607,16 +3709,16 @@ async fn cmd_claim_pending(
         ));
     }
 
-    // claim_pending_for also registers the account, so later transfers to it
-    // are paid out directly.
+    // Either call also registers the account, so later transfers to it are
+    // paid out directly.
     let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
         ContractId::from_bytes(warp_bytes),
-        "claim_pending_for",
-        rkyv_serialize(&(target,)),
-        gas_limit,
+        claim.fn_name,
+        claim.args,
+        claim.gas_limit,
         gas_price,
         next_moonlight_nonce(nonce)?,
         chain_id,
@@ -3626,7 +3728,7 @@ async fn cmd_claim_pending(
 
     let mut output = identity;
     output["success"] = json!(true);
-    output["fn_name"] = json!("claim_pending_for");
+    output["fn_name"] = json!(claim.fn_name);
     output["warp_contract"] = json!(warp_contract_hex);
     output["claimed"] = json!(pending.to_string());
     output["tx_id"] = json!(tx_id);
