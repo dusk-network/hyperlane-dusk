@@ -39,11 +39,16 @@ STATE="$OUT_DIR/deployment.json"
 ZERO_ADDRESS=0x0000000000000000000000000000000000000000
 ZERO_ID=0000000000000000000000000000000000000000000000000000000000000000
 TRANSFER_CONTRACT=0100000000000000000000000000000000000000000000000000000000000000
+# The state_version of each core contract this checkout builds. Older ones
+# keep storage anyone can fill, and this checkout's agents don't read them
+# (docs/storage.md).
+CORE_STATE_VERSIONS="mailbox=5 merkle_tree_hook=2 igp=3 validator_announce=2"
 # The state_version of each warp route this checkout builds. Older routes may
 # pay a sponsored escrow claim to the key as given, which a forged twin of the
 # recipient's key can exploit (docs/security.md, CRITICAL-1), and don't
-# register a recipient that claims its own escrow.
-ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=6 warp_drc20_collateral=5"
+# register a recipient that claims its own escrow. WarpDrc20 7 keys balances
+# by account ID (docs/storage.md).
+ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=7 warp_drc20_collateral=5"
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
@@ -352,7 +357,7 @@ check_state_matches_chain() {
         [ "$domain" = "$DUSK_DOMAIN" ] \
             || fail "$STATE records Dusk Mailbox $mailbox, but it isn't on this chain with domain $DUSK_DOMAIN. The network was reset or the state is from elsewhere; move it aside and redeploy."
     fi
-    check_route_versions
+    check_state_versions
     token="$(state_get '.evm.token')"
     if [ -n "$token" ]; then
         [ "$(cast code "$token" --rpc-url "$EVM_RPC")" != "0x" ] \
@@ -360,22 +365,30 @@ check_state_matches_chain() {
     fi
 }
 
-# Refuse a deployment whose warp routes report another state_version than
-# this checkout's (ROUTE_STATE_VERSIONS).
-check_route_versions() {
-    local entry name expected route version
-    for entry in $ROUTE_STATE_VERSIONS; do
+# Refuse a deployment whose core contracts or warp routes report another
+# state_version than this checkout's (CORE_STATE_VERSIONS,
+# ROUTE_STATE_VERSIONS).
+check_state_versions() {
+    local entry name expected contract version kind older
+    for entry in $CORE_STATE_VERSIONS $ROUTE_STATE_VERSIONS; do
         name="${entry%%=*}" expected="${entry#*=}"
-        route="$(state_get ".dusk.$name")"
-        [ -n "$route" ] || continue
-        version="$(dusk_query --contract "$route" --method state_version --return-type u32 2>/dev/null \
+        contract="$(state_get ".dusk.$name")"
+        [ -n "$contract" ] || continue
+        if [[ " $ROUTE_STATE_VERSIONS " == *" $entry "* ]]; then
+            kind="route"
+            older="Routes before it may pay sponsored escrow claims to forged keys."
+        else
+            kind="contract"
+            older="Contracts before it keep storage anyone can fill, and this checkout's agents don't read them (docs/storage.md)."
+        fi
+        version="$(dusk_query --contract "$contract" --method state_version --return-type u32 2>/dev/null \
             | jq -r '.value // empty')" || true
         [[ "$version" =~ ^[0-9]+$ ]] \
-            || fail "Can't read the state version of the Dusk route ($name) $route recorded in $STATE. If the network was reset, move $OUT_DIR aside and deploy again."
+            || fail "Can't read the state version of the Dusk $kind ($name) $contract recorded in $STATE. If the network was reset, move $OUT_DIR aside and deploy again."
         [ "$version" -ge "$expected" ] \
-            || fail "$STATE records a Dusk route ($name) at state version $version; this checkout's is $expected. Routes before it may pay sponsored escrow claims to forged keys. Move $OUT_DIR aside and redeploy."
+            || fail "$STATE records a Dusk $kind ($name) at state version $version; this checkout's is $expected. $older Move $OUT_DIR aside and redeploy."
         [ "$version" -eq "$expected" ] \
-            || fail "$STATE records a Dusk route ($name) at state version $version, newer than this checkout's $expected. Update the checkout."
+            || fail "$STATE records a Dusk $kind ($name) at state version $version, newer than this checkout's $expected. Update the checkout."
     done
 }
 
@@ -416,7 +429,7 @@ dusk_chain_json() {
 cmd_agent_configs() {
     [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
-    check_route_versions
+    check_state_versions
     check_relayer_gas_limit
     local evm_chain token route
     token="$(state_get '.evm.token')"
