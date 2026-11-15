@@ -10,7 +10,7 @@ what you need first, and how to run and check it.
 | Where | What |
 |---|---|
 | Dusk testnet | The full contract set (Mailbox, Merkle hook, ProtocolFee, AggregationHook, IGP, ValidatorAnnounce, MessageIdMultisig ISM, TestRecipient, TestMock) and a native DUSK warp route (`warp-native`). |
-| Sepolia | A synthetic DUSK token (`HypERC20`, 9 decimals so one unit is one LUX), and a MessageIdMultisig ISM for messages from Dusk. Everything else is Hyperlane's own Sepolia deployment. |
+| Sepolia | A synthetic DUSK token (`HypERC20`, 9 decimals so one unit is one LUX), a MessageIdMultisig ISM for messages from Dusk, an InterchainGasPaymaster with its own StorageGasOracle that charges for delivery to Dusk, and the token's hook: a StaticAggregationHook of Hyperlane's Sepolia MerkleTreeHook and that IGP, from Hyperlane's factory. Everything else is Hyperlane's own Sepolia deployment. |
 
 How each direction is secured:
 
@@ -25,11 +25,34 @@ How each direction is secured:
 The deployer key owns every contract on both sides. That's acceptable for
 testnet. For mainnet, see [Before mainnet](#before-mainnet).
 
-Hyperlane's Sepolia Mailbox has no gas pricing for Dusk. Its default hook falls
-back to plain Merkle insertion, so a transfer to Dusk costs only Hyperlane's
-1 wei protocol fee. The Dusk IGP's pricing for Sepolia is likewise token-sized
-by default. The generated relayer config therefore doesn't enforce gas
-payments, and relays only this deployment's routes.
+Delivery is paid for in both directions, and the relayer relays any message
+between the two chains, from any sender, once it is paid for
+([costs.md](costs.md#fee-coverage)):
+
+- **Dusk → Sepolia.** The Dusk IGP, the Dusk Mailbox's default hook, charges
+  DUSK for the Sepolia gas a delivery takes: 6 DUSK for a transfer at the
+  default prices. The ProtocolFee adds 0.001 DUSK for its beneficiary.
+- **Sepolia → Dusk.** Our IGP on Sepolia charges ETH for the Dusk gas a
+  delivery takes: 1.302e11 wei for a transfer at the default prices, on top
+  of Hyperlane's 1 wei protocol fee. Hyperlane's own Sepolia IGP has no
+  pricing for Dusk, and its Mailbox's default hook falls back to plain
+  Merkle insertion for Dusk, so a message sent the default way pays us
+  nothing.
+
+The Sepolia token's hook replaces the Mailbox's default hook, and the
+Mailbox only adds its required hook, a ProtocolFee. The Merkle insertion
+the validators sign comes from the default hook, so a hook of our IGP alone
+would leave the token's messages out of the tree, and nothing would ever
+deliver them. The token's hook therefore aggregates Hyperlane's
+MerkleTreeHook, `EVM_MERKLE_TREE_HOOK`, and our IGP. `deploy` reads the
+Mailbox's required hook first: had it inserted into the tree itself, the
+IGP alone would do, and adding the tree again would insert every message
+twice.
+
+`relayer.json` enforces payment per origin, against this deployment's IGPs
+(`onChainFeeQuoting`). The operator collects what the IGPs take, and
+`deploy/testnet.sh revenue` and `claim` show and claim it
+([operations.md](operations.md#relaying-fees)).
 
 ## Before you start
 
@@ -45,9 +68,9 @@ payments, and relays only this deployment's routes.
 | Key | Network | Needs | Used for |
 |---|---|---|---|
 | Deployer | Dusk testnet | about 400 DUSK | Contract deploys, about 220 DUSK (a local rehearsal spent 207.4 DUSK on 11 transactions; the native route has since grown by 48 KB, about 10 DUSK). Each deploy also needs its gas limit times the deploy gas price, 100 DUSK, in the balance when it is submitted. `preflight` checks the balance. |
-| Deployer | Sepolia | about 0.05 ETH | ISM, token and enrollment transactions. |
-| Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each, and 0.005 DUSK for one that fails. |
-| Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. |
+| Deployer | Sepolia | about 0.1 ETH | ISM, IGP, gas oracle, hook, token and enrollment transactions: 10.1M gas in the local rehearsal, which deploys its ISM from source; less with Hyperlane's ISM factory. |
+| Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each, and 0.005 DUSK for one that fails. Senders pay it back to the Sepolia IGP. |
+| Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. Senders pay it back to the Dusk IGP. |
 | Each Dusk-origin validator | EVM key, no funds | | Signing checkpoints. Its address goes in `DUSK_ORIGIN_VALIDATORS`. |
 | Each Dusk-origin validator | Dusk testnet | 0.1 DUSK | Its one-time announcement on Dusk, about 2.1M gas. |
 
@@ -147,20 +170,38 @@ dusk-tx account --rues-url https://testnet.nodes.dusk.network/ --address <base58
 
 ```bash
 cp deploy/testnet.env.example deploy/testnet.env
-# edit: DUSK_KEYS, DUSK_ORIGIN_VALIDATORS, DUSK_ORIGIN_THRESHOLD
+# edit: DUSK_KEYS, DUSK_ORIGIN_VALIDATORS, DUSK_ORIGIN_THRESHOLD, and the
+# relaying fees: ETH_DUSK_PRICE_RATIO, EVM_GAS_PRICE_WEI, OPERATOR_MARGIN_BPS
 export DUSK_CONSENSUS_PASSWORD=...   # password of DUSK_KEYS
 export EVM_DEPLOYER_KEY=0x...        # Sepolia deployer
 
+bash deploy/testnet.sh fees          # what the fee settings charge; no network
 bash deploy/testnet.sh preflight     # read-only checks, safe to run any time
 bash deploy/testnet.sh deploy
 bash deploy/testnet.sh agent-configs
 ```
 
+The fee settings are prices: DUSK per ETH, the EVM gas price and the
+operator's margin. `deploy` turns them into each IGP's token exchange rate
+and gas price ([costs.md](costs.md#pricing)), and the gas overheads,
+`DUSK_IGP_GAS_OVERHEAD` and `EVM_IGP_GAS_OVERHEAD`, into the gas each
+transfer pays for. `fees` prints what they come to.
+
 `preflight` checks that:
 - the Dusk node is on the expected chain, has both host queries active, allows
   third-party contracts and serves the archive queries the agents need;
-- the Sepolia Mailbox, Merkle hook and ValidatorAnnounce belong together, and
-  a dispatch to the Dusk domain can be quoted;
+- the Sepolia Mailbox, Merkle hook and ValidatorAnnounce belong together;
+  whether the Mailbox's required hook inserts into the Merkle tree, which
+  decides the route's hook; and that `EVM_AGGREGATION_HOOK_FACTORY`, when
+  set, is a contract;
+- the fee settings are valid and their gas overheads cover delivery:
+  `DUSK_IGP_GAS_OVERHEAD` for `DUSK_ORIGIN_THRESHOLD` of the
+  `DUSK_ORIGIN_VALIDATORS`, `EVM_IGP_GAS_OVERHEAD` for
+  `EVM_ORIGIN_THRESHOLD`;
+- once deployed, both IGPs charge what the settings say, and the Sepolia
+  token's hook is the recorded one, inserting into `EVM_MERKLE_TREE_HOOK`'s
+  tree and paying our IGP. `dusk-igp` and `evm-igp` show and fix a pricing
+  difference ([operations.md](operations.md#keeping-the-prices-current));
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;
@@ -187,6 +228,12 @@ older core contracts keep storage anyone can fill
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
 
+A deployment made before the relaying fees is brought up to date by running
+`deploy` again: it deploys the Sepolia IGP and the token's hook and sets the
+hook on the token. The Dusk IGP keeps its old pricing, so `preflight`, and
+with it `deploy`, stops until `bash deploy/testnet.sh dusk-igp --apply` sets
+the new one.
+
 ## Run the agents
 
 `agent-configs` writes two files to `deploy/out/<DEPLOY_NAME>/`. Neither
@@ -201,7 +248,13 @@ directory: they load the chain defaults in its `config/` directory and exit
 with `Failed to open config directory` anywhere else. `CONFIG_FILES` takes an
 absolute path.
 
-- **`relayer.json`** relays the native route in both directions. Run one relayer:
+- **`relayer.json`** relays any message between Dusk and Sepolia, in both
+  directions, once it is paid for: `gasPaymentEnforcement` has an
+  `onChainFeeQuoting` policy for each origin, and the relayer reads payments
+  from this deployment's two IGPs, the Sepolia one included
+  ([costs.md](costs.md#what-the-relayer-requires)). A message nobody paid
+  for, or paid too little for, waits in the relayer's queue; a later
+  payment releases it. Run one relayer:
 
   ```bash
   cd hyperlane-monorepo/rust/main
@@ -265,7 +318,8 @@ DUSK=https://testnet.nodes.dusk.network/; EVM_RPC=https://ethereum-sepolia.publi
 export DUSK_CONSENSUS_PASSWORD=...
 
 # Dusk -> Sepolia: lock 1 DUSK (1e9 LUX), mint 1 DUSK on Sepolia. The
-# deposit is the amount plus the quoted dispatch fee; dusk-tx adds the fee.
+# deposit is the amount plus the quoted dispatch fee, 6.001 DUSK at the
+# default prices; dusk-tx adds the fee.
 target/release/dusk-tx transfer-remote --native --rues-url $DUSK --keys my.keys \
   --warp-contract $ROUTE --destination 11155111 \
   --recipient 000000000000000000000000<your sepolia address, no 0x> --amount 1000000000
@@ -275,12 +329,15 @@ cast call $TOKEN "balanceOf(address)(uint256)" <your sepolia address> --rpc-url 
 # the route once first; until you do, transfers to you wait in escrow.
 target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE
 H=$(target/release/dusk-tx account --offline --keys my.keys | jq -r .account_h256)
+FEE=$(cast call $TOKEN "quoteGasPayment(uint32)(uint256)" 1146442572 --rpc-url $EVM_RPC | awk '{print $1}')
 cast send $TOKEN "transferRemote(uint32,bytes32,uint256)" 1146442572 0x$H 1000000000 \
-  --value 1 --rpc-url $EVM_RPC --private-key <your key>
+  --value $FEE --rpc-url $EVM_RPC --private-key <your key>
 target/release/dusk-tx account --rues-url $DUSK --keys my.keys
 ```
 
-`--value 1` pays Hyperlane's 1 wei protocol fee on Sepolia.
+`quoteGasPayment` on the token is what a transfer to Dusk pays: our IGP's
+fee and Hyperlane's 1 wei protocol fee, 130,200,000,001 wei at the default
+prices. Sending less reverts; the token's hook refunds anything above it.
 
 `--recipient` takes a 20-byte EVM address and pads it to 32 bytes, as
 Hyperlane does. `dusk-tx` refuses a 32-byte value whose first 12 bytes aren't
@@ -313,6 +370,24 @@ delivery first, finds that it would fail, and retries it with backoff
 without paying for it. The tokens stay where they are: burned on Sepolia,
 or locked in the Dusk route. Add such messages to the relayer's denylist to
 stop the retries.
+
+**Fees.** `bash deploy/testnet.sh revenue` shows what the IGPs and the
+ProtocolFee hold, and `claim` collects it
+([operations.md](operations.md#collecting-the-fees)). A message that didn't
+pay for its delivery isn't delivered: the relayer logs `Message does not
+meet the gas payment requirement` for it and checks again later. A message
+from Sepolia can still be paid for, by anyone, for at least
+`EVM_IGP_GAS_OVERHEAD` gas in all:
+
+```bash
+IGP=$(jq -r .evm.igp $S); GAS=2170000
+FEE=$(cast call $IGP "quoteGasPayment(uint32,uint256)(uint256)" 1146442572 $GAS --rpc-url $EVM_RPC | awk '{print $1}')
+cast send $IGP "payForGas(bytes32,uint32,uint256,address)" <message id> 1146442572 $GAS <refund address> \
+  --value $FEE --rpc-url $EVM_RPC --private-key <your key>
+```
+
+A message from Dusk pays when it is dispatched, through the Mailbox's
+default hook, and can't be paid for afterwards.
 
 ## Reproduce the contracts
 
@@ -375,7 +450,15 @@ bash deploy/local-evm-core.sh            # Hyperlane core on Anvil; writes deplo
 TESTNET_ENV=deploy/local.env bash deploy/testnet.sh deploy
 TESTNET_ENV=deploy/local.env bash deploy/testnet.sh agent-configs
 bash deploy/local-agents.sh start        # relayer and four validators
+bash deploy/local-fees-check.sh          # the relaying fees, end to end
 ```
+
+`local-fees-check.sh` sends paid transfers both ways and checks they are
+delivered, checks that a message from Anvil that paid our IGP nothing, and
+then only half of what it needs, isn't, and that topping it up delivers it,
+checks that a message from Dusk whose delivery costs far more than it paid
+for isn't delivered, and claims the fees on both chains. It takes about ten
+minutes.
 
 The deploy takes about four minutes. Then run the commands from
 [Check it works](#check-it-works) with the local values: Dusk at
@@ -391,6 +474,12 @@ honours that when `DUSK_RUES_URL` and `EVM_RPC` are both local.
 
 In the rehearsal:
 
+- The Anvil core is hooked up as Sepolia's is: the Mailbox requires a
+  ProtocolFee (1 wei), its default hook falls back to the MerkleTreeHook for
+  Dusk, and a StaticAggregationHookFactory stands in for Hyperlane's. So the
+  token's hook has to aggregate the MerkleTreeHook and the IGP, as on
+  Sepolia, and transfers pay the same fees as on testnet at the default
+  prices.
 - Anvil account #2 stands in for Hyperlane's Sepolia validator, #3–#5 are the
   Dusk-origin validators (2 of 3), and #1 is the relayer's EVM key.
 - Checkpoints go to local directories under
@@ -421,11 +510,12 @@ Testnet runs on trust choices and tooling that mainnet can't:
   free.
 - **Validator set.** Sepolia → Dusk trusts one Abacus Works validator. Mainnet
   needs a deliberately chosen set for both directions.
-- **Gas payments.** Price the Dusk IGP for the EVM destination, get Dusk
-  pricing into the EVM side's hook, and turn on gas-payment enforcement in the
-  relayer. As deployed, the relayer pays for every message in both
-  directions ([costs.md](costs.md#fee-coverage) has what each costs and the
-  settings that would charge it).
+- **Gas payments.** Both IGPs are priced and the relayer enforces payment
+  ([costs.md](costs.md#fee-coverage)), but the prices are set by hand
+  (`dusk-igp`, `evm-igp`). Mainnet needs them updated as ETH, DUSK and gas
+  prices move, as Hyperlane's own oracle updater does, monitoring of what
+  the relayer spends against what the IGPs collect, and the IGPs' and the
+  oracle's ownership under the same custody as the rest.
 - **Storage.** Anyone can add to most contracts' storage for good, paying
   gas and, for messages, fees. [storage.md](storage.md#ceilings) lists what
   filling each contract costs: about 3,700 DUSK for a WarpDrc20's

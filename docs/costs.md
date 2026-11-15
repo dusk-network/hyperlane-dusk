@@ -1,15 +1,17 @@
 # Costs
 
 What every public entry point of the production contracts costs on chain,
-the budgets the tests hold each cost to, whether the deployed fees cover
-what relaying costs, what it costs to fill each contract's memory on
-purpose, and how much traffic a block takes. All numbers are measured in
+the budgets the tests hold each cost to, what the relaying fees charge
+against what relaying costs, what it costs to fill each contract's memory
+on purpose, and how much traffic a block takes. All numbers are measured in
 the VM by `tests/tests/cost_profile.rs`, on the contracts configured as
 `deploy/testnet.sh` deploys them: the MessageIdMultisig ISM as the default
 ISM, MerkleTreeHook and ProtocolFee (0.001 DUSK) aggregated as the required
-hook, the IGP as the default hook with the testnet pricing for the EVM
-chain, and the three warp routes. Gas prices are 1 LUX per gas, the
-minimum, so 1M gas is 0.001 DUSK.
+hook, the IGP as the default hook priced for the EVM chain, and the three
+warp routes. The profile prices the EVM chain at a token-sized 25,000 LUX
+per transfer: what a call costs in gas doesn't depend on the price, and
+[Fee coverage](#fee-coverage) has what the configured pricing charges. Gas
+prices are 1 LUX per gas, the minimum, so 1M gas is 0.001 DUSK.
 
 ## Measuring
 
@@ -95,10 +97,13 @@ call, 1.84M for a relayed delivery at one signature, 1.87M at six, and
 
 ### Users
 
-`transfer_remote` deposits are the dispatch fee, 1,025,000 LUX (the 0.001
-DUSK protocol fee and the IGP's 25,000 LUX), plus the amount on the native
-route. Dispatching from an account spends the same from its prepaid
-credit. The largest body is the largest whose transaction fits 64 KiB.
+`transfer_remote` deposits are the dispatch fee, plus the amount on the
+native route. In the profile the fee is 1,025,000 LUX: the 0.001 DUSK
+protocol fee and the IGP's 25,000 LUX. With the pricing
+`deploy/testnet.env.example` configures, the IGP's part is 6 DUSK
+([Fee coverage](#fee-coverage)); the gas is the same. Dispatching from an
+account spends the fee from its prepaid credit. The largest body is the
+largest whose transaction fits 64 KiB.
 
 | Call | Tx gas | Call gas | Calls | Depth | Events | Event bytes | Tx bytes |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -196,7 +201,10 @@ the signature check:
 
 At the 5M limit a delivery can carry about 9,900 body bytes at one
 signature and 6,200 at six; with the 1.5x headroom, 4,200 and 480. The
-generated relayer config only relays this deployment's routes.
+generated relayer config relays any message that paid for its delivery,
+and sends it with the larger of the 5M limit and the gas it paid for, so a
+larger message has to pay for more gas
+([Fee coverage](#what-the-relayer-requires)).
 
 ### Validators
 
@@ -428,69 +436,159 @@ transaction, or a whole transaction where each needs its own.
 
 ## Fee coverage
 
-What the deployed configuration charges, against what delivering costs,
-per warp transfer. Assumptions: an EVM gas price of 1 gwei; 1 ETH = 30,000
-DUSK (ETH at 3,000 USD, DUSK at 0.10 USD); the Dusk-origin validator set of
-the local rehearsal, 2 of 3. The verdicts don't depend on them within
-orders of magnitude.
+What a message pays for its delivery, against what delivering it costs
+the relayer, and how the relayer checks it was paid. The pricing is
+`deploy/testnet.env.example`'s; `bash deploy/testnet.sh fees` prints what
+any settings charge, and `tests/tests/fee_pricing.rs` checks the Dusk IGP's
+quote for them against the formula below.
 
-### Dusk to Sepolia
+### Pricing
 
-- **Charged, on Dusk:** 1,025,000 LUX, 0.001025 DUSK. The ProtocolFee's
-  0.001 DUSK goes to its beneficiary and pays nothing toward delivery. The
-  IGP charges 25,000 LUX for 250,000 destination gas: the routes send no
-  hook metadata, which the IGP reads as 50,000 gas, plus
-  `DUSK_IGP_GAS_OVERHEAD`, 200,000, at `DUSK_IGP_GAS_PRICE` 1 gwei and
-  `DUSK_IGP_TOKEN_EXCHANGE_RATE` 1, which is 1e-10 LUX per wei. The local
-  rehearsal sources the same values (`deploy/local.env`).
-- **Cost, on Sepolia:** the relayer's `process` of a synthetic DUSK mint.
-  Hyperlane prices Mailbox `process` with MessageId multisig verification at
-  151,966 gas for 1 of 1, 159,736 for 2 of 3 and 187,506 for 6 of 6
-  (`multisigIsmVerifyCosts` in the monorepo's SDK, which its IGP overheads
-  use), and a synthetic route's `handle` at 64,000 (its default destination
-  gas; in the Solidity gas snapshot, the test that benchmarks
-  `HypERC20.handle` takes 58,924). For 2 of 3: about 224,000 gas,
-  0.000224 ETH at 1 gwei, which is 6.7 DUSK at the assumed rate.
-- **Verdict:** the relayer loses about 0.000224 ETH, 6.7 DUSK, on every
-  message, and the IGP covers 1/270,000 of it. The 250,000 gas it charges
-  for is about right (it covers up to 5 signatures; 6 of 6 needs 251,506);
-  the price is off by the exchange rate. Charging the cost needs
-  `DUSK_IGP_GAS_PRICE` at the EVM gas price in wei and
-  `DUSK_IGP_TOKEN_EXCHANGE_RATE` at 10 x (ETH price / DUSK price), 300,000
-  at the assumed prices: (50,000 + 200,000) x 1e9 x 300,000 / 1e10 =
-  7.5e9 LUX, 7.5 DUSK. On testnet the ETH is Sepolia ETH, so the loss is
-  the faucet ETH the relayer's account needs, 0.000224 per message.
+Each side has an IGP of this deployment that charges the sender, in the
+origin chain's token, for a gas amount on the destination:
 
-### Sepolia to Dusk
+```
+payment = gas x gas price x token exchange rate / 1e10
+```
 
-- **Charged, on Sepolia:** nothing for delivery. Sepolia's IGP has no gas
-  oracle for the Dusk domain, and the route's hook falls back to plain
-  Merkle insertion, so a transfer pays only Hyperlane's 1 wei protocol fee
-  ([testnet.md](testnet.md#what-gets-deployed)).
-- **Cost, on Dusk:** the relayer's `process` at `EVM_ORIGIN_THRESHOLD` 1:
-  2,142,500 gas for a payout from the native route and 2,127,810 for a new
-  escrow, 0.0021 DUSK. At 6 signatures, up to 3,231,735 on the native route
-  (3,270,197 on a collateral route). A delivery that passes the simulation
-  and fails pays the relayer's whole 5M limit, 0.005 DUSK.
-- **Verdict:** the relayer loses the whole cost, about 0.0021 DUSK (0.0002
-  USD at the assumed price) per message, and anyone can make it pay that
-  by sending transfers from Sepolia, where they cost Sepolia gas only.
-  Charging it needs a Dusk gas oracle in the EVM IGP: 2.15M gas plus 0.22M
-  per signature above one, at a gas price of 1 (LUX) and a token exchange
-  rate of 1e19 / (ETH price / DUSK price), 3.3e14 at the assumed prices,
-  about 7.2e10 wei per message.
+The gas is the message's gas limit, from its hook metadata, plus the
+destination's overhead. The gas price is in the destination's smallest
+unit, and the exchange rate converts that into the origin's, scaled by
+1e10. One ETH is 1e18 wei and buys `ETH_DUSK_PRICE_RATIO` DUSK of 1e9 LUX
+each, so a wei is worth `ETH_DUSK_PRICE_RATIO` x 1e-9 LUX. Neither IGP has
+a markup field, so the operator's margin, `OPERATOR_MARGIN_BPS` / 10,000,
+goes into the exchange rate, rounded up:
 
-The relayer config `deploy/testnet.sh` writes enforces no gas payments, so
-the relayer delivers either way. Both directions need pricing, and
-`gasPaymentEnforcement` turned on, before mainnet
-([testnet.md](testnet.md#before-mainnet)).
+| | Dusk IGP, on Dusk | EVM IGP, on Sepolia |
+|---|---|---|
+| Charges for delivery to | the EVM chain | Dusk |
+| Payment in | LUX | wei |
+| Gas price | `EVM_GAS_PRICE_WEI`, wei | `DUSK_AGENT_GAS_PRICE`, LUX |
+| Token exchange rate | 10 x `ETH_DUSK_PRICE_RATIO` x (1 + margin) | 1e19 / `ETH_DUSK_PRICE_RATIO` x (1 + margin) |
+| Gas a warp transfer pays for | 50,000 (no hook metadata) + `DUSK_IGP_GAS_OVERHEAD` | 0 (the route's destination gas) + `EVM_IGP_GAS_OVERHEAD` |
+
+The Dusk routes send no hook metadata, which the Dusk IGP reads as 50,000
+gas, and the Sepolia route asks for no gas of its own, so a transfer pays
+for the overhead plus 50,000 one way and for the overhead the other. The
+overheads cover the whole delivery:
+
+- **`DUSK_IGP_GAS_OVERHEAD`**, 110,000: Mailbox `process` on the EVM chain
+  with m-of-n MessageId multisig verification and the token's `handle`,
+  less the 50,000. The local rehearsal measured a delivery at 140,569 gas
+  with 2 of 3 signatures, through a StorageMessageIdMultisigIsm, minting to
+  a new holder (the relayer's estimate was 141,343). `deploy/testnet.sh`
+  takes 125,000 + 7,500 per signature + 2,500 per validator as the most a
+  delivery takes, 147,500 at 2 of 3, and `preflight` stops when the
+  overhead doesn't cover it at `DUSK_ORIGIN_THRESHOLD` of the
+  `DUSK_ORIGIN_VALIDATORS`. 160,000 covers up to 3 of 5. Hyperlane's own
+  overheads, from `multisigIsmVerifyCosts` in its SDK (159,736 gas at 2 of
+  3, before the handle), are measured on its default ISM, an aggregation
+  of routing, multisig and pausable ISMs, which costs more than the single
+  MessageIdMultisig ISM the token uses.
+- **`EVM_IGP_GAS_OVERHEAD`**, 2,170,000: a relayed `process` on Dusk,
+  1,950,000 plus 220,000 per signature at `EVM_ORIGIN_THRESHOLD`, the
+  route's `handle` included ([Relayed deliveries](#relayed-deliveries)).
+  `preflight` stops below that, or above `DUSK_RELAYER_GAS_LIMIT`.
+
+### What the defaults charge
+
+Assumptions: 1 ETH = 25,000 DUSK (ETH at 2,500 USD, DUSK at 0.10 USD), EVM
+gas at 1 gwei, Dusk gas at 1 LUX, a 5,000 bps (50%) margin. The ratio and
+the gas price are the operator's to keep current
+([operations.md](operations.md#relaying-fees)).
+
+| | Dusk to Sepolia | Sepolia to Dusk |
+|---|---|---|
+| IGP pricing | overhead 110,000, rate 375,000, gas price 1e9 wei | overhead 2,170,000, rate 6e14, gas price 1 LUX |
+| Gas paid for | 160,000 EVM gas | 2,170,000 Dusk gas |
+| IGP fee | 6 DUSK | 1.302e11 wei (0.0000001302 ETH) |
+| Other fee | 0.001 DUSK protocol fee, to the Dusk ProtocolFee's beneficiary | 1 wei, Hyperlane's own protocol fee on Sepolia |
+| Delivery cost | 140,569 EVM gas at 2 of 3, measured: 0.00014 ETH, 3.5 DUSK | 2,142,500 Dusk gas for a payout, 2,127,810 for a new escrow, at threshold 1: 0.0021 DUSK, 8.6e10 wei |
+| Covered | 1.71 times at 2 of 3; at least 1.5 times up to 3 of 5 | 1.52 times |
+| In USD | 0.60 charged for 0.35 of gas | 0.00033 charged for 0.00021 |
+
+The local rehearsal (`deploy/local-fees-check.sh`, Anvil standing in for
+Sepolia, 2 of 3 Dusk-origin validators) measured both directions: a
+transfer from Dusk paid 6 DUSK to the Dusk IGP (and 0.001 to the
+ProtocolFee) and its delivery on Anvil took 140,569 gas minting to a new
+holder, 106,193 to one that already held tokens; a transfer from
+Anvil paid 130,200,000,000 wei to the EVM IGP and its delivery on Dusk took
+2,141,372 gas, against the 2,170,000 paid for. A short message from Dusk to
+a TestRecipient took 113,834 gas to deliver, and a message to Dusk's
+TestRecipient 2,105,513.
+
+On testnet the ETH is Sepolia ETH, and the relayer pays Sepolia's gas
+price, which can be far below or above 1 gwei; the pricing is set as it
+would be on mainnet.
+
+### What the relayer requires
+
+The relayer config `deploy/testnet.sh agent-configs` writes relays any
+message between Dusk and the EVM chain, whoever sent it and whatever the
+recipient, once it is paid for. It has no whitelist, and its
+`gasPaymentEnforcement` has one `onChainFeeQuoting` policy per origin
+domain. The relayer reads payments only from this deployment's IGPs; the
+EVM chain's `interchainGasPaymaster` in it is ours, not Hyperlane's. A message
+without a payment there isn't relayed, nor is a message from any other
+origin.
+
+`onChainFeeQuoting` compares gas, not money. It holds the gas a message
+paid for, less what the relayer has already spent on it, against a
+fraction of the relayer's own estimate of its delivery, and leaves it to
+the IGP's price to make that gas worth what it costs:
+
+- **From Dusk**, the estimate is `eth_estimateGas` of the `process` call, so
+  it follows each message, and a recipient whose `handle` costs more needs
+  more gas paid for. The fraction is 1 / (1 + margin), `2/3` by default,
+  so what was paid for, at the IGP's price with the margin, covers the
+  estimate at that price without it. A warp transfer pays for 160,000 gas,
+  enough for estimates up to 240,000; the rehearsal's was 141,343.
+- **From the EVM chain**, `hyperlane-dusk` estimates every delivery at the
+  relayer's gas limit, `DUSK_RELAYER_GAS_LIMIT`, because a Rusk query
+  measures no gas. The fraction is `EVM_IGP_GAS_OVERHEAD` /
+  `DUSK_RELAYER_GAS_LIMIT`, `217/500`, so a message must have paid for the
+  overhead, 2,170,000 Dusk gas, as a warp transfer does.
+
+A message that passes is sent with the larger of the estimate and the gas
+it paid for as its gas limit. A sender can pay more on the EVM side at any
+time, with the IGP's `payForGas` for the message ID; payments for one
+message add up. On Dusk only `dispatch` pays, through the Mailbox's default
+hook.
+
+`minimum`, the other policy that checks payments, compares a payment's
+value with a fixed amount of the origin's token. It would have to change
+with every price update, and can't tell a message whose `handle` costs ten
+times more. `none` relays everything, which is what anyone could make the
+relayer pay for before.
+
+### What stays uncovered
+
+- **Prices move.** The IGPs charge what they were last set to. If EVM gas
+  or the ETH/DUSK price moves against the operator by more than the
+  margin, Dusk-origin deliveries cost more than they pay until
+  `deploy/testnet.sh dusk-igp --apply` updates the price. Hyperlane runs a
+  service that updates its own oracles; here it is a manual step.
+- **Dusk-bound messages that cost more than the overhead.** The relayer
+  can't estimate a Dusk delivery, so a message whose `handle` takes more
+  than the 2.17M gas it paid for is still delivered, with the relayer's 5M
+  limit. It costs the relayer up to 0.005 DUSK, of which the payment covers
+  0.0033 at the default margin.
+- **Deliveries that fail.** One that passes the simulation and then fails
+  (a recipient that tells the simulation from the transaction, or someone
+  delivering first) pays the whole 5M limit, 0.005 DUSK, against the
+  same 0.0033 paid. The relayer records the gas it used, and doesn't try
+  that message again until more is paid for it.
 
 ## Attack costs
 
 What it costs to add a byte of permanent state through each permissionless
-path, at 1 LUX per gas, with the fees each entry pays. "Batched" is from a
-contract that makes many calls in one transaction, where the path allows
-it; "one tx each" is a transaction per entry.
+path, at 1 LUX per gas, with the fees each entry pays at the profile's
+token-sized IGP pricing. "Batched" is from a contract that makes many calls
+in one transaction, where the path allows it; "one tx each" is a
+transaction per entry. At the pricing `deploy/testnet.env.example`
+configures, a dispatch through the IGP to the EVM chain pays 6.001 DUSK,
+about 49,200 DUSK per MiB, and filling the IGP costs about 400 million DUSK
+of fees.
 
 | Path | Contract | Bytes per entry | Gas per entry, batched | Gas per entry, one tx each | Fees per entry | DUSK per MiB, batched | DUSK per MiB, one tx each |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -509,7 +607,8 @@ it; "one tx each" is a transaction per entry.
   needs DUSK for its gas first: with a funding transfer per key, about
   3.7M gas and 11.6 DUSK per MiB.
 - Escrow is paid for by the relayer, on Dusk, through its `process` at one
-  signature; the attacker pays an EVM transfer per entry.
+  signature. The attacker pays an EVM transfer per entry, and the EVM IGP
+  for the relayer's gas, without which the relayer doesn't deliver it.
 
 What filling each contract to its ceiling costs, with the cheapest path:
 
@@ -525,7 +624,7 @@ What filling each contract to its ceiling costs, with the cheapest path:
 | WarpDrc20, full at 4 GiB | transfers to new holders | 69M | about 3,900, plus a token unit each |  |
 | WarpDrc20, full at 4 GiB | approvals of new spenders | 72M | about 3,800 |  |
 | A route, full at 4 GiB | registrations | 12.8M | about 23,700; 47,400 with a funding transfer each | [security.md](security.md#open-registry-growth) |
-| A route, full at 4 GiB | escrow for new recipients | 58M | about 123,000, paid by the relayer | plus an EVM transfer each |
+| A route, full at 4 GiB | escrow for new recipients | 58M | about 123,000, the relayer's gas | plus an EVM transfer and its IGP fee each, 7.6 ETH in all at the default pricing |
 | ProtocolFee, AggregationHook, ISM | none |  |  | no permissionless state |
 
 - ProtocolFee and AggregationHook have no state anyone can add to: neither
@@ -534,7 +633,8 @@ What filling each contract to its ceiling costs, with the cheapest path:
 - A route's escrow grows only through deliveries from its enrolled router,
   each a transfer someone sent from the EVM chain, and the relayer pays for
   each delivery on Dusk. Filling a native route's 4 GiB with escrow takes
-  about 58M transfers: about 123,000 DUSK of the relayer's gas, and 58M EVM
+  about 58M transfers: about 123,000 DUSK of the relayer's gas, which the
+  transfers' IGP fees, 7.6 ETH, pay back 1.5 times, and 58M EVM
   transactions from the attacker.
 
 ## Throughput

@@ -20,6 +20,10 @@ in `rust/main/chains/hyperlane-dusk`.
   `keccak256` and `secp256k1_recover` host queries the contracts need.
 - Not yet deployed to Dusk testnet or mainnet. [docs/testnet.md](docs/testnet.md)
   covers deploying to testnet and connecting to Sepolia.
+- Relaying is paid for in both directions: each side's IGP charges the
+  sender for the destination gas, with the operator's margin, and the
+  generated relayer config relays any message once it is paid for
+  ([docs/costs.md](docs/costs.md#fee-coverage)).
 - No external audit is recorded in this repository. See
   [docs/security.md](docs/security.md) for the internal review.
 

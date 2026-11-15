@@ -210,9 +210,17 @@ and router admin of every contract. Whoever holds that key can:
 - **Take fees**: unclaimed and future ProtocolFee and IGP fees, and each
   route's dispatch credit.
 
+On the EVM side, `deploy/testnet.sh` makes the EVM deployer the owner of the
+token, its ISM, the IGP and its gas oracle. Whoever holds that key can mint
+or burn through the token's ISM and routers, point the token's hook at
+anything (a hook without the MerkleTreeHook leaves its messages out of the
+tree validators sign, and they never deliver), price delivery to Dusk at
+anything (an absurd price or a removed oracle makes every transfer to Dusk
+revert), and take the IGP's payments by changing its beneficiary.
+
 They can't touch users' own dispatch credit, pending escrow, or existing
-WarpDrc20 balances. On testnet one deployer key is acceptable. Mainnet needs
-the owner role on a multisig or equivalent custody.
+WarpDrc20 balances. On testnet one deployer key on each side is acceptable.
+Mainnet needs the owner role on a multisig or equivalent custody.
 
 ## Design decisions
 
@@ -279,8 +287,25 @@ Accepted:
   Rusk 1.7.3 only sets the sender for a transaction
   (`rusk-private/core/src/abi.rs`). A hostile recipient can pass the
   simulation and fail the real delivery, costing the relayer the
-  transaction's gas limit (5M), as gas estimation can be fooled on EVM.
-  Enforce IGP gas payments for Dusk destinations on mainnet.
+  transaction's gas limit (5M), as gas estimation can be fooled on EVM. The
+  relayer only delivers a message that paid our Sepolia IGP for at least a
+  relayed `process` (2.17M gas at threshold 1, with the margin worth 3.26M),
+  and doesn't try it again until more is paid, so each such message costs
+  its sender that payment and the relayer at most the rest of the 5M
+  ([costs.md](costs.md#what-stays-uncovered)).
+- **Open relaying, priced on chain.** The relayer relays any message
+  between the two chains, from any sender to any recipient, that paid this
+  deployment's IGP on its origin for enough gas. It trusts the IGPs' prices.
+  If they fall behind the market by more than the margin, the relayer
+  delivers at a loss until the owner updates them, and if the owner sets
+  them too high, nobody can afford a transfer. It counts gas, not money, so
+  a message priced at an IGP's old rate still passes. Anyone can pay for
+  any message on the Sepolia IGP (`payForGas`), and payments for one
+  message add up; on Dusk only `dispatch` pays. A message that paid for more
+  gas is sent with that much as its limit, so a sender can buy the gas an
+  expensive `handle` needs. A Sepolia-origin message sent through the
+  Mailbox's default hook pays no IGP for Dusk (it falls back to the Merkle
+  tree alone), so it isn't relayed until someone pays our IGP for it.
 - **Recipients must not read `public_sender()`.** A recipient's `handle`,
   its `interchain_security_module` getter and any ISM it uses run inside the
   relayer's simulation, where `public_sender()` panics. If `handle` or an
