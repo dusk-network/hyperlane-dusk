@@ -207,6 +207,7 @@ A Dusk chain entry in an agent config looks like this:
   "eventCursorDir": "/var/lib/hyperlane/dusk-relayer-events",
   "gasLimit": 5000000,
   "gasPrice": 1,
+  "maxBatchSize": 32,
   "mailbox": "0x<mailbox contract id>",
   "interchainGasPaymaster": "0x<igp contract id>",
   "validatorAnnounce": "0x<validator-announce contract id>",
@@ -214,6 +215,12 @@ A Dusk chain entry in an agent config looks like this:
   "signer": { "type": "duskKey", "keyFile": "/run/secrets/dusk-signer.key" }
 }
 ```
+
+With `maxBatchSize` above 1 (at most 64), a relayer sends the deliveries it
+has ready together, as consecutive transactions of its account that can
+share a block; one at a time, a relayer key delivers one message every two
+blocks. It needs a `dusk-tx` that takes `call --nonce --no-wait`, as this
+repository's does.
 
 Every agent process needs its own `eventCursorDir`. The `duskKey` signer takes
 exactly one of `keyFile` (a file with no group or world permissions),

@@ -24,7 +24,10 @@
 #   5. The 2 KiB message from Dusk, which paid for too little gas, is topped
 #      up with `dusk-tx pay-for-gas`: half of what it lacks doesn't deliver
 #      it; the rest, found by its nonce, does.
-#   6. `deploy/testnet.sh claim` pays the Dusk IGP's and ProtocolFee's fees
+#   6. A burst of transfers from Anvil is delivered with deliveries sharing
+#      Dusk blocks: the relayer sends the ones it has ready together, as
+#      consecutive transactions of its account (maxBatchSize).
+#   7. `deploy/testnet.sh claim` pays the Dusk IGP's and ProtocolFee's fees
 #      to the deployer, and the Anvil IGP's to its beneficiary.
 #
 # Every Dusk transaction here is signed with DUSK_KEYS, which the rehearsal's
@@ -48,6 +51,8 @@ DELIVERY_TIMEOUT="${DELIVERY_TIMEOUT:-600}"
 UNPAID_WATCH="${UNPAID_WATCH:-120}"
 # Anvil account #0, the rehearsal's EVM deployer, sends the EVM transfers.
 EVM_USER_KEY="$EVM_DEPLOYER_KEY"
+# How many transfers from Anvil step 6 sends at once.
+BURST="${BURST:-8}"
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
@@ -116,6 +121,8 @@ relayer_on() {
 }
 # A message the Dusk Mailbox dispatched last, by its nonce.
 dusk_latest_id() { dq --contract "$DUSK_MAILBOX" --method latest_dispatched_id --return-type bytes32; }
+gql() { curl -sf -m 30 -X POST "${DUSK_RUES_URL%/}/on/graphql/query" --data "$1"; }
+dusk_height() { gql 'query { block(height: -1) { header { height } } }' | jq -er '.block.header.height'; }
 
 # The transfer from Anvil (3.) pays the deployer, which a fresh route holds
 # in escrow until the account is registered.
@@ -256,7 +263,43 @@ wait_until "$DELIVERY_TIMEOUT" "the 2 KiB message from Dusk was delivered once i
     evm_delivered "$heavy_id"
 info "delivering it used $(evm_delivery_gas "$heavy_id") gas"
 
-# ── 6. Collect the fees ──────────────────────────────────────────────────────
+# ── 6. A burst of transfers from Anvil ───────────────────────────────────────
+
+# The relayer sends the deliveries it has ready together, as consecutive
+# transactions of its account (maxBatchSize), and they share Dusk blocks.
+# One at a time, it delivered one every two blocks.
+from_height="$(dusk_height)"
+quote="$(cast call "$EVM_TOKEN" "quoteGasPayment(uint32)(uint256)" "$DUSK_DOMAIN" --rpc-url "$EVM_RPC" | num)"
+nonce="$(cast nonce "$EVM_USER" --rpc-url "$EVM_RPC")"
+burst_txs=()
+for i in $(seq 0 $((BURST - 1))); do
+    # A fixed gas limit: each estimate would see the state before the burst.
+    burst_txs+=("$(cast send "$EVM_TOKEN" "transferRemote(uint32,bytes32,uint256)" "$DUSK_DOMAIN" "0x$account" \
+        1000000 --value "$quote" --nonce $((nonce + i)) --gas-limit 400000 --async \
+        --rpc-url "$EVM_RPC" --private-key "$EVM_USER_KEY")") || fail "burst transfer $i failed"
+done
+burst_ids=()
+for tx in "${burst_txs[@]}"; do
+    burst_ids+=("$(cast receipt "$tx" --json --rpc-url "$EVM_RPC" \
+        | jq -er --arg s "$(cast sig-event 'DispatchId(bytes32)')" '.logs[] | select(.topics[0] == $s) | .topics[1]')") \
+        || fail "burst transfer $tx dispatched nothing"
+done
+info "$BURST transfers from $EVM_CHAIN_NAME sent at once"
+burst_delivered() { local id; for id in "${burst_ids[@]}"; do dusk_delivered "$id" || return 1; done; }
+wait_until "$DELIVERY_TIMEOUT" "the $BURST transfers from $EVM_CHAIN_NAME were delivered" burst_delivered
+# The Mailbox's executed process transactions since the burst, by block.
+per_block="$(gql "query { blockTxs(range: [$from_height, $(dusk_height)], contract: \"$DUSK_MAILBOX\") { blockHeight err tx { callData { fnName } } } }" \
+    | jq -c '[.blockTxs[] | select(.err == null and .tx.callData.fnName == "process") | .blockHeight]
+             | group_by(.) | map({height: .[0], deliveries: length})')" \
+    || fail "Can't read the Dusk Mailbox's transactions since block $from_height"
+info "deliveries to Dusk by block: $per_block"
+[ "$(jq '[.[].deliveries] | add // 0' <<<"$per_block")" -ge "$BURST" ] \
+    || fail "the Dusk Mailbox executed fewer than $BURST deliveries since the burst"
+[ "$(jq '[.[].deliveries] | max // 0' <<<"$per_block")" -ge 2 ] \
+    || fail "no two of the $BURST deliveries shared a Dusk block: the relayer sent them one at a time"
+ok "the relayer delivered the $BURST transfers in $(jq length <<<"$per_block") Dusk blocks, up to $(jq '[.[].deliveries] | max' <<<"$per_block") in one"
+
+# ── 7. Collect the fees ──────────────────────────────────────────────────────
 
 beneficiary="$(cast call "$EVM_IGP" "beneficiary()(address)" --rpc-url "$EVM_RPC")"
 evm_before="$(cast balance "$beneficiary" --rpc-url "$EVM_RPC")"

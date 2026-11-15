@@ -164,6 +164,13 @@ fi
 DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
 DUSK_GAS_LIMIT="${DUSK_GAS_LIMIT:-30000000}"
 DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-1}"
+# How many deliveries to Dusk the relayer sends together, as consecutive
+# transactions of its account that can share a block (maxBatchSize). At most
+# 64, the most of an account's transactions Rusk queues ahead of its next
+# nonce; deploy/testnet.env.example has why 32.
+DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-32}"
+[[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
+    || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
 
 # The relayer relays any message once it is paid for, with the policies
 # deploy/testnet.sh writes (docs/costs.md#fee-coverage): a Dusk-origin
@@ -277,6 +284,7 @@ cat > "$RELAYER_CONFIG" <<JSON
       "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
       "gasLimit": ${DUSK_RELAYER_GAS_LIMIT},
       "gasPrice": ${DUSK_GAS_PRICE},
+      "maxBatchSize": ${DUSK_RELAYER_MAX_BATCH_SIZE},
       "mailbox": "0x${DUSK_MAILBOX}",
       "interchainGasPaymaster": "0x${DUSK_IGP}",
       "validatorAnnounce": "0x${DUSK_VALIDATOR_ANNOUNCE}",

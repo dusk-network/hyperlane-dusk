@@ -1177,6 +1177,23 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(relayer["chains"]["sepolia"]["interchainGasPaymaster"], self.evm_igp)
         self.assertEqual(relayer["chains"]["dusk"]["interchainGasPaymaster"], "0x" + IGP)
 
+    def test_the_relayer_sends_deliveries_to_dusk_together(self):
+        # maxBatchSize above 1: the relayer sends that many deliveries to Dusk
+        # as consecutive transactions, which can share a block.
+        self.assert_ok(self.run_script("agent-configs"))
+        relayer = json.loads(self.relayer_config.read_text())
+        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 32)
+        self.assertNotIn("maxBatchSize", relayer["chains"]["sepolia"])
+        validator = json.loads((self.out / "validator-dusk.json").read_text())
+        self.assertNotIn("maxBatchSize", validator["chains"]["dusk"])
+        self.assert_ok(self.run_script("agent-configs", DUSK_RELAYER_MAX_BATCH_SIZE=1))
+        self.assertEqual(json.loads(self.relayer_config.read_text())["chains"]["dusk"]["maxBatchSize"], 1)
+        for value in ("0", "65", "x", "-1"):
+            with self.subTest(value=value):
+                self.assert_fails(self.run_script("agent-configs", DUSK_RELAYER_MAX_BATCH_SIZE=value),
+                                  "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64")
+                self.assertFalse(self.relayer_config.exists())
+
     def test_agent_configs_follow_the_margin(self):
         self.settings["OPERATOR_MARGIN_BPS"] = 2000
         fees = expected_fees(margin=2000)
@@ -1998,6 +2015,8 @@ class AgentEnvironment(unittest.TestCase):
             with self.subTest(agent=name):
                 self.assert_clean(environments[name], agents / f"{name}.json", expected[name])
                 self.assertEqual(environments[name]["DUSK_TX_BIN"], str(dusk_tx))
+        # The relayer sends deliveries to Dusk together.
+        self.assertEqual(json.loads((agents / "relayer.json").read_text())["chains"]["dusk"]["maxBatchSize"], 32)
         stop = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "stop"],
                               env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(stop.returncode, 0, stop.stderr)
@@ -2123,6 +2142,17 @@ class GenAgentConfigsPassword(unittest.TestCase):
              "matchingList": [{"originDomain": 31338}]},
         ])
         self.assertEqual(relayer["chains"]["anvil"]["interchainGasPaymaster"], "0x" + "03" * 20)
+
+    def test_relayer_sends_deliveries_to_dusk_together(self):
+        stub = self.bin / "dusk-tx"
+        write_executable(stub, EXPORT_STUB)
+        result = self.generate("password", stub)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        generated = json.loads(result.stdout)
+        relayer = json.loads(Path(generated["relayer"]).read_text())
+        shutil.rmtree(generated["runDir"])
+        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 32)
+        self.assertNotIn("maxBatchSize", relayer["chains"]["anvil"])
 
     def test_real_dusk_tx_decrypts_with_a_tricky_password(self):
         dusk_tx = Path(os.environ.get("DUSK_TX_BIN", ROOT / "target" / "release" / "dusk-tx"))

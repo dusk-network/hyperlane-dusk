@@ -904,13 +904,17 @@ EVM to Dusk, 60 messages, one every 25 s:
   previous block is accepted, so a transaction waits for the next round.
   The Dusk to EVM transfers above, each sent just after the last one's
   block, waited 18.3 s (median) before the dispatch's block.
-- **The relayer delivers to Dusk one message per two blocks.** It submits
-  one message at a time, and `dusk-tx` returns once the transaction is in a
-  block, so the next one misses the round that has just started. The 39
-  burst messages had their signatures and metadata within 8.5 s, then went
-  in one every 20.3 s, the last 778 s after its dispatch.
+- **The relayer delivered to Dusk one message per two blocks.** It
+  submitted one message at a time, and `dusk-tx` returns once the
+  transaction is in a block, so the next one missed the round that had just
+  started. The 39 burst messages had their signatures and metadata within
+  8.5 s, then went in one every 20.3 s, the last 778 s after its dispatch.
   That is 3 messages a minute per relayer key, against the 1,000 a block
-  can hold ([Throughput](#throughput)).
+  can hold ([Throughput](#throughput)). The configs `agent-configs` writes
+  now set `maxBatchSize` to 32, so the relayer sends the deliveries it has
+  ready as consecutive transactions that share a block
+  ([operations.md](operations.md#uncertain-transactions)); the bench above
+  ran without it.
 - The relayer checks a delivery 10 minutes after submitting it
   (Hyperlane's `CONFIRM_DELAY`), so it only logs Dusk deliveries as
   confirmed then.
@@ -1034,11 +1038,11 @@ In order of what they save:
    that item 2 removes. The searches by dispatch transaction come from
    `txIdIndexingEnabled` (default true; the demo's relayer config turns it
    off), which a later run could measure without.
-5. **Pipeline Dusk deliveries.** Submitting the next delivery before the
-   last is in a block, with the account's next nonce (Rusk keeps up to 64
-   future nonces per account), or batching deliveries, would lift the 3 a
-   minute. Until then a relayer key delivers at most about 4,300 messages a
-   day to Dusk.
+5. **Pipeline Dusk deliveries.** Done: with `maxBatchSize` above 1 the
+   relayer submits the next delivery before the last is in a block, with the
+   account's next nonce (Rusk queues up to 64 per account), and the
+   generated configs set 32. One at a time, a relayer key delivered at most
+   about 4,300 messages a day to Dusk.
 6. **Cache `lastBlockPair` for a block.** Every indexer looks every 5 s,
    twice per 10 s block, and `lastBlockPair` is the most frequent request
    on a new deployment. Keeping it until the next block is due would cut

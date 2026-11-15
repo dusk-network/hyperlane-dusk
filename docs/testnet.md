@@ -262,7 +262,10 @@ absolute path.
   from this deployment's two IGPs, the Sepolia one included
   ([costs.md](costs.md#what-the-relayer-requires)). A message nobody paid
   for, or paid too little for, waits in the relayer's queue; a later
-  payment releases it. Run one relayer:
+  payment releases it. The relayer sends the deliveries to Dusk it has
+  ready together, up to `DUSK_RELAYER_MAX_BATCH_SIZE` (32), as consecutive
+  transactions of its account that can share a block (`maxBatchSize`;
+  `deploy/testnet.env.example` explains the number). Run one relayer:
 
   ```bash
   cd hyperlane-monorepo/rust/main

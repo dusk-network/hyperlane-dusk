@@ -325,8 +325,13 @@ holds it, retrying every 500 ms, and drops it if they haven't arrived after
 about 5 seconds. Any other refusal still stops it, as `... submission
 failed: Preverify rejected before propagation ...`, and a propagation the
 node doesn't confirm is reported as `... Propagation outcome unknown ...`.
-The relayer pipelines Dusk deliveries with both flags when
-`dusk-tx call --help` lists them, and sends them one at a time otherwise.
+The relayer pipelines Dusk deliveries with both flags when its Dusk chain's
+`maxBatchSize` is above 1 and `dusk-tx call --help` lists them, and sends
+them one at a time otherwise. `agent-configs` sets `maxBatchSize` to
+`DUSK_RELAYER_MAX_BATCH_SIZE`, 32 by default and at most 64, the most of an
+account's transactions Rusk queues ahead of its next nonce: a batch goes out
+one transaction at a time, each once the node holds the one before, and a
+refused one ends the batch, sending the rest one at a time.
 
 ## CI
 

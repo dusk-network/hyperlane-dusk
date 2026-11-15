@@ -45,6 +45,7 @@ DUSK_TX="${DUSK_TX:-$DUSK_DIR/target/release/dusk-tx}"
 AGENT_STATE_DIR="${AGENT_STATE_DIR:-/var/lib/hyperlane}"
 DUSK_SIGNER_KEY_FILE="${DUSK_SIGNER_KEY_FILE:-/run/secrets/dusk-signer.key}"
 DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
+DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-32}"
 WASM_DIR="${WASM_DIR:-$DUSK_DIR/target/contract/wasm32-unknown-unknown/release}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
 STATE="$OUT_DIR/deployment.json"
@@ -772,6 +773,15 @@ check_relayer_gas_limit() {
         || fail "DUSK_RELAYER_GAS_LIMIT is $DUSK_RELAYER_GAS_LIMIT; with $basis of $threshold it must be at least $need"
 }
 
+# How many deliveries to Dusk the relayer sends together, as consecutive
+# transactions of its account (its maxBatchSize for Dusk): 1 to 64, the most
+# of an account's transactions Rusk queues ahead of its next nonce
+# (deploy/testnet.env.example has why 32).
+check_relayer_batch_size() {
+    [[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
+        || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, the most of an account's transactions Rusk queues ahead of its next nonce, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
+}
+
 # Check the ISM that verifies messages to the deployed route: the route's
 # own ISM if it has one, otherwise the Mailbox's default. It must be a
 # MessageIdMultisig ISM whose validators and threshold are
@@ -1034,6 +1044,7 @@ cmd_preflight() {
         command -v "$tool" >/dev/null || fail "$tool is required"
     done
     load_fees
+    check_relayer_batch_size
     preflight_dusk
     preflight_evm
     preflight_keys
@@ -1512,11 +1523,15 @@ cmd_claim() {
 
 # ── Agent configs ────────────────────────────────────────────────────────────
 
+# The Dusk chain of an agent config. The relayer's has a maxBatchSize: it
+# sends that many deliveries to Dusk together, as consecutive transactions
+# of its account, with a dusk-tx that takes `call --nonce --no-wait`.
 dusk_chain_json() {
-    local cursor_dir="$1" gas_limit="$2"
+    local cursor_dir="$1" gas_limit="$2" max_batch_size="${3:-null}"
     jq -n --arg url "$DUSK_RUES_URL" --argjson domain "$DUSK_DOMAIN" \
         --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --arg cursors "$cursor_dir" \
         --argjson gl "$gas_limit" --argjson gp "$DUSK_AGENT_GAS_PRICE" \
+        --argjson batch "$max_batch_size" \
         --arg key_file "$DUSK_SIGNER_KEY_FILE" --slurpfile s "$STATE" '{
           name: "dusk", protocol: "dusk", domainId: $domain, chainId: $chain,
           rpcUrls: [{http: $url}], eventCursorDir: $cursors,
@@ -1527,13 +1542,14 @@ dusk_chain_json() {
           merkleTreeHook: ("0x" + $s[0].dusk.merkle_tree_hook),
           submitter: "Classic",
           signer: {type: "duskKey", keyFile: $key_file}
-        }'
+        } + (if $batch == null then {} else {maxBatchSize: $batch} end)'
 }
 
 cmd_agent_configs() {
     [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
     load_fees
+    check_relayer_batch_size
     check_dusk_deployment
     check_evm_deployment
     check_deployed_ism
@@ -1565,7 +1581,8 @@ cmd_agent_configs() {
     # (onChainFeeQuoting; docs/costs.md#fee-coverage). A message from another
     # origin matches no policy and is not relayed.
     jq -n --arg evm "$EVM_CHAIN_NAME" --argjson evm_chain "$evm_chain" \
-        --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/relayer-dusk-events" "$DUSK_RELAYER_GAS_LIMIT")" \
+        --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/relayer-dusk-events" "$DUSK_RELAYER_GAS_LIMIT" \
+            "$DUSK_RELAYER_MAX_BATCH_SIZE")" \
         --argjson ed "$EVM_DOMAIN" --argjson dd "$DUSK_DOMAIN" \
         --arg dusk_fraction "$(fee .relayer.dusk_origin_gas_fraction)" \
         --arg evm_fraction "$(fee .relayer.evm_origin_gas_fraction)" \
@@ -1594,6 +1611,7 @@ cmd_agent_configs() {
         }' > "$OUT_DIR/validator-dusk.json"
 
     ok "Wrote $OUT_DIR/relayer.json and $OUT_DIR/validator-dusk.json"
+    ok "The relayer sends up to $DUSK_RELAYER_MAX_BATCH_SIZE deliveries to Dusk together, as consecutive transactions (maxBatchSize)"
     ok "The relayer relays a Dusk-origin message once its Dusk IGP payment covers $(fee .relayer.dusk_origin_gas_fraction) of the gas it estimates for $EVM_CHAIN_NAME, and an $EVM_CHAIN_NAME-origin one once it paid the EVM IGP $(state_get '.evm.igp') for $(fee .relayer.evm_origin_required_gas) Dusk gas"
     cat >&2 <<EOF
 Secrets are not in these files. Provide them when starting the agents:
