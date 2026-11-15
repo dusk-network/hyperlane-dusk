@@ -229,7 +229,8 @@ info "the 2 KiB message needs about $((small_gas + handle_gas)) gas, so $needed 
 igp_count() { dq --contract "$DUSK_IGP" --method gas_payment_count --return-type u32; }
 records="$(igp_count)"
 first=$(( missing / 2 ))
-out="$(dtx pay-for-gas --igp "$DUSK_IGP" --message-id "$heavy_id" --destination "$EVM_DOMAIN" --gas-amount "$first")" \
+out="$(dtx pay-for-gas --igp "$DUSK_IGP" --message-id "$heavy_id" --destination "$EVM_DOMAIN" --gas-amount "$first" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
     || fail "the first top-up failed: $out"
 info "paid the Dusk IGP $(jq -r .paid <<<"$out") LUX for $first more gas for it"
 never_within "$UNPAID_WATCH" "the relayer delivered the 2 KiB message from Dusk with $((PAID_GAS + first)) of the $needed gas it needs paid for" \
@@ -242,7 +243,8 @@ ok "not delivered after ${UNPAID_WATCH}s with $((PAID_GAS + first)) gas paid for
 rest=$(( missing - first + missing / 10 ))
 quote="$("$DUSK_TX" pay-for-gas --rues-url "$DUSK_RUES_URL" --igp "$DUSK_IGP" --nonce "$heavy_nonce" \
     --gas-amount "$rest" --quote-only | jq -er '.quote')" || fail "Can't quote the second top-up"
-out="$(dtx pay-for-gas --igp "$DUSK_IGP" --nonce "$heavy_nonce" --gas-amount "$rest" --max-payment $((2 * quote)))" \
+out="$(dtx pay-for-gas --igp "$DUSK_IGP" --nonce "$heavy_nonce" --gas-amount "$rest" --max-payment $((2 * quote)) \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
     || fail "the second top-up failed: $out"
 [ "$(jq -r .message_id <<<"$out")" = "$heavy_id" ] && [ "$(jq -r .destination <<<"$out")" = "$EVM_DOMAIN" ] \
     || fail "pay-for-gas --nonce $heavy_nonce paid for $(jq -c '{message_id, destination}' <<<"$out"), not the 2 KiB message"

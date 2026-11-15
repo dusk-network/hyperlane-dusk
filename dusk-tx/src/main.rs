@@ -556,6 +556,11 @@ enum Command {
             value_name = "DOMAIN:GAS_OVERHEAD:TOKEN_EXCHANGE_RATE:GAS_PRICE"
         )]
         igp_domain_config: String,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         /// Gas limit. Setting a domain's pricing takes about 1.86M gas.
         #[arg(long, default_value_t = OWNER_CALL_GAS_LIMIT)]
         gas_limit: u64,
@@ -589,6 +594,11 @@ enum Command {
         /// claim itself.
         #[arg(long)]
         beneficiary: String,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         /// Gas limit. Setting the beneficiary takes about 1.86M gas.
         #[arg(long, default_value_t = OWNER_CALL_GAS_LIMIT)]
         gas_limit: u64,
@@ -617,6 +627,11 @@ enum Command {
         /// ProtocolFee or IGP contract ID (64 hex chars).
         #[arg(long)]
         contract: String,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         /// Gas limit. A claim takes about 1.87M gas.
         #[arg(long, default_value_t = OWNER_CALL_GAS_LIMIT)]
         gas_limit: u64,
@@ -676,6 +691,11 @@ enum Command {
         /// Print the quote and the checks, and sign nothing.
         #[arg(long)]
         quote_only: bool,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed. Optional with --quote-only, which signs nothing.
+        #[arg(long, required_unless_present = "quote_only")]
+        expected_chain_id: Option<u8>,
         /// Gas limit. A top-up takes about 1.85M gas.
         #[arg(long, default_value_t = PAY_FOR_GAS_GAS_LIMIT)]
         gas_limit: u64,
@@ -1156,6 +1176,7 @@ async fn main() {
             secret_key_stdin,
             igp,
             igp_domain_config,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1167,6 +1188,7 @@ async fn main() {
                 secret_key_stdin,
                 &igp,
                 &igp_domain_config,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1180,6 +1202,7 @@ async fn main() {
             secret_key_stdin,
             contract,
             beneficiary,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1191,6 +1214,7 @@ async fn main() {
                 secret_key_stdin,
                 &contract,
                 &beneficiary,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1203,6 +1227,7 @@ async fn main() {
             secret_key,
             secret_key_stdin,
             contract,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1213,6 +1238,7 @@ async fn main() {
                 secret_key,
                 secret_key_stdin,
                 &contract,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1231,6 +1257,7 @@ async fn main() {
             gas_amount,
             max_payment,
             quote_only,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1254,6 +1281,7 @@ async fn main() {
                 gas_amount,
                 max_payment,
                 quote_only,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1970,6 +1998,8 @@ mod tests {
             &contract,
             "--igp-domain-config",
             "11155111:200000:375000:1000000000",
+            "--expected-chain-id",
+            "2",
         ])
         .unwrap()
         {
@@ -1978,7 +2008,16 @@ mod tests {
             }
             _ => unreachable!("parsed set-igp-config"),
         }
-        match parse(&["dusk-tx", "claim-fees", "--contract", &contract]).unwrap() {
+        match parse(&[
+            "dusk-tx",
+            "claim-fees",
+            "--contract",
+            &contract,
+            "--expected-chain-id",
+            "2",
+        ])
+        .unwrap()
+        {
             super::Command::ClaimFees { gas_limit, .. } => {
                 assert_eq!(gas_limit, super::OWNER_CALL_GAS_LIMIT);
             }
@@ -2290,7 +2329,16 @@ mod tests {
             ];
             Cli::try_parse_from(base.iter().chain(extra).copied()).map(|cli| cli.command)
         };
-        match parse(&["--message-id", &id, "--destination", "11155111"]).unwrap() {
+        match parse(&[
+            "--message-id",
+            &id,
+            "--destination",
+            "11155111",
+            "--expected-chain-id",
+            "2",
+        ])
+        .unwrap()
+        {
             super::Command::PayForGas {
                 message_id,
                 destination,
@@ -2322,7 +2370,15 @@ mod tests {
             }
             _ => unreachable!("parsed pay-for-gas"),
         }
-        assert!(parse(&["--nonce", "7", "--destination", "11155111"]).is_ok());
+        assert!(parse(&[
+            "--nonce",
+            "7",
+            "--destination",
+            "11155111",
+            "--expected-chain-id",
+            "2"
+        ])
+        .is_ok());
         // An ID alone could be paid for under any destination.
         assert!(parse(&["--message-id", &id]).is_err());
         assert!(parse(&["--message-id", &id, "--destination", "1", "--nonce", "7"]).is_err());
@@ -2330,6 +2386,132 @@ mod tests {
         assert!(
             Cli::try_parse_from(["dusk-tx", "pay-for-gas", "--igp", &igp, "--nonce", "7"]).is_err()
         );
+    }
+
+    /// The fee commands sign only for the chain the caller names, as
+    /// `withdraw-dispatch` does: each needs `--expected-chain-id`, except
+    /// `pay-for-gas --quote-only`, which signs nothing.
+    #[test]
+    fn fee_commands_require_an_expected_chain_id() {
+        let id = "11".repeat(32);
+        let commands = [
+            vec![
+                "set-igp-config",
+                "--igp",
+                &id,
+                "--igp-domain-config",
+                "1:0:10000000000:1",
+            ],
+            vec!["set-beneficiary", "--contract", &id, "--beneficiary", "x"],
+            vec!["claim-fees", "--contract", &id],
+            vec!["pay-for-gas", "--igp", &id, "--nonce", "1", "--gas-amount", "1"],
+        ];
+        for args in commands {
+            let parse = |extra: &[&str]| {
+                Cli::try_parse_from(
+                    ["dusk-tx"]
+                        .iter()
+                        .chain(args.iter())
+                        .chain(extra.iter())
+                        .copied(),
+                )
+            };
+            assert!(parse(&[]).is_err(), "{args:?} without --expected-chain-id");
+            assert!(parse(&["--expected-chain-id", "2"]).is_ok(), "{args:?}");
+        }
+        assert!(Cli::try_parse_from([
+            "dusk-tx",
+            "pay-for-gas",
+            "--igp",
+            &id,
+            "--nonce",
+            "1",
+            "--gas-amount",
+            "1",
+            "--quote-only",
+        ])
+        .is_ok());
+    }
+
+    /// A fee command against an endpoint on another chain stops once it has
+    /// the endpoint's chain ID: before it queries a contract, opens the
+    /// signer's key file or builds a transaction. The key file here doesn't
+    /// exist, so reading it first would fail differently.
+    #[tokio::test]
+    async fn fee_commands_check_the_chain_before_anything_else() {
+        let id = "22".repeat(32);
+        let keys = || Some(std::path::PathBuf::from("/nonexistent/dusk-tx-test.keys"));
+        let (_, beneficiary) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let beneficiary = hex::encode(beneficiary.to_bytes());
+        for command in ["set-igp-config", "set-beneficiary", "claim-fees", "pay-for-gas"] {
+            let (url, server) = mock_rues(vec![("/chain_id", 200, vec![1])]);
+            let result = match command {
+                "set-igp-config" => {
+                    super::cmd_set_igp_config(
+                        &url,
+                        keys(),
+                        "",
+                        None,
+                        false,
+                        &id,
+                        "1:0:10000000000:1",
+                        2,
+                        3_000_000,
+                        1,
+                    )
+                    .await
+                }
+                "set-beneficiary" => {
+                    super::cmd_set_beneficiary(
+                        &url,
+                        keys(),
+                        "",
+                        None,
+                        false,
+                        &id,
+                        &beneficiary,
+                        2,
+                        3_000_000,
+                        1,
+                    )
+                    .await
+                }
+                "claim-fees" => {
+                    super::cmd_claim_fees(&url, keys(), "", None, false, &id, 2, 3_000_000, 1).await
+                }
+                _ => {
+                    super::cmd_pay_for_gas(
+                        &url,
+                        keys(),
+                        "",
+                        None,
+                        false,
+                        &id,
+                        super::TopUpMessage::Id {
+                            id: id.clone(),
+                            destination: 1,
+                        },
+                        1,
+                        None,
+                        false,
+                        Some(2),
+                        3_000_000,
+                        1,
+                    )
+                    .await
+                }
+            };
+            let error = result.unwrap_err();
+            assert!(
+                error.contains("Configured Dusk chain ID 2 does not match endpoint chain ID 1"),
+                "{command}: {error}"
+            );
+            assert_eq!(
+                server.join().unwrap().len(),
+                1,
+                "{command} asked for nothing but the chain ID"
+            );
+        }
     }
 
     /// `top_up_quote` is the IGP's `quote_pay_for_gas`: gas x price x rate
@@ -3375,6 +3557,13 @@ fn call_output(
         None => output["submitted"] = json!(true),
     }
     output
+}
+
+/// The chain ID a command signs for: the endpoint's, which must be
+/// `expected`. The fee commands bind it before they query anything else,
+/// read the signer or build a transaction.
+async fn bind_chain_id(client: &RuesClient, expected: u8) -> Result<u8, String> {
+    resolve_signing_chain_id(Some(expected), client.query_chain_id().await?)
 }
 
 fn resolve_signing_chain_id(expected: Option<u8>, observed: u8) -> Result<u8, String> {
@@ -5366,12 +5555,14 @@ async fn cmd_set_igp_config(
     secret_key_stdin: bool,
     igp_hex: &str,
     config_arg: &str,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
     let (domain, config) = parse_igp_domain_config(config_arg)?;
     let igp = parse_bytes32(igp_hex)?;
     let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     fee_contract_kind(&client, &igp, igp_hex, false).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     ensure_signer_owns(&client, &igp, igp_hex, &pk).await?;
@@ -5379,7 +5570,6 @@ async fn cmd_set_igp_config(
         .contract_query(&igp, "domain_gas_config", &domain)
         .await?;
 
-    let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
@@ -5426,6 +5616,7 @@ async fn cmd_set_beneficiary(
     secret_key_stdin: bool,
     contract_hex: &str,
     beneficiary_arg: &str,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -5433,6 +5624,7 @@ async fn cmd_set_beneficiary(
     let beneficiary = hyperlane_dusk_types::message::keccak256(&account.to_bytes());
     let contract = parse_bytes32(contract_hex)?;
     let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let kind = fee_contract_kind(&client, &contract, contract_hex, true).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     ensure_signer_owns(&client, &contract, contract_hex, &pk).await?;
@@ -5449,7 +5641,6 @@ async fn cmd_set_beneficiary(
         return Ok(());
     }
 
-    let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
@@ -5487,11 +5678,13 @@ async fn cmd_claim_fees(
     secret_key_hex: Option<String>,
     secret_key_stdin: bool,
     contract_hex: &str,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
     let contract = parse_bytes32(contract_hex)?;
     let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let kind = fee_contract_kind(&client, &contract, contract_hex, true).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let identity = account_identity(&pk);
@@ -5516,7 +5709,6 @@ async fn cmd_claim_fees(
         return Err(format!("{kind} {contract_hex} holds no fees to claim"));
     }
 
-    let chain_id = client.query_chain_id().await?;
     let (nonce, balance) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
@@ -5671,6 +5863,7 @@ async fn cmd_pay_for_gas(
     gas_amount: u64,
     max_payment: Option<u64>,
     quote_only: bool,
+    expected_chain_id: Option<u8>,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -5680,6 +5873,12 @@ async fn cmd_pay_for_gas(
         TopUpMessage::Nonce { .. } => None,
     };
     let client = RuesClient::new(rues_url)?;
+    // Only --quote-only, which signs nothing, may leave the chain unbound.
+    let chain_id = match expected_chain_id {
+        Some(expected) => Some(bind_chain_id(&client, expected).await?),
+        None if quote_only => None,
+        None => return Err("--expected-chain-id is required to pay".into()),
+    };
 
     // Check what the IGP checks before signing anything: a transaction that
     // fails on chain pays its whole gas limit, and the node reports a failed
@@ -5742,10 +5941,10 @@ async fn cmd_pay_for_gas(
         return Ok(());
     }
 
+    let chain_id = chain_id.ok_or("--expected-chain-id is required to pay")?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (account_nonce, balance) = client.query_account(&pk).await?;
     ensure_balance_covers(balance, deposit, gas_limit, gas_price)?;
-    let chain_id = client.query_chain_id().await?;
     let tx = moonlight_call_with_deposit(
         &sk,
         ContractId::from_bytes(igp),

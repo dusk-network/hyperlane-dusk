@@ -400,7 +400,8 @@ funded account:
 ```bash
 IGP=$(jq -r .dusk.igp $S)
 dusk-tx pay-for-gas --rues-url $DUSK_RUES_URL --igp $IGP --nonce <nonce> --gas-amount <gas> --quote-only
-dusk-tx pay-for-gas --rues-url $DUSK_RUES_URL --keys <your keys> --igp $IGP --nonce <nonce> --gas-amount <gas>
+dusk-tx pay-for-gas --rues-url $DUSK_RUES_URL --keys <your keys> --igp $IGP --nonce <nonce> --gas-amount <gas> \
+  --expected-chain-id 2
 ```
 
 ## Reproduce the contracts

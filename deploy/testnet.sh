@@ -520,17 +520,78 @@ cmd_fees() {
     fi
 }
 
+# ── Chains and the recorded deployment ───────────────────────────────────────
+
+# The node and the RPC must be on the chains the settings name before a
+# command reads a price or signs anything. A transaction is signed for the
+# endpoint's chain, and the IDs and addresses in $STATE can exist on another
+# network: a Dusk contract ID comes from the bytecode, the deployer key and a
+# nonce, an EVM address from the deployer and its nonce.
+check_dusk_chain() {
+    local chain_id
+    require DUSK_RUES_URL DUSK_EXPECTED_CHAIN_ID
+    chain_id="$(dusk_chain_id)" || fail "Dusk node at $DUSK_RUES_URL did not return the transfer contract's chain ID"
+    [ "$chain_id" = "$DUSK_EXPECTED_CHAIN_ID" ] \
+        || fail "Dusk node at $DUSK_RUES_URL is on chain ID $chain_id, expected DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID"
+}
+check_evm_chain() {
+    local chain_id
+    require EVM_RPC EVM_CHAIN_ID
+    chain_id="$(cast chain-id --rpc-url "$EVM_RPC")" || fail "EVM RPC $EVM_RPC is unreachable"
+    [ "$chain_id" = "$EVM_CHAIN_ID" ] \
+        || fail "EVM RPC $EVM_RPC reports chain ID $chain_id, expected EVM_CHAIN_ID $EVM_CHAIN_ID"
+}
+
+# The Dusk contracts the fee commands use must be this deployment's: the
+# recorded Mailbox on the expected chain at DUSK_DOMAIN, the contracts at
+# this checkout's state versions, and the IGP and ProtocolFee bound to that
+# Mailbox.
+check_dusk_deployment() {
+    local mailbox domain name contract bound
+    check_dusk_chain
+    mailbox="$(state_get '.dusk.mailbox')"
+    [ -n "$mailbox" ] || fail "No Dusk deployment recorded in $STATE; run deploy first"
+    [ "$(state_get '.dusk_domain')" = "$DUSK_DOMAIN" ] \
+        || fail "$STATE was made for Dusk domain $(state_get '.dusk_domain'), not DUSK_DOMAIN $DUSK_DOMAIN"
+    domain="$(dusk_value "the domain of the Dusk Mailbox $mailbox recorded in $STATE" \
+        --contract "$mailbox" --method local_domain --return-type u32)" || exit 1
+    [ "$domain" = "$DUSK_DOMAIN" ] \
+        || fail "The Dusk Mailbox $mailbox recorded in $STATE has domain $domain, not DUSK_DOMAIN $DUSK_DOMAIN"
+    check_state_versions
+    for name in igp protocol_fee; do
+        contract="$(state_get ".dusk.$name")"
+        [ -n "$contract" ] || continue
+        bound="$(dusk_value "the Mailbox of the Dusk $name $contract" \
+            --contract "$contract" --method mailbox --return-type bytes32)" || exit 1
+        [ "$bound" = "$mailbox" ] \
+            || fail "The Dusk $name $contract belongs to the Mailbox $bound, not $mailbox recorded in $STATE"
+    done
+}
+
+# The same on the EVM side: the RPC on EVM_CHAIN_ID, the recorded Mailbox
+# EVM_MAILBOX at EVM_DOMAIN, and the IGP and token this deployment created
+# (check_evm_creations).
+check_evm_deployment() {
+    local domain
+    check_evm_chain
+    [ "$(lower "$(state_get '.evm.mailbox')")" = "$(lower "$EVM_MAILBOX")" ] \
+        || fail "$STATE was made for EVM Mailbox $(state_get '.evm.mailbox'), not EVM_MAILBOX $EVM_MAILBOX"
+    [ -z "$(state_get '.evm_domain')" ] || [ "$(state_get '.evm_domain')" = "$EVM_DOMAIN" ] \
+        || fail "$STATE was made for EVM domain $(state_get '.evm_domain'), not EVM_DOMAIN $EVM_DOMAIN"
+    domain="$(evm_number "$EVM_MAILBOX" "localDomain()(uint32)")" || fail "No Hyperlane Mailbox at $EVM_MAILBOX"
+    [ "$domain" = "$EVM_DOMAIN" ] || fail "The EVM Mailbox $EVM_MAILBOX has domain $domain, not EVM_DOMAIN $EVM_DOMAIN"
+    check_evm_creations
+}
+
 # ── Preflight ────────────────────────────────────────────────────────────────
 
 preflight_dusk() {
     require DUSK_RUES_URL DUSK_EXPECTED_CHAIN_ID DUSK_DOMAIN
-    local info height chain_id
+    local info height
     info="$(rues_post /on/node/info)" || fail "Dusk node at $DUSK_RUES_URL is unreachable"
     height="$(rues_post /on/graphql/query 'query { block(height: -1) { header { height } } }' \
         | jq -er '.block.header.height')" || fail "Dusk node did not report a block height"
-    chain_id="$(dusk_chain_id)" || fail "Dusk node did not return the transfer contract's chain ID"
-    [ "$chain_id" = "$DUSK_EXPECTED_CHAIN_ID" ] \
-        || fail "Dusk node is on chain ID $chain_id, expected $DUSK_EXPECTED_CHAIN_ID"
+    check_dusk_chain
     ok "Dusk node $(jq -r '.version_build' <<<"$info"), chain ID $DUSK_EXPECTED_CHAIN_ID, height $height"
 
     # Feature values are an activation height, or a list of [from, to) ranges.
@@ -567,9 +628,8 @@ PY
 
 preflight_evm() {
     require EVM_RPC EVM_CHAIN_ID EVM_DOMAIN EVM_MAILBOX EVM_MERKLE_TREE_HOOK EVM_VALIDATOR_ANNOUNCE
-    local chain_id domain
-    chain_id="$(cast chain-id --rpc-url "$EVM_RPC")" || fail "EVM RPC $EVM_RPC is unreachable"
-    [ "$chain_id" = "$EVM_CHAIN_ID" ] || fail "EVM RPC reports chain ID $chain_id, expected $EVM_CHAIN_ID"
+    local domain
+    check_evm_chain
     domain="$(evm_call "$EVM_MAILBOX" "localDomain()(uint32)" | awk '{print $1}')" \
         || fail "No Hyperlane Mailbox at $EVM_MAILBOX"
     [ "$domain" = "$EVM_DOMAIN" ] || fail "EVM Mailbox domain is $domain, expected $EVM_DOMAIN"
@@ -584,7 +644,7 @@ preflight_evm() {
         evm_has_code "$EVM_AGGREGATION_HOOK_FACTORY" \
             || fail "No contract at EVM_AGGREGATION_HOOK_FACTORY $EVM_AGGREGATION_HOOK_FACTORY; leave it empty to deploy one"
     fi
-    ok "EVM $EVM_CHAIN_NAME (chain $chain_id): Mailbox, Merkle hook and ValidatorAnnounce check out"
+    ok "EVM $EVM_CHAIN_NAME (chain $EVM_CHAIN_ID): Mailbox, Merkle hook and ValidatorAnnounce check out"
     route_hook_plan
 }
 
@@ -822,11 +882,23 @@ check_dusk_igp_pricing() {
     local igp current wanted
     igp="$(state_get '.dusk.igp')"
     [ -n "$igp" ] || return 0
+    check_dusk_igp_is_default_hook
     current="$(dusk_igp_pricing)" || exit 1
     wanted="$(fee '.dusk_igp | {gas_overhead, token_exchange_rate, gas_price}')"
     [ "$(jq -cS . <<<"$current")" = "$(jq -cS . <<<"$wanted")" ] \
         || fail "The Dusk IGP $igp prices domain $EVM_DOMAIN at $(jq -c . <<<"$current"), but the settings say $(jq -c . <<<"$wanted"). Compare them with: bash deploy/testnet.sh dusk-igp; apply the settings with --apply."
     ok "The Dusk IGP charges $(fee '.dusk_to_evm.quote_lux') LUX for a transfer to $EVM_CHAIN_NAME"
+}
+
+# Every dispatch pays the Dusk Mailbox's default hook, so that is the IGP
+# whose pricing counts, and whose payments the relayer reads.
+check_dusk_igp_is_default_hook() {
+    local igp mailbox hook
+    igp="$(state_get '.dusk.igp')" mailbox="$(state_get '.dusk.mailbox')"
+    hook="$(dusk_value "the default hook of the Dusk Mailbox $mailbox" \
+        --contract "$mailbox" --method default_hook --return-type bytes32)" || exit 1
+    [ "$hook" = "$igp" ] \
+        || fail "The Dusk Mailbox $mailbox's default hook is $hook, not the IGP $igp recorded in $STATE: dispatches pay that one"
 }
 
 # Before `deploy`, an IGP it hasn't finished configuring only warns: deploy
@@ -960,7 +1032,8 @@ configure_dusk_beneficiary() {
     for name in igp protocol_fee; do
         contract="$(state_get ".dusk.$name")"
         out="$(dusk_tx set-beneficiary --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-            --contract "$contract" --beneficiary "$DUSK_FEE_BENEFICIARY")" \
+            --contract "$contract" --beneficiary "$DUSK_FEE_BENEFICIARY" \
+            --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
             || fail "Can't set the beneficiary of the Dusk $name $contract: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
     done
     ok "The Dusk IGP's and ProtocolFee's fees go to $DUSK_FEE_BENEFICIARY"
@@ -1235,7 +1308,8 @@ cmd_dusk_igp() {
     load_fees
     igp="$(state_get '.dusk.igp')"
     [ -n "$igp" ] || fail "No Dusk IGP recorded in $STATE; run deploy first"
-    check_state_versions
+    check_dusk_deployment
+    check_dusk_igp_is_default_hook
     current="$(dusk_igp_pricing)" || exit 1
     chain_quote="none"
     if [ "$(jq '.gas_price != "0"' <<<"$current")" = true ]; then
@@ -1259,7 +1333,8 @@ cmd_dusk_igp() {
     fi
     require DUSK_KEYS DUSK_CONSENSUS_PASSWORD
     out="$(dusk_tx set-igp-config --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-        --igp "$igp" --igp-domain-config "$(fee '.dusk_igp.config')")" \
+        --igp "$igp" --igp-domain-config "$(fee '.dusk_igp.config')" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
         || fail "Can't set the Dusk IGP's pricing: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
     info "Sent $(jq -r .tx_id <<<"$out"), included at height $(jq -r .block_height <<<"$out")"
     chain_quote="$(dusk_value "the Dusk IGP's quote" --contract "$igp" --method quote_gas_payment \
@@ -1278,7 +1353,7 @@ cmd_evm_igp() {
     load_fees
     igp="$(state_get '.evm.igp')" oracle="$(state_get '.evm.storage_gas_oracle')"
     [ -n "$igp" ] && [ -n "$oracle" ] || fail "No EVM IGP recorded in $STATE; run deploy first"
-    check_evm_creations
+    check_evm_deployment
     current="$(evm_igp_pricing)" || exit 1
     check_evm_igp_oracle "$current"
     chain_quote="none"
@@ -1323,6 +1398,9 @@ cmd_evm_igp() {
 cmd_revenue() {
     local name contract claimable beneficiary igp balance
     [ -f "$STATE" ] || fail "Run deploy first"
+    igp="$(state_get '.evm.igp')"
+    [ -z "$igp" ] || [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_chain
+    check_dusk_chain
     for name in igp protocol_fee; do
         contract="$(state_get ".dusk.$name")"
         [ -n "$contract" ] || continue
@@ -1332,7 +1410,6 @@ cmd_revenue() {
             --method beneficiary --return-type bytes32)" || exit 1
         info "Dusk $name $contract holds $claimable LUX for the account with hash $beneficiary"
     done
-    igp="$(state_get '.evm.igp')"
     if [ -n "$igp" ] && [ -n "$(state_get '.evm.storage_gas_oracle')" ]; then
         balance="$(cast balance "$igp" --rpc-url "$EVM_RPC")"
         beneficiary="$(evm_call "$igp" "beneficiary()(address)")"
@@ -1344,12 +1421,14 @@ cmd_revenue() {
 # Claim on both chains. On the EVM chain anyone may call claim(), which pays
 # the IGP's balance to its beneficiary. On Dusk only the beneficiary can
 # claim, by signing the claim: DUSK_KEYS here, unless DUSK_FEE_BENEFICIARY is
-# someone else, who then runs the dusk-tx command printed.
+# someone else, who then runs the dusk-tx command printed. Both chains and
+# the recorded contracts are checked before anything is sent on either.
 cmd_claim() {
     local name contract claimable beneficiary signer out igp balance
     [ -f "$STATE" ] || fail "Run deploy first"
-    check_evm_creations
     igp="$(state_get '.evm.igp')"
+    [ -z "$igp" ] || [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_deployment
+    check_dusk_deployment
     if [ -n "$igp" ] && [ -n "$(state_get '.evm.storage_gas_oracle')" ]; then
         balance="$(cast balance "$igp" --rpc-url "$EVM_RPC")"
         if [ "$balance" != 0 ]; then
@@ -1375,10 +1454,11 @@ cmd_claim() {
         beneficiary="$(dusk_value "the Dusk $name's beneficiary" --contract "$contract" \
             --method beneficiary --return-type bytes32)" || exit 1
         if [ "$beneficiary" != "$signer" ]; then
-            warn "The Dusk $name $contract holds $claimable LUX for the account with hash $beneficiary, not DUSK_KEYS. Its beneficiary claims with: dusk-tx claim-fees --rues-url $DUSK_RUES_URL --keys <beneficiary keys> --contract $contract"
+            warn "The Dusk $name $contract holds $claimable LUX for the account with hash $beneficiary, not DUSK_KEYS. Its beneficiary claims with: dusk-tx claim-fees --rues-url $DUSK_RUES_URL --keys <beneficiary keys> --contract $contract --expected-chain-id $DUSK_EXPECTED_CHAIN_ID"
             continue
         fi
-        out="$(dusk_tx claim-fees --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" --contract "$contract")" \
+        out="$(dusk_tx claim-fees --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" --contract "$contract" \
+            --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
             || fail "Can't claim from the Dusk $name: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
         ok "Claimed $(jq -r .claimed_dusk <<<"$out") DUSK from the Dusk $name $contract ($(jq -r .tx_id <<<"$out"))"
     done
@@ -1408,8 +1488,8 @@ cmd_agent_configs() {
     [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
     load_fees
-    check_state_versions
-    check_evm_creations
+    check_dusk_deployment
+    check_evm_deployment
     check_deployed_ism
     check_relayer_gas_limit
     route_hook_plan

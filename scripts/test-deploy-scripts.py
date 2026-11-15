@@ -111,6 +111,14 @@ def set_pricing(igp, config):
     domain, overhead, rate, price = (int(part) for part in config.split(":"))
     queries[f"{igp}/domain_gas_config/{domain}"] = {"value": {
         "gas_overhead": overhead, "token_exchange_rate": rate, "gas_price": price}}
+# As dusk-tx does: the fee commands that sign need --expected-chain-id, and
+# refuse an endpoint on another chain (FIXTURE_DUSK_CHAIN_ID, or 2).
+if args[0] in ("set-igp-config", "set-beneficiary", "claim-fees", "pay-for-gas") and "--quote-only" not in args:
+    expected, endpoint = opt("--expected-chain-id"), os.environ.get("FIXTURE_DUSK_CHAIN_ID", "2")
+    if expected is None:
+        out({"success": False, "error": f"stub dusk-tx: {args[0]} needs --expected-chain-id"}, 2)
+    if expected != endpoint:
+        out({"success": False, "error": f"Configured Dusk chain ID {expected} does not match endpoint chain ID {endpoint}"}, 1)
 if args[0] == "query":
     key = f"{opt('--contract')}/{opt('--method')}"
     for flag in ("--arg-u32", "--arg-u64"):
@@ -606,6 +614,9 @@ def dusk_queries():
         f"{MAILBOX}/local_domain": {"value": DUSK_DOMAIN},
         f"{MAILBOX}/default_ism": {"value": MULTISIG},
         f"{MAILBOX}/state_version": {"value": 5},
+        f"{MAILBOX}/default_hook": {"value": IGP},
+        f"{IGP}/mailbox": {"value": MAILBOX},
+        f"{PROTOCOL_FEE}/mailbox": {"value": MAILBOX},
         f"{MERKLE_TREE_HOOK}/state_version": {"value": 2},
         f"{IGP}/state_version": {"value": 4},
         f"{IGP}/domain_gas_config/{EVM_DOMAIN}": {"value": {
@@ -672,6 +683,8 @@ class TestnetScript(unittest.TestCase):
         self.relayer_config = self.out / "relayer.json"
         self.queries = dusk_queries()
         self.evm = sepolia()
+        # Extra environment for the script and its stubs.
+        self.extra_env = {}
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -699,6 +712,7 @@ class TestnetScript(unittest.TestCase):
             "FIXTURE_CHAIN": str(self.chain),
             "FIXTURE_EVM": str(self.evm_file),
             "FIXTURE_TRACE": str(self.trace),
+            **self.extra_env,
         }
         result = subprocess.run(["bash", str(self.root / "deploy" / "testnet.sh"), *command],
                                 env=env, capture_output=True, text=True, timeout=120)
@@ -1205,6 +1219,90 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], [600000000000000, 1])
         self.assertEqual(self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)], [self.oracle, 2170000])
 
+    def test_fee_commands_refuse_a_dusk_node_on_another_chain(self):
+        # The node is on chain 1, not DUSK_EXPECTED_CHAIN_ID 2. A Dusk
+        # contract's ID comes from its bytecode, the deployer key and a
+        # nonce, so the same IGP can exist on both networks.
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"] = 1
+        self.queries[f"{IGP}/claimable_fees"] = {"value": 5}
+        self.evm["balances"][self.evm_igp] = 7
+        self.extra_env = {"FIXTURE_DUSK_CHAIN_ID": "1"}
+        for command in (["dusk-igp", "--apply"], ["claim"], ["dusk-igp"], ["revenue"], ["agent-configs"]):
+            with self.subTest(command=command):
+                result = self.run_script(*command)
+                self.assert_fails(result, "is on chain ID 1, expected DUSK_EXPECTED_CHAIN_ID 2")
+                self.assertEqual(self.traced("dusk-tx set-igp-config") + self.traced("dusk-tx claim-fees")
+                                 + self.traced("cast send"), [])
+                self.assertFalse(self.relayer_config.exists())
+
+    def test_fee_commands_refuse_an_evm_rpc_on_another_chain(self):
+        self.evm["chain_id"] = 1
+        self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)] = [1, 1]
+        self.evm["balances"][self.evm_igp] = 7
+        self.queries[f"{IGP}/claimable_fees"] = {"value": 5}
+        for command in (["evm-igp", "--apply"], ["claim"], ["evm-igp"], ["revenue"], ["agent-configs"]):
+            with self.subTest(command=command):
+                result = self.run_script(*command)
+                self.assert_fails(result, f"reports chain ID 1, expected EVM_CHAIN_ID {EVM_DOMAIN}")
+                self.assertEqual(self.traced("cast send") + self.traced("dusk-tx claim-fees"), [])
+                self.assertFalse(self.relayer_config.exists())
+
+    def test_fee_commands_sign_only_for_the_expected_dusk_chain(self):
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"] = 1
+        self.assert_ok(self.run_script("dusk-igp", "--apply"))
+        [sent] = self.traced("dusk-tx set-igp-config")
+        self.assertIn("--expected-chain-id 2", sent)
+        self.queries[f"{IGP}/claimable_fees"] = {"value": 5}
+        self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 5}
+        self.assert_ok(self.run_script("claim"))
+        claims = self.traced("dusk-tx claim-fees")
+        self.assertEqual(len(claims), 2)
+        self.assertTrue(all("--expected-chain-id 2" in line for line in claims), claims)
+        # Another beneficiary is told how to claim, on this chain only.
+        self.queries[f"{IGP}/claimable_fees"] = {"value": 5}
+        self.queries[f"{IGP}/beneficiary"] = {"value": "be" * 32}
+        result = self.run_script("claim")
+        self.assert_ok(result)
+        self.assertIn(f"--contract {IGP} --expected-chain-id 2", result.stderr)
+
+    def test_fee_commands_check_the_recorded_deployment(self):
+        other = "a9" * 32
+        cases = [
+            # Dispatches pay another IGP than the one dusk-igp would price.
+            ({f"{MAILBOX}/default_hook": {"value": other}}, ["dusk-igp", "--apply"],
+             f"The Dusk Mailbox {MAILBOX}'s default hook is {other}, not the IGP {IGP}"),
+            ({f"{IGP}/mailbox": {"value": other}}, ["dusk-igp", "--apply"],
+             f"The Dusk igp {IGP} belongs to the Mailbox {other}, not {MAILBOX}"),
+            ({f"{PROTOCOL_FEE}/mailbox": {"value": other}}, ["claim"],
+             f"The Dusk protocol_fee {PROTOCOL_FEE} belongs to the Mailbox {other}, not {MAILBOX}"),
+            ({f"{MAILBOX}/local_domain": {"value": 7}}, ["claim"],
+             f"The Dusk Mailbox {MAILBOX} recorded in"),
+        ]
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"] = 1
+        self.queries[f"{IGP}/claimable_fees"] = {"value": 5}
+        for change, command, expected in cases:
+            with self.subTest(command=command, expected=expected):
+                saved = {key: self.queries[key] for key in change}
+                self.queries.update(change)
+                result = self.run_script(*command)
+                self.queries.update(saved)
+                self.assert_fails(result, expected)
+                self.assertEqual(self.traced("dusk-tx set-igp-config") + self.traced("dusk-tx claim-fees")
+                                 + self.traced("cast send"), [])
+        # The state is another deployment's.
+        state = self.state()
+        for key, value, command, expected in [
+            ("dusk_domain", 7, ["dusk-igp", "--apply"], f"was made for Dusk domain 7, not DUSK_DOMAIN {DUSK_DOMAIN}"),
+            ("evm_domain", 7, ["evm-igp", "--apply"], f"was made for EVM domain 7, not EVM_DOMAIN {EVM_DOMAIN}"),
+        ]:
+            with self.subTest(state=key):
+                self.write_state({**state, key: value})
+                self.assert_fails(self.run_script(*command), expected)
+                self.assertEqual(self.traced("dusk-tx set-igp-config") + self.traced("cast send"), [])
+        self.write_state({**state, "evm": {**state["evm"], "mailbox": "0x" + "12" * 20}})
+        self.assert_fails(self.run_script("evm-igp", "--apply"), f"was made for EVM Mailbox 0x{'12' * 20}")
+        self.assertEqual(self.traced("cast send"), [])
+
     def test_claim_collects_both_chains(self):
         self.queries[f"{IGP}/claimable_fees"] = {"value": 6000000000}
         self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 1000000}
@@ -1367,7 +1465,8 @@ class TestnetDeploy(TestnetScript):
         self.assertEqual(self.evm["contracts"][self.state()["evm"]["igp"]]["beneficiary"], beneficiary)
         sent = self.traced("dusk-tx set-beneficiary")
         self.assertEqual(len(sent), 2)
-        self.assertTrue(all("--beneficiary fixture-treasury" in line for line in sent))
+        self.assertTrue(all("--beneficiary fixture-treasury" in line and "--expected-chain-id 2" in line
+                            for line in sent), sent)
 
     def test_an_unset_beneficiary_leaves_the_igps_alone(self):
         self.assert_ok(self.run_script("deploy"))

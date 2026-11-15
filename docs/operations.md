@@ -137,6 +137,16 @@ The dry runs print the pricing on chain and the new one, each with what a
 warp transfer pays under it, and send nothing. `preflight` and
 `agent-configs` stop while an IGP's pricing differs from the settings.
 
+Before they read a price or send anything, `dusk-igp`, `evm-igp`, `claim`
+and `revenue` check that the Dusk node is on `DUSK_EXPECTED_CHAIN_ID` and the
+EVM RPC on `EVM_CHAIN_ID`: the contract IDs and addresses in the state can
+exist on another network, a Dusk ID being derived from the bytecode, the
+deployer key and a nonce. They also check that the recorded contracts are
+the deployment's: the Mailbox at `DUSK_DOMAIN`, the fee contracts bound to
+it, the IGP its default hook, and the Sepolia contracts created as
+`deploy` recorded. Each `dusk-tx` command they run is bound to the chain
+too (below).
+
 `evm-igp` first checks that the Sepolia IGP reads Dusk's pricing from the
 StorageGasOracle `deploy` recorded, and stops before sending anything when it
 reads from another one: only the owner key can have changed that, so find
@@ -173,8 +183,14 @@ dusk-tx pay-for-gas --rues-url <node> --igp <dusk igp> --nonce <nonce> \
 
 # Pay it, from any funded account
 dusk-tx pay-for-gas --rues-url <node> --keys payer.keys --igp <dusk igp> \
-    --nonce <nonce> --gas-amount <gas> [--max-payment <lux>]
+    --nonce <nonce> --gas-amount <gas> --expected-chain-id <id> [--max-payment <lux>]
 ```
+
+- `--expected-chain-id` is the chain you mean to pay on (2 on testnet). As
+  with every `dusk-tx` command that changes a fee contract or pays one
+  (`set-igp-config`, `set-beneficiary`, `claim-fees`, `pay-for-gas`), the
+  command asks the node its chain ID first and stops on any other, before it
+  queries a contract or reads the key. `--quote-only` doesn't need it.
 
 - `--nonce` is the message's nonce on the Dusk Mailbox (`dusk-tx
   dispatched-message` prints a message by nonce). `pay-for-gas` reads the
@@ -244,7 +260,8 @@ beneficiary and pay that account). `claim` does this when `DUSK_KEYS` is the
 beneficiary; any other beneficiary runs:
 
 ```bash
-dusk-tx claim-fees --rues-url <node> --keys beneficiary.keys --contract <igp or protocol_fee id>
+dusk-tx claim-fees --rues-url <node> --keys beneficiary.keys --contract <igp or protocol_fee id> \
+    --expected-chain-id <id>
 ```
 
 `claim-fees` checks the signer is the beneficiary and there is something
@@ -255,7 +272,7 @@ contracts. The owner can change it at any time:
 
 ```bash
 dusk-tx set-beneficiary --rues-url <node> --keys owner.keys --contract <id> \
-    --beneficiary <base58 address>
+    --beneficiary <base58 address> --expected-chain-id <id>
 ```
 
 On **Sepolia**, the IGP holds its payments as ETH and `claim()` sends all of
