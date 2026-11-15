@@ -260,11 +260,12 @@ mod warp_native {
             self.pending_total
         }
 
-        /// Deployment compatibility version. Version 3 adds
-        /// `claim_pending_for`.
+        /// Deployment compatibility version. Version 4: `claim_pending_for`
+        /// pays the decoded key, and `claim_pending` registers the sender.
+        /// Version 3 added `claim_pending_for`.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            3
+            4
         }
 
         // =================================================================

@@ -3474,7 +3474,7 @@ fn test_warp_drc20_init() {
             .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        5
+        6
     );
 }
 
@@ -3582,7 +3582,7 @@ fn test_warp_native_init() {
             .direct_call::<_, u32>(WARP_NATIVE_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        3
+        4
     );
 }
 
@@ -3674,7 +3674,7 @@ fn test_warp_collateral_init() {
         .direct_call::<_, u32>(WARP_DRC20_COLLATERAL_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(state_version, 4);
+    assert_eq!(state_version, 5);
 }
 
 #[test]

@@ -150,13 +150,19 @@ bash deploy/testnet.sh agent-configs
   third-party contracts and serves the archive queries the agents need;
 - the Sepolia Mailbox, Merkle hook and ValidatorAnnounce belong together, and
   a dispatch to the Dusk domain can be quoted;
-- the keys and validator settings are present and consistent.
+- the keys and validator settings are present and consistent;
+- a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
+  chain, and its warp route is at this checkout's `state_version`.
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
 skips steps already recorded there. If it stops halfway, fix the cause and run
 it again. Router enrollment is re-checked on chain each time. If the recorded
-contracts aren't on chain, for example after a testnet reset, `deploy` stops;
-move the directory aside and deploy again.
+contracts aren't on chain, for example after a testnet reset, or the recorded
+warp route reports an older `state_version` than this checkout's (4 for the
+native route), `deploy` stops; move the directory aside and deploy again.
+Older routes may pay sponsored escrow claims to forged keys
+([security notes](security.md#issues-found-and-fixed), CRITICAL-1), so
+`agent-configs` refuses them too.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.

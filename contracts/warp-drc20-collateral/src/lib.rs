@@ -226,11 +226,12 @@ mod warp_drc20_collateral {
             self.pending_total
         }
 
-        /// Deployment compatibility version. Version 4 adds
-        /// `claim_pending_for`.
+        /// Deployment compatibility version. Version 5: `claim_pending_for`
+        /// pays the decoded key, and `claim_pending` registers the sender.
+        /// Version 4 added `claim_pending_for`.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            4
+            5
         }
 
         // =================================================================

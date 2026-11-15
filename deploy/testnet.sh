@@ -38,6 +38,11 @@ OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
 STATE="$OUT_DIR/deployment.json"
 ZERO_ADDRESS=0x0000000000000000000000000000000000000000
 TRANSFER_CONTRACT=0100000000000000000000000000000000000000000000000000000000000000
+# The state_version of each warp route this checkout builds. Older routes may
+# pay a sponsored escrow claim to the key as given, which a forged twin of the
+# recipient's key can exploit (docs/security.md, CRITICAL-1), and don't
+# register a recipient that claims its own escrow.
+ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=6 warp_drc20_collateral=5"
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
@@ -201,6 +206,7 @@ cmd_preflight() {
     preflight_dusk
     preflight_evm
     preflight_keys
+    check_state_matches_chain
 }
 
 # ── Deploy steps ─────────────────────────────────────────────────────────────
@@ -299,7 +305,8 @@ enroll_routers() {
 }
 
 # A state file from another network, or from before a network reset, would
-# make `deploy` skip steps whose contracts don't exist.
+# make `deploy` skip steps whose contracts don't exist. One whose routes are
+# older than this checkout's would reuse contracts with known bugs.
 check_state_matches_chain() {
     local mailbox token domain
     [ -f "$STATE" ] || return 0
@@ -307,10 +314,11 @@ check_state_matches_chain() {
         || fail "$STATE was made for EVM Mailbox $(state_get '.evm.mailbox'), not $EVM_MAILBOX. Use another DEPLOY_NAME or move it aside."
     mailbox="$(state_get '.dusk.mailbox')"
     if [ -n "$mailbox" ]; then
-        domain="$(dusk_query --contract "$mailbox" --method local_domain --return-type u32 2>/dev/null | jq -r '.value // empty')"
+        domain="$(dusk_query --contract "$mailbox" --method local_domain --return-type u32 2>/dev/null | jq -r '.value // empty')" || true
         [ "$domain" = "$DUSK_DOMAIN" ] \
             || fail "$STATE records Dusk Mailbox $mailbox, but it isn't on this chain with domain $DUSK_DOMAIN. The network was reset or the state is from elsewhere; move it aside and redeploy."
     fi
+    check_route_versions
     token="$(state_get '.evm.token')"
     if [ -n "$token" ]; then
         [ "$(cast code "$token" --rpc-url "$EVM_RPC")" != "0x" ] \
@@ -318,9 +326,27 @@ check_state_matches_chain() {
     fi
 }
 
+# Refuse a deployment whose warp routes report another state_version than
+# this checkout's (ROUTE_STATE_VERSIONS).
+check_route_versions() {
+    local entry name expected route version
+    for entry in $ROUTE_STATE_VERSIONS; do
+        name="${entry%%=*}" expected="${entry#*=}"
+        route="$(state_get ".dusk.$name")"
+        [ -n "$route" ] || continue
+        version="$(dusk_query --contract "$route" --method state_version --return-type u32 2>/dev/null \
+            | jq -r '.value // empty')" || true
+        [[ "$version" =~ ^[0-9]+$ ]] \
+            || fail "Can't read the state version of the Dusk route ($name) $route recorded in $STATE. If the network was reset, move $OUT_DIR aside and deploy again."
+        [ "$version" -ge "$expected" ] \
+            || fail "$STATE records a Dusk route ($name) at state version $version; this checkout's is $expected. Routes before it may pay sponsored escrow claims to forged keys. Move $OUT_DIR aside and redeploy."
+        [ "$version" -eq "$expected" ] \
+            || fail "$STATE records a Dusk route ($name) at state version $version, newer than this checkout's $expected. Update the checkout."
+    done
+}
+
 cmd_deploy() {
     cmd_preflight
-    check_state_matches_chain
     state_set --arg n "$EVM_CHAIN_NAME" --argjson d "$EVM_DOMAIN" --arg m "$EVM_MAILBOX" \
         --arg h "$EVM_MERKLE_TREE_HOOK" --arg va "$EVM_VALIDATOR_ANNOUNCE" --arg igp "${EVM_IGP:-}" \
         '.evm_chain = $n | .evm_domain = $d | .evm.mailbox = $m | .evm.merkle_tree_hook = $h
@@ -355,6 +381,8 @@ dusk_chain_json() {
 
 cmd_agent_configs() {
     [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
+    [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
+    check_route_versions
     check_relayer_gas_limit
     local evm_chain token route
     token="$(state_get '.evm.token')"
