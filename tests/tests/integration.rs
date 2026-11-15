@@ -975,7 +975,7 @@ fn test_dispatch_via_transaction() {
             .direct_call::<_, u32>(MERKLE_TREE_HOOK_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        1
+        2
     );
 
     let destination = REMOTE_DOMAIN;
@@ -1006,17 +1006,15 @@ fn test_dispatch_via_transaction() {
         .expect("inserted_block_height should succeed")
         .data;
     assert_eq!(insertion_height, s.session.block_height());
-    let root_at: H256 = s
+    // The hook no longer stores a root per insertion; validators compute it
+    // from the stored message IDs.
+    assert!(s
         .session
         .direct_call::<_, H256>(MERKLE_TREE_HOOK_ID, "root_at", &(0u32,))
-        .expect("root_at should succeed")
-        .data;
-    let root: H256 = s
-        .session
-        .direct_call::<_, H256>(MERKLE_TREE_HOOK_ID, "root", &())
-        .expect("root should succeed")
-        .data;
-    assert_eq!(root_at, root);
+        .is_err());
+    let mut tree = hyperlane_dusk_types::merkle::IncrementalMerkle::new();
+    tree.insert(message_id);
+    assert_eq!(s.merkle_root(), tree.root());
     assert_eq!(
         s.session
             .direct_call::<_, Vec<H256>>(MERKLE_TREE_HOOK_ID, "message_ids", &(0u32, 256u32))
