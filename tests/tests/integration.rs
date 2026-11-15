@@ -7436,9 +7436,13 @@ fn test_warp_native_sponsor_claims_escrow_for_unfunded_recipient() {
 }
 
 /// A sponsor can't register a recipient up front: only a claim of existing
-/// escrow registers someone else's key, so nobody can fill a route's memory
-/// with registrations. The first transfer waits in escrow; claiming it for
-/// the recipient registers them, and the next transfer is paid out directly.
+/// escrow registers someone else's key. The first transfer waits in escrow;
+/// claiming it for the recipient registers them, and the next transfer is
+/// paid out directly.
+///
+/// This stops registering keys in bulk, but doesn't bound how many keys a
+/// route registers: anyone can fund new keys and register each one itself
+/// (see `test_self_registration_costs_two_transactions_per_key`).
 #[test]
 fn test_warp_native_sponsor_registers_recipient_only_by_claiming_escrow() {
     let (mut session, remote_router) = session_with_warp_native_flow();
@@ -7495,6 +7499,51 @@ fn test_warp_native_sponsor_registers_recipient_only_by_claiming_escrow() {
         route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
         0
     );
+}
+
+/// `register_account` registers the transaction's signer, so each entry a
+/// route adds costs a transaction signed by a new key, and that key needs
+/// DUSK for its gas first. Nothing else bounds the registry, and a route
+/// never removes an entry (docs/security.md lists this as open). This pins
+/// what one entry costs, which docs/security.md uses to estimate what it
+/// takes to fill a route's memory: a transfer that funds the key and the
+/// key's registration, each about 1.85M gas, almost all of it the
+/// transaction's signature check (1.75M).
+#[test]
+fn test_self_registration_costs_two_transactions_per_key() {
+    // Enough for the registration's gas at 1 LUX.
+    const FUNDING: u64 = 2_000_000;
+    let (mut session, _) = session_with_warp_native_flow();
+    for seed in 0..3u64 {
+        let sk = AccountSecretKey::random(&mut StdRng::seed_from_u64(0x5E1F_0000 + seed));
+        let pk = AccountPublicKey::from(&sk);
+        let funding = session.transfer(&RELAYER_SK, &pk, FUNDING);
+        let registration = session
+            .call_public_with_gas_limit::<_, ()>(
+                &sk,
+                WARP_NATIVE_ID,
+                "register_account",
+                &(),
+                FUNDING,
+            )
+            .expect("a funded key registers itself")
+            .gas_spent;
+        assert!(route_is_registered(
+            &mut session,
+            WARP_NATIVE_ID,
+            message::keccak256(&pk.to_bytes())
+        ));
+        // docs/security.md's estimate assumes about 1.85M gas for each.
+        for (what, gas) in [
+            ("funding transfer", funding),
+            ("registration", registration),
+        ] {
+            assert!(
+                (1_800_000..1_900_000).contains(&gas),
+                "{what} took {gas} gas"
+            );
+        }
+    }
 }
 
 #[test]

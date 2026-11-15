@@ -85,6 +85,75 @@ The fixes have regression tests in `tests/tests/integration.rs`, except the
 overflow paths listed under known limitations. HIGH-5 and HIGH-6 use the
 `reentrant-hook` contract to attempt the real nested call.
 
+## Second review
+
+A second internal review of the fixes for CRITICAL-1, MEDIUM-9 and LOW-6,
+before the public testnet, found no new critical or high issue. It found
+these, some of them in the fixes' own claims:
+
+| ID | Issue | Status |
+|---|---|---|
+| MEDIUM-10 | Routes still register any number of keys. Without `register_account_for` (MEDIUM-9) every entry costs a transaction signed by its key, but anyone can fund new keys and call `register_account` from each, and no entry is ever removed. A test said that nobody could fill a route's memory with registrations. | **Open**, see [below](#open-registry-growth). The test now says what holds. |
+| MEDIUM-11 | Routes deployed before the CRITICAL-1 fix reported the same `state_version` as fixed ones, so `deploy/testnet.sh deploy` and `demo/deploy.sh --skip-deploy` would reuse a recorded deployment whose sponsored claims still pay forged keys. | Fixed. Routes are at `state_version` 4 (WarpNative), 6 (WarpDrc20) and 5 (WarpDrc20Collateral), and both scripts refuse a recorded route below that and say to redeploy. `agent-configs` and `preflight` check it too. |
+| LOW-7 | The Mailbox's `withdraw_dispatch_credit`, and each route's owner-only wrapper of it, pay the recipient key as given. A payer who passes a twin of the recipient's key (see CRITICAL-1) is debited and the event names the recipient, but the DUSK goes to an account nobody can spend from. Only the caller's own credit, or a route's credit by its owner, is at risk. | **Open.** The fix belongs in the Mailbox, which waits on a separate study of its storage. |
+| LOW-8 | `claim_pending` paid the sender but didn't register it, unlike `claim_pending_for`, so every later transfer to that account went to escrow again. The contracts' comments said a recipient had to register before claiming, which it didn't. | Fixed. `claim_pending` registers the sender, then pays it. |
+| LOW-9 | `dusk-tx claim-pending` called `claim_pending_for` with an 80M gas limit even for the signer's own escrow: about 59M gas where 1.9M would do, and 80M, 0.08 DUSK, when the claim failed. | Fixed. The signer's own claim (no `--for`, or `--for` naming the signer) calls `claim_pending` with a 3M limit: 1.5 times the costliest route's 1.91M, rounded up. |
+| LOW-10 | `deploy/testnet.sh` checked the relayer's gas limit against `EVM_ORIGIN_THRESHOLD`, not against the threshold deployed on chain, which the owner can raise later. | Fixed. Once the contracts are deployed it reads the threshold of the ISM the route uses (its own, or the Mailbox's default) and checks the larger of the two. |
+| LOW-11 | When a recorded Mailbox wasn't on chain, for example after a testnet reset, `deploy/testnet.sh` exited without a message: under `set -e` and `pipefail` the failed query ended the script before its error. Found while fixing MEDIUM-11. | Fixed. |
+
+The review also asked for tests that had been missing, now in
+`tests/tests/integration.rs`:
+
+- `claim_pending_for` with a key whose raw infinity byte is 2, which gives a
+  compressed encoding with the infinity flag next to a non-zero x, and with a
+  point on the curve but outside the prime-order subgroup. Both revert on all
+  three routes, with escrow waiting under the hash the route computes for
+  them, and change no escrow, registration or balance
+  (`*_claim_for_undecodable_keys_changes_nothing`).
+- A relayed `process` at threshold 6, the highest the 5M relayer limit
+  allows, in a transaction whose gas limit is 5M rather than one measured
+  under a bigger limit, on every route and both delivery paths
+  (`test_relayed_process_at_threshold_6_fits_a_5m_gas_limit`). The costliest
+  is a payout from a collateral route locking the upstream DRC20, at 3.27M.
+
+### Open: registry growth
+
+Each registration adds about 339 bytes to the route's memory (338.6 on
+average, the map's own overhead included), and nothing removes it. The
+memory is wasm32: at most 4 GiB, and it never shrinks. A route whose memory
+is full of registrations can't allocate a new escrow entry or registration:
+transfers to recipients that aren't registered can't be delivered, those
+recipients can't claim, and WarpDrc20 can't mint to an account with no
+balance yet. The registrations never go away, so neither does the problem.
+
+`register_account` registers the transaction's signer, so an entry costs a
+transaction signed by a new key, and that key needs DUSK for its gas first.
+`test_self_registration_costs_two_transactions_per_key` measures the funding
+transfer and the registration at about 1.85M gas each, nearly all of it the
+1.75M signature check every Moonlight transaction pays at the Boreas
+host-query prices testnet and mainnet use (the registration itself costs
+about 35k). Filling 4 GiB takes about 12.7 million entries:
+
+| Per entry | Gas | DUSK to fill 4 GiB at 1 LUX/gas |
+|---|---|---|
+| Registration only | 1.85M | about 23,500 |
+| A funding transfer and the registration | 3.70M | about 46,900 |
+
+This assumes the minimum gas price of 1 LUX, that the whole 4 GiB is free,
+and one ordinary transfer to fund each key. Funding many keys from a
+contract in one transaction costs less per key, so the registration-only
+figure is the floor. Each key must also hold its registration's gas limit
+when it submits, but keeps what isn't spent. It takes two transactions per
+entry, about 15,600 blocks filled to their 3 billion gas limit. For
+comparison, `register_account_for` (MEDIUM-9) did the same for about
+500 DUSK.
+
+This is the same class of problem as the Mailbox's process path after
+HIGH-7, which stores every processed message ID and isn't covered by the
+3 GiB dispatch limit: storage anyone can add to, bounded only by the cost of
+the transactions. It stays open until the storage design being worked out
+separately bounds or prices both. Routes don't report their memory use yet.
+
 ## Owner powers
 
 `dusk-tx deploy-hyperlane` makes the deployer key the owner, fee beneficiary

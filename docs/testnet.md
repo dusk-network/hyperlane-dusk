@@ -346,6 +346,11 @@ Testnet runs on trust choices and tooling that mainnet can't:
 - **Gas payments.** Price the Dusk IGP for the EVM destination, get Dusk
   pricing into the EVM side's hook, and turn on gas-payment enforcement in the
   relayer.
+- **Storage.** Anyone can add keys to a route's registry, and processed
+  message IDs to the Mailbox, for good, paying only gas. Filling a route's
+  4 GiB with registrations takes roughly 23,000 to 47,000 DUSK
+  ([security notes](security.md#open-registry-growth)), and routes don't
+  report their memory yet. Bound or price both.
 - **Upgrades.** The contracts are immutable. Plan how a fix ships: a pause
   limited to `dispatch` and `transfer_remote` (never `process` or claims), a
   redeploy, and a migration of route custody that doesn't depend on forging
