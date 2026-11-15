@@ -500,6 +500,10 @@ In the rehearsal:
   Dusk-origin validators (2 of 3), and #1 is the relayer's EVM key.
 - Checkpoints go to local directories under
   `deploy/out/local-rehearsal/agents/`, with logs and PID files.
+- `local-agents.sh` starts each agent with only `PATH`, `HOME`,
+  `DUSK_TX_BIN`, its config and its keys. Hyperlane applies every `HYP_*`
+  variable over the config files, so one left in your shell would
+  otherwise change the rehearsal's agents, or point them at another node.
 - Every agent signs its Dusk transactions with the deployer's key, because
   the local chain funds no other account with a key file. Don't send your own
   transactions from that key while the relayer is delivering, or one of them

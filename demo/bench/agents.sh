@@ -275,8 +275,14 @@ start_agent() {
         ok "$name is already running (pid $pid)"
         return
     fi
-    (cd "$AGENT_RUN_DIR" && exec setsid env DUSK_TX_BIN="$BENCH_SCRIPTS/dusk-tx-shim.sh" \
-        BENCH_DUSK_TX_REAL="$DUSK_TX" BENCH_DUSK_TX_LOG="$LOG_DIR/dusk-tx.jsonl" BENCH_AGENT="$name" \
+    # The agent gets only these variables, and the keys in "$@". Hyperlane
+    # applies every HYP_* variable over its config files, so one left in the
+    # operator's shell, such as HYP_CHAINS_DUSK_CUSTOMRPCURLS, would send the
+    # agent past the proxy to another node; others change what the agent or
+    # its dusk-tx does (CONFIG_FILES, DUSK_TX_BIN, RUST_LOG, AWS_*).
+    (cd "$AGENT_RUN_DIR" && exec setsid env -i PATH="$PATH" HOME="$HOME" \
+        DUSK_TX_BIN="$BENCH_SCRIPTS/dusk-tx-shim.sh" BENCH_DUSK_TX_REAL="$DUSK_TX" \
+        BENCH_DUSK_TX_LOG="$LOG_DIR/dusk-tx.jsonl" BENCH_AGENT="$name" \
         CONFIG_FILES="$AGENTS_DIR/$name.json" "$@" "$AGENT_BIN_DIR/$bin") \
         >>"$LOG_DIR/$name.log" 2>&1 </dev/null &
     echo "$!" > "$AGENTS_DIR/$name.pid"

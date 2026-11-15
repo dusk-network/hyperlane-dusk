@@ -68,7 +68,14 @@ start_agent() {
         ok "$name is already running (pid $(pid_of "$name"))"
         return
     fi
-    (cd "$AGENT_RUN_DIR" && exec setsid env DUSK_TX_BIN="$DUSK_TX" \
+    # The agent gets only these variables, and the keys in "$@". Hyperlane
+    # applies every HYP_* variable over its config files, so one left in the
+    # operator's shell, such as HYP_CHAINS_DUSK_CUSTOMRPCURLS, would point the
+    # rehearsal's agents at another node; others change what the agent or its
+    # dusk-tx does (CONFIG_FILES, DUSK_TX_BIN, RUST_LOG, AWS_*), and the env
+    # file's own secrets (EVM_DEPLOYER_KEY, DUSK_CONSENSUS_PASSWORD) aren't
+    # the agents' to hold.
+    (cd "$AGENT_RUN_DIR" && exec setsid env -i PATH="$PATH" HOME="$HOME" DUSK_TX_BIN="$DUSK_TX" \
         CONFIG_FILES="$AGENTS_DIR/$name.json" "$@" "$AGENT_BIN_DIR/$bin") \
         >>"$AGENTS_DIR/logs/$name.log" 2>&1 </dev/null &
     echo "$!" > "$AGENTS_DIR/$name.pid"

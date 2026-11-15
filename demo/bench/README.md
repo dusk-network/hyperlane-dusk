@@ -44,6 +44,11 @@ python3 demo/bench/report.py "$BENCH_DIR" > report.md
 `hyperlane-monorepo/rust/main/config`). Phase lengths and counts are
 environment variables at the top of `scenario.sh`.
 
+Each agent starts with only `PATH`, `HOME`, its config, its keys and the
+shim's variables. Hyperlane applies every `HYP_*` variable over the config
+files, so one left in your shell, such as `HYP_CHAINS_DUSK_CUSTOMRPCURLS`,
+would otherwise send an agent past the proxy to another node.
+
 The phases, in order:
 
 1. `baseline`: node and Anvil, no agents.

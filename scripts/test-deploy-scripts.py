@@ -1781,6 +1781,149 @@ class AnvilEvmDeploy(unittest.TestCase):
         self.run_tool(str(self.root / "deploy" / "testnet.sh"), "preflight", check=True)
 
 
+# Stands in for the relayer and validator binaries: writes the environment
+# it was started with next to its config, and waits to be stopped.
+AGENT_STUB = """#!/bin/sh
+env > "${CONFIG_FILES%.json}.env"
+exec sleep 120
+"""
+
+# What an operator's shell might hold. Hyperlane applies HYP_* over the
+# config files, so the first sends the relayer to another Dusk node.
+OPERATOR_ENV = {
+    "HYP_CHAINS_DUSK_CUSTOMRPCURLS": "https://public-node.invalid/",
+    "HYP_CHAINS_ANVIL_RPCURLS_0_HTTP": "https://public-rpc.invalid/",
+    "HYP_DB": "/somewhere/else",
+    "HYP_GASPAYMENTENFORCEMENT": "[]",
+    "RUST_LOG": "trace",
+    "CONFIG_FILES": "/somewhere/else.json",
+    "AWS_ACCESS_KEY_ID": "operator",
+    "DUSK_TX_BIN": "/somewhere/dusk-tx",
+    "DUSK_CONSENSUS_PASSWORD": "operator-secret",
+}
+
+# Anvil's development keys #1-#5 and their addresses, as the agent scripts
+# use them.
+ANVIL_DEV_KEYS = {
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+    "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+    "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a": "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65",
+    "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba": "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc",
+}
+
+
+class AgentEnvironment(unittest.TestCase):
+    """The bench and the local rehearsal start each agent with only the
+    variables it needs, whatever the operator's shell holds."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="hyperlane-agent-env-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bin = self.root / "agent-bin"
+        self.bin.mkdir()
+        for name in ("relayer", "validator"):
+            write_executable(self.bin / name, AGENT_STUB)
+        self.run_dir = self.root / "run"
+        self.run_dir.mkdir()
+
+    def stop_all(self, pid_files):
+        for pid_file in pid_files:
+            try:
+                os.kill(int(pid_file.read_text()), 15)
+            except (OSError, ValueError):
+                pass
+
+    def environments(self, directory):
+        found = {}
+        for dump in sorted(directory.glob("*.env")):
+            found[dump.stem] = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
+        return found
+
+    def assert_clean(self, environment, config, keys):
+        self.assertEqual(environment["CONFIG_FILES"], str(config))
+        self.assertEqual({name: value for name, value in environment.items() if name.startswith("HYP_")}, keys)
+        for name in ("RUST_LOG", "AWS_ACCESS_KEY_ID", "DUSK_CONSENSUS_PASSWORD", "EVM_DEPLOYER_KEY"):
+            self.assertNotIn(name, environment)
+
+    def test_bench_agents_get_a_clean_environment(self):
+        (self.root / "demo" / "bench").mkdir(parents=True)
+        shutil.copy2(ROOT / "demo" / "bench" / "agents.sh", self.root / "demo" / "bench" / "agents.sh")
+        (self.root / "demo" / ".env.bridge").write_text("RUSK_HTTP_PORT=8080\nANVIL_PORT=8545\n"
+                                                        f"SOLIDITY_DIR={self.root}\n")
+        bench = self.root / "bench"
+        for directory in ("agents", "logs"):
+            (bench / directory).mkdir(parents=True)
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.root), "BENCH_DIR": str(bench),
+               "AGENT_BIN_DIR": str(self.bin), "AGENT_RUN_DIR": str(self.run_dir),
+               "DUSK_TX": "/usr/bin/false", **OPERATOR_ENV}
+        self.addCleanup(self.stop_all, [bench / "agents" / "relayer.pid"])
+        result = subprocess.run(["bash", str(self.root / "demo" / "bench" / "agents.sh"), "start", "relayer"],
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        environment = self.environments(bench / "agents")["relayer"]
+        self.assert_clean(environment, bench / "agents" / "relayer.json",
+                          {"HYP_CHAINS_ANVIL_SIGNER_KEY": "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"})
+        self.assertEqual(environment["DUSK_TX_BIN"], str(self.root / "demo" / "bench" / "dusk-tx-shim.sh"))
+        self.assertEqual((environment["BENCH_AGENT"], environment["BENCH_DUSK_TX_REAL"]), ("relayer", "/usr/bin/false"))
+
+    def test_rehearsal_agents_get_a_clean_environment(self):
+        (self.root / "deploy").mkdir()
+        shutil.copy2(ROOT / "deploy" / "local-agents.sh", self.root / "deploy" / "local-agents.sh")
+        out = self.root / "deploy" / "out" / "rehearsal"
+        out.mkdir(parents=True)
+        (out / "relayer.json").write_text(json.dumps({"db": "x", "chains": {"anvil": {"name": "anvil"},
+                                                                          "dusk": {"name": "dusk"}}}))
+        (out / "validator-dusk.json").write_text(json.dumps({"db": "y", "chains": {"dusk": {"name": "dusk"}}}))
+        keys = self.root / "consensus.keys"
+        keys.write_text("{}")
+        dev = list(ANVIL_DEV_KEYS.values())
+        env_file = self.root / "deploy" / "local.env"
+        env_file.write_text("".join(f"{key}={shlex.quote(str(value))}\n" for key, value in {
+            "DEPLOY_NAME": "rehearsal", "DUSK_RUES_URL": "http://localhost:8080/", "DUSK_KEYS": keys,
+            "EVM_CHAIN_NAME": "anvil", "EVM_RPC": "http://localhost:8545",
+            "EVM_VALIDATOR_ANNOUNCE": "0x" + "5a" * 20, "EVM_ORIGIN_VALIDATORS": dev[1],
+            "DUSK_ORIGIN_VALIDATORS": ",".join(dev[2:]), "AGENT_STATE_DIR": out / "agents" / "state",
+            "DUSK_SIGNER_KEY_FILE": out / "agents" / "dusk-signer.key",
+        }.items()) + "export DUSK_CONSENSUS_PASSWORD=password\nexport EVM_DEPLOYER_KEY=0x" + "11" * 32 + "\n")
+        tools = self.root / "tools"
+        tools.mkdir()
+        write_executable(tools / "cast", "#!/usr/bin/env python3\nimport sys\nkeys = " + repr(ANVIL_DEV_KEYS) + "\n"
+                         "args = sys.argv[1:]\n"
+                         "if args[0] == 'wallet':\n    print(keys[args[args.index('--private-key') + 1]])\n"
+                         "else:\n    print('[' + ', '.join(keys.values()) + ']')\n")
+        dusk_tx = tools / "dusk-tx"
+        write_executable(dusk_tx, "#!/bin/sh\ncase \"$1\" in\n"
+                         "  export-signer-key) shift; while [ \"$1\" != --out ]; do shift; done; echo key > \"$2\" ;;\n"
+                         "  query) echo '{\"value\": 3}' ;;\nesac\n")
+        env = {"PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root),
+               "TESTNET_ENV": str(env_file), "DUSK_TX": str(dusk_tx), "AGENT_BIN_DIR": str(self.bin),
+               "AGENT_RUN_DIR": str(self.run_dir), **OPERATOR_ENV}
+        agents = out / "agents"
+        names = ["validator-evm", "validator-dusk-1", "validator-dusk-2", "validator-dusk-3", "relayer"]
+        self.addCleanup(self.stop_all, [agents / f"{name}.pid" for name in names])
+        result = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "start"],
+                                env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        environments = self.environments(agents)
+        self.assertEqual(sorted(environments), sorted(names))
+        validator_keys = list(ANVIL_DEV_KEYS)[2:]
+        expected = {
+            "validator-evm": {"HYP_VALIDATOR_KEY": list(ANVIL_DEV_KEYS)[1],
+                              "HYP_CHAINS_ANVIL_SIGNER_KEY": list(ANVIL_DEV_KEYS)[1]},
+            "relayer": {"HYP_CHAINS_ANVIL_SIGNER_KEY": list(ANVIL_DEV_KEYS)[0]},
+            **{f"validator-dusk-{i + 1}": {"HYP_VALIDATOR_KEY": key} for i, key in enumerate(validator_keys)},
+        }
+        for name in names:
+            with self.subTest(agent=name):
+                self.assert_clean(environments[name], agents / f"{name}.json", expected[name])
+                self.assertEqual(environments[name]["DUSK_TX_BIN"], str(dusk_tx))
+        stop = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "stop"],
+                              env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+
+
 # Encrypt a consensus key pair the way rusk-wallet's export does.
 def consensus_keys(secret_key, public_key, password):
     from cryptography.hazmat.primitives import hashes
