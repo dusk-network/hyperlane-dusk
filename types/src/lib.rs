@@ -27,6 +27,7 @@ pub mod merkle;
 pub mod message;
 pub mod metadata;
 pub mod signature;
+pub mod storage;
 pub mod token_message;
 
 /// Hyperlane protocol version.
