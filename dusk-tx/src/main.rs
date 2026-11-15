@@ -9,6 +9,9 @@
 //!   encode-message     Encode a Hyperlane message (no TX, pure encoding)
 //!   enroll-router      Enroll a remote router on a warp route
 //!   transfer-remote    Send tokens or native DUSK through a warp route
+//!   set-igp-config     Set an IGP's pricing for a destination (owner)
+//!   set-beneficiary    Set who can claim a fee contract's fees (owner)
+//!   claim-fees         Claim a ProtocolFee's or IGP's fees (beneficiary)
 //!   account            Show an account's address, recipient hash and balance
 //!   export-signer-key  Write an agent signer key file from consensus.keys
 //!
@@ -62,6 +65,14 @@ const CLAIM_PENDING_GAS_LIMIT: u64 = 3_000_000;
 /// (`claim_pending_for`): decoding the account's key costs about 57M gas, so
 /// a claim takes about 59M.
 const CLAIM_PENDING_FOR_GAS_LIMIT: u64 = 80_000_000;
+/// Default gas limit for the owner and beneficiary calls on the fee
+/// contracts (`set-igp-config`, `set-beneficiary`, `claim-fees`). They take
+/// 1.86M to 1.87M gas (docs/costs.md, Owners); a failed call is charged its
+/// whole limit, so it stays low.
+const OWNER_CALL_GAS_LIMIT: u64 = 3_000_000;
+/// The hook types the fee contracts report (Hyperlane's HookType).
+const IGP_HOOK_TYPE: u8 = 4;
+const PROTOCOL_FEE_HOOK_TYPE: u8 = 6;
 /// Default gas limit for `withdraw-dispatch`: the Mailbox decodes the
 /// recipient's key before paying it, which costs about 57M gas, so a
 /// withdrawal takes about 59M, directly or through a route's owner-only
@@ -227,6 +238,11 @@ enum Command {
         /// Optional u32 argument.
         #[arg(long, name = "arg-u32")]
         arg_u32: Option<u32>,
+        /// Optional u64 argument, only with --arg-u32 and --return-type u64:
+        /// the argument is then the pair (u32, u64), as the IGP's
+        /// quote_gas_payment(destination, gas_limit) takes it.
+        #[arg(long, name = "arg-u64", requires = "arg-u32")]
+        arg_u64: Option<u64>,
         /// Optional pair of u32 arguments, encoded as FIRST,SECOND, for a
         /// page query: ValidatorAnnounce get_announced_validators(start,
         /// limit) or MerkleTreeHook message_ids(start, limit).
@@ -487,6 +503,104 @@ enum Command {
         #[arg(long, default_value = "1")]
         gas_price: u64,
     },
+    /// Set an IGP's pricing for one destination domain. Owner only. The
+    /// signer and the pricing are checked as the IGP checks them before
+    /// anything is signed.
+    SetIgpConfig {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// IGP contract ID (64 hex chars).
+        #[arg(long)]
+        igp: String,
+        /// The new pricing, as DOMAIN:GAS_OVERHEAD:TOKEN_EXCHANGE_RATE:GAS_PRICE.
+        /// The IGP charges (gas limit + GAS_OVERHEAD) x GAS_PRICE x
+        /// TOKEN_EXCHANGE_RATE / 1e10 LUX.
+        #[arg(
+            long = "igp-domain-config",
+            value_name = "DOMAIN:GAS_OVERHEAD:TOKEN_EXCHANGE_RATE:GAS_PRICE"
+        )]
+        igp_domain_config: String,
+        /// Gas limit. Setting a domain's pricing takes about 1.86M gas.
+        #[arg(long, default_value_t = OWNER_CALL_GAS_LIMIT)]
+        gas_limit: u64,
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
+        gas_price: u64,
+    },
+    /// Set the beneficiary of a ProtocolFee or IGP contract: the account that
+    /// can claim its fees. Owner only.
+    SetBeneficiary {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// ProtocolFee or IGP contract ID (64 hex chars).
+        #[arg(long)]
+        contract: String,
+        /// The new beneficiary: a base58 Moonlight address or a 96-byte
+        /// public key in hex. Only that account can claim, by signing the
+        /// claim itself.
+        #[arg(long)]
+        beneficiary: String,
+        /// Gas limit. Setting the beneficiary takes about 1.86M gas.
+        #[arg(long, default_value_t = OWNER_CALL_GAS_LIMIT)]
+        gas_limit: u64,
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
+        gas_price: u64,
+    },
+    /// Claim the fees a ProtocolFee or IGP contract holds. The signer must be
+    /// the contract's beneficiary, and the fees go to its account.
+    ClaimFees {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// ProtocolFee or IGP contract ID (64 hex chars).
+        #[arg(long)]
+        contract: String,
+        /// Gas limit. A claim takes about 1.87M gas.
+        #[arg(long, default_value_t = OWNER_CALL_GAS_LIMIT)]
+        gas_limit: u64,
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
+        gas_price: u64,
+    },
     /// Approve a DRC20 contract spender using the current Dusk ABI.
     Drc20Approve {
         #[arg(long, default_value = "http://localhost:8080/")]
@@ -732,6 +846,7 @@ async fn main() {
             method,
             return_type,
             arg_u32,
+            arg_u64,
             arg_u32_pair,
             arg_bytes32,
             arg_eth_address,
@@ -742,6 +857,7 @@ async fn main() {
                 &method,
                 &return_type,
                 arg_u32,
+                arg_u64,
                 arg_u32_pair.as_deref(),
                 arg_bytes32,
                 arg_eth_address,
@@ -942,6 +1058,76 @@ async fn main() {
                 secret_key_stdin,
                 &warp_contract,
                 for_account.as_deref(),
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
+        Command::SetIgpConfig {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            igp,
+            igp_domain_config,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_set_igp_config(
+                &rues_url,
+                keys,
+                password.as_deref().unwrap_or_default(),
+                secret_key,
+                secret_key_stdin,
+                &igp,
+                &igp_domain_config,
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
+        Command::SetBeneficiary {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            contract,
+            beneficiary,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_set_beneficiary(
+                &rues_url,
+                keys,
+                password.as_deref().unwrap_or_default(),
+                secret_key,
+                secret_key_stdin,
+                &contract,
+                &beneficiary,
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
+        Command::ClaimFees {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            contract,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_claim_fees(
+                &rues_url,
+                keys,
+                password.as_deref().unwrap_or_default(),
+                secret_key,
+                secret_key_stdin,
+                &contract,
                 gas_limit,
                 gas_price,
             )
@@ -1617,6 +1803,93 @@ mod tests {
         );
         let duplicate = format!("0x{},0x{}", "11".repeat(20), "11".repeat(20));
         assert!(parse_eth_addresses_in_order(&duplicate).is_err());
+    }
+
+    /// `igp_quote` is the IGP's own arithmetic: (gas + overhead) x price x
+    /// rate / 1e10, rounded down.
+    #[test]
+    fn igp_quote_matches_the_contract_formula() {
+        let (domain, config) =
+            super::parse_igp_domain_config("11155111:200000:375000:1000000000").unwrap();
+        assert_eq!(domain, 11_155_111);
+        // 250,000 gas at 1 gwei is 2.5e14 wei; at 375,000 / 1e10 LUX per wei
+        // that is 9.375e9 LUX, 9.375 DUSK.
+        assert_eq!(super::igp_quote(config, 50_000), Some(9_375_000_000));
+        let config = hyperlane_dusk_types::DomainGasConfig {
+            gas_overhead: 0,
+            token_exchange_rate: 3,
+            gas_price: 1,
+        };
+        assert_eq!(super::igp_quote(config, 3_333_333_333), Some(0));
+        assert_eq!(super::igp_quote(config, 3_333_333_334), Some(1));
+        let huge = hyperlane_dusk_types::DomainGasConfig {
+            gas_overhead: u64::MAX,
+            token_exchange_rate: u64::MAX,
+            gas_price: u64::MAX,
+        };
+        assert_eq!(super::igp_quote(huge, 1), None);
+        assert!(super::parse_igp_domain_config("11155111:200000:375000").is_err());
+        assert!(super::parse_igp_domain_config("11155111:0:1:1").is_err());
+    }
+
+    #[test]
+    fn fee_contract_commands_default_to_a_low_gas_limit() {
+        let contract = "11".repeat(32);
+        let parse =
+            |args: &[&str]| Cli::try_parse_from(args.iter().copied()).map(|cli| cli.command);
+        match parse(&[
+            "dusk-tx",
+            "set-igp-config",
+            "--igp",
+            &contract,
+            "--igp-domain-config",
+            "11155111:200000:375000:1000000000",
+        ])
+        .unwrap()
+        {
+            super::Command::SetIgpConfig { gas_limit, .. } => {
+                assert_eq!(gas_limit, super::OWNER_CALL_GAS_LIMIT);
+            }
+            _ => unreachable!("parsed set-igp-config"),
+        }
+        match parse(&["dusk-tx", "claim-fees", "--contract", &contract]).unwrap() {
+            super::Command::ClaimFees { gas_limit, .. } => {
+                assert_eq!(gas_limit, super::OWNER_CALL_GAS_LIMIT);
+            }
+            _ => unreachable!("parsed claim-fees"),
+        }
+        assert!(parse(&["dusk-tx", "set-beneficiary", "--contract", &contract]).is_err());
+        assert!(parse(&["dusk-tx", "set-igp-config", "--igp", &contract]).is_err());
+    }
+
+    #[test]
+    fn a_u64_query_argument_needs_a_u32_one() {
+        let contract = "11".repeat(32);
+        let base = [
+            "dusk-tx",
+            "query",
+            "--contract",
+            &contract,
+            "--method",
+            "quote_gas_payment",
+            "--return-type",
+            "u64",
+        ];
+        assert!(Cli::try_parse_from(base.iter().copied().chain(["--arg-u64", "50000"])).is_err());
+        match Cli::try_parse_from(base.iter().copied().chain([
+            "--arg-u32",
+            "11155111",
+            "--arg-u64",
+            "50000",
+        ]))
+        .unwrap()
+        .command
+        {
+            super::Command::Query {
+                arg_u32, arg_u64, ..
+            } => assert_eq!((arg_u32, arg_u64), (Some(11_155_111), Some(50_000))),
+            _ => unreachable!("parsed query"),
+        }
     }
 
     #[test]
@@ -3679,24 +3952,30 @@ async fn before<T>(deadline: tokio::time::Instant, future: impl Future<Output = 
 
 // ── cmd_query ─────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_query(
     rues_url: &str,
     contract_hex: &str,
     method: &str,
     return_type: &str,
     arg_u32: Option<u32>,
+    arg_u64: Option<u64>,
     arg_u32_pair: Option<&str>,
     arg_bytes32: Option<String>,
     arg_eth_address: Option<String>,
 ) -> Result<(), String> {
     let client = RuesClient::new(rues_url)?;
     let contract_id = parse_bytes32(contract_hex)?;
+    // --arg-u64 goes with --arg-u32 (clap enforces that) as one argument.
     let argument_count = usize::from(arg_u32.is_some())
         + usize::from(arg_u32_pair.is_some())
         + usize::from(arg_bytes32.is_some())
         + usize::from(arg_eth_address.is_some());
     if argument_count > 1 {
         return Err("Query accepts at most one argument option".to_string());
+    }
+    if arg_u64.is_some() && return_type != "u64" {
+        return Err("--arg-u64 is supported only with --return-type u64".to_string());
     }
     let arg_u32_pair = arg_u32_pair.map(parse_u32_pair).transpose()?;
     if method == "get_announced_validators" {
@@ -3745,7 +4024,11 @@ async fn cmd_query(
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         "u64" => {
-            let result: u64 = if let Some(val) = arg_u32 {
+            let result: u64 = if let (Some(first), Some(second)) = (arg_u32, arg_u64) {
+                client
+                    .contract_query(&contract_id, method, &(first, second))
+                    .await?
+            } else if let Some(val) = arg_u32 {
                 client.contract_query(&contract_id, method, &val).await?
             } else if let Some(ref hex) = arg_bytes32 {
                 let arg = parse_bytes32(hex)?;
@@ -4325,6 +4608,275 @@ async fn cmd_claim_pending(
     output["fn_name"] = json!(claim.fn_name);
     output["warp_contract"] = json!(warp_contract_hex);
     output["claimed"] = json!(pending.to_string());
+    output["tx_id"] = json!(tx_id);
+    confirmation.record(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+// ── Fee contracts: pricing, beneficiary, claims ──────────────────────────
+
+/// One `DOMAIN:GAS_OVERHEAD:TOKEN_EXCHANGE_RATE:GAS_PRICE` pricing, checked
+/// as the IGP checks it.
+fn parse_igp_domain_config(value: &str) -> Result<(u32, DomainGasConfig), String> {
+    let mut configs = parse_igp_domain_configs(&[value.to_owned()])?;
+    Ok(configs.remove(0))
+}
+
+/// What an IGP with this pricing charges, in LUX, for `gas_limit` gas, as
+/// its `quote_gas_payment` computes it: (gas_limit + overhead) x gas price x
+/// exchange rate / 1e10. `None` if that doesn't fit a u64.
+fn igp_quote(config: DomainGasConfig, gas_limit: u64) -> Option<u64> {
+    let gas = u128::from(gas_limit) + u128::from(config.gas_overhead);
+    let lux = gas
+        .checked_mul(u128::from(config.gas_price))?
+        .checked_mul(u128::from(config.token_exchange_rate))?
+        / IGP_TOKEN_EXCHANGE_RATE_SCALE;
+    u64::try_from(lux).ok()
+}
+
+/// A destination's pricing, with what it charges a message without hook
+/// metadata, which the IGP reads as 50,000 gas. The warp routes send none.
+fn domain_gas_config_json(config: DomainGasConfig) -> serde_json::Value {
+    json!({
+        "gas_overhead": config.gas_overhead,
+        "token_exchange_rate": config.token_exchange_rate,
+        "gas_price": config.gas_price,
+        "quote_default_gas": igp_quote(config, hyperlane_dusk_types::metadata::DEFAULT_GAS_USAGE),
+    })
+}
+
+/// Name a ProtocolFee or IGP contract by its hook type, or fail.
+async fn fee_contract_kind(
+    client: &RuesClient,
+    contract: &[u8; 32],
+    contract_hex: &str,
+    accept_protocol_fee: bool,
+) -> Result<&'static str, String> {
+    let hook_type: u8 = client
+        .contract_query(contract, "hook_type", &())
+        .await
+        .map_err(|e| format!("Can't query {contract_hex} (is it a fee contract?): {e}"))?;
+    match hook_type {
+        IGP_HOOK_TYPE => Ok("IGP"),
+        PROTOCOL_FEE_HOOK_TYPE if accept_protocol_fee => Ok("ProtocolFee"),
+        _ if accept_protocol_fee => Err(format!(
+            "{contract_hex} has hook type {hook_type}: neither an IGP ({IGP_HOOK_TYPE}) nor a ProtocolFee ({PROTOCOL_FEE_HOOK_TYPE})"
+        )),
+        _ => Err(format!(
+            "{contract_hex} has hook type {hook_type}, not an IGP's ({IGP_HOOK_TYPE})"
+        )),
+    }
+}
+
+/// Fail unless the signer owns `contract`: an owner-only call from anyone
+/// else fails on chain and is charged its whole gas limit.
+async fn ensure_signer_owns(
+    client: &RuesClient,
+    contract: &[u8; 32],
+    contract_hex: &str,
+    signer: &BlsPublicKey,
+) -> Result<(), String> {
+    let owner: Option<[u8; 32]> = client
+        .contract_query(contract, "owner", &())
+        .await
+        .map_err(|e| format!("Can't read the owner of {contract_hex}: {e}"))?;
+    let signer_h256 = hyperlane_dusk_types::message::keccak256(&signer.to_bytes());
+    match owner {
+        Some(owner) if owner == signer_h256 => Ok(()),
+        Some(owner) => Err(format!(
+            "The signer (account hash {}) doesn't own {contract_hex}; its owner is {}",
+            hex::encode(signer_h256),
+            hex::encode(owner)
+        )),
+        None => Err(format!("{contract_hex} has no owner")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_set_igp_config(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    igp_hex: &str,
+    config_arg: &str,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    let (domain, config) = parse_igp_domain_config(config_arg)?;
+    let igp = parse_bytes32(igp_hex)?;
+    let client = RuesClient::new(rues_url)?;
+    fee_contract_kind(&client, &igp, igp_hex, false).await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    ensure_signer_owns(&client, &igp, igp_hex, &pk).await?;
+    let previous: DomainGasConfig = client
+        .contract_query(&igp, "domain_gas_config", &domain)
+        .await?;
+
+    let chain_id = client.query_chain_id().await?;
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        ContractId::from_bytes(igp),
+        "set_domain_gas_config",
+        rkyv_serialize(&(domain, config)),
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+
+    let current: DomainGasConfig = client
+        .contract_query(&igp, "domain_gas_config", &domain)
+        .await?;
+    if current != config {
+        return Err(format!(
+            "Transaction {tx_id} was included, but the IGP now prices domain {domain} at \
+             {current:?}, not {config:?}"
+        ));
+    }
+    let mut output = json!({
+        "success": true,
+        "fn_name": "set_domain_gas_config",
+        "igp": igp_hex,
+        "domain": domain,
+        "previous": domain_gas_config_json(previous),
+        "config": domain_gas_config_json(config),
+        "tx_id": tx_id,
+    });
+    confirmation.record(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_set_beneficiary(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    contract_hex: &str,
+    beneficiary_arg: &str,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    let account = parse_account_arg(beneficiary_arg)?;
+    let beneficiary = hyperlane_dusk_types::message::keccak256(&account.to_bytes());
+    let contract = parse_bytes32(contract_hex)?;
+    let client = RuesClient::new(rues_url)?;
+    let kind = fee_contract_kind(&client, &contract, contract_hex, true).await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    ensure_signer_owns(&client, &contract, contract_hex, &pk).await?;
+    let previous: [u8; 32] = client.contract_query(&contract, "beneficiary", &()).await?;
+
+    let mut output = account_identity(&account);
+    output["success"] = json!(true);
+    output["contract"] = json!(contract_hex);
+    output["kind"] = json!(kind);
+    output["previous_beneficiary"] = json!(hex::encode(previous));
+    if previous == beneficiary {
+        output["unchanged"] = json!(true);
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+
+    let chain_id = client.query_chain_id().await?;
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        ContractId::from_bytes(contract),
+        "set_beneficiary",
+        rkyv_serialize(&(beneficiary,)),
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let current: [u8; 32] = client.contract_query(&contract, "beneficiary", &()).await?;
+    if current != beneficiary {
+        return Err(format!(
+            "Transaction {tx_id} was included, but the beneficiary of {kind} {contract_hex} is \
+             now {}",
+            hex::encode(current)
+        ));
+    }
+    output["fn_name"] = json!("set_beneficiary");
+    output["unchanged"] = json!(false);
+    output["tx_id"] = json!(tx_id);
+    confirmation.record(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_claim_fees(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    contract_hex: &str,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    let contract = parse_bytes32(contract_hex)?;
+    let client = RuesClient::new(rues_url)?;
+    let kind = fee_contract_kind(&client, &contract, contract_hex, true).await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let identity = account_identity(&pk);
+
+    // Check first: a claim that fails on chain is charged its whole gas
+    // limit. The contract pays the account that signs, and only if it is
+    // the beneficiary.
+    let beneficiary: [u8; 32] = client.contract_query(&contract, "beneficiary", &()).await?;
+    let signer_h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
+    if beneficiary != signer_h256 {
+        return Err(format!(
+            "The signer (account hash {}) isn't the beneficiary of {kind} {contract_hex}, {}. \
+             Sign with the beneficiary's key, or have the owner change it with set-beneficiary.",
+            hex::encode(signer_h256),
+            hex::encode(beneficiary)
+        ));
+    }
+    let claimable: u64 = client
+        .contract_query(&contract, "claimable_fees", &())
+        .await?;
+    if claimable == 0 {
+        return Err(format!("{kind} {contract_hex} holds no fees to claim"));
+    }
+
+    let chain_id = client.query_chain_id().await?;
+    let (nonce, balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        ContractId::from_bytes(contract),
+        "claim",
+        Vec::new(),
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let (_, balance_after) = client.query_account(&pk).await?;
+
+    let mut output = identity;
+    output["success"] = json!(true);
+    output["fn_name"] = json!("claim");
+    output["contract"] = json!(contract_hex);
+    output["kind"] = json!(kind);
+    output["claimed"] = json!(claimable.to_string());
+    output["claimed_dusk"] = json!(format_dusk(claimable));
+    output["balance_before"] = json!(balance.to_string());
+    output["balance_after"] = json!(balance_after.to_string());
     output["tx_id"] = json!(tx_id);
     confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
