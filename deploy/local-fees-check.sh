@@ -117,6 +117,13 @@ relayer_on() {
 # A message the Dusk Mailbox dispatched last, by its nonce.
 dusk_latest_id() { dq --contract "$DUSK_MAILBOX" --method latest_dispatched_id --return-type bytes32; }
 
+# The transfer from Anvil (3.) pays the deployer, which a fresh route holds
+# in escrow until the account is registered.
+if [ "$(dtx account --warp-contract "$DUSK_ROUTE" | jq -r '.route.registered')" != true ]; then
+    dtx register-account --warp-contract "$DUSK_ROUTE" >/dev/null || fail "Can't register the deployer on $DUSK_ROUTE"
+    ok "registered the deployer on the native route"
+fi
+
 # ── 1. A warp transfer from Dusk ─────────────────────────────────────────────
 
 minted="$(cast call "$EVM_TOKEN" "balanceOf(address)(uint256)" "$EVM_USER" --rpc-url "$EVM_RPC" | num)"
