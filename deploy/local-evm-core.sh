@@ -4,10 +4,15 @@
 # =============================================================================
 #
 # Stands up a stand-in for Sepolia's Hyperlane core contracts on the local
-# Anvil (Mailbox with a Merkle required hook and a fee-free default hook,
-# ValidatorAnnounce, IGP), then writes deploy/local.env so that
-# deploy/testnet.sh targets the local Rusk node and Anvil instead of the real
-# networks.
+# Anvil, hooked up as on Sepolia: the Mailbox requires a ProtocolFee hook
+# (1 wei), and its default hook routes by destination, falling back to the
+# MerkleTreeHook the validators sign for a destination it has no route for,
+# such as Dusk. Also a ValidatorAnnounce and a StaticAggregationHookFactory.
+# Then writes deploy/local.env so that deploy/testnet.sh targets the local
+# Rusk node and Anvil instead of the real networks.
+#
+# A route's hook replaces the default hook, so as on Sepolia only a route
+# hook that inserts into the MerkleTreeHook itself gets its messages signed.
 #
 # Requires `bash demo/start-env.sh` to be running.
 #
@@ -51,14 +56,19 @@ send() { cast send "$@" --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY
 
 MAILBOX="$(deploy contracts/Mailbox.sol:Mailbox --constructor-args "$EVM_CHAIN_ID")"
 MERKLE="$(deploy contracts/hooks/MerkleTreeHook.sol:MerkleTreeHook --constructor-args "$MAILBOX")"
-DEFAULT_HOOK="$(deploy contracts/test/TestPostDispatchHook.sol:TestPostDispatchHook)"
+# Sepolia's: maximum 1 gwei; Hyperlane's own scripts set the fee to 0, and
+# Sepolia quotes 1 wei, which exercises the split of msg.value.
+PROTOCOL_FEE="$(deploy contracts/hooks/ProtocolFee.sol:ProtocolFee \
+    --constructor-args 1000000000 1 "$ANVIL_DEPLOYER" "$ANVIL_DEPLOYER")"
+DEFAULT_HOOK="$(deploy contracts/hooks/routing/FallbackDomainRoutingHook.sol:FallbackDomainRoutingHook \
+    --constructor-args "$MAILBOX" "$ANVIL_DEPLOYER" "$MERKLE")"
 DEFAULT_ISM="$(deploy contracts/test/TestIsm.sol:TestIsm)"
 VA="$(deploy contracts/isms/multisig/ValidatorAnnounce.sol:ValidatorAnnounce --constructor-args "$MAILBOX")"
-IGP="$(deploy contracts/hooks/igp/InterchainGasPaymaster.sol:InterchainGasPaymaster)"
-send "$IGP" "initialize(address,address)" "$ANVIL_DEPLOYER" "$ANVIL_DEPLOYER"
+AGGREGATION_HOOK_FACTORY="$(deploy contracts/hooks/aggregation/StaticAggregationHookFactory.sol:StaticAggregationHookFactory)"
 send "$MAILBOX" "initialize(address,address,address,address)" \
-    "$ANVIL_DEPLOYER" "$DEFAULT_ISM" "$DEFAULT_HOOK" "$MERKLE"
+    "$ANVIL_DEPLOYER" "$DEFAULT_ISM" "$DEFAULT_HOOK" "$PROTOCOL_FEE"
 ok "Local EVM core: Mailbox $MAILBOX, MerkleTreeHook $MERKLE, ValidatorAnnounce $VA"
+ok "Required hook: ProtocolFee $PROTOCOL_FEE; default hook: FallbackDomainRoutingHook $DEFAULT_HOOK, falling back to the MerkleTreeHook"
 
 REHEARSAL_OUT="$DUSK_DIR/deploy/out/local-rehearsal"
 if [ -e "$REHEARSAL_OUT" ]; then
@@ -85,8 +95,8 @@ EVM_BLOCK_TIME=1
 EVM_MAILBOX=$MAILBOX
 EVM_MERKLE_TREE_HOOK=$MERKLE
 EVM_VALIDATOR_ANNOUNCE=$VA
-EVM_IGP=$IGP
 EVM_ISM_FACTORY=
+EVM_AGGREGATION_HOOK_FACTORY=$AGGREGATION_HOOK_FACTORY
 export EVM_DEPLOYER_KEY=$ANVIL_PRIVATE_KEY
 EVM_ORIGIN_VALIDATORS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 EVM_ORIGIN_THRESHOLD=1
