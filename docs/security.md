@@ -196,6 +196,14 @@ before the public testnet, found:
 | LOW-14 | `dusk-tx` reported a write as done once `tx(hash)` showed it with no error, which only proves the transaction was included. Until its block is final, a revert can drop it or run it again with another result, and nothing in the output said which it was. | Fixed. Every write's output also has `block_height`, `gas_spent` and `finalized`, whether its block was final when checked right after inclusion (with `block_hash` once it is); the existing fields are unchanged, so the agents' parsing is too. `--wait-finality` waits until the block is final, and only then reports an execution error; it is opt-in, and the agents don't use it. |
 | LOW-15 | The Dusk IGP only took a payment when a message was dispatched. Once the relayer enforced payment (`onChainFeeQuoting`), a Dusk message whose dispatch paid for too little gas, such as one whose recipient's `handle` takes more than a transfer's, or whose delivery got more expensive after it was sent, could never be relayed: nothing could add to its payment, as `payForGas` does on EVM. | Fixed. The IGP, at `state_version` 4, takes top-ups: `pay_for_gas(message_id, destination, gas_amount, deposit)`, priced by `quote_pay_for_gas` without the overhead. It takes the calling transaction's deposit through the transfer contract, which hands a deposit over once, at its exact value and only to the transaction's target, before it records anything, and sends the deposit beyond its price back to the signer. The record and the `gas_payment` event are a dispatch's, so the agents index top-ups unchanged and the relayer adds them up. `dusk-tx pay-for-gas` quotes and checks a top-up before signing it, both deploy scripts refuse an IGP below 4, and the local rehearsal tops up a stuck message until it is delivered. See [Design decisions](#design-decisions). |
 
+## Fourth review
+
+A review of the relaying fees before the public testnet found:
+
+| ID | Issue | Status |
+|---|---|---|
+| HIGH-8 | `deploy/testnet.sh` deployed the Sepolia IGP and the route's token bare and initialized each in a second transaction, which anyone could send first. An IGP initialized with the deployer as owner and the attacker as beneficiary passed every check, and with `EVM_IGP_BENEFICIARY` empty `deploy` kept that beneficiary: every fee paid to the IGP went to the attacker. Or the attacker could initialize it with a contract of its own as owner, add a quote signer, store a free standing quote for its own messages to Dusk, or for everyone's, remove the signer and hand the IGP to the deployer. Standing quotes outlive their signer and come before the oracle, so the oracle checks still passed, and the relayer delivered messages that had paid nothing for the gas they were credited with. A token initialized first had the attacker's owner, ISM and supply, and `deploy` stopped. | Fixed. The IGP and the token are each an `ERC1967Proxy` of their implementation whose constructor calls `initialize`, so the transaction that creates one also initializes it. The proxies have no admin, and neither implementation can upgrade itself. `deploy` records each creation transaction, and every command that uses the contracts checks its receipt: sent by the EVM deployer, creating the contract as a proxy of the recorded implementation, with the contract's `Initialized` event in it. A contract recorded without one, by an older version of the script, is refused. The IGP must also have no quote signers, and quote a transfer what its oracle's pricing comes to, as the token and as any other sender. `scripts/test-deploy-scripts.py` runs both attacks and a token front-run against a fake chain, and on Anvil shows the initialization in the creation transaction and an IGP the attacker initialized first refused. |
+
 ## Owner powers
 
 `dusk-tx deploy-hyperlane` makes the deployer key the owner, fee beneficiary
@@ -212,12 +220,18 @@ and router admin of every contract. Whoever holds that key can:
   route's dispatch credit.
 
 On the EVM side, `deploy/testnet.sh` makes the EVM deployer the owner of the
-token, its ISM, the IGP and its gas oracle. Whoever holds that key can mint
-or burn through the token's ISM and routers, point the token's hook at
+token, the IGP and its gas oracle. The token's ISM has no owner: its
+validators and threshold are fixed when it is created. Whoever holds the
+deployer key can mint or burn through the token's ISM and routers, point the token's hook at
 anything (a hook without the MerkleTreeHook leaves its messages out of the
 tree validators sign, and they never deliver), price delivery to Dusk at
 anything (an absurd price or a removed oracle makes every transfer to Dusk
 revert), and take the IGP's payments by changing its beneficiary.
+
+The token and the IGP are `ERC1967Proxy`s without an admin, so nobody can
+change their code. Their implementations, deployed first, are never
+initialized or used; anyone may initialize one, which changes nothing about
+the proxies.
 
 They can't touch users' own dispatch credit, pending escrow, or existing
 WarpDrc20 balances. On testnet one deployer key on each side is acceptable.

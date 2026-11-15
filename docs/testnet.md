@@ -10,7 +10,7 @@ what you need first, and how to run and check it.
 | Where | What |
 |---|---|
 | Dusk testnet | The full contract set (Mailbox, Merkle hook, ProtocolFee, AggregationHook, IGP, ValidatorAnnounce, MessageIdMultisig ISM, TestRecipient, TestMock) and a native DUSK warp route (`warp-native`). |
-| Sepolia | A synthetic DUSK token (`HypERC20`, 9 decimals so one unit is one LUX), a MessageIdMultisig ISM for messages from Dusk, an InterchainGasPaymaster with its own StorageGasOracle that charges for delivery to Dusk, and the token's hook: a StaticAggregationHook of Hyperlane's Sepolia MerkleTreeHook and that IGP, from Hyperlane's factory. Everything else is Hyperlane's own Sepolia deployment. |
+| Sepolia | A synthetic DUSK token (`HypERC20`, 9 decimals so one unit is one LUX), a MessageIdMultisig ISM for messages from Dusk, an InterchainGasPaymaster with its own StorageGasOracle that charges for delivery to Dusk, and the token's hook: a StaticAggregationHook of Hyperlane's Sepolia MerkleTreeHook and that IGP, from Hyperlane's factory. The token and the IGP are each an `ERC1967Proxy` whose constructor initializes them, so the transaction that creates them also sets their owner, and nobody can initialize them first; the proxies have no admin, so they can't be upgraded. Everything else is Hyperlane's own Sepolia deployment. |
 
 How each direction is secured:
 
@@ -202,6 +202,13 @@ transfer pays for. `fees` prints what they come to.
   token's hook is the recorded one, inserting into `EVM_MERKLE_TREE_HOOK`'s
   tree and paying our IGP. `dusk-igp` and `evm-igp` show and fix a pricing
   difference ([operations.md](operations.md#keeping-the-prices-current));
+- the Sepolia IGP and token were initialized in the transaction that
+  created them: `deploy` records that transaction, and its receipt must
+  show the EVM deployer creating the contract as a proxy of the recorded
+  implementation, and the contract's `Initialized` event. The IGP must have
+  no quote signers, and quote a transfer what its oracle's pricing comes
+  to, asked as the token and as any other sender: a signed offchain quote
+  would come before the oracle;
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;
@@ -224,16 +231,13 @@ sponsored escrow claims to forged keys
 ([security notes](security.md#issues-found-and-fixed), CRITICAL-1), older
 core contracts keep storage anyone can fill
 ([storage.md](storage.md)), and an older IGP can't be topped up (LOW-15),
-so `agent-configs` refuses them too.
+so `agent-configs` refuses them too. So is a Sepolia IGP or token recorded
+by an older version of this script, which initialized them in a second
+transaction that anyone could send first
+([security notes](security.md#fourth-review), HIGH-8).
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
-
-A deployment made before the relaying fees is brought up to date by running
-`deploy` again: it deploys the Sepolia IGP and the token's hook and sets the
-hook on the token. The Dusk IGP keeps its old pricing, so `preflight`, and
-with it `deploy`, stops until `bash deploy/testnet.sh dusk-igp --apply` sets
-the new one.
 
 ## Run the agents
 

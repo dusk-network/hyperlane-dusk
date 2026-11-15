@@ -73,6 +73,12 @@ HOOK_IGP=4
 # The gas the Dusk IGP charges a message without hook metadata for, as the
 # warp routes send none (types/src/metadata.rs, DEFAULT_GAS_USAGE).
 DUSK_IGP_DEFAULT_GAS=50000
+# What the EVM IGP's and the token's creation receipts must show: their
+# ERC1967Proxy's Upgraded(address) and the implementation's
+# Initialized(uint8). IMPLEMENTATION_SLOT is EIP-1967's.
+UPGRADED_TOPIC=0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b
+INITIALIZED_TOPIC=0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb3847402498
+IMPLEMENTATION_SLOT=0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
@@ -134,6 +140,18 @@ evm_has_code() {
     [ "$code" != "0x" ]
 }
 evm_deployer() { cast wallet address --private-key "$EVM_DEPLOYER_KEY"; }
+# Who deployed the EVM contracts: EVM_DEPLOYER_KEY's address, or, for a
+# command run without the key, the deployer deploy recorded.
+evm_creator() {
+    if [ -n "${EVM_DEPLOYER_KEY:-}" ]; then
+        evm_deployer
+    elif [ -n "$(state_get '.evm.deployer')" ]; then
+        state_get '.evm.deployer'
+    else
+        echo "[FAIL] Set EVM_DEPLOYER_KEY: $STATE doesn't record who deployed the EVM contracts" >&2
+        return 1
+    fi
+}
 # Deploy a contract from the Hyperlane Solidity sources; prints its address.
 forge_create() {
     local contract="$1" address
@@ -142,6 +160,93 @@ forge_create() {
         --private-key "$EVM_DEPLOYER_KEY" "$@" | jq -r '.deployedTo')" || return 1
     [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || return 1
     printf '%s' "$address"
+}
+# ERC1967Proxy's creation code, from the OpenZeppelin release Hyperlane's
+# Solidity sources build with.
+evm_proxy_creation_code() {
+    local oz
+    oz="$(cd "$SOLIDITY_DIR" && forge remappings 2>/dev/null | sed -n 's|^@openzeppelin/contracts/=||p' | head -1)"
+    [ -n "$oz" ] || return 1
+    (cd "$SOLIDITY_DIR" && forge inspect "${oz%/}/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy" bytecode 2>/dev/null)
+}
+
+# The EVM IGP and the route's token are initialized in the transaction that
+# creates them. Each is an ERC1967Proxy whose constructor calls the
+# implementation's initialize, which sets the owner and, for the IGP, the
+# beneficiary. Deployed bare and initialized in a second transaction, as
+# before, anyone could send initialize first: an IGP initialized with the
+# deployer as owner and someone else as beneficiary passed every check, and
+# one whose first owner planted a free standing quote overrode the oracle
+# for good (docs/security.md, HIGH-8). The proxies have no admin, and
+# neither implementation can upgrade itself, so they stay what they are.
+#
+# deploy_evm_proxied <key> <label> <implementation> <initialize calldata>
+#     [forge create arguments for the implementation...]
+# deploys the implementation, unless .evm.<key>_implementation records one,
+# then the proxy, and records .evm.<key> and .evm.<key>_creation_tx.
+deploy_evm_proxied() {
+    local key="$1" label="$2" contract="$3" init="$4" impl code args receipt address tx
+    shift 4
+    [[ "$init" =~ ^0x[0-9a-fA-F]{8,}$ ]] || fail "No initialize call for the $label"
+    impl="$(state_get ".evm.${key}_implementation")"
+    if [ -z "$impl" ]; then
+        info "Deploying the $label's implementation on $EVM_CHAIN_NAME..."
+        impl="$(forge_create "$contract" "$@")" || fail "$label implementation deployment failed"
+        state_set --arg k "${key}_implementation" --arg i "$impl" '.evm[$k] = $i'
+    fi
+    evm_has_code "$impl" || fail "No $label implementation at $impl, which $STATE records"
+    code="$(evm_proxy_creation_code)" && [[ "$code" =~ ^0x[0-9a-fA-F]+$ ]] \
+        || fail "Can't get ERC1967Proxy's creation code from $SOLIDITY_DIR"
+    args="$(cast abi-encode "constructor(address,bytes)" "$impl" "$init")" \
+        || fail "Can't encode the $label proxy's constructor arguments"
+    info "Deploying the $label behind an ERC1967Proxy that initializes it in the same transaction..."
+    receipt="$(cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json --create "$code${args#0x}")" \
+        || fail "$label deployment failed"
+    address="$(jq -r '.contractAddress // empty' <<<"$receipt")"
+    tx="$(jq -r '.transactionHash // empty' <<<"$receipt")"
+    [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] \
+        || fail "$label deployment returned no contract address and transaction hash"
+    state_set --arg k "$key" --arg a "$address" --arg t "$tx" --arg d "$(evm_deployer)" \
+        '.evm[$k] = $a | .evm[$k + "_creation_tx"] = $t | .evm.deployer = $d'
+    check_evm_creation "$key" "$label"
+}
+
+# Prove from the receipt of the transaction that created the recorded
+# contract that the deployer sent it, that it created the contract as a proxy
+# of the recorded implementation, and that the contract was initialized in
+# it, so nobody could have initialized it before. A contract recorded without
+# that transaction was deployed by an older version of this script.
+check_evm_creation() {
+    local key="$1" label="$2" address tx impl creator receipt slot
+    address="$(state_get ".evm.$key")"
+    [ -n "$address" ] || return 0
+    tx="$(state_get ".evm.${key}_creation_tx")" impl="$(state_get ".evm.${key}_implementation")"
+    [ -n "$tx" ] && [ -n "$impl" ] \
+        || fail "$STATE records the EVM $label $address without the transaction that created and initialized it. An older deploy/testnet.sh initialized it in a second transaction, which anyone could send first, and so choose its owner, its beneficiary or its pricing (docs/security.md, HIGH-8). Move $OUT_DIR aside and deploy again."
+    creator="$(evm_creator)" || exit 1
+    receipt="$(cast receipt "$tx" --json --rpc-url "$EVM_RPC")" \
+        || fail "Can't read the receipt of $tx, which created the EVM $label $address"
+    jq -e --arg a "$(lower "$address")" --arg c "$(lower "$creator")" --arg i "$(pad32 "$impl")" \
+        --arg upgraded "$UPGRADED_TOPIC" --arg initialized "$INITIALIZED_TOPIC" '
+        def mine: (.address | ascii_downcase) == $a;
+        (.status | tostring | test("^(0x)?1$"))
+        and ((.contractAddress // "") | ascii_downcase) == $a
+        and ((.from // "") | ascii_downcase) == $c
+        and any(.logs[]; mine and .topics[0] == $upgraded
+                and ((.topics[1] // "") | ascii_downcase | ltrimstr("0x")) == $i)
+        and any(.logs[]; mine and .topics[0] == $initialized)' <<<"$receipt" >/dev/null \
+        || fail "The EVM $label $address wasn't initialized in the transaction that created it: $tx isn't the EVM deployer $creator creating it as a proxy of $impl and initializing it. Whoever initialized it chose its owner (docs/security.md, HIGH-8). Move $OUT_DIR aside and deploy again."
+    slot="$(cast storage "$address" "$IMPLEMENTATION_SLOT" --rpc-url "$EVM_RPC")" \
+        || fail "Can't read the implementation of the EVM $label $address"
+    [ "$(lower "0x${slot: -40}")" = "$(lower "$impl")" ] \
+        || fail "The EVM $label $address runs the implementation 0x${slot: -40}, not $impl, which it was created with"
+}
+
+# The EVM contracts deploy initializes: our IGP, once the state records its
+# oracle (before, .evm.igp was Hyperlane's), and the token.
+check_evm_creations() {
+    [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_creation igp IGP
+    check_evm_creation token "DUSK token"
 }
 
 sorted_addresses() {
@@ -685,8 +790,35 @@ check_evm_igp_pricing() {
         || fail "The EVM IGP $igp reads domain $DUSK_DOMAIN's pricing from $(jq -r .oracle <<<"$current"), not the StorageGasOracle $(state_get '.evm.storage_gas_oracle') recorded in $STATE"
     [ "$(jq -cS 'del(.oracle)' <<<"$current")" = "$(jq -cS . <<<"$wanted")" ] \
         || fail "The EVM IGP $igp prices domain $DUSK_DOMAIN at $(jq -c 'del(.oracle)' <<<"$current"), but the settings say $(jq -c . <<<"$wanted"). Compare them with: bash deploy/testnet.sh evm-igp; apply the settings with --apply."
+    check_evm_igp_quotes "$current"
     ok "The EVM IGP charges $(fee '.evm_to_dusk.quote_wei') wei for a transfer to Dusk"
 }
+
+# Signed offchain quotes come before the oracle: a quote signer the owner
+# adds can price delivery to Dusk at anything, for one sender or for all,
+# and a standing quote outlives the signer's removal until it expires. This
+# deployment uses none. The IGP resolves quotes by the caller, so ask it what
+# a transfer pays as the route, whose messages it prices, and as any other
+# sender, against what the pricing `current` (evm_igp_pricing) comes to.
+check_evm_igp_quotes() {
+    local current="$1" igp signers gas expected sender quote
+    igp="$(state_get '.evm.igp')"
+    signers="$(evm_call "$igp" "quoteSigners()(address[])")" || fail "Can't read the EVM IGP $igp's quote signers"
+    [ -z "$(tr -d '[] ' <<<"$signers")" ] \
+        || fail "The EVM IGP $igp has quote signers $signers: offchain quotes they sign override its StorageGasOracle's pricing, which the relayer's requirements follow. Remove them (removeQuoteSigner), and wait for their standing quotes to expire."
+    gas="$(fee .evm_igp.gas_overhead)"
+    expected="$(igp_cost "$gas" "$(jq -r .gas_price <<<"$current")" "$(jq -r .token_exchange_rate <<<"$current")")"
+    for sender in "$(state_get '.evm.token')" "$ZERO_ADDRESS"; do
+        [ -n "$sender" ] || continue
+        quote="$(evm_number "$igp" "quoteGasPayment(uint32,uint256)(uint256)" "$DUSK_DOMAIN" "$gas" --from "$sender")" \
+            || fail "Can't read the EVM IGP $igp's quote for a message from $sender"
+        [ "$quote" = "$expected" ] \
+            || fail "The EVM IGP $igp quotes $quote wei for $gas Dusk gas to a message from $sender, not the $expected its oracle's pricing comes to: a signed offchain quote overrides the oracle (docs/security.md, HIGH-8)."
+    done
+}
+# What gas costs at a gas price and token exchange rate, as the IGPs compute
+# it. Bash's integers are too small.
+igp_cost() { python3 -c 'import sys; g, p, r = map(int, sys.argv[1:]); print(g * p * r // 10**10)' "$@"; }
 
 # The EVM route must dispatch through its recorded hook, and that hook must
 # insert into the Merkle tree validators sign, unless the required hook
@@ -818,11 +950,13 @@ forget_hyperlane_igp() {
 }
 
 # Our IGP on the EVM chain, priced for Dusk through our own StorageGasOracle.
-# The EVM deployer owns both; EVM_IGP_BENEFICIARY, or the deployer, can claim
-# the payments. A configuration already on chain is left as it is: preflight
+# The EVM deployer owns both: the oracle's constructor makes it the owner,
+# and the IGP is initialized in the transaction that creates it
+# (deploy_evm_proxied). EVM_IGP_BENEFICIARY, or the deployer, can claim the
+# payments. A configuration already on chain is left as it is: preflight
 # stops when it differs from the settings, and evm-igp --apply changes it.
 deploy_evm_igp() {
-    local deployer beneficiary oracle igp owner current wanted
+    local deployer beneficiary oracle igp owner current wanted init
     deployer="$(evm_deployer)"
     beneficiary="${EVM_IGP_BENEFICIARY:-$deployer}"
     forget_hyperlane_igp
@@ -836,24 +970,18 @@ deploy_evm_igp() {
     fi
     [ "$(lower "$(evm_call "$oracle" "owner()(address)")")" = "$(lower "$deployer")" ] \
         || fail "The StorageGasOracle $oracle isn't owned by the EVM deployer $deployer"
-    igp="$(state_get '.evm.igp')"
-    if [ -z "$igp" ]; then
+    if [ -z "$(state_get '.evm.igp')" ]; then
         record_index_from
-        info "Deploying an InterchainGasPaymaster on $EVM_CHAIN_NAME..."
-        igp="$(forge_create contracts/hooks/igp/InterchainGasPaymaster.sol:InterchainGasPaymaster)" \
-            || fail "InterchainGasPaymaster deployment failed"
-        state_set --arg i "$igp" '.evm.igp = $i'
+        init="$(cast calldata "initialize(address,address)" "$deployer" "$beneficiary")" \
+            || fail "Can't encode the EVM IGP's initialize call"
+        deploy_evm_proxied igp IGP contracts/hooks/igp/InterchainGasPaymaster.sol:InterchainGasPaymaster "$init"
     fi
+    igp="$(state_get '.evm.igp')"
+    check_evm_creation igp IGP
+    # Only its owner, the deployer, could have handed it to someone else.
     owner="$(evm_call "$igp" "owner()(address)")" || fail "Can't read the owner of the EVM IGP $igp"
-    if [ "$(lower "$owner")" = "$ZERO_ADDRESS" ]; then
-        evm_send "$igp" "initialize(address,address)" "$deployer" "$beneficiary" \
-            || warn "Initializing the EVM IGP $igp failed"
-        owner="$(evm_call "$igp" "owner()(address)")" || fail "Can't read the owner of the EVM IGP $igp"
-    fi
-    # Deploying and initializing are two transactions: someone can initialize
-    # it first. Then it is theirs; deploy another.
     [ "$(lower "$owner")" = "$(lower "$deployer")" ] \
-        || fail "The EVM IGP $igp is owned by $owner, not the EVM deployer $deployer. Remove .evm.igp from $STATE and deploy again."
+        || fail "The EVM IGP $igp is owned by $owner, not the EVM deployer $deployer"
     # EVM_IGP_BENEFICIARY, when set, wins over what the IGP has; when it isn't,
     # the beneficiary stays what it is, as on Dusk.
     if [ -n "${EVM_IGP_BENEFICIARY:-}" ] \
@@ -916,16 +1044,20 @@ deploy_evm_token() {
         ok "EVM DUSK token already deployed ($(state_get '.evm.token'))"
         return
     fi
-    local deployer token
+    local deployer init
     deployer="$(evm_deployer)"
     record_index_from
+    # Initialized in the transaction that creates it (deploy_evm_proxied):
+    # before, anyone could initialize it first with their own ISM, owner and
+    # supply, and deploy stopped.
+    init="$(cast calldata "initialize(uint256,string,string,address,address,address)" \
+        0 "Dusk" "DUSK" "$(state_get '.evm.route_hook')" "$(state_get '.evm.ism')" "$deployer")" \
+        || fail "Can't encode the EVM token's initialize call"
     info "Deploying the synthetic DUSK token on $EVM_CHAIN_NAME (9 decimals, matching LUX)..."
-    token="$(forge_create contracts/token/HypERC20.sol:HypERC20 --constructor-args 9 1 1 "$EVM_MAILBOX")" \
-        || fail "HypERC20 deployment failed"
-    evm_send "$token" "initialize(uint256,string,string,address,address,address)" \
-        0 "Dusk" "DUSK" "$(state_get '.evm.route_hook')" "$(state_get '.evm.ism')" "$deployer"
-    state_set --arg t "$token" --arg o "$deployer" '.evm.token = $t | .evm.owner = $o'
-    ok "EVM DUSK token $token"
+    deploy_evm_proxied token "DUSK token" contracts/token/HypERC20.sol:HypERC20 "$init" \
+        --constructor-args 9 1 1 "$EVM_MAILBOX"
+    state_set --arg o "$deployer" '.evm.owner = $o'
+    ok "EVM DUSK token $(state_get '.evm.token')"
 }
 
 # A token deployed before the route had its own hook dispatches through the
@@ -990,6 +1122,7 @@ check_state_matches_chain() {
         evm_has_code "$contract" \
             || fail "$STATE records EVM igp $contract, but there is no contract there; move the state aside and redeploy."
     fi
+    check_evm_creations
 }
 
 # Refuse a deployment whose core contracts or warp routes report another
@@ -1099,10 +1232,13 @@ cmd_evm_igp() {
     load_fees
     igp="$(state_get '.evm.igp')" oracle="$(state_get '.evm.storage_gas_oracle')"
     [ -n "$igp" ] && [ -n "$oracle" ] || fail "No EVM IGP recorded in $STATE; run deploy first"
+    check_evm_creations
     current="$(evm_igp_pricing)" || exit 1
     chain_quote="none"
     if [ "$(jq '.gas_price != "0" and .token_exchange_rate != "0"' <<<"$current")" = true ] \
         && [ "$(lower "$(jq -r .oracle <<<"$current")")" != "$ZERO_ADDRESS" ]; then
+        # The settings can't undo a quote that overrides the oracle.
+        check_evm_igp_quotes "$current"
         chain_quote="$(evm_number "$igp" "quoteGasPayment(uint32,uint256)(uint256)" "$DUSK_DOMAIN" \
             "$(jq -r .gas_overhead <<<"$current")")" || fail "Can't read the EVM IGP's quote"
     fi
@@ -1174,6 +1310,7 @@ cmd_revenue() {
 cmd_claim() {
     local name contract claimable beneficiary signer out igp balance
     [ -f "$STATE" ] || fail "Run deploy first"
+    check_evm_creations
     igp="$(state_get '.evm.igp')"
     if [ -n "$igp" ] && [ -n "$(state_get '.evm.storage_gas_oracle')" ]; then
         balance="$(cast balance "$igp" --rpc-url "$EVM_RPC")"
@@ -1234,6 +1371,7 @@ cmd_agent_configs() {
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
     load_fees
     check_state_versions
+    check_evm_creations
     check_deployed_ism
     check_relayer_gas_limit
     route_hook_plan

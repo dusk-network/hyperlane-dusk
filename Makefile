@@ -226,7 +226,9 @@ test-demo-lifecycle:
 
 # deploy/testnet.sh and demo/gen-agent-configs.sh against stubbed tools. Needs
 # no network, chain or Rust build; with target/release/dusk-tx (or
-# DUSK_TX_BIN) it also runs the real key export.
+# DUSK_TX_BIN) it also runs the real key export, and with Anvil, Foundry and
+# ../hyperlane-monorepo/solidity (or HYPERLANE_SOLIDITY_DIR) it also deploys
+# the EVM side on a local Anvil.
 .PHONY: test-deploy-scripts
 test-deploy-scripts:
 	python3 -B scripts/test-deploy-scripts.py

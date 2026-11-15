@@ -6,10 +6,14 @@ replaced by stubs. The dusk-tx stub answers queries from a fixture and
 records what the transactions it is asked for would change; cast and forge
 run against a small fake EVM chain with Hyperlane's contracts, kept in a JSON
 file. A test that needs the real dusk-tx skips itself unless DUSK_TX_BIN or
-target/release/dusk-tx exists.
+target/release/dusk-tx exists. AnvilEvmDeploy deploys the EVM side on a
+local Anvil with Hyperlane's real contracts, and skips itself without Anvil,
+Foundry and the Solidity sources (HYPERLANE_SOLIDITY_DIR, by default
+../hyperlane-monorepo/solidity).
 """
 import base64
 from fractions import Fraction
+import hashlib
 import json
 from math import ceil
 import os
@@ -51,6 +55,11 @@ EVM_PROTOCOL_FEE = "0x13ac3349cb159fe86a22cf42dda803d9f7309db5"
 EVM_DEFAULT_HOOK = "0x17dc724b7a2f09141c13b8ac33b396073785c2bc"
 DEPLOYER_KEY = "0x" + "11" * 32
 DEPLOYER = "0x000000000000000000000000000000000000dead"
+ATTACKER = "0x" + "ee" * 20
+# Events deploy/testnet.sh reads from receipts: Initialized(uint8) and
+# Upgraded(address).
+INITIALIZED = "0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb3847402498"
+UPGRADED = "0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b"
 
 # What deploy/testnet.env.example's defaults charge (docs/costs.md).
 DEFAULT_DUSK_IGP = {"gas_overhead": "110000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
@@ -59,6 +68,23 @@ DEFAULT_EVM_IGP = {"gas_overhead": "2170000", "token_exchange_rate": "6000000000
 
 def validators(count):
     return [f"0x{'ab' * 19}{index:02x}" for index in range(1, count + 1)]
+
+
+def proxy_creation(evm, address, implementation, contract, creator=DEPLOYER, initialized=True):
+    """Put `contract` at `address` behind an ERC1967Proxy of
+    `implementation` on the fake EVM, with the receipt of the transaction
+    that created it: sent by `creator`, and with the contract's
+    initialization in it unless `initialized` is false. Returns the
+    transaction's hash."""
+    tx = "0x" + hashlib.sha256(f"creation:{address}".encode()).hexdigest()
+    evm["contracts"][address] = {**contract, "implementation": implementation, "initialized": True}
+    logs = [{"address": address, "topics": [UPGRADED, "0x" + "00" * 12 + implementation[2:]], "data": "0x"}]
+    if initialized:
+        logs.append({"address": address, "topics": [INITIALIZED], "data": "0x"})
+    evm.setdefault("receipts", {})[tx] = {
+        "transactionHash": tx, "status": "0x1", "from": creator, "to": None,
+        "contractAddress": address, "blockNumber": "0x1", "logs": logs}
+    return tx
 
 
 # Answers the dusk-tx subcommands the scripts use from FIXTURE_CHAIN, and
@@ -137,12 +163,38 @@ out({"success": False, "error": f"stub dusk-tx: unexpected {args[0]}"}, 1)
 
 # A fake EVM chain for cast and forge: contracts are JSON objects in
 # FIXTURE_EVM, calls read them and sends change them, as far as the scripts
-# use Hyperlane's Mailbox, hooks, IGP, gas oracle, factories and HypERC20.
-FAKE_EVM = r'''
+# use Hyperlane's Mailbox, hooks, IGP, gas oracle, factories, HypERC20 and
+# OpenZeppelin's ERC1967Proxy. Every transaction leaves a receipt with the
+# events the scripts look for. `cast calldata` and `cast abi-encode` encode
+# as hex of JSON, which only this fake reads back.
+#
+# FIXTURE_EVM's "front_run" plays an attacker whose transaction lands right
+# after the deployer creates a bare IGP or HypERC20, before anything else the
+# deployer sends: {"attacker": address, "igp": mode, "token": mode}, with igp
+# mode "owner" (initialize(attacker, attacker)), "beneficiary"
+# (initialize(deployer, attacker)) or "standing_quote" (initialize with a
+# helper owner, a quote signer that sets a free standing quote for any
+# sender to Dusk, the signer removed and the IGP handed to the deployer),
+# and token mode "owner" (initialize with the attacker as owner and a supply
+# minted to it).
+FAKE_EVM = r"""
 import hashlib, json, os, re, sys
 
 ZERO = "0x" + "00" * 20
+WILDCARD_SENDER = "0x" + "ff" * 20
+WILDCARD_DEST = str(2**32 - 1)
 SCALE = 10**10
+DUSK_DOMAIN = "1146442572"
+NOW = 1_800_000_000
+# Event topics: Initialized(uint8), Upgraded(address),
+# OwnershipTransferred(address,address), BeneficiarySet(address).
+INITIALIZED = "0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb3847402498"
+UPGRADED = "0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b"
+OWNERSHIP_TRANSFERRED = "0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0"
+BENEFICIARY_SET = "0x04d55a8be181fb8d75b76f2d48aa0b2ee40f47e53d6e61763eeeec46feea8a24"
+IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+# What `forge inspect` gives as ERC1967Proxy's creation code.
+PROXY_CODE = "0x" + b"ERC1967Proxy".hex()
 
 def load():
     with open(os.environ["FIXTURE_EVM"]) as f:
@@ -167,12 +219,21 @@ def num(value):
 def derive(*parts):
     return "0x" + hashlib.sha256(":".join(map(str, parts)).encode()).hexdigest()[:40]
 
+def word(address):
+    return "0x" + "00" * 12 + address.lower()[2:]
+
+def encode(value):
+    return "0x" + json.dumps(value).encode().hex()
+
+def decode(data):
+    return json.loads(bytes.fromhex(data[2:] if data.startswith("0x") else data))
+
 def split(args):
     positional, options, flags = [], {}, set()
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg in ("--rpc-url", "--private-key", "--value"):
+        if arg in ("--rpc-url", "--private-key", "--value", "--from", "--create", "--gas-limit"):
             options[arg] = args[i + 1]
             i += 2
         elif arg == "--constructor-args":
@@ -195,21 +256,44 @@ def contract(state, address):
         die(f"Error: no contract at {address}")
     return found
 
-def hook_quote(state, hook, domain, gas_limit):
+def log(address, *topics):
+    return {"address": address.lower(), "topics": list(topics), "data": "0x"}
+
+def igp_rate(state, c, domain, sender):
+    # Signed offchain quotes come first: for the sender to the domain, for
+    # anyone to the domain, for the sender to anywhere.
+    for key in (f"{domain}/{sender.lower()}", f"{domain}/{WILDCARD_SENDER}", f"{WILDCARD_DEST}/{sender.lower()}"):
+        quote = c.get("quotes", {}).get(key)
+        if quote and quote["expiry"] >= NOW:
+            return quote["rate"], quote["price"]
+    oracle, overhead = c["configs"].get(str(domain), [ZERO, 0])
+    if oracle == ZERO:
+        die("execution reverted: IGP: no gas oracle for domain")
+    return contract(state, oracle)["data"].get(str(domain), [0, 0])
+
+def routed(state, c, domain):
+    route = c.get("routes", {}).get(str(domain), ZERO)
+    if route == ZERO and c["type"] == "fallback_routing":
+        route = c["fallback"]
+    if route == ZERO:
+        die(f"execution reverted: No hook configured for destination: {domain}")
+    return route
+
+def hook_quote(state, hook, domain, gas_limit, sender):
     if hook.lower() == ZERO:
         return 0
     c = contract(state, hook)
     if c["type"] == "aggregation":
-        return sum(hook_quote(state, child, domain, gas_limit) for child in c["hooks"])
+        return sum(hook_quote(state, child, domain, gas_limit, sender) for child in c["hooks"])
+    if c["type"] in ("routing", "fallback_routing"):
+        return hook_quote(state, routed(state, c, domain), domain, gas_limit, sender)
     if c["type"] == "igp":
-        oracle, overhead = c["configs"].get(str(domain), [ZERO, 0])
-        if oracle == ZERO:
-            die("execution reverted: IGP: no gas oracle for domain")
-        rate, price = contract(state, oracle)["data"].get(str(domain), [0, 0])
+        rate, price = igp_rate(state, c, domain, sender)
+        overhead = c["configs"].get(str(domain), [ZERO, 0])[1]
         return (gas_limit + overhead) * price * rate // SCALE
     return c.get("fee", 0)
 
-def call(state, address, signature, args):
+def call(state, address, signature, args, sender):
     c = contract(state, address)
     name = signature.split("(")[0]
     if name in ("hookType", "localDomain"):
@@ -220,45 +304,71 @@ def call(state, address, signature, args):
         return c.get("owner", ZERO)
     if name == "hook":
         return c.get("hook", ZERO)
+    if name == "interchainSecurityModule":
+        return c.get("ism", ZERO)
     if name == "remoteGasData":
         rate, price = c["data"].get(args[0], [0, 0])
         return f"{num(rate)}\n{num(price)}"
     if name == "destinationGasConfigs":
         oracle, overhead = c["configs"].get(args[0], [ZERO, 0])
         return f"{oracle}\n{num(overhead)}"
+    if name == "quoteSigners":
+        return "[" + ", ".join(c.get("quote_signers", [])) + "]"
     if name == "quoteGasPayment" and c["type"] == "igp":
-        oracle, overhead = c["configs"][args[0]]
-        rate, price = contract(state, oracle)["data"][args[0]]
+        rate, price = igp_rate(state, c, args[0], sender)
         return num(int(args[1]) * price * rate // SCALE)
     if name == "quoteGasPayment" and c["type"] == "token":
         mailbox = contract(state, c["mailbox"])
-        return num(hook_quote(state, mailbox["requiredHook"], args[0], 0)
-                   + hook_quote(state, c["hook"], args[0], 0))
+        return num(hook_quote(state, mailbox["requiredHook"], args[0], 0, address)
+                   + hook_quote(state, c["hook"], args[0], 0, address))
+    if name == "hooks" and signature.startswith("hooks(uint32)"):
+        return c.get("routes", {}).get(args[0], ZERO)
     if name == "hooks":
         return "[" + ", ".join(c["hooks"]) + "]"
+    if name == "fallbackHook":
+        return c["fallback"]
     if name == "getAddress" and c["type"] == "aggregation_factory":
         return derive("aggregation", address.lower(), args[0].lower())
     if name == "getAddress" and c["type"] == "ism_factory":
         return derive("ism", address.lower(), args[0].lower(), args[1])
     if name == "routers":
         return c["routers"].get(args[0], "0x" + "00" * 32)
+    if name == "totalSupply":
+        return num(c.get("supply", 0))
     die(f"stub cast: unexpected call {signature} on a {c['type']}")
 
 def only_owner(c, sender):
     if c.get("owner", ZERO).lower() != sender.lower():
         die("execution reverted: Ownable: caller is not the owner")
 
+def initialize(c, address, sender, args):
+    if c.get("initialized"):
+        die("execution reverted: Initializable: contract is already initialized")
+    c["initialized"] = True
+    logs = [log(address, OWNERSHIP_TRANSFERRED, word(c.get("owner", ZERO)), word(sender))]
+    if c["type"] == "igp":
+        c["owner"], c["beneficiary"] = args[0].lower(), args[1].lower()
+        logs.append(log(address, OWNERSHIP_TRANSFERRED, word(sender), word(c["owner"])))
+        logs.append(log(address, BENEFICIARY_SET))
+    elif c["type"] == "token":
+        c["supply"] = c.get("supply", 0) + int(args[0])
+        c["holders"] = {sender.lower(): int(args[0])} if int(args[0]) else {}
+        c.update(hook=args[3].lower(), ism=args[4].lower(), owner=args[5].lower())
+        logs.append(log(address, OWNERSHIP_TRANSFERRED, word(sender), word(c["owner"])))
+    else:
+        die(f"stub cast: unexpected initialize of a {c['type']}")
+    return logs + [log(address, INITIALIZED)]
+
 def send(state, address, signature, args, sender):
     c = contract(state, address)
     name = signature.split("(")[0]
+    logs = []
     if name == "setRemoteGasDataConfigs":
         only_owner(c, sender)
         for domain, rate, price in tuples(args[0]):
             c["data"][domain] = [int(rate), int(price)]
-    elif name == "initialize" and c["type"] == "igp":
-        if c["owner"] != ZERO:
-            die("execution reverted: Initializable: contract is already initialized")
-        c["owner"], c["beneficiary"] = args[0].lower(), args[1].lower()
+    elif name == "initialize":
+        logs = initialize(c, address, sender, args)
     elif name == "setBeneficiary":
         only_owner(c, sender)
         c["beneficiary"] = args[0].lower()
@@ -276,8 +386,6 @@ def send(state, address, signature, args, sender):
             "type": "aggregation", "hook_type": 2, "hooks": hooks}
     elif name == "deploy" and c["type"] == "ism_factory":
         state["contracts"][derive("ism", address.lower(), args[0].lower(), args[1])] = {"type": "ism"}
-    elif name == "initialize" and c["type"] == "token":
-        c.update(hook=args[3].lower(), ism=args[4].lower(), owner=args[5].lower())
     elif name == "setHook":
         only_owner(c, sender)
         c["hook"] = args[0].lower()
@@ -286,21 +394,81 @@ def send(state, address, signature, args, sender):
         c["routers"][args[0]] = args[1].lower()
     else:
         die(f"stub cast: unexpected send {signature} to a {c['type']}")
+    return logs
+
+def receipt(state, sender, to=None, created=None, logs=()):
+    state["txs"] = state.get("txs", 0) + 1
+    tx = "0x" + hashlib.sha256(f"tx:{state['txs']}".encode()).hexdigest()
+    state.setdefault("receipts", {})[tx] = {
+        "transactionHash": tx, "status": "0x1", "from": sender.lower(),
+        "to": to.lower() if to else None, "contractAddress": created,
+        "blockNumber": hex(state["block"]), "logs": list(logs)}
+    state["block"] += 1
+    return tx
+
+def new_address(state, sender):
+    state["nonce"] += 1
+    return derive("create", sender, state["nonce"])
 
 CREATED = {
     "StorageGasOracle": lambda sender, args: {"type": "oracle", "owner": sender, "data": {}},
     "InterchainGasPaymaster": lambda sender, args: {
-        "type": "igp", "hook_type": 4, "owner": ZERO, "beneficiary": ZERO, "configs": {}},
+        "type": "igp", "hook_type": 4, "owner": ZERO, "beneficiary": ZERO, "configs": {},
+        "quote_signers": [], "quotes": {}},
     "StaticAggregationHookFactory": lambda sender, args: {"type": "aggregation_factory"},
+    # MailboxClient's constructor makes the deployer the owner, but leaves
+    # initialize open.
     "HypERC20": lambda sender, args: {
-        "type": "token", "mailbox": args[3].lower(), "hook": ZERO, "owner": ZERO, "routers": {}},
+        "type": "token", "mailbox": args[3].lower(), "hook": ZERO, "ism": ZERO, "owner": sender,
+        "routers": {}, "supply": 0},
     "StorageMessageIdMultisigIsm": lambda sender, args: {"type": "ism"},
 }
+
+def front_run(state, deployer, address, c):
+    attack = state.get("front_run") or {}
+    attacker, mode = attack.get("attacker"), attack.get(c["type"])
+    if not mode:
+        return
+    if c["type"] == "igp" and mode == "owner":
+        logs = initialize(c, address, attacker, [attacker, attacker])
+    elif c["type"] == "igp" and mode == "beneficiary":
+        logs = initialize(c, address, attacker, [deployer, attacker])
+    elif c["type"] == "igp" and mode == "standing_quote":
+        helper = derive("helper", attacker)
+        logs = initialize(c, address, attacker, [helper, deployer])
+        # The helper adds a signer, which signs a free standing quote for any
+        # sender to Dusk; then the signer goes and the deployer gets the IGP.
+        c["quotes"][f"{DUSK_DOMAIN}/{WILDCARD_SENDER}"] = {"rate": 0, "price": 0, "expiry": 2**47}
+        c["owner"] = deployer.lower()
+    elif c["type"] == "token" and mode == "owner":
+        logs = initialize(c, address, attacker, [10**30, "Dusk", "DUSK", ZERO, attacker, attacker])
+    else:
+        die(f"fake EVM: unknown front_run {mode} for a {c['type']}")
+    receipt(state, attacker, to=address, logs=logs)
+
+def create_proxy(state, sender, data):
+    if not data.startswith(PROXY_CODE):
+        die("stub cast: --create is only for ERC1967Proxy here")
+    implementation, init = decode(data[len(PROXY_CODE):])["args"]
+    impl = contract(state, implementation)
+    address = new_address(state, sender)
+    # The proxy's own storage: nothing set yet but the implementation's
+    # immutables.
+    proxy = CREATED[{"igp": "InterchainGasPaymaster", "token": "HypERC20"}[impl["type"]]](
+        sender, [9, 1, 1, impl.get("mailbox", ZERO)])
+    proxy.update(owner=ZERO, implementation=implementation.lower(), created_at=state["block"])
+    logs = [log(address, UPGRADED, word(implementation))]
+    if init != "0x":
+        call_data = decode(init)
+        logs += initialize(proxy, address, sender, call_data["args"])
+    state["contracts"][address] = proxy
+    return receipt(state, sender, created=address, logs=logs)
 
 def main_cast(argv):
     state = load()
     positional, options, flags = split(argv)
-    trace("cast " + " ".join(positional))
+    trace("cast " + " ".join(positional + ([f"--create {options['--create'][:40]}..."] if "--create" in options else [])
+                             + ([f"--from {options['--from']}"] if "--from" in options else [])))
     command = positional[0]
     sender = state["keys"].get(options.get("--private-key", ""), ZERO)
     if command == "chain-id":
@@ -314,12 +482,31 @@ def main_cast(argv):
         print(f"{wei / 10**18:.18f}" if "--ether" in flags else wei)
     elif command == "wallet":
         print(state["keys"][options["--private-key"]])
+    elif command in ("calldata", "abi-encode"):
+        print(encode({"sig": positional[1], "args": positional[2:]}))
+    elif command == "storage":
+        c = contract(state, positional[1])
+        if positional[2].lower() == IMPLEMENTATION_SLOT and "implementation" in c:
+            print(word(c["implementation"]))
+        else:
+            print("0x" + "00" * 32)
+    elif command == "receipt":
+        found = state.get("receipts", {}).get(positional[1].lower())
+        if found is None:
+            die(f"Error: transaction {positional[1]} not found")
+        print(json.dumps(found) if "--json" in flags else found[positional[2]])
     elif command == "call":
-        print(call(state, positional[1], positional[2], positional[3:]))
-    elif command == "send":
-        send(state, positional[1], positional[2], positional[3:], sender)
-        state["block"] += 1
+        print(call(state, positional[1], positional[2], positional[3:], options.get("--from", ZERO)))
+    elif command == "send" and "--create" in options:
+        tx = create_proxy(state, sender, options["--create"])
         save(state)
+        print(json.dumps(state["receipts"][tx]))
+    elif command == "send":
+        logs = send(state, positional[1], positional[2], positional[3:], sender)
+        tx = receipt(state, sender, to=positional[1], logs=logs)
+        save(state)
+        if "--json" in flags:
+            print(json.dumps(state["receipts"][tx]))
     else:
         die(f"stub cast: unexpected {command}")
 
@@ -327,19 +514,26 @@ def main_forge(argv):
     state = load()
     positional, options, flags = split(argv)
     trace("forge " + " ".join(positional + options.get("--constructor-args", [])))
+    if positional[0] == "remappings":
+        print("@openzeppelin/contracts/=dependencies/@openzeppelin-contracts-4.9.3/contracts/")
+        return
+    if positional[0] == "inspect":
+        if not positional[1].endswith("ERC1967Proxy.sol:ERC1967Proxy") or positional[2] != "bytecode":
+            die(f"stub forge: unexpected inspect {positional[1:]}")
+        print(PROXY_CODE)
+        return
     name = positional[1].split(":")[-1]
     sender = state["keys"][options["--private-key"]]
-    state["nonce"] += 1
-    address = derive("create", sender, state["nonce"])
+    address = new_address(state, sender)
     created = CREATED[name](sender, options.get("--constructor-args", []))
-    if name == "InterchainGasPaymaster" and state.get("front_run"):
-        created.update(owner=state["front_run"], beneficiary=state["front_run"])
     created["created_at"] = state["block"]
     state["contracts"][address] = created
-    state["block"] += 1
+    logs = [log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))] if created.get("owner", ZERO) != ZERO else []
+    tx = receipt(state, sender, created=address, logs=logs)
+    front_run(state, sender, address, created)
     save(state)
-    print(json.dumps({"deployedTo": address}))
-'''
+    print(json.dumps({"deployer": sender, "deployedTo": address, "transactionHash": tx}))
+"""
 
 CAST_STUB = """#!/usr/bin/env python3
 import os, sys
@@ -351,7 +545,7 @@ fake_evm.main_cast(sys.argv[1:])
 FORGE_STUB = CAST_STUB.replace("main_cast", "main_forge")
 
 # The RUES endpoints preflight reads: node info, a block height, the chain
-# ID (one raw byte) and an archive query.
+# ID (one raw byte, FIXTURE_DUSK_CHAIN_ID or 2) and an archive query.
 CURL_STUB = r'''#!/bin/sh
 url=""
 data=""
@@ -365,7 +559,7 @@ while [ "$#" -gt 0 ]; do
 done
 case "$url" in
     */on/node/info) echo '{"version_build":"fixture","vm_config":{"features":{"HQ_KECCAK256":0,"HQ_SECP256K1_RECOVER":0}}}' ;;
-    */chain_id) printf '\002' ;;
+    */chain_id) printf "\\$(printf '%03o' "${FIXTURE_DUSK_CHAIN_ID:-2}")" ;;
     */on/graphql/query)
         case "$data" in
             *finalizedEvents*) echo '{"finalizedEvents":{"json":{"events":[]}}}' ;;
@@ -394,8 +588,9 @@ def sepolia():
                           "requiredHook": EVM_PROTOCOL_FEE, "defaultHook": EVM_DEFAULT_HOOK},
             EVM_MERKLE: {"type": "merkle", "hook_type": 3, "mailbox": EVM_MAILBOX},
             EVM_VA: {"type": "validator_announce", "mailbox": EVM_MAILBOX},
-            EVM_PROTOCOL_FEE: {"type": "protocol_fee", "hook_type": 6, "fee": 1},
-            EVM_DEFAULT_HOOK: {"type": "fallback_routing", "hook_type": 5},
+            EVM_PROTOCOL_FEE: {"type": "protocol_fee", "hook_type": 8, "fee": 1},
+            EVM_DEFAULT_HOOK: {"type": "fallback_routing", "hook_type": 5, "routes": {},
+                               "fallback": EVM_MERKLE},
             EVM_ISM_FACTORY: {"type": "ism_factory"},
             EVM_HOOK_FACTORY: {"type": "aggregation_factory"},
         },
@@ -534,21 +729,34 @@ class DeployedTestnet(TestnetScript):
         evm = self.evm["contracts"]
         self.ism, self.token = "0x" + "55" * 20, "0x" + "11" * 20
         self.oracle, self.evm_igp, self.hook = "0x" + "66" * 20, "0x" + "44" * 20, "0x" + "77" * 20
+        self.igp_impl, self.token_impl = "0x" + "4a" * 20, "0x" + "1a" * 20
         evm[self.ism] = {"type": "ism"}
         evm[self.oracle] = {"type": "oracle", "owner": DEPLOYER, "data": {
             str(DUSK_DOMAIN): [int(DEFAULT_EVM_IGP["token_exchange_rate"]), int(DEFAULT_EVM_IGP["gas_price"])]}}
-        evm[self.evm_igp] = {"type": "igp", "hook_type": 4, "owner": DEPLOYER, "beneficiary": DEPLOYER,
-                             "configs": {str(DUSK_DOMAIN): [self.oracle, int(DEFAULT_EVM_IGP["gas_overhead"])]}}
+        # The bare implementations, never initialized, and the proxies the
+        # deployment uses, each initialized in the transaction that created
+        # it.
+        evm[self.igp_impl] = {"type": "igp", "hook_type": 4, "owner": "0x" + "00" * 20,
+                              "beneficiary": "0x" + "00" * 20, "configs": {}, "quote_signers": [], "quotes": {}}
+        evm[self.token_impl] = {"type": "token", "mailbox": EVM_MAILBOX, "hook": "0x" + "00" * 20,
+                                "ism": "0x" + "00" * 20, "owner": DEPLOYER, "routers": {}, "supply": 0}
+        self.igp_tx = proxy_creation(self.evm, self.evm_igp, self.igp_impl, {
+            "type": "igp", "hook_type": 4, "owner": DEPLOYER, "beneficiary": DEPLOYER,
+            "configs": {str(DUSK_DOMAIN): [self.oracle, int(DEFAULT_EVM_IGP["gas_overhead"])]},
+            "quote_signers": [], "quotes": {}})
         evm[self.hook] = {"type": "aggregation", "hook_type": 2, "hooks": [EVM_MERKLE, self.evm_igp]}
-        evm[self.token] = {"type": "token", "mailbox": EVM_MAILBOX, "hook": self.hook, "owner": DEPLOYER,
-                           "routers": {str(DUSK_DOMAIN): "0x" + ROUTE}}
+        self.token_tx = proxy_creation(self.evm, self.token, self.token_impl, {
+            "type": "token", "mailbox": EVM_MAILBOX, "hook": self.hook, "ism": self.ism, "owner": DEPLOYER,
+            "routers": {str(DUSK_DOMAIN): "0x" + ROUTE}, "supply": 0})
         self.queries[f"{ROUTE}/enrolled_router/{EVM_DOMAIN}"] = {"value": "00" * 12 + "11" * 20}
         self.write_state({
             "evm_chain": "sepolia",
             "evm_domain": EVM_DOMAIN,
             "evm": {"mailbox": EVM_MAILBOX, "merkle_tree_hook": EVM_MERKLE, "validator_announce": EVM_VA,
                     "ism": self.ism, "storage_gas_oracle": self.oracle, "igp": self.evm_igp,
+                    "igp_implementation": self.igp_impl, "igp_creation_tx": self.igp_tx,
                     "igp_beneficiary": DEPLOYER, "route_hook": self.hook, "token": self.token,
+                    "token_implementation": self.token_impl, "token_creation_tx": self.token_tx,
                     "owner": DEPLOYER, "index_from": 1},
             "dusk": DUSK_CONTRACTS,
             "dusk_domain": DUSK_DOMAIN,
@@ -678,6 +886,77 @@ class TestnetDeployedIsmChecks(DeployedTestnet):
     def test_unset_default_ism_is_refused(self):
         self.queries[f"{MAILBOX}/default_ism"] = {"value": ZERO}
         self.assert_both_commands(False, "the Mailbox's default ISM, which is not set")
+
+
+class TestnetEvmCreationChecks(DeployedTestnet):
+    """Every command that relies on the EVM IGP and token checks, from the
+    receipt of the transaction that created each, that the deployer created
+    it initialized, and that nothing prices delivery to Dusk below the
+    oracle."""
+
+    COMMANDS = ["preflight", "agent-configs", "evm-igp", "claim", "deploy"]
+
+    def assert_refused(self, expected, commands=COMMANDS):
+        for command in commands:
+            with self.subTest(command=command):
+                result = self.run_script(command)
+                self.assert_fails(result, expected)
+                self.assertEqual(self.traced("cast send"), [])
+                self.assertEqual(self.traced("forge"), [])
+                self.assertFalse(self.relayer_config.exists())
+
+    def test_the_recorded_deployment_passes(self):
+        for command in self.COMMANDS:
+            with self.subTest(command=command):
+                self.assert_ok(self.run_script(command))
+
+    def test_contracts_without_a_creation_record_are_refused(self):
+        # What an older deploy/testnet.sh recorded: it initialized the IGP and
+        # the token in a second transaction, which anyone could send first.
+        for key, label in (("igp", "IGP"), ("token", "DUSK token")):
+            with self.subTest(contract=key):
+                state = self.state()
+                saved = state["evm"].pop(f"{key}_creation_tx")
+                self.write_state(state)
+                self.assert_refused(f"records the EVM {label} {state['evm'][key]} without the transaction that "
+                                    "created and initialized it")
+                state["evm"][f"{key}_creation_tx"] = saved
+                self.write_state(state)
+
+    def test_a_contract_initialized_after_its_creation_is_refused(self):
+        # Created without its initialization: whoever sent initialize first
+        # chose its owner and beneficiary, and could have set quotes.
+        proxy_creation(self.evm, self.evm_igp, self.igp_impl, self.evm["contracts"][self.evm_igp],
+                       initialized=False)
+        self.assert_refused(f"The EVM IGP {self.evm_igp} wasn't initialized in the transaction that created it")
+
+    def test_a_contract_someone_else_created_is_refused(self):
+        proxy_creation(self.evm, self.token, self.token_impl, self.evm["contracts"][self.token], creator=ATTACKER)
+        self.assert_refused(f"The EVM DUSK token {self.token} wasn't initialized in the transaction that created it")
+
+    def test_a_proxy_of_another_implementation_is_refused(self):
+        self.evm["contracts"][self.evm_igp]["implementation"] = "0x" + "4b" * 20
+        self.assert_refused(f"runs the implementation 0x{'4b' * 20}, not {self.igp_impl}")
+
+    def test_a_standing_quote_that_undercuts_the_oracle_is_refused(self):
+        wildcard_sender, wildcard_dest = "0x" + "ff" * 20, str(2**32 - 1)
+        commands = ["preflight", "agent-configs", "evm-igp", "deploy"]
+        for key in (f"{DUSK_DOMAIN}/{wildcard_sender}", f"{DUSK_DOMAIN}/{self.token}",
+                    f"{wildcard_dest}/{self.token}"):
+            with self.subTest(quote=key):
+                self.evm["contracts"][self.evm_igp]["quotes"] = {
+                    key: {"rate": 0, "price": 0, "expiry": 2**47}}
+                self.assert_refused("a signed offchain quote", commands)
+        # An expired quote no longer counts, for the IGP or the checks.
+        self.evm["contracts"][self.evm_igp]["quotes"] = {
+            f"{DUSK_DOMAIN}/{wildcard_sender}": {"rate": 0, "price": 0, "expiry": 1}}
+        for command in commands:
+            with self.subTest(command=command, quote="expired"):
+                self.assert_ok(self.run_script(command))
+
+    def test_quote_signers_are_refused(self):
+        self.evm["contracts"][self.evm_igp]["quote_signers"] = [ATTACKER]
+        self.assert_refused(f"has quote signers [{ATTACKER}]", ["preflight", "agent-configs", "evm-igp", "deploy"])
 
 
 def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=110000,
@@ -981,12 +1260,15 @@ class TestnetDeploy(TestnetScript):
 
     def test_an_interrupted_deploy_finishes_configuring_the_igp(self):
         # deploy stopped after deploying the oracle and the IGP.
-        oracle, igp = "0x" + "66" * 20, "0x" + "44" * 20
+        oracle, igp, impl = "0x" + "66" * 20, "0x" + "44" * 20, "0x" + "4a" * 20
         self.evm["contracts"][oracle] = {"type": "oracle", "owner": DEPLOYER, "data": {}}
-        self.evm["contracts"][igp] = {"type": "igp", "hook_type": 4, "owner": "0x" + "00" * 20,
-                                      "beneficiary": "0x" + "00" * 20, "configs": {}}
+        self.evm["contracts"][impl] = {"type": "igp", "hook_type": 4, "owner": "0x" + "00" * 20,
+                                       "beneficiary": "0x" + "00" * 20, "configs": {}}
+        tx = proxy_creation(self.evm, igp, impl, {"type": "igp", "hook_type": 4, "owner": DEPLOYER,
+                                                  "beneficiary": DEPLOYER, "configs": {},
+                                                  "quote_signers": [], "quotes": {}})
         self.write_state({"evm": {"mailbox": EVM_MAILBOX, "storage_gas_oracle": oracle, "igp": igp,
-                                  "index_from": 1}})
+                                  "igp_implementation": impl, "igp_creation_tx": tx, "index_from": 1}})
         result = self.run_script("deploy")
         self.assert_ok(result)
         self.assertIn("isn't priced for Dusk yet; deploy prices it", result.stderr)
@@ -994,9 +1276,59 @@ class TestnetDeploy(TestnetScript):
         self.assertEqual(self.evm["contracts"][igp]["configs"][str(DUSK_DOMAIN)], [oracle, 2170000])
         self.assertEqual(self.state()["evm"]["igp"], igp)
 
-    def test_a_front_run_igp_initialization_stops_the_deploy(self):
-        self.evm["front_run"] = "0x" + "ee" * 20
-        self.assert_fails(self.run_script("deploy"), "Remove .evm.igp from")
+    def test_deploy_initializes_the_igp_and_the_token_in_their_creation_transactions(self):
+        self.assert_ok(self.run_script("deploy"))
+        state = self.state()["evm"]
+        for key in ("igp", "token"):
+            with self.subTest(contract=key):
+                address, tx = state[key], state[f"{key}_creation_tx"]
+                receipt = self.evm["receipts"][tx]
+                self.assertEqual(receipt["contractAddress"], address)
+                self.assertEqual(receipt["from"], DEPLOYER)
+                topics = [entry["topics"][0] for entry in receipt["logs"] if entry["address"] == address]
+                self.assertEqual(topics[0], UPGRADED)
+                self.assertIn(INITIALIZED, topics)
+                self.assertEqual(self.evm["contracts"][address]["implementation"],
+                                 state[f"{key}_implementation"])
+        # Nothing initializes them afterwards: there is no second transaction
+        # to send first.
+        self.assertEqual([line for line in self.trace.read_text().splitlines()
+                          if line.startswith("cast send") and "initialize" in line], [])
+        token = self.evm["contracts"][state["token"]]
+        self.assertEqual((token["owner"], token["ism"], token["hook"], token["supply"]),
+                         (DEPLOYER, state["ism"], state["route_hook"], 0))
+
+    def test_front_runners_get_nothing_from_the_bare_contracts(self):
+        # An attacker initializes every bare IGP and HypERC20 the deployer
+        # creates before the deployer's next transaction. Before, the IGP was
+        # theirs (or paid them, with the deployer as its owner), and the
+        # token's initialization reverted.
+        for mode in ("owner", "beneficiary"):
+            with self.subTest(igp=mode):
+                self.evm = sepolia()
+                self.queries = dusk_queries()
+                if (self.out / "deployment.json").exists():
+                    (self.out / "deployment.json").unlink()
+                self.evm["front_run"] = {"attacker": ATTACKER, "igp": mode, "token": "owner"}
+                result = self.run_script("deploy")
+                self.assert_ok(result)
+                state = self.state()["evm"]
+                igp, token = self.evm["contracts"][state["igp"]], self.evm["contracts"][state["token"]]
+                self.assertEqual((igp["owner"], igp["beneficiary"]), (DEPLOYER, DEPLOYER))
+                self.assertEqual((token["owner"], token["ism"], token["supply"]), (DEPLOYER, state["ism"], 0))
+                # The attacker only initialized the unused implementations.
+                self.assertEqual(self.evm["contracts"][state["igp_implementation"]]["owner"],
+                                 ATTACKER if mode == "owner" else DEPLOYER)
+
+    def test_a_front_run_cannot_plant_a_free_standing_quote(self):
+        # A helper owner adds a quote signer, which signs a free standing
+        # quote for any sender to Dusk, then hands the IGP to the deployer:
+        # the oracle's pricing and the owner check still passed.
+        self.evm["front_run"] = {"attacker": ATTACKER, "igp": "standing_quote"}
+        self.assert_ok(self.run_script("deploy"))
+        igp = self.evm["contracts"][self.state()["evm"]["igp"]]
+        self.assertEqual(igp["quotes"], {})
+        self.assert_ok(self.run_script("agent-configs"))
 
     def test_beneficiaries_are_configurable(self):
         beneficiary = "0x" + "be" * 20
@@ -1017,16 +1349,16 @@ class TestnetDeploy(TestnetScript):
         self.assertEqual(self.traced("cast send"), [])
         self.assertEqual(self.traced("dusk-tx set-beneficiary"), [])
 
-    def test_an_older_deployment_gets_our_igp_and_a_route_hook(self):
+    def test_an_older_deployment_is_refused_until_it_is_redeployed(self):
         # deploy/testnet.sh before relaying fees: Hyperlane's IGP recorded as
-        # .evm.igp, and a token on the Mailbox's default hook.
+        # .evm.igp, and a token it initialized in a second transaction.
         evm = self.evm["contracts"]
         hyperlane_igp, ism, token = "0x" + "6f" * 20, "0x" + "55" * 20, "0x" + "11" * 20
         evm[hyperlane_igp] = {"type": "igp", "hook_type": 4, "owner": "0x" + "ab" * 20,
                               "beneficiary": "0x" + "ab" * 20, "configs": {}}
         evm[ism] = {"type": "ism"}
-        evm[token] = {"type": "token", "mailbox": EVM_MAILBOX, "hook": "0x" + "00" * 20,
-                      "owner": DEPLOYER, "routers": {str(DUSK_DOMAIN): "0x" + ROUTE}}
+        evm[token] = {"type": "token", "mailbox": EVM_MAILBOX, "hook": "0x" + "00" * 20, "ism": ism,
+                      "owner": DEPLOYER, "routers": {str(DUSK_DOMAIN): "0x" + ROUTE}, "initialized": True}
         self.queries[f"{ROUTE}/enrolled_router/{EVM_DOMAIN}"] = {"value": "00" * 12 + "11" * 20}
         self.write_state({
             "evm_chain": "sepolia", "evm_domain": EVM_DOMAIN,
@@ -1034,14 +1366,290 @@ class TestnetDeploy(TestnetScript):
                     "igp": hyperlane_igp, "ism": ism, "token": token, "owner": DEPLOYER, "index_from": 1},
             "dusk": DUSK_CONTRACTS, "dusk_domain": DUSK_DOMAIN,
         })
-        self.assert_ok(self.run_script("deploy"))
-        state = self.state()
-        self.assertEqual(state["evm"]["hyperlane_igp"], hyperlane_igp)
-        self.assertNotEqual(state["evm"]["igp"], hyperlane_igp)
-        self.assertEqual(state["evm"]["index_from"], 1)
-        self.assertEqual(self.evm["contracts"][token]["hook"], state["evm"]["route_hook"])
-        self.assertIn(f"cast send {token} setHook(address) {state['evm']['route_hook']}",
-                      self.trace.read_text())
+        for command in ["deploy", "preflight"]:
+            with self.subTest(command=command):
+                self.assert_fails(self.run_script(command),
+                                  f"records the EVM DUSK token {token} without the transaction that created")
+                self.assertEqual(self.traced("cast send"), [])
+                self.assertEqual(self.traced("forge"), [])
+
+SOLIDITY_DIR = Path(os.environ.get("HYPERLANE_SOLIDITY_DIR", ROOT.parent / "hyperlane-monorepo" / "solidity"))
+# Anvil's development keys and accounts: #0 deploys, #2 stands in for
+# Hyperlane's Sepolia validator, #9 attacks.
+ANVIL_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+ANVIL_DEPLOYER = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+ANVIL_VALIDATOR = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
+ANVIL_ATTACKER_KEY = "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6"
+ANVIL_ATTACKER = "0xa0ee7a142d267c1f36714e4a8f75612f20a79720"
+
+# Runs a real tool after logging the call to FIXTURE_TRACE.
+LOGGING_WRAPPER = """#!/bin/sh
+printf '%s\\n' "TOOL $*" >> "$FIXTURE_TRACE"
+exec REAL "$@"
+"""
+
+
+def anvil_unavailable():
+    """Why the Anvil tests can't run here, or None."""
+    for tool in ("anvil", "forge", "cast"):
+        if shutil.which(tool) is None:
+            return f"{tool} is not installed"
+    if not (SOLIDITY_DIR / "foundry.toml").exists():
+        return f"no Hyperlane Solidity sources at {SOLIDITY_DIR} (HYPERLANE_SOLIDITY_DIR)"
+    return None
+
+
+class AnvilEvmDeploy(unittest.TestCase):
+    """deploy/testnet.sh's EVM side on Anvil, with Hyperlane's contracts and
+    real cast and forge; the Dusk side is the dusk-tx stub. Shows on chain
+    that the IGP and the token are initialized in the transaction that
+    creates them, so there is nothing to front-run, and that an IGP deployed
+    the old way, which an attacker initialized first, is refused. Skipped
+    without Anvil, Foundry and the Hyperlane Solidity sources."""
+
+    @classmethod
+    def setUpClass(cls):
+        reason = anvil_unavailable()
+        if reason:
+            raise unittest.SkipTest(reason)
+        cls.temp = tempfile.TemporaryDirectory(prefix="hyperlane-anvil-checks-")
+        cls.root = Path(cls.temp.name)
+        try:
+            cls.start_anvil()
+            cls.prepare_checkout()
+            cls.deploy_core_and_route()
+        except BaseException:
+            cls.tearDownClass()
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        anvil = getattr(cls, "anvil", None)
+        if anvil is not None and anvil.poll() is None:
+            anvil.terminate()
+            try:
+                anvil.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                anvil.kill()
+                anvil.wait()
+        cls.temp.cleanup()
+
+    @classmethod
+    def start_anvil(cls):
+        import socket
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            cls.port = probe.getsockname()[1]
+        cls.rpc = f"http://127.0.0.1:{cls.port}"
+        cls.anvil = subprocess.Popen(["anvil", "--port", str(cls.port), "--chain-id", "31338", "--silent"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if subprocess.run(["cast", "block-number", "--rpc-url", cls.rpc],
+                              capture_output=True).returncode == 0:
+                return
+            if cls.anvil.poll() is not None:
+                raise RuntimeError("anvil exited at startup")
+            import time
+            time.sleep(0.1)
+        raise RuntimeError("anvil did not start")
+
+    @classmethod
+    def prepare_checkout(cls):
+        (cls.root / "deploy").mkdir()
+        (cls.root / "demo").mkdir()
+        shutil.copy2(TESTNET_SH, cls.root / "deploy" / "testnet.sh")
+        for name in ("testnet.env.example", "local-evm-core.sh"):
+            shutil.copy2(ROOT / "deploy" / name, cls.root / "deploy" / name)
+        cls.bin = cls.root / "bin"
+        cls.bin.mkdir()
+        write_executable(cls.bin / "dusk-tx", DUSK_TX_STUB)
+        write_executable(cls.bin / "curl", CURL_STUB)
+        for tool in ("cast", "forge"):
+            write_executable(cls.bin / tool, LOGGING_WRAPPER.replace("TOOL", tool)
+                             .replace("REAL", shlex.quote(shutil.which(tool))))
+        wasm = cls.root / "wasm"
+        wasm.mkdir()
+        (wasm / "hyperlane_dusk_mailbox.wasm").write_bytes(b"\0asm")
+        keys = cls.root / "consensus.keys"
+        keys.write_text("{}")
+        (cls.root / "demo" / ".env.bridge").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in {
+            "ANVIL_RPC": cls.rpc, "DUSK_RUES_URL": "http://localhost:8080/", "SOLIDITY_DIR": SOLIDITY_DIR,
+            "ANVIL_PRIVATE_KEY": ANVIL_KEY, "ANVIL_DEPLOYER": ANVIL_DEPLOYER,
+            "CONSENSUS_KEYS": keys, "CONSENSUS_PASSWORD": "fixture"}.items()))
+        cls.chain = cls.root / "chain.json"
+        cls.trace = cls.root / "tools.trace"
+        queries = dusk_queries()
+        queries[f"{MULTISIG}/validators_and_threshold"] = {"value": {"validators": [ANVIL_VALIDATOR],
+                                                                     "threshold": 1}}
+        cls.chain.write_text(json.dumps({"queries": queries, "deployer_h256": DEPLOYER_H256,
+                                         "deploy": DUSK_CONTRACTS}))
+        cls.trace.write_text("")
+
+    @classmethod
+    def run_tool(cls, *command, deploy_name=None, check=False):
+        env = {
+            "PATH": f"{cls.bin}{os.pathsep}{os.environ['PATH']}",
+            "HOME": os.environ.get("HOME", str(cls.root)),
+            "DUSK_TX": str(cls.bin / "dusk-tx"),
+            "WASM_DIR": str(cls.root / "wasm"),
+            "TESTNET_ENV": str(cls.root / "deploy" / "local.env"),
+            "FIXTURE_CHAIN": str(cls.chain),
+            "FIXTURE_TRACE": str(cls.trace),
+        }
+        if deploy_name:
+            env["DEPLOY_NAME_OVERRIDE"] = deploy_name
+        result = subprocess.run(["bash", *command], cwd=cls.root, env=env, capture_output=True, text=True,
+                                timeout=600)
+        if check and result.returncode != 0:
+            raise AssertionError(f"{command} failed:\n{result.stdout}{result.stderr}")
+        return result
+
+    @classmethod
+    def deploy_core_and_route(cls):
+        cls.run_tool(str(cls.root / "deploy" / "local-evm-core.sh"), check=True)
+        env_file = cls.root / "deploy" / "local.env"
+        # Let a test deploy under another name, with the same chains.
+        env_file.write_text(env_file.read_text()
+                            + 'DEPLOY_NAME="${DEPLOY_NAME_OVERRIDE:-local-rehearsal}"\n')
+        cls.trace.write_text("")
+        cls.deploy_output = cls.run_tool(str(cls.root / "deploy" / "testnet.sh"), "deploy", check=True)
+        cls.state = json.loads((cls.root / "deploy" / "out" / "local-rehearsal" / "deployment.json").read_text())
+        cls.deploy_trace = cls.trace.read_text()
+
+    def cast(self, *args):
+        result = subprocess.run(["cast", *args, "--rpc-url", self.rpc], capture_output=True, text=True, timeout=60)
+        return result
+
+    def cast_ok(self, *args):
+        result = self.cast(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_the_igp_and_the_token_are_initialized_in_their_creation_transactions(self):
+        evm = self.state["evm"]
+        expected = {
+            "igp": [UPGRADED, "0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0",
+                    "0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0",
+                    "0x04d55a8be181fb8d75b76f2d48aa0b2ee40f47e53d6e61763eeeec46feea8a24", INITIALIZED],
+        }
+        for key in ("igp", "token"):
+            with self.subTest(contract=key):
+                address = evm[key].lower()
+                receipt = json.loads(self.cast_ok("receipt", evm[f"{key}_creation_tx"], "--json"))
+                # One transaction, sent by the deployer, created the proxy...
+                self.assertEqual(receipt["status"], "0x1")
+                self.assertEqual(receipt["from"].lower(), ANVIL_DEPLOYER)
+                self.assertIsNone(receipt["to"])
+                self.assertEqual(receipt["contractAddress"].lower(), address)
+                # ...and, in its constructor, initialized it.
+                topics = [entry["topics"][0] for entry in receipt["logs"] if entry["address"].lower() == address]
+                self.assertEqual(topics[0], UPGRADED)
+                self.assertEqual(topics[-1], INITIALIZED)
+                if key in expected:
+                    self.assertEqual(topics, expected[key])
+                slot = self.cast_ok("storage", evm[key],
+                                    "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
+                self.assertEqual("0x" + slot[-40:], evm[f"{key}_implementation"].lower())
+                # No admin: nobody can swap the implementation.
+                self.assertEqual(int(self.cast_ok("storage", evm[key],
+                                                  "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"),
+                                     16), 0)
+                self.assertEqual(self.cast_ok("call", evm[key], "owner()(address)").lower(), ANVIL_DEPLOYER)
+        self.assertEqual(self.cast_ok("call", evm["igp"], "beneficiary()(address)").lower(), ANVIL_DEPLOYER)
+        self.assertEqual(self.cast_ok("call", evm["token"], "interchainSecurityModule()(address)").lower(),
+                         evm["ism"].lower())
+        self.assertEqual(self.cast_ok("call", evm["token"], "totalSupply()(uint256)"), "0")
+        # deploy never sent initialize in a transaction of its own.
+        self.assertNotRegex(self.deploy_trace, r"cast send [^\n]*initialize")
+
+    def test_initializing_them_again_reverts(self):
+        evm = self.state["evm"]
+        attempts = {
+            "igp": ("initialize(address,address)", ANVIL_ATTACKER, ANVIL_ATTACKER),
+            "token": ("initialize(uint256,string,string,address,address,address)", "1000000000000", "Dusk",
+                      "DUSK", "0x" + "00" * 20, ANVIL_ATTACKER, ANVIL_ATTACKER),
+        }
+        for key, call in attempts.items():
+            with self.subTest(contract=key):
+                result = self.cast("send", evm[key], *call, "--private-key", ANVIL_ATTACKER_KEY)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Initializable: contract is already initialized", result.stderr)
+
+    def test_an_igp_initialized_by_someone_else_is_refused(self):
+        # The old deployment: a bare IGP, which the attacker initializes
+        # before the deployer can, keeping the deployer as owner so that the
+        # old owner check passed, and making itself the beneficiary.
+        created = json.loads(subprocess.run(
+            ["forge", "create", "contracts/hooks/igp/InterchainGasPaymaster.sol:InterchainGasPaymaster",
+             "--broadcast", "--json", "--rpc-url", self.rpc, "--private-key", ANVIL_KEY],
+            cwd=SOLIDITY_DIR, capture_output=True, text=True, check=True).stdout)
+        bare = created["deployedTo"]
+        self.cast_ok("send", bare, "initialize(address,address)", ANVIL_DEPLOYER, ANVIL_ATTACKER,
+                     "--private-key", ANVIL_ATTACKER_KEY)
+        self.assertEqual(self.cast_ok("call", bare, "owner()(address)").lower(), ANVIL_DEPLOYER)
+        self.assertEqual(self.cast_ok("call", bare, "beneficiary()(address)").lower(), ANVIL_ATTACKER)
+        cases = {
+            # As an older deploy/testnet.sh recorded it.
+            "without a creation record": ({"igp": bare},
+                                          "without the transaction that created and initialized it"),
+            # Its creation, which has no initialization in it.
+            "with its bare creation": ({"igp": bare, "igp_creation_tx": created["transactionHash"],
+                                        "igp_implementation": bare},
+                                       "wasn't initialized in the transaction that created it"),
+        }
+        for name, (recorded, expected) in cases.items():
+            with self.subTest(case=name):
+                state = json.loads(json.dumps(self.state))
+                for key in ("igp_creation_tx", "igp_implementation"):
+                    state["evm"].pop(key, None)
+                state["evm"].update(recorded)
+                out = self.root / "deploy" / "out" / "front-run"
+                out.mkdir(parents=True, exist_ok=True)
+                (out / "deployment.json").write_text(json.dumps(state))
+                for command in ("preflight", "agent-configs", "evm-igp", "claim"):
+                    result = self.run_tool(str(self.root / "deploy" / "testnet.sh"), command,
+                                           deploy_name="front-run")
+                    output = result.stdout + result.stderr
+                    self.assertNotEqual(result.returncode, 0, output)
+                    self.assertIn(expected, output, command)
+
+    def test_a_proxy_someone_else_created_is_refused(self):
+        # A copy of the deployment's IGP, created and initialized in one
+        # transaction, but by the attacker: owner the deployer, beneficiary
+        # the attacker.
+        evm = self.state["evm"]
+        remappings = subprocess.run(["forge", "remappings"], cwd=SOLIDITY_DIR, capture_output=True, text=True,
+                                    check=True).stdout.splitlines()
+        oz = next(line.split("=", 1)[1] for line in remappings if line.startswith("@openzeppelin/contracts/="))
+        code = subprocess.run(["forge", "inspect", f"{oz.rstrip('/')}/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy",
+                               "bytecode"], cwd=SOLIDITY_DIR, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        init = self.cast_ok("calldata", "initialize(address,address)", ANVIL_DEPLOYER, ANVIL_ATTACKER)
+        args = subprocess.run(["cast", "abi-encode", "constructor(address,bytes)", evm["igp_implementation"], init],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        receipt = json.loads(subprocess.run(
+            ["cast", "send", "--rpc-url", self.rpc, "--private-key", ANVIL_ATTACKER_KEY, "--json",
+             "--create", code + args[2:]], capture_output=True, text=True, check=True).stdout)
+        state = json.loads(json.dumps(self.state))
+        state["evm"].update(igp=receipt["contractAddress"], igp_creation_tx=receipt["transactionHash"])
+        out = self.root / "deploy" / "out" / "foreign-proxy"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "deployment.json").write_text(json.dumps(state))
+        result = self.run_tool(str(self.root / "deploy" / "testnet.sh"), "preflight", deploy_name="foreign-proxy")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("wasn't initialized in the transaction that created it", result.stderr)
+
+    def test_a_quote_signer_is_refused(self):
+        igp = self.state["evm"]["igp"]
+        self.cast_ok("send", igp, "addQuoteSigner(address)", ANVIL_ATTACKER, "--private-key", ANVIL_KEY)
+        try:
+            result = self.run_tool(str(self.root / "deploy" / "testnet.sh"), "preflight")
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"has quote signers [{self.cast_ok('call', igp, 'quoteSigners()(address[])')[1:-1]}]",
+                          result.stderr)
+        finally:
+            self.cast_ok("send", igp, "removeQuoteSigner(address)", ANVIL_ATTACKER, "--private-key", ANVIL_KEY)
+        self.run_tool(str(self.root / "deploy" / "testnet.sh"), "preflight", check=True)
 
 
 # Encrypt a consensus key pair the way rusk-wallet's export does.
