@@ -89,6 +89,9 @@ mod warp_drc20_collateral {
         pending_transfers: BTreeMap<H256, u64>,
         /// Aggregate pending liability reserved against wrapped-token custody.
         pending_total: u64,
+        /// Held while `transfer_remote`, `handle`, a claim or
+        /// `withdraw_dispatch_credit` runs (see [`Self::enter`]).
+        entered: bool,
     }
 
     impl WarpDrc20Collateral {
@@ -104,6 +107,7 @@ mod warp_drc20_collateral {
                 registered_accounts: BTreeMap::new(),
                 pending_transfers: BTreeMap::new(),
                 pending_total: 0,
+                entered: false,
             }
         }
 
@@ -180,10 +184,12 @@ mod warp_drc20_collateral {
         /// as after [`Self::claim_pending_for`]. A call with nothing in
         /// escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
+            self.enter();
             let pk =
                 abi::public_sender().expect("WarpCollateral: claim_pending requires Moonlight TX");
             let h = self.register(pk);
             self.claim_pending_to(h, Account::moonlight(&pk));
+            self.exit();
         }
 
         /// Register `account` and pay it the tokens escrowed for
@@ -197,9 +203,11 @@ mod warp_drc20_collateral {
         /// reverts, and so does a call with nothing in escrow, so this can't
         /// register a key nobody has sent tokens to.
         pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
+            self.enter();
             let account = canonical_account(&account);
             let h = self.register(account);
             self.claim_pending_to(h, Account::moonlight(&account));
+            self.exit();
         }
 
         /// Claim pending wrapped DRC20 tokens for the calling contract.
@@ -208,12 +216,14 @@ mod warp_drc20_collateral {
         /// bytes. The Moonlight transfer contract is rejected as a root
         /// caller so it cannot be confused with the intended recipient.
         pub fn claim_pending_contract(&mut self) {
+            self.enter();
             let contract = abi::caller().expect("WarpCollateral: contract caller unavailable");
             assert!(
                 contract != TRANSFER_CONTRACT,
                 "WarpCollateral: claim_pending_contract requires contract caller"
             );
             self.claim_pending_to(contract.to_bytes(), Account::Contract(contract));
+            self.exit();
         }
 
         /// Returns the pending (escrowed) balance for an H256 recipient.
@@ -226,12 +236,14 @@ mod warp_drc20_collateral {
             self.pending_total
         }
 
-        /// Deployment compatibility version. Version 5: `claim_pending_for`
-        /// pays the decoded key, and `claim_pending` registers the sender.
-        /// Version 4 added `claim_pending_for`.
+        /// Deployment compatibility version. Version 6: `transfer_remote`,
+        /// `handle`, the claims and `withdraw_dispatch_credit` can't be
+        /// re-entered. Version 5: `claim_pending_for` pays the decoded key,
+        /// and `claim_pending` registers the sender. Version 4 added
+        /// `claim_pending_for`.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            5
+            6
         }
 
         // =================================================================
@@ -248,6 +260,7 @@ mod warp_drc20_collateral {
             recipient: H256,
             amount: u64,
         ) -> MessageId {
+            self.enter();
             assert!(amount > 0, "WarpCollateral: amount must be > 0");
             assert!(
                 recipient != [0u8; 32],
@@ -309,6 +322,7 @@ mod warp_drc20_collateral {
                 },
             );
 
+            self.exit();
             message_id
         }
 
@@ -339,6 +353,7 @@ mod warp_drc20_collateral {
         /// Called by the Mailbox when a message is delivered. Unlocks
         /// wrapped DRC20 tokens to the recipient.
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
+            self.enter();
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpCollateral: cannot determine caller");
             assert!(
@@ -390,6 +405,7 @@ mod warp_drc20_collateral {
                     amount: msg.amount,
                 },
             );
+            self.exit();
         }
 
         /// Returns the ISM override for this contract.
@@ -476,6 +492,7 @@ mod warp_drc20_collateral {
         /// with it, so a forged twin of the key can't divert the payout; the
         /// decoding costs about 57M gas.
         pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
+            self.enter();
             self.only_owner();
             let _: () = abi::call(
                 self.mailbox,
@@ -483,6 +500,7 @@ mod warp_drc20_collateral {
                 &(recipient, amount),
             )
             .expect("WarpCollateral: dispatch credit withdrawal failed");
+            self.exit();
         }
 
         /// Transfer ownership. Owner only.
@@ -506,6 +524,34 @@ mod warp_drc20_collateral {
         // =================================================================
         // Internal helpers
         // =================================================================
+
+        /// Take the route's reentrancy guard, or panic if it's held.
+        ///
+        /// The wrapped token, the Mailbox and anything they call can call
+        /// back into the route before the call that reached them returns.
+        /// `transfer_remote` measures custody before and after
+        /// `transfer_from`, so the deposit of a nested `transfer_remote`
+        /// that lands in between counts toward both checks: with a token
+        /// that takes a fee on transfers, 100 locked tokens could back 110
+        /// remote mints. Every entry point that calls another contract and
+        /// changes state takes the guard before its first call:
+        /// `transfer_remote`, `handle`, the three claims and
+        /// `withdraw_dispatch_credit`. A call that panics is reverted, the
+        /// guard with it.
+        fn enter(&mut self) {
+            // The VM tests build a copy of the route with
+            // `--cfg hyperlane_dusk_unguarded_test` to show the attack this
+            // check stops (`make warp-drc20-collateral-unguarded`). That copy
+            // is never deployed.
+            #[cfg(not(hyperlane_dusk_unguarded_test))]
+            assert!(!self.entered, "WarpCollateral: reentrant call");
+            self.entered = true;
+        }
+
+        /// Release the guard taken by [`Self::enter`].
+        fn exit(&mut self) {
+            self.entered = false;
+        }
 
         /// Map `keccak256(pk)` to `pk` and return the hash. `pk` must be
         /// canonical: the transaction's public sender, or a key from

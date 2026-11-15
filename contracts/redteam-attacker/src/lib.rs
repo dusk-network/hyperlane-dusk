@@ -3,8 +3,9 @@
 // Red-team attack contract for callback and reentrancy tests.
 
 //! Test-only contract that plays every attacker-controlled callback role:
-//! post-dispatch hook, message recipient, recipient-nominated ISM and
-//! contract recipient of native escrow. At each callback point it replays a
+//! post-dispatch hook, message recipient, recipient-nominated ISM, contract
+//! recipient of native escrow and holder of a token that calls its sender
+//! back (`callback-fee-token`). At each callback point it replays a
 //! configured list of raw calls, records whether each succeeded, and can
 //! panic afterwards so the caller observes a failed callback.
 
@@ -28,6 +29,7 @@ mod redteam_attacker {
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::transfer::ReceiveFromContract;
 
+    use hyperlane_dusk_types::drc20::Account;
     use hyperlane_dusk_types::H256;
 
     /// Zero contract ID: "use the Mailbox default ISM".
@@ -47,6 +49,8 @@ mod redteam_attacker {
     const HANDLE: u8 = 5;
     /// Callback point: `receive_native_pending`.
     const NATIVE_PENDING: u8 = 6;
+    /// Callback point: `tokens_to_send`.
+    const TOKENS_TO_SEND: u8 = 7;
 
     /// One raw call: target, function name, rkyv-serialized argument.
     type Action = (ContractId, String, Vec<u8>);
@@ -186,6 +190,11 @@ mod redteam_attacker {
         pub fn receive_native_pending(&mut self, transfer: ReceiveFromContract) {
             self.received += transfer.value;
             self.fire(NATIVE_PENDING);
+        }
+
+        /// Token callback before the attacker's tokens move.
+        pub fn tokens_to_send(&mut self, _from: Account, _to: Account, _amount: u64) {
+            self.fire(TOKENS_TO_SEND);
         }
 
         /// Returns the success flag of every replayed call.

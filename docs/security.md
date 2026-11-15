@@ -100,7 +100,7 @@ these, some of them in the fixes' own claims:
 | ID | Issue | Status |
 |---|---|---|
 | MEDIUM-10 | Routes still register any number of keys. Without `register_account_for` (MEDIUM-9) every entry costs a transaction signed by its key, but anyone can fund new keys and call `register_account` from each, and no entry is ever removed. A test said that nobody could fill a route's memory with registrations. | **Open**, see [below](#open-registry-growth). The test now says what holds. The storage redesign left route registries as they are. |
-| MEDIUM-11 | Routes deployed before the CRITICAL-1 fix reported the same `state_version` as fixed ones, so `deploy/testnet.sh deploy` and `demo/deploy.sh --skip-deploy` would reuse a recorded deployment whose sponsored claims still pay forged keys. | Fixed. Routes are at `state_version` 4 (WarpNative), 6 (WarpDrc20) and 5 (WarpDrc20Collateral), and both scripts refuse a recorded route below that and say to redeploy. `agent-configs` and `preflight` check it too. |
+| MEDIUM-11 | Routes deployed before the CRITICAL-1 fix reported the same `state_version` as fixed ones, so `deploy/testnet.sh deploy` and `demo/deploy.sh --skip-deploy` would reuse a recorded deployment whose sponsored claims still pay forged keys. | Fixed. Routes are at `state_version` 4 (WarpNative), 6 (WarpDrc20) and 5 (WarpDrc20Collateral, 6 since MEDIUM-13), and both scripts refuse a recorded route below that and say to redeploy. `agent-configs` and `preflight` check it too. |
 | LOW-7 | The Mailbox's `withdraw_dispatch_credit`, and each route's owner-only wrapper of it, pay the recipient key as given. A payer who passes a twin of the recipient's key (see CRITICAL-1) is debited and the event names the recipient, but the DUSK goes to an account nobody can spend from. Only the caller's own credit, or a route's credit by its owner, is at risk. | Fixed. The Mailbox decodes the key from its compressed encoding, reverts if that fails or gives the identity, and pays and names the decoded key; the routes' wrappers go through it. Decoding costs about 57M gas, so a withdrawal takes 58.7M, and `dusk-tx withdraw-dispatch` defaults to an 80M limit. |
 | LOW-8 | `claim_pending` paid the sender but didn't register it, unlike `claim_pending_for`, so every later transfer to that account went to escrow again. The contracts' comments said a recipient had to register before claiming, which it didn't. | Fixed. `claim_pending` registers the sender, then pays it. |
 | LOW-9 | `dusk-tx claim-pending` called `claim_pending_for` with an 80M gas limit even for the signer's own escrow: about 59M gas where 1.9M would do, and 80M, 0.08 DUSK, when the claim failed. | Fixed. The signer's own claim (no `--for`, or `--for` naming the signer) calls `claim_pending` with a 3M limit: 1.5 times the costliest route's 1.91M, rounded up. |
@@ -190,6 +190,7 @@ before the public testnet, found:
 | ID | Issue | Status |
 |---|---|---|
 | MEDIUM-12 | The LOW-10 check failed open. `deploy/testnet.sh` treated a `module_type` query that failed or returned nothing, and every module type but 5, TestMock's 6 (an ISM that accepts every message) included, as an ISM with no signatures to check, and fell back to `EVM_ORIGIN_THRESHOLD`. With the threshold raised to 20 on chain and that one query failing, `preflight` and `agent-configs` passed a 5M relayer gas limit; a 20-signature `process` needs 9.5M with the margin, so every delivery would have failed and paid the whole limit. The deployed validator set wasn't compared at all. | Fixed. Every query must succeed. The ISM the route uses, its own or else the Mailbox's default, must be a MessageIdMultisig ISM whose validators and threshold are exactly `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`, or `preflight`, `deploy` and `agent-configs` stop. A TestMock ISM passes only in a local rehearsal (`LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1` with local endpoints). `scripts/test-deploy-scripts.py` runs both commands against a stubbed `dusk-tx`. |
+| MEDIUM-13 | WarpDrc20Collateral's `transfer_remote` read its custody before and after the token's `transfer_from`, with no reentrancy guard. A token that takes a fee on transfers and calls the sender back could re-enter `transfer_remote` from that callback; with no dispatch fee, a contract can call it. Nested transfers small enough to pay no fee land between the outer transfer's two reads and make up its fee, so both checks pass: 100 locked tokens backed 110 remote mints. | Fixed. `transfer_remote`, `handle`, the three claims and `withdraw_dispatch_credit` take a guard stored in the route before their first call to another contract, and a nested call into any of them reverts. The balance checks stay. Collateral routes are at `state_version` 6, and both deploy scripts refuse older ones. The VM tests run the attack with a test token, `callback-fee-token`, against the route and against a build of it without the guard (`make warp-drc20-collateral-unguarded`), and re-enter every guarded entry point from the token's callback. |
 
 ## Owner powers
 
@@ -284,6 +285,12 @@ Accepted:
   message. If the getter calls it, the simulation and the delivery can
   verify with different ISMs, and the delivery fails after the relayer has
   paid for it.
+- **Collateral routes need exact transfers.** WarpDrc20Collateral checks
+  that every `transfer_from` and `transfer` moves exactly the amount asked
+  for. With a token that takes a fee on transfers, or rebases, every
+  transfer that pays a fee reverts, so only fee-free amounts can be bridged
+  and inbound transfers that would pay one stay undelivered. Don't deploy a
+  collateral route for such a token.
 - **Contracts can't bridge.** `transfer_remote` takes its DUSK and fees as the
   transaction's deposit, which only the transaction's target contract can
   claim. A smart wallet or router contract calling a warp route always

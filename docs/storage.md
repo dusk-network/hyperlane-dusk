@@ -42,7 +42,7 @@ not fail before the memory is actually full.
 | | | keccak256 of each announced location, at most 16 per validator | 32 bytes, plus about 58 for a validator's first |
 | WarpDrc20 | 7 | Balances, keyed by account ID | about 61 bytes |
 | | | Allowances, keyed by owner's and spender's account ID | about 61 bytes, plus a map per owner |
-| Warp routes | 4, 7, 5 | Registered accounts, escrow | unchanged, see [security.md](security.md#open-registry-growth) |
+| Warp routes | 4, 7, 6 | Registered accounts, escrow | unchanged, see [security.md](security.md#open-registry-growth) |
 
 What the contracts no longer store:
 

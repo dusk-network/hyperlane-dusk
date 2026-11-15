@@ -26,7 +26,7 @@ WASM_REMAP := \
 	--remap-path-prefix=$(RUST_SYSROOT)/lib/rustlib/src/rust/=rust/ \
 	--remap-path-prefix=$(RUSK_DIR)/=rusk/ \
 	--remap-path-prefix=$(CURDIR)/=
-CONTRACTS := mailbox merkle-tree-hook aggregation-hook ism-multisig validator-announce test-recipient plain-recipient test-mock reentrant-hook redteam-attacker protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
+CONTRACTS := mailbox merkle-tree-hook aggregation-hook ism-multisig validator-announce test-recipient plain-recipient test-mock reentrant-hook redteam-attacker callback-fee-token protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
 CONTRACT_CHECK_PACKAGES := $(addprefix -p hyperlane-dusk-,$(CONTRACTS))
 TARGET_DIR := target/contract
 PRODUCTION_CLIPPY_PACKAGES := \
@@ -47,7 +47,7 @@ PRODUCTION_CLIPPY_PACKAGES := \
 # as one codegen unit with LTO, which is smaller and doesn't depend on how
 # the build is scheduled.
 .PHONY: all
-all: $(CONTRACTS)
+all: $(CONTRACTS) warp-drc20-collateral-unguarded
 
 # Refuse to build against a rusk-private checkout other than RUSK_VERSION.
 .PHONY: rusk-version
@@ -69,6 +69,29 @@ $(CONTRACTS): rusk-version
 			--target $(WASM_TARGET) \
 			-p hyperlane-dusk-$@
 	@echo "  -> $(TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_$(subst -,_,$@).wasm"
+
+# Test only: the collateral route without its reentrancy guard, so the VM
+# tests can show the attack the guard stops (docs/security.md, MEDIUM-13).
+# Built with the same flags in its own target directory. Never deploy it.
+UNGUARDED_TARGET_DIR := target/contract-unguarded
+.PHONY: warp-drc20-collateral-unguarded
+warp-drc20-collateral-unguarded: rusk-version
+	@echo "Building $@ (test only)..."
+	@CARGO_TARGET_DIR=$(UNGUARDED_TARGET_DIR) \
+		CARGO_PROFILE_RELEASE_STRIP=symbols \
+		CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+		CARGO_PROFILE_RELEASE_LTO=true \
+		RUSTFLAGS="$(RUSTFLAGS) -C link-args=-zstack-size=$(STACK_SIZE) $(WASM_REMAP) --cfg hyperlane_dusk_unguarded_test" \
+		cargo build -Z build-std=core,alloc \
+			--locked \
+			--release \
+			--features $(CONTRACT_FEATURE) \
+			--target $(WASM_TARGET) \
+			-p hyperlane-dusk-warp-drc20-collateral
+	@mkdir -p $(TARGET_DIR)/$(WASM_TARGET)/release
+	@cp $(UNGUARDED_TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_warp_drc20_collateral.wasm \
+		$(TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_warp_drc20_collateral_unguarded.wasm
+	@echo "  -> $(TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_warp_drc20_collateral_unguarded.wasm"
 
 # Check all contracts compile
 .PHONY: check
@@ -146,7 +169,7 @@ demo: all dusk-tx
 .PHONY: clean
 clean:
 	cargo clean
-	rm -rf $(TARGET_DIR) target/data-driver
+	rm -rf $(TARGET_DIR) $(UNGUARDED_TARGET_DIR) target/data-driver
 
 .PHONY: help
 help:
@@ -162,6 +185,9 @@ help:
 	@echo "  validator-announce Build ValidatorAnnounce contract"
 	@echo "  test-recipient     Build TestRecipient contract"
 	@echo "  test-mock          Build TestMock contract"
+	@echo "  warp-drc20-collateral-unguarded"
+	@echo "                     Build the test-only collateral route without its"
+	@echo "                     reentrancy guard (VM tests only, never deploy)"
 	@echo "  check              Check all contracts compile"
 	@echo "  clippy-contracts   Lint production contract/type crates for wasm"
 	@echo "  test-types         Run types crate tests"

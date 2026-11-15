@@ -3780,7 +3780,7 @@ fn test_warp_collateral_init() {
         .direct_call::<_, u32>(WARP_DRC20_COLLATERAL_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(state_version, 5);
+    assert_eq!(state_version, 6);
 }
 
 #[test]
@@ -7419,6 +7419,291 @@ fn redteam_hook_process_during_dispatch_keeps_indexes_aligned() {
         .expect("guard must be clear");
     assert_eq!(s.mailbox_nonce(), 2);
     assert_eq!(s.merkle_count(), 2);
+}
+
+// =============================================================================
+// Red team: a collateral route re-entered from its token's callback
+// =============================================================================
+
+const CALLBACK_FEE_TOKEN_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_callback_fee_token.wasm"
+);
+/// The collateral route built without its reentrancy guard
+/// (`make warp-drc20-collateral-unguarded`), to show what the guard stops.
+const UNGUARDED_COLLATERAL_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_warp_drc20_collateral_unguarded.wasm"
+);
+const CALLBACK_FEE_TOKEN_ID: ContractId = ContractId::from_bytes([42; 32]);
+/// The attacker's callback point for the token's `tokens_to_send`.
+const RT_TOKENS_TO_SEND: u8 = 7;
+/// 10% of each transfer, rounded down: a transfer of 9 or less pays no fee.
+const TEN_PERCENT_FEE: u16 = 1_000;
+const ATTACKER_TOKENS: u64 = 1_000;
+const COLLATERAL_ROUTER: H256 = [0xCC; 32];
+
+/// A collateral route (`route_bytecode`) over the callback fee token, behind
+/// a Mailbox whose hooks charge nothing, so `transfer_remote` takes no
+/// deposit and a contract can call it. The attacker contract holds
+/// `ATTACKER_TOKENS`, has approved the route for all of them and gets the
+/// token's `tokens_to_send` callback.
+fn session_with_callback_token_route(route_bytecode: &[u8], fee_bps: u16) -> TestSession {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    session
+        .deploy(
+            TEST_MOCK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_MOCK_ID),
+        )
+        .expect("Deploying TestMock should succeed");
+    session
+        .deploy(
+            MERKLE_TREE_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(MERKLE_TREE_HOOK_ID),
+        )
+        .expect("Deploying MerkleTreeHook should succeed");
+    session
+        .deploy(
+            MAILBOX_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    LOCAL_DOMAIN,
+                    *OWNER_ID,
+                    TEST_MOCK_ID,
+                    TEST_MOCK_ID,
+                    MERKLE_TREE_HOOK_ID,
+                ))
+                .contract_id(MAILBOX_ID),
+        )
+        .expect("Deploying Mailbox should succeed");
+    session
+        .deploy(
+            CALLBACK_FEE_TOKEN_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    fee_bps,
+                    vec![(Drc20Account::Contract(REDTEAM_ID), ATTACKER_TOKENS)],
+                ))
+                .contract_id(CALLBACK_FEE_TOKEN_ID),
+        )
+        .expect("Deploying the callback fee token should succeed");
+    session
+        .deploy(
+            route_bytecode,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    CALLBACK_FEE_TOKEN_ID,
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    vec![(REMOTE_DOMAIN, COLLATERAL_ROUTER)],
+                ))
+                .contract_id(WARP_DRC20_COLLATERAL_ID),
+        )
+        .expect("Deploying the collateral route should succeed");
+    rt_deploy(&mut session);
+    let approve = rt_action(
+        CALLBACK_FEE_TOKEN_ID,
+        "approve",
+        &Drc20ApproveCall {
+            spender: Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+            amount: ATTACKER_TOKENS,
+        },
+    );
+    let register_hook = rt_action(CALLBACK_FEE_TOKEN_ID, "register_send_hook", &());
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![approve, register_hook], true))
+        .expect("the attacker approves the route and registers its token hook");
+    session
+}
+
+fn callback_token_balance(session: &mut TestSession, account: Drc20Account) -> u64 {
+    session
+        .direct_call::<_, u64>(
+            CALLBACK_FEE_TOKEN_ID,
+            "balance_of",
+            &Drc20BalanceOf { account },
+        )
+        .expect("balance_of should succeed")
+        .data
+}
+
+fn collateral_transfer(amount: u64) -> RtAction {
+    rt_action(
+        WARP_DRC20_COLLATERAL_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0xAAu8; 32], amount),
+    )
+}
+
+/// The attack: the attacker sends 100 through the route, and from the
+/// token's callback, while the route's `transfer_from` is still running,
+/// sends 9 and then 1 more. Those two pay no fee, and land in custody
+/// between the outer transfer's before and after balances, where they make
+/// up exactly the outer transfer's fee of 10.
+fn attempt_fee_token_reentry(session: &mut TestSession) -> Result<CallReceipt<()>, ContractError> {
+    rt_configure(
+        session,
+        RT_TOKENS_TO_SEND,
+        vec![collateral_transfer(9), collateral_transfer(1)],
+        false,
+    );
+    session.direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(100)], true))
+}
+
+/// The amounts of the token messages a receipt's `Dispatch` events carry:
+/// what the remote route will mint.
+fn dispatched_token_amounts<R>(receipt: &CallReceipt<R>) -> Vec<u64> {
+    receipt
+        .events
+        .iter()
+        .filter(|e| e.source == MAILBOX_ID && e.topic == events::Dispatch::TOPIC)
+        .map(|e| {
+            let dispatched = test_session::rkyv_deserialize::<events::Dispatch>(&e.data);
+            let decoded = message::decode(&dispatched.message).expect("dispatched message");
+            token_message::decode(&decoded.body)
+                .expect("dispatched token message")
+                .amount
+        })
+        .collect()
+}
+
+/// Without the guard, the attack works: the route dispatches 110 tokens'
+/// worth of remote mints and holds 100.
+#[test]
+fn redteam_unguarded_collateral_route_mints_unbacked_tokens_on_fee_token_reentry() {
+    let mut session =
+        session_with_callback_token_route(UNGUARDED_COLLATERAL_BYTECODE, TEN_PERCENT_FEE);
+    let custody = Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID);
+
+    let receipt = attempt_fee_token_reentry(&mut session)
+        .expect("without the guard, the nested transfers satisfy both custody checks");
+
+    // The session's approval and hook registration, the two nested
+    // transfers, then the outer one.
+    assert_eq!(rt_results(&mut session), vec![true; 5]);
+    assert_eq!(dispatched_token_amounts(&receipt), vec![9, 1, 100]);
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 3);
+    assert_eq!(callback_token_balance(&mut session, custody), 100);
+    assert_eq!(
+        callback_token_balance(&mut session, Drc20Account::Contract(REDTEAM_ID)),
+        ATTACKER_TOKENS - 110
+    );
+}
+
+/// With the guard, the nested transfers are refused, the outer transfer gets
+/// 90 of its 100 into custody, and its custody check reverts the whole call.
+/// The guard is released afterwards.
+#[test]
+fn redteam_collateral_route_rejects_fee_token_reentry() {
+    let mut session =
+        session_with_callback_token_route(WARP_DRC20_COLLATERAL_BYTECODE, TEN_PERCENT_FEE);
+    let custody = Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID);
+
+    assert_contract_panic_contains(
+        attempt_fee_token_reentry(&mut session),
+        "WarpCollateral: transfer_from did not deliver exact collateral",
+    );
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 0);
+    assert_eq!(callback_token_balance(&mut session, custody), 0);
+    assert_eq!(
+        callback_token_balance(&mut session, Drc20Account::Contract(REDTEAM_ID)),
+        ATTACKER_TOKENS
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(CALLBACK_FEE_TOKEN_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        ATTACKER_TOKENS
+    );
+
+    // A transfer small enough to pay no fee still works.
+    rt_configure(&mut session, RT_TOKENS_TO_SEND, Vec::new(), false);
+    let receipt = session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(9)], true))
+        .expect("the guard was released with the failed call");
+    assert_eq!(dispatched_token_amounts(&receipt), vec![9]);
+    assert_eq!(callback_token_balance(&mut session, custody), 9);
+}
+
+/// From the token's callback during an honest `transfer_remote`, the
+/// attacker calls each entry point that takes the guard: `transfer_remote`,
+/// `handle` (through the Mailbox's `process`), `claim_pending_contract` and
+/// `claim_pending_for`. Every nested call is refused while the outer
+/// transfer completes, and each of them works on its own afterwards.
+#[test]
+fn test_collateral_route_guard_refuses_nested_transfer_handle_and_claims() {
+    let mut session = session_with_callback_token_route(WARP_DRC20_COLLATERAL_BYTECODE, 0);
+    let route = WARP_DRC20_COLLATERAL_ID;
+    let custody = Drc20Account::Contract(route);
+    let escrowed = 50u64;
+
+    // Custody to pay from, and escrow for the attacker contract and for an
+    // account that hasn't registered.
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(500)], true))
+        .expect("an honest transfer locks custody");
+    for (nonce, recipient) in [(0, REDTEAM_ID.to_bytes()), (1, *FRESH_ID)] {
+        let inbound = inbound_transfer(route, COLLATERAL_ROUTER, nonce, recipient, escrowed);
+        session
+            .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound))
+            .expect("inbound transfer to an unregistered recipient goes to escrow");
+    }
+    let pending_total = session
+        .direct_call::<_, u64>(route, "pending_total", &())
+        .expect("pending_total should succeed")
+        .data;
+    assert_eq!(pending_total, 2 * escrowed);
+
+    let late = inbound_transfer(route, COLLATERAL_ROUTER, 2, *FRESH_ID, escrowed);
+    let nested = vec![
+        collateral_transfer(10),
+        rt_action(MAILBOX_ID, "process", &(Vec::<u8>::new(), late.clone())),
+        rt_action(route, "claim_pending_contract", &()),
+        rt_action(route, "claim_pending_for", &(*FRESH_PK,)),
+    ];
+    rt_configure(&mut session, RT_TOKENS_TO_SEND, nested.clone(), false);
+    let receipt = session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(100)], true))
+        .expect("the outer transfer completes");
+
+    // The session's approval and hook registration and the transfer of
+    // 500, then the four nested calls, then the outer transfer.
+    assert_eq!(
+        rt_results(&mut session),
+        vec![true, true, true, false, false, false, false, true],
+        "every nested call is refused, the outer transfer succeeds"
+    );
+    assert_eq!(dispatched_token_amounts(&receipt), vec![100]);
+    assert_eq!(callback_token_balance(&mut session, custody), 600);
+    assert!(!rt_delivered(&mut session, message::id(&late)));
+    assert_eq!(route_u64(&mut session, route, "pending_balance", *FRESH_ID), escrowed);
+    assert_eq!(
+        route_u64(&mut session, route, "pending_balance", REDTEAM_ID.to_bytes()),
+        escrowed
+    );
+
+    // On their own, the same calls go through.
+    rt_configure(&mut session, RT_TOKENS_TO_SEND, Vec::new(), false);
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(nested, true))
+        .expect("each call works outside another route call");
+    assert!(rt_delivered(&mut session, message::id(&late)));
+    assert_eq!(route_u64(&mut session, route, "pending_balance", *FRESH_ID), 0);
+    assert_eq!(
+        route_u64(&mut session, route, "pending_balance", REDTEAM_ID.to_bytes()),
+        0
+    );
+    assert_eq!(
+        callback_token_balance(&mut session, Drc20Account::moonlight(&FRESH_PK)),
+        2 * escrowed
+    );
 }
 
 // =============================================================================

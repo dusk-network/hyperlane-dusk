@@ -49,8 +49,9 @@ CORE_STATE_VERSIONS="mailbox=5 merkle_tree_hook=2 igp=3 validator_announce=2"
 # pay a sponsored escrow claim to the key as given, which a forged twin of the
 # recipient's key can exploit (docs/security.md, CRITICAL-1), and don't
 # register a recipient that claims its own escrow. WarpDrc20 7 keys balances
-# by account ID (docs/storage.md).
-ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=7 warp_drc20_collateral=5"
+# by account ID (docs/storage.md). Older collateral routes can be re-entered
+# from their token (MEDIUM-13).
+ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=7 warp_drc20_collateral=6"
 # Module types the Dusk ISMs report (Hyperlane's IsmType).
 MESSAGE_ID_MULTISIG_ISM=5
 TEST_MOCK_ISM=6
@@ -440,7 +441,7 @@ check_state_versions() {
         [ -n "$contract" ] || continue
         if [[ " $ROUTE_STATE_VERSIONS " == *" $entry "* ]]; then
             kind="route"
-            older="Routes before it may pay sponsored escrow claims to forged keys."
+            older="Older routes have bugs this checkout fixes (docs/security.md, CRITICAL-1 and MEDIUM-13)."
         else
             kind="contract"
             older="Contracts before it keep storage anyone can fill, and this checkout's agents don't read them (docs/storage.md)."

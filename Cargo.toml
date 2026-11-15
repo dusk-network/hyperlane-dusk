@@ -12,6 +12,7 @@ members = [
     "contracts/test-mock",
     "contracts/reentrant-hook",
     "contracts/redteam-attacker",
+    "contracts/callback-fee-token",
     "contracts/protocol-fee",
     "contracts/igp",
     "contracts/warp-drc20",

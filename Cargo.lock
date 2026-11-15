@@ -2025,6 +2025,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperlane-dusk-callback-fee-token"
+version = "0.1.0"
+dependencies = [
+ "dusk-core 1.7.1",
+ "dusk-forge",
+ "hyperlane-dusk-types",
+]
+
+[[package]]
 name = "hyperlane-dusk-data-driver"
 version = "0.1.0"
 dependencies = [
