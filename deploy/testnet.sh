@@ -705,14 +705,17 @@ check_evm_route_hook() {
     if [ "$(lower "$hook")" = "$(lower "$igp")" ]; then
         [ "$ROUTE_HOOK_NEEDS_MERKLE" = 0 ] \
             || fail "The EVM route's hook is the IGP alone, so its messages never reach the Merkle tree validators sign"
-    else
-        children="$(evm_call "$hook" "hooks(bytes)(address[])" 0x)" || fail "Can't read the hooks of $hook"
-        children="$(tr -d '[] ' <<<"$children" | tr '[:upper:]' '[:lower:]')"
-        expected="$(lower "$EVM_MERKLE_TREE_HOOK,$igp")"
-        [ "$children" = "$expected" ] \
-            || fail "The EVM route's hook $hook aggregates [$children], not [$expected] (the Merkle hook validators sign, then the IGP)"
+        ok "The EVM route dispatches through the IGP $igp; the Mailbox's required hook inserts into $EVM_MERKLE_TREE_HOOK"
+        return 0
     fi
-    ok "The EVM route dispatches through $hook: Merkle tree $EVM_MERKLE_TREE_HOOK and IGP $igp"
+    [ "$ROUTE_HOOK_NEEDS_MERKLE" = 1 ] \
+        || fail "The EVM Mailbox's required hook now inserts into $EVM_MERKLE_TREE_HOOK, and so does the route's hook $hook: every message would be inserted twice. Point the route's hook at the IGP $igp."
+    children="$(evm_call "$hook" "hooks(bytes)(address[])" 0x)" || fail "Can't read the hooks of $hook"
+    children="$(tr -d '[] ' <<<"$children" | tr '[:upper:]' '[:lower:]')"
+    expected="$(lower "$EVM_MERKLE_TREE_HOOK,$igp")"
+    [ "$children" = "$expected" ] \
+        || fail "The EVM route's hook $hook aggregates [$children], not [$expected] (the Merkle hook validators sign, then the IGP)"
+    ok "The EVM route dispatches through $hook: Merkle tree $EVM_MERKLE_TREE_HOOK, then IGP $igp"
 }
 
 cmd_preflight() {

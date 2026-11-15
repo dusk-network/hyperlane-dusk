@@ -834,6 +834,12 @@ class TestnetFeeCommands(DeployedTestnet):
         self.evm["contracts"][self.hook]["hooks"] = [self.evm_igp]
         self.assert_fails(self.run_script("agent-configs"), "the Merkle hook validators sign, then the IGP")
 
+    def test_agent_configs_refuse_inserting_twice(self):
+        # Should Sepolia's Mailbox come to require the MerkleTreeHook, the
+        # route's aggregation would insert each message a second time.
+        self.evm["contracts"][EVM_MAILBOX]["requiredHook"] = EVM_MERKLE
+        self.assert_fails(self.run_script("agent-configs"), "every message would be inserted twice")
+
     def test_dusk_igp_dry_run_shows_both_quotes_and_sends_nothing(self):
         self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"] = {"value": {
             "gas_overhead": 200000, "token_exchange_rate": 1, "gas_price": 1000000000}}
