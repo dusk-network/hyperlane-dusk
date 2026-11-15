@@ -328,12 +328,23 @@ A validator computes the root at leaf index `i` from the stored IDs:
 3. Its `root()` is the root at `i`.
 
 Keep the tree between checkpoints and insert only the new IDs. The IDs are
-the hook's own state, as authenticated as `root_at` was. To check the
-tree, compare it with `root()` and `tree().branch` whenever `count()` is
-`i + 1`. The finalized count at height `h` is still the number of indexes
-whose `inserted_block_height` is at most `h` (a binary search), and the
+the hook's own state, as authenticated as `root_at` was. The finalized
+count at height `h` is still the number of indexes whose
+`inserted_block_height` is at most `h` (a binary search), and the
 checkpoint at `h` is that count minus one, the root computed for it, and
 `message_id_at` of it.
+
+To check the local tree against the hook, compare its root and count with
+`root()` and `count()` whenever `count()` is `i + 1`. Don't compare its
+whole branch with `tree().branch`: the hook starts every branch slot at
+zero, while hyperlane-core's `IncrementalMerkle::default()` starts slot `l`
+at `ZERO_HASHES[l]`. Neither reads a slot before writing it, so the roots
+agree, but slot `l` keeps its initial value until the count reaches `2^l`,
+and the two arrays differ there. Compare `branch[l]` only for the levels
+whose bit is set in the count, or start the local tree from zeroed slots
+(`IncrementalMerkle { branch: [H256::zero(); 32], count: 0 }`), whose
+branch then equals the hook's. `types/tests/upstream_merkle.rs` checks
+both at counts from 1 to 100.
 
 ### ValidatorAnnounce
 
