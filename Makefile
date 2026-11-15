@@ -224,8 +224,9 @@ test-sdk:
 test-demo-lifecycle:
 	python3 -B scripts/test-demo-lifecycle.py
 
-# deploy/testnet.sh against stubbed tools. Needs no network, chain or Rust
-# build.
+# deploy/testnet.sh and demo/gen-agent-configs.sh against stubbed tools. Needs
+# no network, chain or Rust build; with target/release/dusk-tx (or
+# DUSK_TX_BIN) it also runs the real key export.
 .PHONY: test-deploy-scripts
 test-deploy-scripts:
 	python3 -B scripts/test-deploy-scripts.py

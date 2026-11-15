@@ -197,37 +197,10 @@ if [ "$ISM" = "messageIdMultisig" ]; then
     done
 fi
 
-# ── Decrypt Dusk Deployer Key (consensus.keys) ──────────────────────────────
+# ── Dusk Deployer Key (consensus.keys) ──────────────────────────────────────
 
-if [ ! -f "$CONSENSUS_KEYS" ]; then
-    fail "Consensus keys not found at $CONSENSUS_KEYS"
-fi
-
-DUSK_SECRET_KEY_HEX="$(
-python3 - <<PY
-import base64, json
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-path = ${CONSENSUS_KEYS@Q}
-password = ${CONSENSUS_PASSWORD@Q}
-
-enc = json.load(open(path, "r", encoding="utf-8"))
-salt = base64.b64decode(enc["salt"])
-iv = base64.b64decode(enc["iv"])
-key_pair = bytes(enc["key_pair"])
-
-kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=10000)
-aes_key = kdf.derive(password.encode("utf-8"))
-pt = AESGCM(aes_key).decrypt(iv, key_pair, None)
-kp = json.loads(pt)
-sk = base64.b64decode(kp["secret_key_bls"])
-if len(sk) != 32:
-    raise SystemExit(f"Expected 32-byte BLS secret key, got {len(sk)} bytes")
-print(sk.hex())
-PY
-)"
+[ -f "$CONSENSUS_KEYS" ] || fail "Consensus keys not found at $CONSENSUS_KEYS"
+[ -x "$DUSK_TX" ] || fail "dusk-tx not found at $DUSK_TX (run: make dusk-tx)"
 
 # ── Output Paths ────────────────────────────────────────────────────────────
 
@@ -244,7 +217,13 @@ VALIDATOR_CONFIG="$RUN_DIR/validator-anvil.json"
 VALIDATOR_DUSK_CONFIG="$RUN_DIR/validator-dusk.json"
 DUSK_SIGNER_KEY_FILE="$RUN_DIR/dusk-signer.key"
 
-printf '0x%s\n' "$DUSK_SECRET_KEY_HEX" > "$DUSK_SIGNER_KEY_FILE"
+# dusk-tx decrypts the consensus keys and writes the agents' key file (mode
+# 0600, never over an existing file), as deploy/local-agents.sh does. The
+# password reaches it as data in its environment, as in the other demo
+# scripts, never as code or an argument.
+export_result="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" \
+    "$DUSK_TX" export-signer-key --keys "$CONSENSUS_KEYS" --out "$DUSK_SIGNER_KEY_FILE")" \
+    || fail "Cannot export the Dusk signer key from $CONSENSUS_KEYS: $(jq -r '.error // "dusk-tx failed"' <<<"$export_result" 2>/dev/null)"
 
 # ── Write Relayer Config ────────────────────────────────────────────────────
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Run deploy/testnet.sh against stubbed tools.
+"""Run deploy/testnet.sh and demo/gen-agent-configs.sh against stubbed tools.
 
 No network, chain or Rust build is needed: dusk-tx, cast, curl and forge are
-replaced by stubs that answer from a fixture.
+replaced by stubs that answer from a fixture. A test that needs the real
+dusk-tx skips itself unless DUSK_TX_BIN or target/release/dusk-tx exists.
 """
+import base64
 import json
 import os
 from pathlib import Path
@@ -15,6 +17,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTNET_SH = Path(os.environ.get("HYPERLANE_TESTNET_SH", ROOT / "deploy" / "testnet.sh"))
+GEN_AGENT_CONFIGS_SH = Path(
+    os.environ.get("HYPERLANE_GEN_AGENT_CONFIGS_SH", ROOT / "demo" / "gen-agent-configs.sh")
+)
 
 ZERO = "00" * 32
 ROUTE = "e1" * 32
@@ -305,6 +310,127 @@ class TestnetDeployedIsmChecks(unittest.TestCase):
     def test_unset_default_ism_is_refused(self):
         self.queries[f"{MAILBOX}/default_ism"] = {"value": ZERO}
         self.assert_both_commands(False, "the Mailbox's default ISM, which is not set")
+
+
+# Encrypt a consensus key pair the way rusk-wallet's export does.
+def consensus_keys(secret_key, public_key, password):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    salt, iv = os.urandom(32), os.urandom(12)
+    key = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=10000).derive(password.encode())
+    plaintext = json.dumps({"secret_key_bls": base64.b64encode(secret_key).decode(),
+                            "public_key_bls": base64.b64encode(public_key).decode()}).encode()
+    return json.dumps({"salt": base64.b64encode(salt).decode(), "iv": base64.b64encode(iv).decode(),
+                       "key_pair": list(AESGCM(key).encrypt(iv, plaintext, None))})
+
+
+# Passwords Bash quoting (${var@Q}) and Python string literals disagree on.
+TRICKY_PASSWORDS = [
+    "it's",
+    'say "hi" \\n \\x41 \\\\ $HOME `id` ${PATH}',
+    "trailing backslash \\",
+    "''' triple \"\"\" quotes",
+    "tab\tand unicode é中",
+]
+
+# Records the password export-signer-key gets, and writes a key file.
+EXPORT_STUB = r'''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+assert args[0] == "export-signer-key", args
+assert "--password" not in args, "the password must not be on the command line"
+out = args[args.index("--out") + 1]
+with open(os.environ["FIXTURE_PASSWORD_SEEN"], "w", encoding="utf-8") as seen:
+    seen.write(os.environ["DUSK_CONSENSUS_PASSWORD"])
+fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+os.write(fd, b"0x" + b"11" * 32 + b"\n")
+os.close(fd)
+print(json.dumps({"success": True, "out": out}))
+'''
+
+
+class GenAgentConfigsPassword(unittest.TestCase):
+    """demo/gen-agent-configs.sh passes the consensus password as data."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="hyperlane-gen-agent-configs-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.demo = self.root / "demo"
+        self.demo.mkdir()
+        shutil.copy2(GEN_AGENT_CONFIGS_SH, self.demo / "gen-agent-configs.sh")
+        # The live-chain check gen-agent-configs.sh runs first.
+        write_executable(self.demo / "deploy.sh", "#!/bin/sh\nexit 0\n")
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        write_executable(self.bin / "cast", "#!/bin/sh\necho 0x000000000000000000000000000000000000dEaD\n")
+        self.state = self.root / "state.json"
+        self.state.write_text(json.dumps({
+            "evm": {"mailbox": "0x" + "01" * 20, "token": "0x" + "02" * 20, "igp": "0x" + "03" * 20,
+                    "validator_announce": "0x" + "04" * 20, "merkle_tree_hook": "0x" + "05" * 20},
+            "dusk": {"mailbox": "a1" * 32, "igp": "a2" * 32, "validator_announce": "a3" * 32,
+                     "merkle_tree_hook": "a4" * 32, "test_mock": TEST_MOCK, "default_ism": TEST_MOCK},
+            "evm_domain": 31338, "dusk_domain": 4242, "dusk_default_ism": "testMock", "dusk_chain_id": "02",
+        }))
+        self.keys = self.root / "consensus.keys"
+        self.keys.write_text("{}")
+        self.seen = self.root / "password-seen"
+        self.tmp = self.root / "tmp"
+        self.tmp.mkdir()
+
+    def generate(self, password, dusk_tx):
+        (self.demo / ".env.bridge").write_text("".join(f"{key}={shlex.quote(str(value))}\n" for key, value in {
+            "BRIDGE_STATE_FILE": self.state, "CONSENSUS_KEYS": self.keys, "DUSK_TX": dusk_tx,
+            "DUSK_RUES_URL": "http://localhost:8080/", "ANVIL_RPC": "http://localhost:8545",
+            "ANVIL_CHAIN_ID": 31338, "ANVIL_PRIVATE_KEY": "0x" + "22" * 32,
+        }.items()) + 'CONSENSUS_PASSWORD="${CONSENSUS_PASSWORD:-password}"\n')
+        env = {
+            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            "HOME": str(self.root),
+            "TMPDIR": str(self.tmp),
+            "CONSENSUS_PASSWORD": password,
+            "FIXTURE_PASSWORD_SEEN": str(self.seen),
+        }
+        return subprocess.run(["bash", str(self.demo / "gen-agent-configs.sh"), "--ism", "testMock"],
+                              env=env, capture_output=True, text=True, timeout=60)
+
+    def assert_generated(self, result, password, secret_key_hex):
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn(password, output, "the password must not be printed")
+        generated = json.loads(result.stdout)
+        key_file = Path(generated["duskSignerKeyFile"])
+        self.assertEqual(key_file.read_text(), f"0x{secret_key_hex}\n")
+        self.assertEqual(key_file.stat().st_mode & 0o077, 0)
+        shutil.rmtree(generated["runDir"])
+
+    def test_password_reaches_the_key_export_unchanged(self):
+        stub = self.bin / "dusk-tx"
+        write_executable(stub, EXPORT_STUB)
+        for password in TRICKY_PASSWORDS:
+            with self.subTest(password=password):
+                result = self.generate(password, stub)
+                self.assert_generated(result, password, "11" * 32)
+                self.assertEqual(self.seen.read_text(encoding="utf-8"), password)
+
+    def test_real_dusk_tx_decrypts_with_a_tricky_password(self):
+        dusk_tx = Path(os.environ.get("DUSK_TX_BIN", ROOT / "target" / "release" / "dusk-tx"))
+        if not os.access(dusk_tx, os.X_OK):
+            self.skipTest(f"no dusk-tx binary at {dusk_tx}")
+        try:
+            import cryptography  # noqa: F401
+        except ImportError:
+            self.skipTest("python3 cryptography is not installed")
+        secret_key = bytes.fromhex("11" * 31 + "05")
+        account = subprocess.run([str(dusk_tx), "account", "--offline", "--secret-key-stdin"],
+                                 input=secret_key.hex() + "\n", capture_output=True, text=True, check=True)
+        public_key = bytes.fromhex(json.loads(account.stdout)["public_key"])
+        for password in TRICKY_PASSWORDS:
+            with self.subTest(password=password):
+                self.keys.write_text(consensus_keys(secret_key, public_key, password))
+                self.assert_generated(self.generate(password, dusk_tx), password, secret_key.hex())
 
 
 if __name__ == "__main__":
