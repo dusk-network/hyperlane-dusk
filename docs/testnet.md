@@ -244,7 +244,14 @@ from `ValidatorAnnouncement` events ([storage.md](storage.md#what-agents-read)).
 
 Each Dusk transaction an agent sends is logged as `dusk-tx call succeeded`
 with its `tx_id`. Its gas use and result are in the node's GraphQL API:
-`query { tx(hash: "<tx_id>") { gasSpent err } }` at `/on/graphql/query`.
+`query { tx(hash: "<tx_id>") { gasSpent err blockHeight } }` at
+`/on/graphql/query`, and whether its block is final in
+`query { block(height: <blockHeight>) { status } }`.
+
+`dusk-tx` reports a transaction once it is included: its output has
+`block_height`, `gas_spent` and `finalized`, whether that block was already
+final. To wait until it is, pass `--wait-finality` to any command (see
+[operations](operations.md#uncertain-transactions)).
 
 ## Check it works
 

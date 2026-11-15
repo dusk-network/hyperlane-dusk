@@ -95,6 +95,24 @@ submitted. If a command is interrupted or reports an unknown outcome, do not
 resend it: look up that hash on the node first. The agents do this themselves,
 reconciling against the hash they prepared before retrying.
 
+A `dusk-tx` write succeeds once the transaction is included in a block and
+executed without error. Inclusion isn't final: until its block is final, a
+revert can drop the transaction or run it again in another block, with
+another result. The output says which it was:
+
+- `block_height` and `gas_spent`: where the transaction was included, and
+  what it cost.
+- `finalized`: whether its block was final when `dusk-tx` checked, right
+  after inclusion. `block_hash` is set once it is, and `null` until then.
+
+Pass `--wait-finality` to wait until the block is final, for at most
+`--finality-timeout` seconds (300 by default) from submission. An execution
+error is then only reported once its block is final too, and a timeout is an
+unknown outcome with the hash to reconcile. `deploy-hyperlane` waits for its
+last deploy, which can only be final once every earlier one is, and then
+checks that each earlier one still executed. The agents don't pass the flag:
+they only act on finalized events and reconcile their own transactions.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request: workflow lint,

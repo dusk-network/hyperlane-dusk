@@ -11,9 +11,15 @@
 //!   transfer-remote    Send tokens or native DUSK through a warp route
 //!   account            Show an account's address, recipient hash and balance
 //!   export-signer-key  Write an agent signer key file from consensus.keys
+//!
+//! Every command that sends a transaction waits until the transaction is
+//! included in a block, then says whether that block is final (`finalized`).
+//! With `--wait-finality` it waits until it is.
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::Duration;
 use std::{
     env, fs,
     io::{BufRead, Read},
@@ -38,7 +44,7 @@ use serde_json::json;
 mod keys;
 mod rues;
 
-use rues::{RuesClient, TransactionStatus, TransactionStatusQueryError};
+use rues::{BlockStatus, Inclusion, RuesClient, TransactionStatus, TransactionStatusQueryError};
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
 const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
 const MAX_RUES_URL_STDIN_BYTES: usize = 8 * 1024;
@@ -61,12 +67,30 @@ const CLAIM_PENDING_FOR_GAS_LIMIT: u64 = 80_000_000;
 /// withdrawal takes about 59M, directly or through a route's owner-only
 /// wrapper. The VM tests check this limit covers both.
 const WITHDRAW_DISPATCH_GAS_LIMIT: u64 = 80_000_000;
+/// How often a transaction's status is polled.
+const TRANSACTION_POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// How long a submitted transaction may take to be included.
+const INCLUSION_TIMEOUT: Duration = Duration::from_secs(60);
+/// The one finality check made without `--wait-finality` gives up after
+/// this, so it can't hold up a caller such as the relayer.
+const FINALITY_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `--wait-finality`'s timeout, if it was given.
+static FINALITY_WAIT: OnceLock<Option<Duration>> = OnceLock::new();
 
 // ── CLI definition ──────────────────────────────────────────────────────────
 
 #[derive(Parser)]
 #[command(name = "dusk-tx", about = "Hyperlane Dusk transaction tool")]
 struct Cli {
+    /// Wait until each transaction's block is final, not only until the
+    /// transaction is included. A block that isn't final yet can still be
+    /// reverted, which drops its transactions or runs them again.
+    #[arg(long, global = true)]
+    wait_finality: bool,
+    /// How long --wait-finality waits, in seconds, from submission.
+    #[arg(long, global = true, default_value = "300", value_name = "SECONDS")]
+    finality_timeout: u64,
     #[command(subcommand)]
     command: Command,
 }
@@ -619,6 +643,12 @@ enum Command {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    FINALITY_WAIT
+        .set(
+            cli.wait_finality
+                .then(|| Duration::from_secs(cli.finality_timeout)),
+        )
+        .expect("set once");
     let result = match cli.command {
         Command::Call {
             rues_url,
@@ -1159,9 +1189,10 @@ mod tests {
         prepare_bytes32_query_argument, prepare_dispatch_call, prepare_process_call,
         read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
         submission_error_with_hash, wait_for_transaction_with, Bytes32QueryArgument, Cli,
-        MAX_CALL_ARGS_BYTES, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
+        Confirmation, MAX_CALL_ARGS_BYTES, MAX_PASSWORD_FILE_BYTES, MAX_SECRET_KEY_STDIN_BYTES,
     };
-    use crate::rues::{TransactionStatus, TransactionStatusQueryError};
+    use super::{finality_check_with, wait_for_finality_with};
+    use crate::rues::{BlockStatus, Inclusion, TransactionStatus, TransactionStatusQueryError};
     use clap::Parser;
     use dusk_bytes::Serializable;
     use std::collections::VecDeque;
@@ -1742,7 +1773,7 @@ mod tests {
             Err(TransactionStatusQueryError::Retryable(
                 "temporary GraphQL outage".to_string(),
             )),
-            Ok(TransactionStatus::Executed),
+            Ok(TransactionStatus::Executed(AT_10)),
         ]);
 
         wait_for_transaction_with(
@@ -1797,18 +1828,18 @@ mod tests {
             Duration::from_millis(100),
             wait_for_transaction_with(
                 "1122",
-                || ready(Ok(TransactionStatus::Executed)),
+                || ready(Ok(TransactionStatus::Executed(AT_10))),
                 Duration::from_secs(60),
                 Duration::from_secs(1),
             ),
         )
         .await;
         assert!(immediate.is_ok(), "the first query must not sleep");
-        assert!(immediate.unwrap().is_ok());
+        assert_eq!(immediate.unwrap(), Ok(AT_10));
 
         let error = wait_for_transaction_with(
             "3344",
-            || ready(Ok(TransactionStatus::Failed("contract rejected".into()))),
+            || ready(Ok(failed_at(10, "contract rejected"))),
             Duration::ZERO,
             Duration::from_secs(1),
         )
@@ -1823,7 +1854,7 @@ mod tests {
         let mut statuses = VecDeque::from(
             (0..20)
                 .map(|_| Ok(TransactionStatus::NotFound))
-                .chain([Ok(TransactionStatus::Executed)])
+                .chain([Ok(TransactionStatus::Executed(AT_10))])
                 .collect::<Vec<_>>(),
         );
 
@@ -1835,6 +1866,268 @@ mod tests {
         )
         .await
         .expect("the absolute deadline must remain authoritative after twenty observations");
+    }
+
+    const AT_10: Inclusion = Inclusion {
+        block_height: 10,
+        gas_spent: 2_140_000,
+    };
+
+    fn executed_at(block_height: u64) -> TransactionStatus {
+        TransactionStatus::Executed(Inclusion {
+            block_height,
+            ..AT_10
+        })
+    }
+
+    fn failed_at(block_height: u64, error: &str) -> TransactionStatus {
+        TransactionStatus::Failed {
+            error: error.into(),
+            inclusion: Inclusion {
+                block_height,
+                ..AT_10
+            },
+        }
+    }
+
+    fn block(label: &str) -> Option<BlockStatus> {
+        Some(BlockStatus {
+            hash: format!("{label}-hash"),
+            label: label.into(),
+        })
+    }
+
+    type StatusReply = Result<TransactionStatus, TransactionStatusQueryError>;
+    type BlockReply = Result<Option<BlockStatus>, TransactionStatusQueryError>;
+
+    /// Replies queued per query; a query with none left fails the test.
+    fn scripted(
+        statuses: Vec<StatusReply>,
+        blocks: Vec<(u64, BlockReply)>,
+    ) -> (
+        impl FnMut() -> std::future::Ready<StatusReply>,
+        impl FnMut(u64) -> std::future::Ready<BlockReply>,
+    ) {
+        let mut statuses = VecDeque::from(statuses);
+        let mut blocks = VecDeque::from(blocks);
+        (
+            move || ready(statuses.pop_front().expect("unexpected status query")),
+            move |height| {
+                let (expected, reply) = blocks.pop_front().expect("unexpected block query");
+                assert_eq!(height, expected, "block queried at the wrong height");
+                ready(reply)
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn finality_check_needs_the_block_final_and_the_transaction_still_in_it() {
+        // Final, and still at that height when read again.
+        let (status, block_at) =
+            scripted(vec![Ok(executed_at(10))], vec![(10, Ok(block("Final")))]);
+        let confirmation = finality_check_with(AT_10, status, block_at).await;
+        assert_eq!(confirmation.final_block_hash.as_deref(), Some("Final-hash"));
+
+        // Only inclusion is reported while the block may still be reverted.
+        for label in ["Accepted", "Attested", "Confirmed"] {
+            let (status, block_at) = scripted(vec![], vec![(10, Ok(block(label)))]);
+            assert_eq!(
+                finality_check_with(AT_10, status, block_at).await,
+                Confirmation::included(AT_10),
+                "{label}"
+            );
+        }
+
+        // A block that is final, but the transaction moved out of it, or
+        // nothing to read: not final.
+        for (statuses, block_reply) in [
+            (vec![Ok(executed_at(11))], Ok(block("Final"))),
+            (vec![Ok(TransactionStatus::NotFound)], Ok(block("Final"))),
+            (
+                vec![Ok(failed_at(10, "re-run after a revert"))],
+                Ok(block("Final")),
+            ),
+            (vec![], Ok(None)),
+            (
+                vec![],
+                Err(TransactionStatusQueryError::Retryable("node busy".into())),
+            ),
+        ] {
+            let (status, block_at) = scripted(statuses, vec![(10, block_reply)]);
+            assert_eq!(
+                finality_check_with(AT_10, status, block_at).await,
+                Confirmation::included(AT_10)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn finality_wait_follows_the_transaction_until_its_block_is_final() {
+        // Pending, included in a block that is then reverted, included again
+        // in another block, which becomes final.
+        let (status, block_at) = scripted(
+            vec![
+                Ok(TransactionStatus::NotFound),
+                Ok(executed_at(10)),
+                Ok(executed_at(10)),
+                Ok(TransactionStatus::NotFound),
+                Ok(executed_at(12)),
+                Ok(executed_at(12)),
+                Ok(executed_at(12)),
+            ],
+            vec![
+                (10, Ok(block("Attested"))),
+                (10, Ok(None)),
+                (12, Ok(block("Accepted"))),
+                (12, Ok(block("Final"))),
+            ],
+        );
+        let confirmation = wait_for_finality_with(
+            "a1",
+            status,
+            block_at,
+            Duration::ZERO,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(confirmation.inclusion.block_height, 12);
+        assert_eq!(confirmation.final_block_hash.as_deref(), Some("Final-hash"));
+    }
+
+    #[tokio::test]
+    async fn finality_wait_reports_an_execution_error_only_once_it_is_final() {
+        // A failure in a block that is then reverted doesn't count: the
+        // transaction runs again and succeeds.
+        let (status, block_at) = scripted(
+            vec![
+                Ok(failed_at(10, "first run")),
+                Ok(executed_at(11)),
+                Ok(executed_at(11)),
+            ],
+            vec![(10, Ok(block("Attested"))), (11, Ok(block("Final")))],
+        );
+        assert!(wait_for_finality_with(
+            "b2",
+            status,
+            block_at,
+            Duration::ZERO,
+            Duration::from_secs(5)
+        )
+        .await
+        .is_ok());
+
+        // A failure in a final block is the transaction's final outcome, in
+        // the form the relayer reads as an included failure.
+        let (status, block_at) = scripted(
+            vec![
+                Ok(failed_at(10, "recipient rejected")),
+                Ok(failed_at(10, "recipient rejected")),
+            ],
+            vec![(10, Ok(block("Final")))],
+        );
+        let error = wait_for_finality_with(
+            "c3",
+            status,
+            block_at,
+            Duration::ZERO,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Transaction c3 failed: recipient rejected");
+    }
+
+    #[tokio::test]
+    async fn finality_wait_times_out_with_what_it_last_saw() {
+        let statuses = std::iter::repeat_with(|| Ok(executed_at(10)));
+        let mut statuses = statuses.take(1000).collect::<VecDeque<_>>();
+        let error = wait_for_finality_with(
+            "d4",
+            || ready(statuses.pop_front().unwrap()),
+            |_| ready(Ok(block("Attested"))),
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.starts_with("Transaction d4 was not final within 0s"),
+            "{error}"
+        );
+        assert!(
+            error.contains("last seen in block 10 (Attested)"),
+            "{error}"
+        );
+        assert!(confirmation_error_with_hash("d4", &error).contains("confirmation outcome unknown"));
+    }
+
+    #[tokio::test]
+    async fn finality_wait_stops_on_incompatible_responses() {
+        let (status, block_at) = scripted(
+            vec![Ok(executed_at(10))],
+            vec![(
+                10,
+                Err(TransactionStatusQueryError::Terminal(
+                    "no data.block.status".into(),
+                )),
+            )],
+        );
+        let error = wait_for_finality_with(
+            "e5",
+            status,
+            block_at,
+            Duration::ZERO,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("e5"), "{error}");
+        assert!(error.contains("no data.block.status"), "{error}");
+    }
+
+    #[test]
+    fn confirmation_adds_its_fields_and_keeps_the_others() {
+        let mut output = serde_json::json!({ "success": true, "tx_id": "ab" });
+        Confirmation::included(AT_10).record(&mut output);
+        assert_eq!(
+            output,
+            serde_json::json!({
+                "success": true,
+                "tx_id": "ab",
+                "block_height": 10,
+                "gas_spent": 2_140_000,
+                "finalized": false,
+                "block_hash": null,
+            })
+        );
+        Confirmation {
+            inclusion: AT_10,
+            final_block_hash: Some("ff".into()),
+        }
+        .record(&mut output);
+        assert_eq!(output["finalized"], true);
+        assert_eq!(output["block_hash"], "ff");
+    }
+
+    #[test]
+    fn wait_finality_is_opt_in_and_global() {
+        let cli =
+            Cli::try_parse_from(["dusk-tx", "account", "--offline", "--address", "x"]).unwrap();
+        assert!(!cli.wait_finality);
+        let cli = Cli::try_parse_from([
+            "dusk-tx",
+            "account",
+            "--offline",
+            "--address",
+            "x",
+            "--wait-finality",
+            "--finality-timeout",
+            "90",
+        ])
+        .unwrap();
+        assert!(cli.wait_finality);
+        assert_eq!(cli.finality_timeout, 90);
     }
 }
 
@@ -1981,14 +2274,15 @@ async fn cmd_fund_dispatch(
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-    let output = json!({
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let mut output = json!({
         "success": true,
         "mailbox": mailbox_hex,
         "payer": payer_hex,
         "amount": amount,
         "tx_id": tx_id,
     });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -2036,14 +2330,15 @@ async fn cmd_withdraw_dispatch(
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-    let output = json!({
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let mut output = json!({
         "success": true,
         "target": target_hex,
         "recipient_public_key": hex::encode(recipient.to_bytes()),
         "amount": amount,
         "tx_id": tx_id,
     });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -2154,14 +2449,15 @@ async fn cmd_call(
 
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
-    propagate_and_wait(&client, &tx_id, &tx_bytes).await?;
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx_bytes).await?;
 
-    let output = json!({
+    let mut output = json!({
         "success": true,
         "contract": contract_hex,
         "fn_name": fn_name,
         "tx_id": tx_id,
     });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -2503,6 +2799,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
 
     let mut mn = account_nonce; // moonlight nonce
     let mut dn = 0u64; // deploy nonce
+    let mut deployed = Vec::new();
 
     // Deploy contracts one at a time, waiting for block inclusion between each.
     // Rusk requires sequential nonce confirmation — a TX with nonce N+1 won't be
@@ -2517,6 +2814,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         vec![],
         &mut mn,
         &mut dn,
+        &mut deployed,
         gas_limit,
         gas_price,
         chain_id,
@@ -2533,6 +2831,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         vec![],
         &mut mn,
         &mut dn,
+        &mut deployed,
         gas_limit,
         gas_price,
         chain_id,
@@ -2550,6 +2849,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         mth_init,
         &mut mn,
         &mut dn,
+        &mut deployed,
         gas_limit,
         gas_price,
         chain_id,
@@ -2571,6 +2871,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             init,
             &mut mn,
             &mut dn,
+            &mut deployed,
             gas_limit,
             gas_price,
             chain_id,
@@ -2595,6 +2896,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         pf_init,
         &mut mn,
         &mut dn,
+        &mut deployed,
         gas_limit,
         gas_price,
         chain_id,
@@ -2613,6 +2915,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         aggregation_init,
         &mut mn,
         &mut dn,
+        &mut deployed,
         gas_limit,
         gas_price,
         chain_id,
@@ -2637,6 +2940,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         mailbox_init,
         &mut mn,
         &mut dn,
+        &mut deployed,
         gas_limit,
         gas_price,
         chain_id,
@@ -2654,6 +2958,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         va_init,
         &mut mn,
         &mut dn,
+        &mut deployed,
         gas_limit,
         gas_price,
         chain_id,
@@ -2669,7 +2974,17 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         igp_domain_configs.clone(),
     ));
     deploy_one(
-        &client, &sk, &pk, igp_bytes, igp_init, &mut mn, &mut dn, gas_limit, gas_price, chain_id,
+        &client,
+        &sk,
+        &pk,
+        igp_bytes,
+        igp_init,
+        &mut mn,
+        &mut dn,
+        &mut deployed,
+        gas_limit,
+        gas_price,
+        chain_id,
         "IGP",
     )
     .await?;
@@ -2692,6 +3007,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             warp_init,
             &mut mn,
             &mut dn,
+            &mut deployed,
             gas_limit,
             gas_price,
             chain_id,
@@ -2714,6 +3030,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             warp_init,
             &mut mn,
             &mut dn,
+            &mut deployed,
             gas_limit,
             gas_price,
             chain_id,
@@ -2742,6 +3059,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             warp_init,
             &mut mn,
             &mut dn,
+            &mut deployed,
             gas_limit,
             gas_price,
             chain_id,
@@ -2754,6 +3072,10 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     };
 
     eprintln!("  All contracts confirmed on-chain");
+    let confirmation = confirm_in_order(&client, &deployed).await?;
+    if confirmation.final_block_hash.is_some() {
+        eprintln!("  Every deploy is in a final block");
+    }
 
     let mut contracts = json!({
         "test_mock": hex::encode(test_mock_id.to_bytes()),
@@ -2789,6 +3111,10 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             "gas_price": config.gas_price,
         })).collect::<Vec<_>>(),
         "contracts": contracts,
+        // Every deploy is final once the last one is.
+        "last_tx_id": deployed.last().map(|(tx_id, _)| tx_id),
+        "last_block_height": confirmation.inclusion.block_height,
+        "finalized": confirmation.final_block_hash.is_some(),
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
@@ -2945,7 +3271,8 @@ fn parse_eth_address(s: &str) -> Result<EthAddress, String> {
     Ok(EthAddress(arr))
 }
 
-/// Deploy a single contract via Moonlight deployment TX.
+/// Deploy a single contract via Moonlight deployment TX and wait until it is
+/// included. Appends the transaction's hash and inclusion to `deployed`.
 async fn deploy_one(
     client: &RuesClient,
     sk: &BlsSecretKey,
@@ -2954,6 +3281,7 @@ async fn deploy_one(
     init_args: Vec<u8>,
     moonlight_nonce: &mut u64,
     deploy_nonce: &mut u64,
+    deployed: &mut Vec<(String, Inclusion)>,
     gas_limit: u64,
     gas_price: u64,
     chain_id: u8,
@@ -2972,10 +3300,14 @@ async fn deploy_one(
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
-    propagate_and_wait(client, &tx_id, &tx_bytes)
-        .await
-        .map_err(|e| format!("Failed to deploy {name}: {e}"))?;
+    let inclusion = async {
+        propagate(client, &tx_id, &tx_bytes).await?;
+        wait_for_inclusion(client, &tx_id).await
+    }
+    .await
+    .map_err(|e| format!("Failed to deploy {name}: {e}"))?;
     eprintln!("  {name} TX {tx_id} executed");
+    deployed.push((tx_id, inclusion));
     Ok(())
 }
 
@@ -2997,26 +3329,59 @@ fn next_moonlight_nonce(current: u64) -> Result<u64, String> {
         .ok_or_else(|| "Moonlight account nonce is exhausted".to_string())
 }
 
-/// Wait for the exact transaction to be persisted and fail closed on a
-/// contract execution error. A Moonlight nonce also advances for failed
-/// executions, so nonce polling alone cannot establish success.
-async fn wait_for_transaction(client: &RuesClient, tx_id: &str) -> Result<(), String> {
-    wait_for_transaction_with(
-        tx_id,
-        || client.query_transaction_status(tx_id),
-        std::time::Duration::from_secs(3),
-        std::time::Duration::from_secs(60),
-    )
-    .await
+/// What dusk-tx saw of a transaction it sent: the block it is in, the gas
+/// it used, and whether that block is final.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Confirmation {
+    inclusion: Inclusion,
+    /// The block's hash, once the block is final and so can't be reverted.
+    /// `None`: only the transaction's inclusion was seen.
+    final_block_hash: Option<String>,
 }
 
-/// Submit a transaction while preserving its exact reconciliation hash across
-/// both propagation ambiguity and confirmation timeouts.
+impl Confirmation {
+    fn included(inclusion: Inclusion) -> Self {
+        Self {
+            inclusion,
+            final_block_hash: None,
+        }
+    }
+
+    /// Add what was seen to a command's JSON output, next to its other
+    /// fields.
+    fn record(&self, output: &mut serde_json::Value) {
+        output["block_height"] = json!(self.inclusion.block_height);
+        output["gas_spent"] = json!(self.inclusion.gas_spent);
+        output["finalized"] = json!(self.final_block_hash.is_some());
+        output["block_hash"] = json!(self.final_block_hash);
+    }
+}
+
+/// `--wait-finality`'s timeout, or `None` to only report finality.
+fn finality_wait() -> Option<Duration> {
+    FINALITY_WAIT.get().copied().flatten()
+}
+
+/// Submit a transaction, wait until it is included, and say whether its
+/// block is final; with `--wait-finality`, wait until it is. Every error
+/// keeps the exact hash to reconcile.
 async fn propagate_and_wait(
     client: &RuesClient,
     tx_id: &str,
     tx_bytes: &[u8],
-) -> Result<(), String> {
+) -> Result<Confirmation, String> {
+    propagate(client, tx_id, tx_bytes).await?;
+    match finality_wait() {
+        Some(timeout) => wait_for_finality(client, tx_id, timeout).await,
+        None => {
+            let inclusion = wait_for_inclusion(client, tx_id).await?;
+            Ok(check_finality(client, tx_id, inclusion).await)
+        }
+    }
+}
+
+/// Submit a transaction while preserving its exact reconciliation hash.
+async fn propagate(client: &RuesClient, tx_id: &str, tx_bytes: &[u8]) -> Result<(), String> {
     // Emit the locally computed reconciliation identity before the first
     // remote write. This gives an interrupted operator a concrete hash to
     // reconcile before deciding whether a non-idempotent operation may be
@@ -3027,18 +3392,96 @@ async fn propagate_and_wait(
     client
         .propagate_tx(tx_bytes)
         .await
-        .map_err(|error| submission_error_with_hash(tx_id, &error))?;
-    wait_for_transaction(client, tx_id)
-        .await
-        .map_err(|error| confirmation_error_with_hash(tx_id, &error))
+        .map_err(|error| submission_error_with_hash(tx_id, &error))
+}
+
+/// Wait for the exact transaction to be persisted and fail closed on a
+/// contract execution error. A Moonlight nonce also advances for failed
+/// executions, so nonce polling alone cannot establish success.
+async fn wait_for_inclusion(client: &RuesClient, tx_id: &str) -> Result<Inclusion, String> {
+    wait_for_transaction_with(
+        tx_id,
+        || client.query_transaction_status(tx_id),
+        TRANSACTION_POLL_INTERVAL,
+        INCLUSION_TIMEOUT,
+    )
+    .await
+    .map_err(|error| confirmation_error_with_hash(tx_id, &error))
+}
+
+/// One look at whether an included transaction's block is final. It gives
+/// up after `FINALITY_CHECK_TIMEOUT` and never fails: the transaction is
+/// included either way, and only a block seen final counts as final.
+async fn check_finality(client: &RuesClient, tx_id: &str, inclusion: Inclusion) -> Confirmation {
+    tokio::time::timeout(
+        FINALITY_CHECK_TIMEOUT,
+        finality_check_with(
+            inclusion,
+            || client.query_transaction_status(tx_id),
+            |height| client.query_block_status(height),
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| Confirmation::included(inclusion))
+}
+
+/// Poll until the transaction's block is final (`wait_for_finality_with`).
+async fn wait_for_finality(
+    client: &RuesClient,
+    tx_id: &str,
+    timeout: Duration,
+) -> Result<Confirmation, String> {
+    wait_for_finality_with(
+        tx_id,
+        || client.query_transaction_status(tx_id),
+        |height| client.query_block_status(height),
+        TRANSACTION_POLL_INTERVAL,
+        timeout,
+    )
+    .await
+    .map_err(|error| confirmation_error_with_hash(tx_id, &error))
+}
+
+/// Confirm transactions one signer sent in nonce order, each already seen
+/// included: report or wait for the finality of the last. Finality comes in
+/// height order, and an earlier nonce can't be in a later block, so once
+/// the last is final every earlier one is in a final block too. With
+/// `--wait-finality`, check that each of those still executed.
+async fn confirm_in_order(
+    client: &RuesClient,
+    transactions: &[(String, Inclusion)],
+) -> Result<Confirmation, String> {
+    let ((last_tx_id, last), earlier) = transactions
+        .split_last()
+        .ok_or("No transaction to confirm")?;
+    let Some(timeout) = finality_wait() else {
+        return Ok(check_finality(client, last_tx_id, *last).await);
+    };
+    let confirmation = wait_for_finality(client, last_tx_id, timeout).await?;
+    for (tx_id, _) in earlier {
+        match client.query_transaction_status(tx_id).await {
+            Ok(TransactionStatus::Executed(_)) => {}
+            Ok(TransactionStatus::Failed { error, .. }) => {
+                return Err(format!("Transaction {tx_id} failed: {error}"));
+            }
+            Ok(TransactionStatus::NotFound) => {
+                return Err(confirmation_error_with_hash(
+                    tx_id,
+                    "it is not in the ledger, though a later transaction is final",
+                ));
+            }
+            Err(error) => return Err(confirmation_error_with_hash(tx_id, &error.to_string())),
+        }
+    }
+    Ok(confirmation)
 }
 
 async fn wait_for_transaction_with<F, Fut>(
     tx_id: &str,
     mut query_status: F,
-    poll_interval: std::time::Duration,
-    timeout: std::time::Duration,
-) -> Result<(), String>
+    poll_interval: Duration,
+    timeout: Duration,
+) -> Result<Inclusion, String>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<TransactionStatus, TransactionStatusQueryError>>,
@@ -3055,8 +3498,8 @@ where
         attempt = attempt.saturating_add(1);
 
         match tokio::time::timeout(remaining, query_status()).await {
-            Ok(Ok(TransactionStatus::Executed)) => return Ok(()),
-            Ok(Ok(TransactionStatus::Failed(error))) => {
+            Ok(Ok(TransactionStatus::Executed(inclusion))) => return Ok(inclusion),
+            Ok(Ok(TransactionStatus::Failed { error, .. })) => {
                 return Err(format!("Transaction {tx_id} failed: {error}"));
             }
             Ok(Ok(TransactionStatus::NotFound)) => {}
@@ -3089,6 +3532,149 @@ where
         "Transaction {tx_id} was not confirmed within {}s{detail}",
         timeout.as_secs()
     ))
+}
+
+/// Whether the block an included transaction is in is final. The node reads
+/// a block and its label separately from the transaction, so after seeing
+/// the block at the transaction's height final, read the transaction again:
+/// a final block can't change, so if the ledger still has the transaction
+/// at that height, it is in that block for good.
+async fn finality_check_with<S, SF, B, BF>(
+    inclusion: Inclusion,
+    mut query_status: S,
+    mut query_block: B,
+) -> Confirmation
+where
+    S: FnMut() -> SF,
+    SF: Future<Output = Result<TransactionStatus, TransactionStatusQueryError>>,
+    B: FnMut(u64) -> BF,
+    BF: Future<Output = Result<Option<BlockStatus>, TransactionStatusQueryError>>,
+{
+    let Ok(Some(block)) = query_block(inclusion.block_height).await else {
+        return Confirmation::included(inclusion);
+    };
+    if !block.is_final() {
+        return Confirmation::included(inclusion);
+    }
+    match query_status().await {
+        Ok(TransactionStatus::Executed(now)) if now.block_height == inclusion.block_height => {
+            Confirmation {
+                inclusion: now,
+                final_block_hash: Some(block.hash),
+            }
+        }
+        _ => Confirmation::included(inclusion),
+    }
+}
+
+/// Poll a submitted transaction until the block it is in is final, then
+/// report it, or its execution error, as final. Until then a revert can drop
+/// the transaction or run it again in another block, with another result,
+/// so neither inclusion nor an execution error is final before its block
+/// is. Errors name the transaction; the caller adds how to reconcile it.
+async fn wait_for_finality_with<S, SF, B, BF>(
+    tx_id: &str,
+    mut query_status: S,
+    mut query_block: B,
+    poll_interval: Duration,
+    timeout: Duration,
+) -> Result<Confirmation, String>
+where
+    S: FnMut() -> SF,
+    SF: Future<Output = Result<TransactionStatus, TransactionStatusQueryError>>,
+    B: FnMut(u64) -> BF,
+    BF: Future<Output = Result<Option<BlockStatus>, TransactionStatusQueryError>>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    let incompatible =
+        |error: String| format!("Transaction {tx_id} status response is incompatible: {error}");
+    let mut seen = String::from("not in a block");
+    let mut last_query_error = None;
+    let mut attempt = 0usize;
+
+    'poll: loop {
+        attempt = attempt.saturating_add(1);
+        let Some(status) = before(deadline, query_status()).await else {
+            break;
+        };
+        match status {
+            Err(TransactionStatusQueryError::Terminal(error)) => return Err(incompatible(error)),
+            Err(TransactionStatusQueryError::Retryable(error)) => last_query_error = Some(error),
+            Ok(TransactionStatus::NotFound) => seen = String::from("not in a block"),
+            Ok(status) => {
+                let inclusion = status.inclusion().expect("an included status");
+                let height = inclusion.block_height;
+                let failed = if matches!(status, TransactionStatus::Failed { .. }) {
+                    ", failed"
+                } else {
+                    ""
+                };
+                let Some(block) = before(deadline, query_block(height)).await else {
+                    break;
+                };
+                match block {
+                    Err(TransactionStatusQueryError::Terminal(error)) => {
+                        return Err(incompatible(error));
+                    }
+                    Err(TransactionStatusQueryError::Retryable(error)) => {
+                        last_query_error = Some(error);
+                    }
+                    Ok(None) => seen = format!("in block {height}, which the node no longer has"),
+                    Ok(Some(block)) if !block.is_final() => {
+                        seen = format!("in block {height} ({}{failed})", block.label);
+                    }
+                    Ok(Some(block)) => {
+                        let Some(now) = before(deadline, query_status()).await else {
+                            break 'poll;
+                        };
+                        match now {
+                            Ok(TransactionStatus::Executed(now)) if now.block_height == height => {
+                                return Ok(Confirmation {
+                                    inclusion: now,
+                                    final_block_hash: Some(block.hash),
+                                });
+                            }
+                            Ok(TransactionStatus::Failed { error, inclusion })
+                                if inclusion.block_height == height =>
+                            {
+                                return Err(format!("Transaction {tx_id} failed: {error}"));
+                            }
+                            Err(TransactionStatusQueryError::Terminal(error)) => {
+                                return Err(incompatible(error));
+                            }
+                            Err(TransactionStatusQueryError::Retryable(error)) => {
+                                last_query_error = Some(error);
+                            }
+                            // Moved since: look again.
+                            Ok(_) => seen = format!("moved out of block {height}"),
+                        }
+                    }
+                }
+            }
+        }
+
+        if attempt.is_multiple_of(5) {
+            eprintln!("  [waiting for finality, attempt {attempt}: {seen}]");
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::time::sleep(poll_interval.min(remaining)).await;
+    }
+
+    let detail = last_query_error
+        .map(|error| format!("; last query error: {error}"))
+        .unwrap_or_default();
+    Err(format!(
+        "Transaction {tx_id} was not final within {}s: last seen {seen}{detail}",
+        timeout.as_secs()
+    ))
+}
+
+/// `future`'s output, or `None` if `deadline` passes first.
+async fn before<T>(deadline: tokio::time::Instant, future: impl Future<Output = T>) -> Option<T> {
+    tokio::time::timeout_at(deadline, future).await.ok()
 }
 
 // ── cmd_query ─────────────────────────────────────────────────────────────
@@ -3378,9 +3964,9 @@ async fn cmd_dispatch(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
-    let output = json!({
+    let mut output = json!({
         "success": true,
         "fn_name": "dispatch_message",
         "test_recipient": test_recipient_hex,
@@ -3388,6 +3974,7 @@ async fn cmd_dispatch(
         "recipient": recipient_hex,
         "tx_id": tx_id,
     });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -3450,15 +4037,16 @@ async fn cmd_process(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
-    let output = json!({
+    let mut output = json!({
         "success": true,
         "fn_name": "process",
         "mailbox": mailbox_hex,
         "message_id": hex::encode(message_id),
         "tx_id": tx_id,
     });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -3566,9 +4154,9 @@ async fn cmd_enroll_router(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
-    let output = json!({
+    let mut output = json!({
         "success": true,
         "fn_name": "enroll_remote_router",
         "warp_contract": warp_contract_hex,
@@ -3576,6 +4164,7 @@ async fn cmd_enroll_router(
         "router": router_hex,
         "tx_id": tx_id,
     });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -3615,7 +4204,7 @@ async fn cmd_register_account(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
     let h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
     let pending: u64 = client
@@ -3629,6 +4218,7 @@ async fn cmd_register_account(
     output["warp_contract"] = json!(warp_contract_hex);
     output["pending"] = json!(pending.to_string());
     output["tx_id"] = json!(tx_id);
+    confirmation.record(&mut output);
     if pending > 0 {
         output["next"] =
             json!("Tokens are waiting in escrow for this account: run dusk-tx claim-pending");
@@ -3728,7 +4318,7 @@ async fn cmd_claim_pending(
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
     let mut output = identity;
     output["success"] = json!(true);
@@ -3736,6 +4326,7 @@ async fn cmd_claim_pending(
     output["warp_contract"] = json!(warp_contract_hex);
     output["claimed"] = json!(pending.to_string());
     output["tx_id"] = json!(tx_id);
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -3775,18 +4366,16 @@ async fn cmd_drc20_approve(
         chain_id,
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "success": true,
-            "token": token_hex,
-            "spender": spender_hex,
-            "amount": amount,
-            "tx_id": tx_id,
-        }))
-        .unwrap()
-    );
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let mut output = json!({
+        "success": true,
+        "token": token_hex,
+        "spender": spender_hex,
+        "amount": amount,
+        "tx_id": tx_id,
+    });
+    confirmation.record(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
 
@@ -3917,9 +4506,9 @@ async fn cmd_transfer_remote(
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
-    propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
 
-    let output = json!({
+    let mut output = json!({
         "success": true,
         "fn_name": "transfer_remote",
         "warp_contract": warp_contract_hex,
@@ -3931,6 +4520,7 @@ async fn cmd_transfer_remote(
         "deposit": deposit,
         "tx_id": tx_id,
     });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
