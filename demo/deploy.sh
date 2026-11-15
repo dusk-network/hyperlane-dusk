@@ -625,7 +625,7 @@ validate_saved_deployment() {
     validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 4
     validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 6
     validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce" 2
-    validate_dusk_state_version "$dusk_igp" "Dusk IGP" 3
+    validate_dusk_state_version "$dusk_igp" "Dusk IGP" 4
     validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"
     validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"
     validate_dusk_state_version "$dusk_test_recipient" "Dusk test recipient"

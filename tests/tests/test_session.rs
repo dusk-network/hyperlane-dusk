@@ -227,6 +227,28 @@ impl TestSession {
         self.call_public_with(sender_sk, contract, fn_name, fn_arg, 0, gas_limit)
     }
 
+    /// [`Self::call_public_with_gas_limit`] with an attached DUSK deposit.
+    /// A transaction that fails is charged its whole gas limit and gets its
+    /// deposit back.
+    #[allow(dead_code)]
+    pub fn call_public_with_deposit_and_gas_limit<A, R>(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_arg: &A,
+        deposit: u64,
+        gas_limit: u64,
+    ) -> Result<CallReceipt<R>, ContractError>
+    where
+        A: for<'b> Serialize<StandardBufSerializer<'b>>,
+        A::Archived: for<'b> CheckBytes<DefaultValidator<'b>>,
+        R: Archive,
+        R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
+    {
+        self.call_public_with(sender_sk, contract, fn_name, fn_arg, deposit, gas_limit)
+    }
+
     /// Call through the transfer contract with arguments already serialized,
     /// for arguments too large for [`rkyv_serialize`]'s scratch space, such
     /// as long batches of calls. Returns the raw return value.

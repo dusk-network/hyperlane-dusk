@@ -1978,6 +1978,17 @@ fn session_with_hooks_fee_and_igp_config(
     max_protocol_fee: u64,
     igp_configs: Vec<(u32, DomainGasConfig)>,
 ) -> TestSession {
+    session_with_hooks_and_igp(IGP_BYTECODE, protocol_fee, max_protocol_fee, igp_configs)
+}
+
+/// [`session_with_hooks_fee_and_igp_config`] with the IGP deployed from
+/// `igp_bytecode`.
+fn session_with_hooks_and_igp(
+    igp_bytecode: &[u8],
+    protocol_fee: u64,
+    max_protocol_fee: u64,
+    igp_configs: Vec<(u32, DomainGasConfig)>,
+) -> TestSession {
     let mut session = TestSession::instantiate(vec![
         (&*OWNER_PK, INITIAL_DUSK_BALANCE),
         (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
@@ -2045,7 +2056,7 @@ fn session_with_hooks_fee_and_igp_config(
     // Deploy IGP with provided gas configs
     session
         .deploy(
-            IGP_BYTECODE,
+            igp_bytecode,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
                 .init_arg(&(MAILBOX_ID, *OWNER_ID, *OWNER_ID, igp_configs))
@@ -2894,11 +2905,12 @@ fn test_igp_init() {
         .data;
     assert_eq!(hook_type, 4); // HookType::Igp
 
+    // 4: `pay_for_gas` and `quote_pay_for_gas`.
     let version = session
         .direct_call::<_, u32>(IGP_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 
     let total: u64 = session
         .direct_call::<_, u64>(IGP_ID, "total_gas_payments", &())
@@ -3318,6 +3330,789 @@ fn test_igp_rejects_unbacked_direct_post_dispatch() {
         },),
     );
     assert_contract_panic(result, "IGP: unauthenticated payment");
+}
+
+// =============================================================================
+// Tests: IGP top-ups (pay_for_gas)
+// =============================================================================
+
+/// `dusk-tx pay-for-gas`'s default gas limit. A failed transaction pays its
+/// whole limit, so the limit stays near what a top-up costs, about 1.85M.
+const PAY_FOR_GAS_GAS_LIMIT: u64 = 3_000_000;
+
+/// Pricing for the top-up tests: 1 LUX per gas on the destination, and an
+/// overhead that a dispatch pays for on top of its gas limit.
+const TOP_UP_PRICING: DomainGasConfig = DomainGasConfig {
+    gas_overhead: 100_000,
+    token_exchange_rate: 10_000_000_000,
+    gas_price: 1,
+};
+
+/// The IGP's `TOP_UP_MEMORY_LIMIT`.
+const TOP_UP_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+
+/// A session whose IGP, the Mailbox's default hook, prices `REMOTE_DOMAIN`
+/// at [`TOP_UP_PRICING`].
+fn session_for_top_ups() -> TestSession {
+    session_with_hooks_and_igp_config(vec![(REMOTE_DOMAIN, TOP_UP_PRICING)])
+}
+
+/// Dispatches a message from the TestRecipient through the Mailbox's default
+/// hook, the IGP, and returns the receipt. With no hook metadata it pays for
+/// 50,000 gas plus the destination's overhead.
+fn dispatch_through_igp(session: &mut TestSession, body: &[u8]) -> CallReceipt<MessageId> {
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(MAILBOX_ID, REMOTE_DOMAIN, [0xBBu8; 32], body.to_vec()),
+        )
+        .expect("the dispatch should pay the IGP")
+}
+
+/// `payer`'s Moonlight transaction calling
+/// `pay_for_gas(id, destination, gas_amount, declared)` with a deposit of
+/// `deposit`, at `dusk-tx pay-for-gas`'s default gas limit.
+fn pay_for_gas(
+    session: &mut TestSession,
+    payer: &AccountSecretKey,
+    (id, destination, gas_amount): (MessageId, u32, u64),
+    declared: u64,
+    deposit: u64,
+) -> Result<CallReceipt<()>, ContractError> {
+    session.call_public_with_deposit_and_gas_limit::<_, ()>(
+        payer,
+        IGP_ID,
+        "pay_for_gas",
+        &(id, destination, gas_amount, declared),
+        deposit,
+        PAY_FOR_GAS_GAS_LIMIT,
+    )
+}
+
+fn quote_pay_for_gas(session: &mut TestSession, destination: u32, gas_amount: u64) -> u64 {
+    query(
+        session,
+        IGP_ID,
+        "quote_pay_for_gas",
+        &(destination, gas_amount),
+    )
+}
+
+/// Every payment record the IGP holds, at most a page of them.
+fn igp_payment_records(session: &mut TestSession) -> Vec<GasPaymentRecord> {
+    let count: u32 = query(session, IGP_ID, "gas_payment_count", &());
+    assert!(count <= 256, "{count} records are more than a page");
+    query(session, IGP_ID, "gas_payments", &(0u32, count))
+}
+
+/// What the relayer adds up for a message: the gas and the LUX of every
+/// payment for its ID and destination (hyperlane-base keys gas payments by
+/// both).
+fn paid_for(records: &[GasPaymentRecord], id: MessageId, destination: u32) -> (u64, u64) {
+    records
+        .iter()
+        .filter(|record| record.message_id == id && record.destination == destination)
+        .fold((0, 0), |(gas, lux), record| {
+            (gas + record.gas_limit, lux + record.payment)
+        })
+}
+
+/// The IGP holds what its records say it was paid, all of it claimable.
+fn assert_igp_holds_what_it_recorded(session: &mut TestSession) {
+    let total: u64 = query(session, IGP_ID, "total_gas_payments", &());
+    let claimable: u64 = query(session, IGP_ID, "claimable_fees", &());
+    let recorded: u64 = igp_payment_records(session)
+        .iter()
+        .map(|record| record.payment)
+        .sum();
+    assert_eq!(total, recorded);
+    assert_eq!(claimable, total);
+    assert_eq!(
+        session
+            .contract_balance(&IGP_ID)
+            .expect("IGP balance query should succeed"),
+        claimable
+    );
+}
+
+/// The panic message of a call that must fail.
+fn panic_message<R>(result: Result<CallReceipt<R>, ContractError>) -> String
+where
+    R: rkyv::Archive,
+    R::Archived: rkyv::Deserialize<R, rkyv::Infallible>
+        + for<'b> rkyv::bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    match result {
+        Err(ContractError::Panic(message)) => message,
+        Err(error) => panic!("expected a contract panic, got {error}"),
+        Ok(_) => panic!("the call should fail"),
+    }
+}
+
+/// The events the transfer contract emitted with `topic`, decoded.
+fn transfer_events<E>(receipt: &CallReceipt<()>, topic: &str) -> Vec<E>
+where
+    E: rkyv::Archive,
+    E::Archived: rkyv::Deserialize<E, rkyv::Infallible>
+        + for<'b> rkyv::bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    receipt
+        .events
+        .iter()
+        .filter(|e| {
+            e.source == dusk_core::transfer::TRANSFER_CONTRACT && e.topic == topic && !e.reverted
+        })
+        .map(|e| test_session::rkyv_deserialize::<E>(&e.data))
+        .collect()
+}
+
+/// A message whose dispatch paid for less gas than its delivery takes can be
+/// topped up by anyone. The IGP charges exactly its quote for the missing
+/// gas, with no overhead, and records it under the message's ID and
+/// destination; the payments the relayer adds up then cover the delivery,
+/// at the price one dispatch asking for all that gas would have paid.
+#[test]
+fn test_igp_top_up_pays_the_rest_of_an_underpaid_dispatch() {
+    let mut session = session_for_top_ups();
+    let id = dispatch_through_igp(&mut session, b"a handle that takes more gas").data;
+    let dispatch_paid = paid_for(&igp_payment_records(&mut session), id, REMOTE_DOMAIN);
+    assert_eq!(
+        dispatch_paid,
+        (150_000, 150_000),
+        "50,000 gas plus the 100,000 overhead, at 1 LUX"
+    );
+
+    // Its delivery takes 400,000 gas. Anyone may pay for the rest: here the
+    // relayer's account, not the sender.
+    let needed = 400_000u64;
+    let missing = needed - dispatch_paid.0;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, missing);
+    assert_eq!(quote, missing, "no overhead on a top-up, at 1 LUX per gas");
+    let payer_before = moonlight_balance(&mut session, &RELAYER_PK);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, missing),
+        quote,
+        quote,
+    )
+    .expect("a top-up of exactly its quote should succeed");
+    assert!(
+        receipt.gas_spent * 3 / 2 <= PAY_FOR_GAS_GAS_LIMIT,
+        "pay_for_gas took {} gas, too close to {PAY_FOR_GAS_GAS_LIMIT}",
+        receipt.gas_spent
+    );
+    assert_eq!(
+        payer_before - moonlight_balance(&mut session, &RELAYER_PK),
+        quote + receipt.gas_spent
+    );
+    assert_eq!(
+        session.contract_balance(&IGP_ID).unwrap(),
+        igp_before + quote
+    );
+
+    let records = igp_payment_records(&mut session);
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records[1],
+        GasPaymentRecord {
+            message_id: id,
+            destination: REMOTE_DOMAIN,
+            gas_limit: missing,
+            payment: quote,
+            block_height: session.block_height(),
+        }
+    );
+    let (gas, lux) = paid_for(&records, id, REMOTE_DOMAIN);
+    assert_eq!(gas, needed);
+    let as_one_dispatch: u64 = query(
+        &mut session,
+        IGP_ID,
+        "quote_gas_payment",
+        &(REMOTE_DOMAIN, needed - TOP_UP_PRICING.gas_overhead),
+    );
+    assert_eq!(lux, as_one_dispatch);
+    assert_igp_holds_what_it_recorded(&mut session);
+
+    // Payments keep adding up, from anyone: the sender adds 1,000 gas.
+    pay_for_gas(
+        &mut session,
+        &OWNER_SK,
+        (id, REMOTE_DOMAIN, 1_000),
+        1_000,
+        1_000,
+    )
+    .expect("a second top-up should succeed");
+    assert_eq!(
+        paid_for(&igp_payment_records(&mut session), id, REMOTE_DOMAIN),
+        (needed + 1_000, as_one_dispatch + 1_000)
+    );
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// The IGP charges the price at execution and sends the rest of the deposit
+/// back to the account that signed, in the same transaction. A deposit with
+/// a margin survives a price update between quoting and inclusion; one
+/// without is refused, and comes back whole.
+#[test]
+fn test_igp_top_up_refunds_the_deposit_beyond_its_price() {
+    let mut session = session_for_top_ups();
+    let id = dispatch_through_igp(&mut session, b"refund").data;
+    let gas = 100_000u64;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, gas);
+    let deposit = quote + 1_234_567;
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        deposit,
+        deposit,
+    )
+    .expect("a top-up with a margin should succeed");
+    assert!(
+        receipt.gas_spent * 3 / 2 <= PAY_FOR_GAS_GAS_LIMIT,
+        "pay_for_gas with a refund took {} gas, too close to {PAY_FOR_GAS_GAS_LIMIT}",
+        receipt.gas_spent
+    );
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        quote + receipt.gas_spent
+    );
+    // The transfer contract moved the whole deposit to the IGP, and the IGP
+    // sent the margin back to the signer.
+    let deposits: Vec<dusk_core::transfer::DepositEvent> =
+        transfer_events(&receipt, dusk_core::transfer::DEPOSIT_TOPIC);
+    assert_eq!(deposits.len(), 1);
+    assert_eq!(deposits[0].sender, Some(*RELAYER_PK));
+    assert_eq!(deposits[0].receiver, IGP_ID);
+    assert_eq!(deposits[0].value, deposit);
+    let refunds: Vec<dusk_core::transfer::ContractToAccountEvent> =
+        transfer_events(&receipt, dusk_core::transfer::CONTRACT_TO_ACCOUNT_TOPIC);
+    assert_eq!(refunds.len(), 1);
+    assert_eq!(refunds[0].sender, IGP_ID);
+    assert_eq!(refunds[0].receiver, *RELAYER_PK);
+    assert_eq!(refunds[0].value, deposit - quote);
+    assert_eq!(igp_payment_records(&mut session)[1].payment, quote);
+    assert_igp_holds_what_it_recorded(&mut session);
+
+    // The owner doubles the price after the payer quoted it.
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_domain_gas_config",
+            &(
+                REMOTE_DOMAIN,
+                DomainGasConfig {
+                    gas_price: 2,
+                    ..TOP_UP_PRICING
+                },
+            ),
+        )
+        .expect("the owner should reprice the destination");
+    let records = igp_payment_records(&mut session);
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let result = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        quote,
+        quote,
+    );
+    assert_contract_panic(result, "IGP: insufficient interchain gas payment");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        PAY_FOR_GAS_GAS_LIMIT,
+        "the refused transaction pays its gas limit and gets its deposit back"
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        3 * quote,
+        3 * quote,
+    )
+    .expect("a deposit with room for the new price should pay it");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        2 * quote + receipt.gas_spent
+    );
+    let charged = igp_payment_records(&mut session).last().unwrap().payment;
+    assert_eq!(charged, 2 * quote);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A deposit below the quote is refused, and the transaction gets it back:
+/// it pays only its gas, and nothing is recorded.
+#[test]
+fn test_igp_top_up_rejects_underpayment() {
+    let mut session = session_for_top_ups();
+    let id = dispatch_through_igp(&mut session, b"underpaid").data;
+    let gas = 250_000u64;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, gas);
+    let records = igp_payment_records(&mut session);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    for short in [quote - 1, 1, 0] {
+        let result = pay_for_gas(
+            &mut session,
+            &RELAYER_SK,
+            (id, REMOTE_DOMAIN, gas),
+            short,
+            short,
+        );
+        assert_contract_panic(result, "IGP: insufficient interchain gas payment");
+    }
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        3 * PAY_FOR_GAS_GAS_LIMIT
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A top-up is recorded only after the transfer contract has moved the
+/// transaction's deposit into the IGP, and a deposit pays for one top-up
+/// only. The declared deposit must be the transaction's exactly: declaring
+/// more would refund DUSK that never arrived. A transaction without a
+/// deposit pays nothing, and a contract can't spend the deposit of the
+/// transaction that calls it. Every refused transaction gets its deposit
+/// back.
+#[test]
+fn test_igp_top_up_takes_the_transaction_deposit_exactly_once() {
+    let mut session = session_for_top_ups();
+    rt_deploy(&mut session);
+    let id = dispatch_through_igp(&mut session, b"deposit").data;
+    let gas = 10_000u64;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, gas);
+    let records = igp_payment_records(&mut session);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    for (declared, deposit, reason) in [
+        (quote, 0, "There is no deposit in the transaction"),
+        (
+            quote + 1,
+            quote,
+            "doesn't match the value in the transaction",
+        ),
+        (
+            quote,
+            quote + 1,
+            "doesn't match the value in the transaction",
+        ),
+    ] {
+        let message = panic_message(pay_for_gas(
+            &mut session,
+            &RELAYER_SK,
+            (id, REMOTE_DOMAIN, gas),
+            declared,
+            deposit,
+        ));
+        assert!(
+            message.contains("IGP: deposit failed") && message.contains(reason),
+            "declared {declared}, deposited {deposit}: {message}"
+        );
+    }
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        3 * PAY_FOR_GAS_GAS_LIMIT
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+
+    // A contract that the transaction calls, with the deposit, can't pay
+    // with it: the deposit is the contract's to take, not the IGP's.
+    let pay = vec![rt_action(
+        IGP_ID,
+        "pay_for_gas",
+        &(id, REMOTE_DOMAIN, gas, quote),
+    )];
+    let args = |strict: bool| {
+        rkyv::to_bytes::<_, 4096>(&(pay.clone(), strict))
+            .expect("the batch should serialize")
+            .to_vec()
+    };
+    let message = panic_message(session.call_public_raw_with_deposit(
+        &RELAYER_SK,
+        REDTEAM_ID,
+        "run",
+        args(true),
+        quote,
+    ));
+    assert!(
+        message.contains("IGP: payer must call directly"),
+        "{message}"
+    );
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = session
+        .call_public_raw_with_deposit(&RELAYER_SK, REDTEAM_ID, "run", args(false), quote)
+        .expect("the red-team contract records the failed call");
+    assert_eq!(rt_results(&mut session), vec![false]);
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        receipt.gas_spent,
+        "nobody took the deposit, so it came back whole"
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+
+    // Each transaction pays for its own top-up.
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let first = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        quote,
+        quote,
+    )
+    .expect("the first top-up should succeed");
+    let second = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        quote,
+        quote,
+    )
+    .expect("the second top-up should succeed");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        2 * quote + first.gas_spent + second.gas_spent
+    );
+    assert_eq!(
+        session.contract_balance(&IGP_ID).unwrap(),
+        igp_before + 2 * quote
+    );
+    assert_eq!(igp_payment_records(&mut session).len(), records.len() + 2);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A top-up is priced by its destination's pricing. A destination without
+/// any, no gas, more gas than the IGP prices, or a payment that rounds to
+/// zero is refused before the deposit is taken, and nothing is recorded.
+/// Once the owner prices a destination, top-ups to it go through, and are
+/// recorded under that destination, not the message's.
+#[test]
+fn test_igp_top_up_needs_a_priced_destination() {
+    let unpriced = 42u32;
+    let cheap = 43u32;
+    // 1 LUX per 10,000 gas, and an overhead that keeps the IGP's smallest
+    // dispatch quote at 1 LUX.
+    let cheap_pricing = DomainGasConfig {
+        gas_overhead: 10_000,
+        token_exchange_rate: 1_000_000,
+        gas_price: 1,
+    };
+    let mut session = session_with_hooks_and_igp_config(vec![
+        (REMOTE_DOMAIN, TOP_UP_PRICING),
+        (cheap, cheap_pricing),
+    ]);
+    let id = dispatch_through_igp(&mut session, b"priced").data;
+    assert_contract_panic(
+        session.direct_call::<_, u64>(IGP_ID, "quote_pay_for_gas", &(unpriced, 1_000u64)),
+        "IGP: destination is not configured",
+    );
+    let records = igp_payment_records(&mut session);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    for ((destination, gas), expected) in [
+        ((unpriced, 1_000u64), "IGP: destination is not configured"),
+        ((REMOTE_DOMAIN, 0), "IGP: gas amount cannot be zero"),
+        (
+            (REMOTE_DOMAIN, 1_000_000_001),
+            "IGP: gas amount exceeds supported maximum",
+        ),
+        ((cheap, 9_999), "IGP: payment rounds to zero"),
+    ] {
+        let result = pay_for_gas(
+            &mut session,
+            &RELAYER_SK,
+            (id, destination, gas),
+            1_000_000,
+            1_000_000,
+        );
+        assert_contract_panic(result, expected);
+    }
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        4 * PAY_FOR_GAS_GAS_LIMIT
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+    assert_eq!(quote_pay_for_gas(&mut session, cheap, 10_000), 1);
+    assert_eq!(
+        quote_pay_for_gas(&mut session, REMOTE_DOMAIN, 1_000_000_000),
+        1_000_000_000
+    );
+
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_domain_gas_config",
+            &(unpriced, TOP_UP_PRICING),
+        )
+        .expect("the owner should price the destination");
+    pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, unpriced, 1_000),
+        1_000,
+        1_000,
+    )
+    .expect("a top-up to a priced destination should succeed");
+    let records = igp_payment_records(&mut session);
+    assert_eq!(paid_for(&records, id, unpriced), (1_000, 1_000));
+    assert_eq!(
+        paid_for(&records, id, REMOTE_DOMAIN),
+        (150_000, 150_000),
+        "a payment for another destination doesn't add to the message's"
+    );
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A top-up emits the event a dispatch's payment does: the same topic, the
+/// same `GasPayment` struct, the same bytes for the same fields, and those
+/// fields are its record's, as hyperlane-dusk's IGP indexer rebuilds the
+/// event from `gas_payments` to find it. Agents index top-ups unchanged.
+#[test]
+fn test_igp_top_up_emits_the_gas_payment_event_of_a_dispatch() {
+    // No overhead, so topping up a dispatch's 50,000 gas has its fields.
+    let mut session = session_with_hooks_and_igp_config(vec![(
+        REMOTE_DOMAIN,
+        DomainGasConfig {
+            gas_overhead: 0,
+            ..TOP_UP_PRICING
+        },
+    )]);
+    let dispatch = dispatch_through_igp(&mut session, b"same event");
+    let id = dispatch.data;
+    let top_up = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, 50_000),
+        50_000,
+        50_000,
+    )
+    .expect("the top-up should succeed");
+
+    let igp_events = |events: &[dusk_core::abi::Event]| -> Vec<dusk_core::abi::Event> {
+        events
+            .iter()
+            .filter(|e| e.source == IGP_ID && !e.reverted)
+            .cloned()
+            .collect()
+    };
+    let from_dispatch = igp_events(&dispatch.events);
+    let from_top_up = igp_events(&top_up.events);
+    assert_eq!(from_dispatch.len(), 1);
+    assert_eq!(from_top_up.len(), 1, "a top-up emits one event, GasPayment");
+    assert_eq!(from_top_up[0].topic, events::GasPayment::TOPIC);
+    assert_eq!(from_top_up[0].topic, from_dispatch[0].topic);
+    assert_eq!(from_top_up[0].data, from_dispatch[0].data);
+
+    let records = igp_payment_records(&mut session);
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records[0], records[1],
+        "both paid 50,000 LUX for 50,000 gas"
+    );
+    for (record, event) in records.iter().zip([&from_dispatch[0], &from_top_up[0]]) {
+        let rebuilt = test_session::rkyv_serialize(&events::GasPayment {
+            message_id: record.message_id,
+            gas_limit: record.gas_limit,
+            payment: record.payment,
+        });
+        assert_eq!(event.data, rebuilt);
+        let decoded = HyperlaneDataDriver
+            .decode_event(&event.topic, &event.data)
+            .unwrap();
+        assert_eq!(decoded["gas_limit"].as_str(), Some("50000"));
+        assert_eq!(decoded["payment"].as_str(), Some("50000"));
+    }
+}
+
+/// As on EVM, the IGP doesn't look a top-up's message up: a payment for an
+/// ID the Mailbox never dispatched is recorded and only costs its payer.
+/// The relayer only looks up payments for messages it has indexed, so the
+/// record never counts for anything.
+#[test]
+fn test_igp_top_up_for_an_undispatched_id_only_costs_its_payer() {
+    let mut session = session_for_top_ups();
+    let never_dispatched = [0x5Au8; 32];
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, 5_000);
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (never_dispatched, REMOTE_DOMAIN, 5_000),
+        quote,
+        quote,
+    )
+    .expect("a top-up for any ID should succeed");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        quote + receipt.gas_spent
+    );
+    assert_eq!(
+        paid_for(
+            &igp_payment_records(&mut session),
+            never_dispatched,
+            REMOTE_DOMAIN
+        ),
+        (5_000, quote)
+    );
+    assert_eq!(query::<_, u32>(&mut session, MAILBOX_ID, "nonce", &()), 0);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// The most a top-up can still grow the IGP's memory, the bound it checks:
+/// the chunk of records and the larger chunk table the next record may
+/// start, each with dlmalloc's overhead, in whole pages. `log` mirrors the
+/// IGP's. The chunk table is twice as large here as in wasm32, which the
+/// page rounding hides while it stays under 32 KiB.
+fn top_up_memory_bound(log: &hyperlane_dusk_types::storage::ChunkedLog<GasPaymentRecord>) -> u64 {
+    let [chunk, table] = log.push_allocations();
+    assert!(table < 32 * 1024);
+    [chunk, table]
+        .into_iter()
+        .map(|bytes| {
+            if bytes == 0 {
+                0
+            } else {
+                (bytes as u64 + 64).next_multiple_of(WASM_PAGE)
+            }
+        })
+        .sum()
+}
+
+/// `pay_for_gas` refuses a top-up unless what it can allocate fits under
+/// 3 GiB, so top-ups never take the IGP past that, and the last GiB stays
+/// for the payments dispatches make. The IGP here starts a few pages below
+/// the limit, as if it were nearly full. Every top-up it admits leaves its
+/// memory at or below 3 GiB, and it admits exactly the top-ups whose record
+/// fits. Once top-ups are closed, dispatches still pay the IGP, past 3 GiB,
+/// and top-ups stay closed there.
+#[test]
+fn test_igp_top_ups_close_at_3_gib_and_dispatches_still_pay() {
+    let limit_pages = TOP_UP_MEMORY_LIMIT / WASM_PAGE;
+    let igp = with_initial_memory_pages(IGP_BYTECODE, limit_pages - 6);
+    let mut session =
+        session_with_hooks_and_igp(&igp, 1000, 10000, vec![(REMOTE_DOMAIN, TOP_UP_PRICING)]);
+    rt_deploy(&mut session);
+    // The red-team contract dispatches to fill chunks with dispatches'
+    // payments: each pays 1,000 LUX of protocol fee and 150,000 to the IGP.
+    let credit = 2_000_000_000u64;
+    session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(REDTEAM_ID.to_bytes(), credit),
+            credit,
+        )
+        .expect("funding the red-team contract's dispatch credit should succeed");
+    let start = session.memory_len(IGP_ID);
+    assert!(
+        (TOP_UP_MEMORY_LIMIT - 6 * WASM_PAGE..=TOP_UP_MEMORY_LIMIT - 4 * WASM_PAGE)
+            .contains(&start),
+        "starts at {start}"
+    );
+
+    let placeholder = GasPaymentRecord {
+        message_id: [0; 32],
+        destination: 0,
+        gas_limit: 0,
+        payment: 0,
+        block_height: 0,
+    };
+    let per_chunk = hyperlane_dusk_types::storage::ChunkedLog::<GasPaymentRecord>::PER_CHUNK;
+    let mut log = hyperlane_dusk_types::storage::ChunkedLog::<GasPaymentRecord>::new();
+    let mut nonce = 0u32;
+    let mut dispatch = |session: &mut TestSession,
+                        log: &mut hyperlane_dusk_types::storage::ChunkedLog<GasPaymentRecord>,
+                        count: u32| {
+        dispatch_batch(session, nonce, count).expect("dispatches should pay the IGP");
+        nonce += count;
+        for _ in 0..count {
+            log.push(placeholder);
+        }
+    };
+    let top_up = ([0x7Bu8; 32], REMOTE_DOMAIN, 1_000u64);
+    let mut admitted = 0;
+    loop {
+        let memory = session.memory_len(IGP_ID);
+        let bound = top_up_memory_bound(&log);
+        let fits = memory + bound <= TOP_UP_MEMORY_LIMIT;
+        // Up to the next chunk, records allocate nothing: dispatches fill
+        // the chunk, 256 to a transaction, but for one top-up.
+        let room = per_chunk - log.len() % per_chunk;
+        if bound == 0 && room > 1 {
+            dispatch(&mut session, &mut log, (room - 1).min(256));
+            continue;
+        }
+        match pay_for_gas(&mut session, &RELAYER_SK, top_up, 1_000, 1_000) {
+            Ok(_) => {
+                assert!(fits, "record {}: admitted at {memory} + {bound}", log.len());
+                log.push(placeholder);
+                admitted += 1;
+                let after = session.memory_len(IGP_ID);
+                assert!(
+                    after <= TOP_UP_MEMORY_LIMIT,
+                    "record {}: a top-up took the IGP to {after} bytes",
+                    log.len()
+                );
+            }
+            Err(error) => {
+                assert!(
+                    !fits,
+                    "record {}: refused at {memory} + {bound}: {error}",
+                    log.len()
+                );
+                assert_contract_panic(
+                    Err::<CallReceipt<()>, _>(error),
+                    "IGP: storage full, top-ups are closed",
+                );
+                break;
+            }
+        }
+    }
+    // Each admitted top-up that started a chunk took 2 to 3 pages; the IGP
+    // started 4 to 6 below the limit, so at least the first chunk fit.
+    assert!(admitted >= 2, "admitted {admitted} top-ups");
+    let closed_at = session.memory_len(IGP_ID);
+    assert!(closed_at <= TOP_UP_MEMORY_LIMIT);
+    let count: u32 = query(&mut session, IGP_ID, "gas_payment_count", &());
+    assert_eq!(count, log.len());
+
+    // Dispatches go on paying the IGP until its memory is past 3 GiB.
+    let mut batches = 0;
+    while session.memory_len(IGP_ID) <= TOP_UP_MEMORY_LIMIT {
+        assert!(
+            batches < 16,
+            "dispatches from {closed_at} bytes never passed the limit"
+        );
+        dispatch(&mut session, &mut log, 256);
+        batches += 1;
+    }
+    let count: u32 = query(&mut session, IGP_ID, "gas_payment_count", &());
+    assert_eq!(count, log.len());
+    let last: GasPaymentRecord = query(&mut session, IGP_ID, "gas_payment_at", &(count - 1,));
+    assert_eq!((last.destination, last.gas_limit), (REMOTE_DOMAIN, 150_000));
+    // And top-ups stay closed there, even one that starts no chunk.
+    assert_eq!(top_up_memory_bound(&log), 0);
+    assert_contract_panic(
+        pay_for_gas(&mut session, &RELAYER_SK, top_up, 1_000, 1_000),
+        "IGP: storage full, top-ups are closed",
+    );
 }
 
 // =============================================================================

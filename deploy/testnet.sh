@@ -53,8 +53,9 @@ ZERO_ID=0000000000000000000000000000000000000000000000000000000000000000
 TRANSFER_CONTRACT=0100000000000000000000000000000000000000000000000000000000000000
 # The state_version of each core contract this checkout builds. Older ones
 # keep storage anyone can fill, and this checkout's agents don't read them
-# (docs/storage.md).
-CORE_STATE_VERSIONS="mailbox=5 merkle_tree_hook=2 igp=3 validator_announce=2"
+# (docs/storage.md); an IGP before 4 can't be topped up (pay_for_gas), so a
+# message that paid it too little is never relayed (docs/operations.md).
+CORE_STATE_VERSIONS="mailbox=5 merkle_tree_hook=2 igp=4 validator_announce=2"
 # The state_version of each warp route this checkout builds. Older routes may
 # pay a sponsored escrow claim to the key as given, which a forged twin of the
 # recipient's key can exploit (docs/security.md, CRITICAL-1), and don't
@@ -1003,6 +1004,9 @@ check_state_versions() {
         if [[ " $ROUTE_STATE_VERSIONS " == *" $entry "* ]]; then
             kind="route"
             older="Older routes have bugs this checkout fixes (docs/security.md, CRITICAL-1 and MEDIUM-13)."
+        elif [ "$name" = igp ]; then
+            kind="contract"
+            older="An IGP before it takes no top-ups (pay_for_gas), so a message that paid it too little is never relayed (docs/operations.md)."
         else
             kind="contract"
             older="Contracts before it keep storage anyone can fill, and this checkout's agents don't read them (docs/storage.md)."

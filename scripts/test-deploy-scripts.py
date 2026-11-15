@@ -412,7 +412,7 @@ def dusk_queries():
         f"{MAILBOX}/default_ism": {"value": MULTISIG},
         f"{MAILBOX}/state_version": {"value": 5},
         f"{MERKLE_TREE_HOOK}/state_version": {"value": 2},
-        f"{IGP}/state_version": {"value": 3},
+        f"{IGP}/state_version": {"value": 4},
         f"{IGP}/domain_gas_config/{EVM_DOMAIN}": {"value": {
             key: int(value) for key, value in DEFAULT_DUSK_IGP.items()}},
         f"{IGP}/claimable_fees": {"value": 0},
@@ -911,6 +911,19 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(len(self.traced("dusk-tx claim-fees")), 2)
         self.assertEqual(self.evm["balances"][beneficiary], 130200000000)
         self.assertEqual(self.queries[f"{IGP}/claimable_fees"]["value"], 0)
+
+    def test_an_igp_that_takes_no_top_ups_is_refused(self):
+        # IGP state_version 3 has no pay_for_gas: a Dusk message that paid it
+        # too little could never be topped up, and the relayer would never
+        # deliver it.
+        self.queries[f"{IGP}/state_version"] = {"value": 3}
+        for command in ["preflight", "agent-configs", "dusk-igp"]:
+            with self.subTest(command=command):
+                result = self.run_script(command)
+                self.assert_fails(result, "takes no top-ups (pay_for_gas)")
+                self.assertIn("records a Dusk contract (igp) at state version 3; this checkout's is 4",
+                              result.stdout + result.stderr)
+                self.assertFalse(self.relayer_config.exists())
 
     def test_claim_leaves_another_beneficiary_its_own_claim(self):
         self.queries[f"{IGP}/claimable_fees"] = {"value": 5}
