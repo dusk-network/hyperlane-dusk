@@ -165,6 +165,19 @@ DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
 DUSK_GAS_LIMIT="${DUSK_GAS_LIMIT:-30000000}"
 DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-1}"
 
+# The relayer relays any message once it is paid for, with the policies
+# deploy/testnet.sh writes (docs/costs.md#fee-coverage): a Dusk-origin
+# message's payment to the Dusk IGP must cover 2/3 of the EVM gas the relayer
+# estimates for it (the default 50% margin), and an EVM-origin message must
+# have paid the EVM IGP for the overhead demo/deploy.sh configured, as a
+# fraction of the relayer's gas limit, which is hyperlane-dusk's estimate.
+EVM_IGP_DUSK_GAS_OVERHEAD="$(jq -er '.evm.igp_dusk_gas_overhead | numbers' "$STATE_FILE")" \
+    || fail "Deployment state lacks the EVM IGP's pricing for Dusk; redeploy"
+[ "$EVM_IGP_DUSK_GAS_OVERHEAD" -le "$DUSK_RELAYER_GAS_LIMIT" ] \
+    || fail "The EVM IGP's overhead for Dusk ($EVM_IGP_DUSK_GAS_OVERHEAD) is above DUSK_RELAYER_GAS_LIMIT"
+DUSK_ORIGIN_GAS_FRACTION="2/3"
+EVM_ORIGIN_GAS_FRACTION="$EVM_IGP_DUSK_GAS_OVERHEAD/$DUSK_RELAYER_GAS_LIMIT"
+
 # Keep the EVM relayer submitter and validator identities independently
 # configurable. Existing callers remain compatible, while the live E2E can
 # isolate them from the operator account and from each other to avoid nonce
@@ -235,7 +248,11 @@ cat > "$RELAYER_CONFIG" <<JSON
   "relayChains": "anvil,dusk",
   "allowLocalCheckpointSyncers": true,
   "txIdIndexingEnabled": false,
-  "igpIndexingEnabled": false,
+  "igpIndexingEnabled": true,
+  "gasPaymentEnforcement": [
+    { "type": "onChainFeeQuoting", "gasFraction": "${DUSK_ORIGIN_GAS_FRACTION}", "matchingList": [{ "originDomain": ${DUSK_DOMAIN} }] },
+    { "type": "onChainFeeQuoting", "gasFraction": "${EVM_ORIGIN_GAS_FRACTION}", "matchingList": [{ "originDomain": ${EVM_DOMAIN} }] }
+  ],
   "chains": {
     "anvil": {
       "name": "anvil",

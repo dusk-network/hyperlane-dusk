@@ -58,7 +58,15 @@ MULTISIG_VALIDATORS="${MULTISIG_VALIDATORS:-$ANVIL_DEPLOYER}"
 MULTISIG_THRESHOLD="${MULTISIG_THRESHOLD:-1}"
 # Minimum ready balance per route. Permissionless sponsorship may exceed it.
 DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
-DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-50000}"
+# The relayer the demo's agent configs set up relays a message only once it
+# paid this deployment's IGP for enough gas (docs/costs.md#fee-coverage),
+# as the testnet relayer does. The demo prices that gas at token amounts: the
+# Dusk IGP charges 1 LUX per EVM gas, and the EVM IGP charges nothing, so the
+# demo's EVM transfers need no value, but each still leaves the payment
+# record the relayer requires. The overheads cover delivery: 200,000 EVM gas
+# plus the 50,000 of a message without hook metadata from Dusk, and a relayed
+# `process` at MULTISIG_THRESHOLD signatures into Dusk.
+DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-200000}"
 DUSK_IGP_TOKEN_EXCHANGE_RATE="${DUSK_IGP_TOKEN_EXCHANGE_RATE:-10000000000}"
 DUSK_IGP_GAS_PRICE="${DUSK_IGP_GAS_PRICE:-1}"
 
@@ -439,7 +447,7 @@ validate_saved_deployment() {
     local saved_igp_config saved_igp_domain live_igp_config
     local saved_multisig_policy live_multisig_policy
     local live_evm_value route expected_router
-    local saved_account_h256 expected_children
+    local saved_account_h256 expected_children evm_gas_oracle saved_overhead
 
     jq -e 'type == "object" and (.evm | type == "object") and (.dusk | type == "object")' \
         "$BRIDGE_STATE_FILE" >/dev/null \
@@ -557,6 +565,18 @@ validate_saved_deployment() {
         [ "$live_evm_value" = "${ANVIL_DEPLOYER,,}" ] \
             || fail "Running EVM IGP $method differs from the deployment policy; redeploy"
     done
+    # The demo's relayer requires every EVM-origin message to have paid the
+    # IGP for the saved overhead.
+    evm_gas_oracle="$(jq -er '.evm.gas_oracle | strings | select(length > 0)' "$BRIDGE_STATE_FILE")" \
+        && saved_overhead="$(jq -er '.evm.igp_dusk_gas_overhead | numbers' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the EVM IGP's pricing for Dusk; redeploy"
+    [ "$evm_hook" = "$evm_igp" ] \
+        || fail "Saved deployment's EVM hook is not its IGP, so its messages pay nothing; redeploy"
+    live_evm_value="$(cast call "$evm_igp" "destinationGasConfigs(uint32)(address,uint96)" "$DUSK_DOMAIN" \
+        --rpc-url "$ANVIL_RPC" 2>/dev/null | awk '{print $1}' | paste -sd' ' | tr '[:upper:]' '[:lower:]')" \
+        || fail "Saved EVM IGP's pricing for Dusk is not queryable on the running chain"
+    [ "$live_evm_value" = "${evm_gas_oracle,,} $saved_overhead" ] \
+        || fail "Running EVM IGP's pricing for Dusk differs from the saved deployment; redeploy"
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
     validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 5
     [ "$(query_dusk_u32 "$dusk_mailbox" local_domain "Dusk Mailbox local domain")" = "$DUSK_DOMAIN" ] \
@@ -760,12 +780,6 @@ cd "$SOLIDITY_DIR"
         ok "TestIsm: $EVM_ISM"
     fi
 
-    step "Deploying TestPostDispatchHook..."
-    EVM_HOOK=$(forge_deploy contracts/test/TestPostDispatchHook.sol:TestPostDispatchHook \
-        --rpc-url "$ANVIL_RPC" \
-        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy Hook"
-    ok "TestPostDispatchHook: $EVM_HOOK"
-
     step "Deploying Mailbox (domain=$EVM_DOMAIN)..."
     EVM_MAILBOX=$(forge_deploy contracts/Mailbox.sol:Mailbox \
         --rpc-url "$ANVIL_RPC" \
@@ -801,6 +815,25 @@ cd "$SOLIDITY_DIR"
         --private-key "$ANVIL_PRIVATE_KEY" \
         &>/dev/null || fail "Failed to initialize InterchainGasPaymaster"
     ok "InterchainGasPaymaster initialized"
+
+    # The IGP is the hook of the Mailbox and of every route: the required
+    # MerkleTreeHook inserts their messages, and the IGP records their
+    # payment, at a price of zero (a rate and gas price of 1 round any gas
+    # below 1e10 down to nothing).
+    EVM_IGP_DUSK_GAS_OVERHEAD=$((1950000 + 220000 * MULTISIG_THRESHOLD))
+    step "Deploying StorageGasOracle..."
+    EVM_GAS_ORACLE=$(forge_deploy contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy StorageGasOracle"
+    cast send "$EVM_GAS_ORACLE" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])" \
+        "[($DUSK_DOMAIN,1,1)]" --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to price Dusk in the StorageGasOracle"
+    cast send "$EVM_IGP" "setDestinationGasConfigs((uint32,(address,uint96))[])" \
+        "[($DUSK_DOMAIN,($EVM_GAS_ORACLE,$EVM_IGP_DUSK_GAS_OVERHEAD))]" \
+        --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to configure the IGP for Dusk"
+    EVM_HOOK="$EVM_IGP"
+    ok "IGP prices Dusk at zero through $EVM_GAS_ORACLE, overhead $EVM_IGP_DUSK_GAS_OVERHEAD gas"
 
     step "Initializing Mailbox..."
     cast send "$EVM_MAILBOX" \
@@ -866,6 +899,8 @@ cd "$SOLIDITY_DIR"
     "merkle_tree_hook": "$EVM_MERKLE_TREE_HOOK",
     "validator_announce": "$EVM_VALIDATOR_ANNOUNCE",
     "igp": "$EVM_IGP",
+    "gas_oracle": "$EVM_GAS_ORACLE",
+    "igp_dusk_gas_overhead": $EVM_IGP_DUSK_GAS_OVERHEAD,
     "mailbox": "$EVM_MAILBOX",
     "recipient": "$EVM_RECIPIENT",
     "token": "$EVM_TOKEN",
@@ -1070,6 +1105,8 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         "merkle_tree_hook": "${EVM_MERKLE_TREE_HOOK:-}",
         "validator_announce": "${EVM_VALIDATOR_ANNOUNCE:-}",
         "igp": "${EVM_IGP:-}",
+        "gas_oracle": "$EVM_GAS_ORACLE",
+        "igp_dusk_gas_overhead": $EVM_IGP_DUSK_GAS_OVERHEAD,
         "recipient": "$EVM_RECIPIENT"
     },
     "dusk": {

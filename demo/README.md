@@ -89,6 +89,13 @@ Notes:
   chains and runs both an Anvil-origin validator and a Dusk-origin validator.
   Dusk -> EVM delivery therefore requires a checkpoint produced from Dusk
   finalized events; it is not accepted by an EVM test ISM.
+- The relayer relays a message only once it paid the origin chain's IGP for
+  enough gas, as the testnet relayer does
+  ([docs/costs.md](../docs/costs.md#fee-coverage)). The demo prices that gas
+  at token amounts: the Dusk IGP charges 1 LUX per EVM gas, and the EVM IGP,
+  which is the hook of the Anvil Mailbox and of every route, charges nothing,
+  so EVM transfers need no value but still leave the payment record the
+  relayer requires.
 - Every Dusk agent config has its own persistent `eventCursorDir`. Restarted
   agents resume contract-scoped finalized-event cursors and provenance without
   sharing mutable cursor state with another agent.
@@ -347,11 +354,12 @@ bash demo/demo.sh --skip-deploy
 ```
    EVM (Anvil, domain=31338)              Dusk (domain=4242)
   +-------------------------+           +-------------------------+
-  |  Mailbox + ISM/hooks    |           |  Mailbox + selected ISM |
-  |                         |           |  +- AggregationHook     |
-  |  HypERC20 routes       |<--------->|  |  +- MerkleTreeHook   |
-  |  +- synthetic DRC20    |  enrolled  |  |  +- ProtocolFee     |
-  |  +- native DUSK token  |  routers   |  +- IGP                |
+  |  Mailbox + ISM          |           |  Mailbox + selected ISM |
+  |  +- MerkleTreeHook      |           |  +- AggregationHook     |
+  |  +- IGP (zero price)    |           |  |  +- MerkleTreeHook   |
+  |  HypERC20 routes       |<--------->|  |  +- ProtocolFee     |
+  |  +- synthetic DRC20    |  enrolled  |  +- IGP                |
+  |  +- native DUSK token  |  routers   |                         |
   |  +- collateral token   |            |                         |
   |                         |           |  Warp routes            |
   |  TestRecipient          |           |  +- WarpDrc20          |
@@ -368,7 +376,7 @@ bash demo/demo.sh --skip-deploy
 ```bash
 # Deploy the full local route matrix on Dusk
 dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc20 \
-    --igp-domain-config 31338:50000:10000000000:1 \
+    --igp-domain-config 31338:200000:10000000000:1 \
     --deploy-warp-native --warp-collateral-token warp-drc20
 
 # Pre-fund Mailbox dispatch credit for a direct dispatcher (warp routes
