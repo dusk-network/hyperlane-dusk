@@ -63,12 +63,31 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_bool(result);
   }
 
-  /** Get the block height at which a message was delivered. Returns 0n if not delivered. */
-  async deliveredAt(messageId: Uint8Array): Promise<bigint> {
-    const args = this.wasm.rkyv_serialize_bytes32(messageId);
+  /**
+   * Quote the native DUSK fee, in LUX, that `dispatch` charges `sender` for
+   * a message. A read-only query: the sender is explicit, not the caller.
+   * A `hook` of 32 zero bytes, the default, selects the Mailbox's default
+   * hook. The quote can change with the nonce and the hook configuration.
+   */
+  async quoteDispatchForSender(
+    sender: Uint8Array,
+    destination: number,
+    recipient: Uint8Array,
+    body: Uint8Array,
+    metadata: Uint8Array = new Uint8Array(),
+    hook: Uint8Array = new Uint8Array(32)
+  ): Promise<bigint> {
+    const args = this.wasm.rkyv_serialize_quote_dispatch_for_sender(
+      sender,
+      destination,
+      recipient,
+      body,
+      metadata,
+      hook
+    );
     const result = await this.rues.contractQuery(
       this.contractId,
-      "delivered_at",
+      "quote_dispatch_for_sender",
       args
     );
     return this.wasm.rkyv_deserialize_u64(result);
@@ -121,17 +140,6 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_bytes32(result);
   }
 
-  /** Get the number of processed (delivered) messages. */
-  async processedCount(): Promise<number> {
-    const args = this.wasm.rkyv_serialize_unit();
-    const result = await this.rues.contractQuery(
-      this.contractId,
-      "processed_count",
-      args
-    );
-    return this.wasm.rkyv_deserialize_u32(result);
-  }
-
   /**
    * Query mailbox fields, keeping the nonce and latest message ID consistent.
    * Configuration fields are independent current-state reads, not a snapshot.
@@ -170,6 +178,14 @@ export interface WasmBindings {
   rkyv_serialize_u64(value: bigint): Uint8Array;
   rkyv_serialize_bool(value: boolean): Uint8Array;
   rkyv_serialize_bytes32(data: Uint8Array): Uint8Array;
+  rkyv_serialize_quote_dispatch_for_sender(
+    sender: Uint8Array,
+    destination: number,
+    recipient: Uint8Array,
+    body: Uint8Array,
+    metadata: Uint8Array,
+    hook: Uint8Array
+  ): Uint8Array;
   rkyv_deserialize_string(data: Uint8Array): string;
   rkyv_deserialize_u8(data: Uint8Array): number;
   rkyv_deserialize_u32(data: Uint8Array): number;

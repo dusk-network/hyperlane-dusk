@@ -21,10 +21,9 @@ assert.equal(view.defaultHook, state.dusk.igp);
 assert.equal(view.requiredHook, state.dusk.aggregation_hook);
 assert.ok(view.nonce >= 3, 'all three routes must have dispatched');
 assert.equal(await mailbox.dispatchedId(view.nonce - 1), view.latestDispatchedId);
-assert.ok(await mailbox.processedCount() >= 3, 'all three routes must have received');
-const processedId = await client.contractQuery(bytes(state.dusk.mailbox), 'processed_at_index', wasm.rkyv_serialize_u32(0));
-assert.equal(await mailbox.delivered(processedId), true);
-assert.ok(await mailbox.deliveredAt(processedId) > 0n);
+// The Mailbox keeps no list of deliveries; an outbound message isn't one.
+assert.equal(await mailbox.delivered(bytes(view.latestDispatchedId)), false);
+assert.equal(typeof await mailbox.quoteDispatchForSender(bytes(state.dusk.warp_native), state.evm_domain, new Uint8Array(32), new Uint8Array(64)), 'bigint');
 assert.equal(await token.symbol(), state.token_symbol);
 assert.equal(await token.name(), process.env.TOKEN_NAME);
 assert.equal(await token.decimals(), Number(process.env.TOKEN_DECIMALS));

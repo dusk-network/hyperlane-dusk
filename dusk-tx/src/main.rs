@@ -44,8 +44,8 @@ const MAX_SECRET_KEY_STDIN_BYTES: usize = 128;
 const MAX_RUES_URL_STDIN_BYTES: usize = 8 * 1024;
 const MAX_MULTISIG_VALIDATORS: usize = u8::MAX as usize;
 const MAX_CALL_ARGS_BYTES: usize = 60 * 1024;
-// Keep this synchronized with validator-announce's MAX_QUERY_VALIDATORS.
-const MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS: usize = 2;
+// Keep this synchronized with validator-announce's MAX_VALIDATOR_PAGE.
+const MAX_VALIDATOR_ANNOUNCE_PAGE: u32 = 256;
 const IGP_TOKEN_EXCHANGE_RATE_SCALE: u128 = 10_000_000_000;
 const IGP_MAX_GAS_LIMIT: u64 = 1_000_000_000;
 /// Default gas limit for claiming the signer's own escrow (`claim_pending`).
@@ -196,27 +196,25 @@ enum Command {
         #[arg(long)]
         method: String,
         /// Return type: u8, u32, u64, bool, bytes32, option-bytes32,
-        /// contract-id-list, eth-address-list, string-list,
-        /// string-list-list, validators-and-threshold, bytes, string, or
-        /// domain-gas-config.
+        /// contract-id-list, eth-address-list, bytes32-list,
+        /// validators-and-threshold, bytes, string, or domain-gas-config.
         #[arg(long, name = "return-type", default_value = "u32")]
         return_type: String,
         /// Optional u32 argument.
         #[arg(long, name = "arg-u32")]
         arg_u32: Option<u32>,
-        /// Optional pair of u32 arguments, encoded as FIRST,SECOND.
-        /// Required for ValidatorAnnounce get_announced_validators(start, limit).
+        /// Optional pair of u32 arguments, encoded as FIRST,SECOND, for a
+        /// page query: ValidatorAnnounce get_announced_validators(start,
+        /// limit) or MerkleTreeHook message_ids(start, limit).
         #[arg(long, name = "arg-u32-pair", value_name = "FIRST,SECOND")]
         arg_u32_pair: Option<String>,
         /// Optional bytes32 argument (64 hex chars).
         #[arg(long, name = "arg-bytes32")]
         arg_bytes32: Option<String>,
-        /// Optional Ethereum address argument (20-byte hex).
+        /// Optional Ethereum address argument (20-byte hex), for
+        /// ValidatorAnnounce get_announced_storage_location_hashes.
         #[arg(long, name = "arg-eth-address")]
         arg_eth_address: Option<String>,
-        /// Optional comma-separated Ethereum address list argument.
-        #[arg(long, name = "arg-eth-addresses")]
-        arg_eth_addresses: Option<String>,
     },
     /// Deposit native DUSK into a Mailbox dispatch-fee credit.
     FundDispatch {
@@ -707,7 +705,6 @@ async fn main() {
             arg_u32_pair,
             arg_bytes32,
             arg_eth_address,
-            arg_eth_addresses,
         } => {
             cmd_query(
                 &rues_url,
@@ -718,7 +715,6 @@ async fn main() {
                 arg_u32_pair.as_deref(),
                 arg_bytes32,
                 arg_eth_address,
-                arg_eth_addresses,
             )
             .await
         }
@@ -1159,7 +1155,7 @@ fn resolve_keys_password(cli_password: &str) -> Result<String, String> {
 mod tests {
     use super::{
         confirmation_error_with_hash, next_moonlight_nonce, parse_account_public_key,
-        parse_igp_domain_configs, parse_u32_pair, parse_validator_announce_query_addresses,
+        parse_eth_addresses_in_order, parse_igp_domain_configs, parse_u32_pair,
         prepare_bytes32_query_argument, prepare_dispatch_call, prepare_process_call,
         read_secret_key_hex, resolve_keys_password, resolve_signing_chain_id,
         submission_error_with_hash, wait_for_transaction_with, Bytes32QueryArgument, Cli,
@@ -1572,25 +1568,9 @@ mod tests {
     }
 
     #[test]
-    fn validator_announce_query_matches_the_contract_batch_bound() {
-        let two = format!("0x{},0x{}", "11".repeat(20), "22".repeat(20));
-        assert_eq!(
-            parse_validator_announce_query_addresses(&two)
-                .unwrap()
-                .len(),
-            2
-        );
-
-        let three = format!("{two},0x{}", "33".repeat(20));
-        assert!(parse_validator_announce_query_addresses(&three)
-            .unwrap_err()
-            .contains("at most 2"));
-    }
-
-    #[test]
-    fn validator_query_preserves_positional_address_order() {
+    fn validator_lists_keep_their_order_until_deployed() {
         let descending = format!("0x{},0x{}", "22".repeat(20), "11".repeat(20));
-        let queried = parse_validator_announce_query_addresses(&descending).unwrap();
+        let queried = parse_eth_addresses_in_order(&descending).unwrap();
         assert_eq!(
             queried,
             vec![
@@ -1605,7 +1585,7 @@ mod tests {
             "multisig deployment must still canonicalize validators"
         );
         let duplicate = format!("0x{},0x{}", "11".repeat(20), "11".repeat(20));
-        assert!(parse_validator_announce_query_addresses(&duplicate).is_err());
+        assert!(parse_eth_addresses_in_order(&duplicate).is_err());
     }
 
     #[test]
@@ -2925,17 +2905,6 @@ fn parse_eth_addresses_in_order(list: &str) -> Result<Vec<EthAddress>, String> {
     Ok(addresses)
 }
 
-fn parse_validator_announce_query_addresses(list: &str) -> Result<Vec<EthAddress>, String> {
-    // The returned location lists correspond positionally to the input list.
-    let addresses = parse_eth_addresses_in_order(list)?;
-    if addresses.len() > MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS {
-        return Err(format!(
-            "ValidatorAnnounce batch query supports at most {MAX_VALIDATOR_ANNOUNCE_QUERY_VALIDATORS} addresses"
-        ));
-    }
-    Ok(addresses)
-}
-
 fn parse_u32_pair(value: &str) -> Result<(u32, u32), String> {
     let mut parts = value.split(',');
     let first = parts
@@ -3133,15 +3102,13 @@ async fn cmd_query(
     arg_u32_pair: Option<&str>,
     arg_bytes32: Option<String>,
     arg_eth_address: Option<String>,
-    arg_eth_addresses: Option<String>,
 ) -> Result<(), String> {
     let client = RuesClient::new(rues_url)?;
     let contract_id = parse_bytes32(contract_hex)?;
     let argument_count = usize::from(arg_u32.is_some())
         + usize::from(arg_u32_pair.is_some())
         + usize::from(arg_bytes32.is_some())
-        + usize::from(arg_eth_address.is_some())
-        + usize::from(arg_eth_addresses.is_some());
+        + usize::from(arg_eth_address.is_some());
     if argument_count > 1 {
         return Err("Query accepts at most one argument option".to_string());
     }
@@ -3155,11 +3122,17 @@ async fn cmd_query(
                 "get_announced_validators requires --return-type eth-address-list".to_string(),
             );
         }
-        if !(1..=2).contains(&limit) {
-            return Err("get_announced_validators LIMIT must be 1 or 2".to_string());
+        if !(1..=MAX_VALIDATOR_ANNOUNCE_PAGE).contains(&limit) {
+            return Err(format!(
+                "get_announced_validators LIMIT must be 1 to {MAX_VALIDATOR_ANNOUNCE_PAGE}"
+            ));
         }
-    } else if arg_u32_pair.is_some() && return_type != "eth-address-list" {
-        return Err("--arg-u32-pair is supported only for eth-address-list queries".to_string());
+    } else if arg_u32_pair.is_some() && !matches!(return_type, "eth-address-list" | "bytes32-list")
+    {
+        return Err(
+            "--arg-u32-pair is supported only for eth-address-list and bytes32-list queries"
+                .to_string(),
+        );
     }
 
     match return_type {
@@ -3259,26 +3232,24 @@ async fn cmd_query(
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
-        "string-list" => {
-            let address = arg_eth_address.as_deref().ok_or_else(|| {
-                "--return-type string-list requires --arg-eth-address <address>".to_string()
-            })?;
-            let address = parse_eth_address(address)?;
-            let result: Vec<String> = client
-                .contract_query(&contract_id, method, &address)
-                .await?;
-            let output = json!({ "success": true, "value": result });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        }
-        "string-list-list" => {
-            let addresses = arg_eth_addresses.as_deref().ok_or_else(|| {
-                "--return-type string-list-list requires --arg-eth-addresses <list>".to_string()
-            })?;
-            let addresses = parse_validator_announce_query_addresses(addresses)?;
-            let result: Vec<Vec<String>> = client
-                .contract_query(&contract_id, method, &addresses)
-                .await?;
-            let output = json!({ "success": true, "value": result });
+        "bytes32-list" => {
+            let result: Vec<[u8; 32]> = if let Some(pair) = arg_u32_pair {
+                client.contract_query(&contract_id, method, &pair).await?
+            } else if let Some(address) = arg_eth_address.as_deref() {
+                let address = parse_eth_address(address)?;
+                client
+                    .contract_query(&contract_id, method, &address)
+                    .await?
+            } else {
+                return Err(
+                    "--return-type bytes32-list requires --arg-u32-pair or --arg-eth-address"
+                        .to_string(),
+                );
+            };
+            let output = json!({
+                "success": true,
+                "value": result.iter().map(hex::encode).collect::<Vec<_>>(),
+            });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         "validators-and-threshold" => {
@@ -3339,7 +3310,7 @@ async fn cmd_query(
         }
         _ => {
             return Err(format!(
-                "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, option-bytes32, contract-id-list, eth-address-list, string-list, string-list-list, validators-and-threshold, bytes, string, domain-gas-config"
+                "Unsupported return type: {return_type}. Use: u8, u32, u64, bool, bytes32, option-bytes32, contract-id-list, eth-address-list, bytes32-list, validators-and-threshold, bytes, string, domain-gas-config"
             ));
         }
     }

@@ -168,6 +168,31 @@ pub fn rkyv_serialize_bytes32(data: &[u8]) -> Result<Vec<u8>, String> {
         .to_vec())
 }
 
+/// Serialize the arguments of the Mailbox's `quote_dispatch_for_sender`
+/// query: `(sender, destination, recipient, body, metadata, hook)`. A `hook`
+/// of 32 zero bytes selects the Mailbox's default hook.
+#[wasm_bindgen]
+pub fn rkyv_serialize_quote_dispatch_for_sender(
+    sender: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "number")] destination: JsValue,
+    recipient: &[u8],
+    body: &[u8],
+    metadata: &[u8],
+    hook: &[u8],
+) -> Result<Vec<u8>, String> {
+    let args = (
+        checked_bytes32(sender)?,
+        checked_u32(destination)?,
+        checked_bytes32(recipient)?,
+        body.to_vec(),
+        metadata.to_vec(),
+        checked_bytes32(hook)?,
+    );
+    Ok(rkyv::to_bytes::<_, 256>(&args)
+        .expect("quote arguments serialization should not fail")
+        .to_vec())
+}
+
 /// Serialize an empty tuple () using rkyv (for no-argument queries).
 #[wasm_bindgen]
 pub fn rkyv_serialize_unit() -> Vec<u8> {

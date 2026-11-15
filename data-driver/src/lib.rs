@@ -151,7 +151,6 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "default_hook"
             | "required_hook"
             | "owner"
-            | "processed_count"
             | "claimable_fees"
             | "gas_payment_count"
             | "hooks"
@@ -161,21 +160,20 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "announced_validator_count"
             | "memory_bytes" => json_to_rkyv::<()>(json),
             // Mailbox queries with args
-            "delivered" | "delivered_at" => json_to_rkyv::<(MessageId,)>(json),
+            "delivered" => json_to_rkyv::<(MessageId,)>(json),
             "dispatched_id"
             | "dispatched_block_height"
-            | "processed_at_index"
-            | "processed_block_height_at_index"
             | "message_id_at"
             | "inserted_block_height"
-            | "root_at"
             | "gas_payment_at" => json_to_rkyv::<(u32,)>(json),
             "message_ids" | "gas_payments" | "get_announced_validators" => {
                 json_to_rkyv::<(u32, u32)>(json)
             }
             "recipient_ism" | "fee_credit" => json_to_rkyv::<(H256,)>(json),
-            "get_announced_storage_locations_for_validator" => json_to_rkyv::<(EthAddress,)>(json),
-            "get_announced_storage_locations" => json_to_rkyv::<(Vec<EthAddress>,)>(json),
+            "get_announced_storage_location_hashes" => json_to_rkyv::<(EthAddress,)>(json),
+            "quote_dispatch_for_sender" => {
+                json_to_rkyv::<(H256, u32, H256, Vec<u8>, Vec<u8>, H256)>(json)
+            }
             "withdraw_dispatch_credit" => encode_withdrawal_input(json),
             "claim_pending_for" => encode_account_input(json),
             // Hook queries
@@ -217,7 +215,6 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "default_hook"
             | "required_hook"
             | "owner"
-            | "processed_count"
             | "claimable_fees"
             | "gas_payment_count"
             | "hooks"
@@ -240,21 +237,20 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "symbol"
             | "decimals"
             | "wrapped_token" => rkyv_to_json::<()>(rkyv),
-            "delivered" | "delivered_at" => rkyv_to_json::<(MessageId,)>(rkyv),
+            "delivered" => rkyv_to_json::<(MessageId,)>(rkyv),
             "dispatched_id"
             | "dispatched_block_height"
-            | "processed_at_index"
-            | "processed_block_height_at_index"
             | "message_id_at"
             | "inserted_block_height"
-            | "root_at"
             | "gas_payment_at" => rkyv_to_json::<(u32,)>(rkyv),
             "message_ids" | "gas_payments" | "get_announced_validators" => {
                 rkyv_to_json::<(u32, u32)>(rkyv)
             }
             "recipient_ism" | "fee_credit" => rkyv_to_json::<(H256,)>(rkyv),
-            "get_announced_storage_locations_for_validator" => rkyv_to_json::<(EthAddress,)>(rkyv),
-            "get_announced_storage_locations" => rkyv_to_json::<(Vec<EthAddress>,)>(rkyv),
+            "get_announced_storage_location_hashes" => rkyv_to_json::<(EthAddress,)>(rkyv),
+            "quote_dispatch_for_sender" => {
+                rkyv_to_json::<(H256, u32, H256, Vec<u8>, Vec<u8>, H256)>(rkyv)
+            }
             "withdraw_dispatch_credit" => decode_withdrawal_input(rkyv),
             "claim_pending_for" => decode_account_input(rkyv),
             "quote_dispatch" | "quote_dispatch_for_contract" => {
@@ -276,13 +272,11 @@ impl ConvertibleContract for HyperlaneDataDriver {
             // u32 outputs
             "local_domain"
             | "nonce"
-            | "processed_count"
             | "gas_payment_count"
             | "state_version"
             | "announced_validator_count" => rkyv_to_json::<u32>(rkyv),
             // u64 outputs
-            "delivered_at"
-            | "protocol_fee"
+            "protocol_fee"
             | "max_protocol_fee"
             | "collected_fees"
             | "total_gas_payments"
@@ -294,7 +288,6 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "fee_credit"
             | "dispatched_block_height"
             | "inserted_block_height"
-            | "processed_block_height_at_index"
             | "memory_bytes"
             | "pending_total" => rkyv_to_json_u64(rkyv),
             // u8 outputs
@@ -302,11 +295,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             // bool outputs
             "delivered" | "is_registered" => rkyv_to_json::<bool>(rkyv),
             // H256 outputs
-            "latest_dispatched_id"
-            | "dispatched_id"
-            | "processed_at_index"
-            | "message_id_at"
-            | "root_at" => rkyv_to_json::<MessageId>(rkyv),
+            "latest_dispatched_id" | "dispatched_id" | "message_id_at" => {
+                rkyv_to_json::<MessageId>(rkyv)
+            }
             // ContractId (= H256) outputs
             "default_ism"
             | "default_hook"
@@ -320,7 +311,9 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "enrolled_router" => rkyv_to_json::<H256>(rkyv),
             "owner" => rkyv_to_json::<Option<H256>>(rkyv),
             // Vec<H256> outputs
-            "hooks" | "message_ids" => rkyv_to_json::<Vec<H256>>(rkyv),
+            "hooks" | "message_ids" | "get_announced_storage_location_hashes" => {
+                rkyv_to_json::<Vec<H256>>(rkyv)
+            }
             // String outputs
             "name" | "symbol" => rkyv_to_json::<String>(rkyv),
             // Struct outputs
@@ -329,11 +322,10 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "gas_payments" => rkyv_to_json::<Vec<GasPaymentRecord>>(rkyv),
             "validators_and_threshold" => rkyv_to_json::<(Vec<EthAddress>, u8)>(rkyv),
             "get_announced_validators" => rkyv_to_json::<Vec<EthAddress>>(rkyv),
-            "get_announced_storage_locations_for_validator" => rkyv_to_json::<Vec<String>>(rkyv),
-            "get_announced_storage_locations" => rkyv_to_json::<Vec<Vec<String>>>(rkyv),
             // u64 from quote_dispatch / quote_gas_payment
             "quote_dispatch"
             | "quote_dispatch_for_contract"
+            | "quote_dispatch_for_sender"
             | "quote_gas_payment"
             | "quote_transfer_remote" => rkyv_to_json_u64(rkyv),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
@@ -488,8 +480,6 @@ mod tests {
             "dispatched_block_height",
             "inserted_block_height",
             "message_id_at",
-            "processed_block_height_at_index",
-            "root_at",
             "gas_payment_at",
         ] {
             let encoded = driver
@@ -517,7 +507,6 @@ mod tests {
             "fee_credit",
             "dispatched_block_height",
             "inserted_block_height",
-            "processed_block_height_at_index",
             "pending_total",
         ] {
             driver
@@ -533,11 +522,9 @@ mod tests {
 
         let h256_json = to_json([5u8; 32]).unwrap().to_string();
         let h256_output = json_to_rkyv::<[u8; 32]>(&h256_json).unwrap();
-        for name in ["message_id_at", "root_at"] {
-            driver
-                .decode_output_fn(name, &h256_output)
-                .expect("Merkle provenance output should decode");
-        }
+        driver
+            .decode_output_fn("message_id_at", &h256_output)
+            .expect("Merkle provenance output should decode");
 
         let record = GasPaymentRecord {
             message_id: [1u8; 32],
@@ -571,6 +558,68 @@ mod tests {
         driver
             .decode_output_fn("validators_and_threshold", &validator_output)
             .expect("validator configuration should decode");
+    }
+
+    /// Queries the contracts no longer have: the Mailbox's processed log and
+    /// delivery heights, the Merkle hook's per-insertion roots and the
+    /// ValidatorAnnounce location strings.
+    #[test]
+    fn removed_storage_queries_are_unsupported() {
+        let driver = HyperlaneDataDriver;
+        for name in [
+            "processed_count",
+            "processed_at_index",
+            "processed_block_height_at_index",
+            "delivered_at",
+            "root_at",
+            "get_announced_storage_locations",
+            "get_announced_storage_locations_for_validator",
+        ] {
+            assert!(driver.encode_input_fn(name, "[3]").is_err(), "{name}");
+            assert!(driver.decode_input_fn(name, &[0; 4]).is_err(), "{name}");
+            assert!(driver.decode_output_fn(name, &[0; 8]).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn quote_dispatch_for_sender_round_trips() {
+        let driver = HyperlaneDataDriver;
+        let json = to_json((
+            [1u8; 32],
+            1000u32,
+            [2u8; 32],
+            vec![3u8, 4],
+            Vec::<u8>::new(),
+            [0u8; 32],
+        ))
+        .unwrap()
+        .to_string();
+        let encoded = driver
+            .encode_input_fn("quote_dispatch_for_sender", &json)
+            .expect("quote input should encode");
+        assert_eq!(
+            encoded,
+            rkyv::to_bytes::<_, 1024>(&(
+                [1u8; 32],
+                1000u32,
+                [2u8; 32],
+                vec![3u8, 4],
+                Vec::<u8>::new(),
+                [0u8; 32]
+            ))
+            .unwrap()
+            .to_vec()
+        );
+        driver
+            .decode_input_fn("quote_dispatch_for_sender", &encoded)
+            .expect("quote input should decode");
+        let quote = rkyv::to_bytes::<_, 1024>(&u64::MAX).unwrap();
+        assert_eq!(
+            driver
+                .decode_output_fn("quote_dispatch_for_sender", &quote)
+                .unwrap(),
+            serde_json::json!(u64::MAX.to_string())
+        );
     }
 
     #[test]
@@ -613,19 +662,11 @@ mod tests {
 
         let one_json = to_json((validator,)).unwrap().to_string();
         let one = driver
-            .encode_input_fn("get_announced_storage_locations_for_validator", &one_json)
-            .expect("single-validator location query should encode");
+            .encode_input_fn("get_announced_storage_location_hashes", &one_json)
+            .expect("location hash query should encode");
         driver
-            .decode_input_fn("get_announced_storage_locations_for_validator", &one)
-            .expect("single-validator location query should decode");
-
-        let many_json = to_json((vec![validator],)).unwrap().to_string();
-        let many = driver
-            .encode_input_fn("get_announced_storage_locations", &many_json)
-            .expect("batched location query should encode");
-        driver
-            .decode_input_fn("get_announced_storage_locations", &many)
-            .expect("batched location query should decode");
+            .decode_input_fn("get_announced_storage_location_hashes", &one)
+            .expect("location hash query should decode");
 
         let validators =
             json_to_rkyv::<Vec<EthAddress>>(&to_json(vec![validator]).unwrap().to_string())
@@ -634,25 +675,11 @@ mod tests {
             .decode_output_fn("get_announced_validators", &validators)
             .expect("validator registry output should decode");
 
-        let locations = json_to_rkyv::<Vec<alloc::string::String>>(
-            &to_json(vec![alloc::string::String::from("s3://checkpoint")])
-                .unwrap()
-                .to_string(),
-        )
-        .unwrap();
+        let hashes =
+            json_to_rkyv::<Vec<[u8; 32]>>(&to_json(vec![[6u8; 32]]).unwrap().to_string()).unwrap();
         driver
-            .decode_output_fn("get_announced_storage_locations_for_validator", &locations)
-            .expect("single-validator location output should decode");
-
-        let batches = json_to_rkyv::<Vec<Vec<alloc::string::String>>>(
-            &to_json(vec![vec![alloc::string::String::from("s3://checkpoint")]])
-                .unwrap()
-                .to_string(),
-        )
-        .unwrap();
-        driver
-            .decode_output_fn("get_announced_storage_locations", &batches)
-            .expect("batched location output should decode");
+            .decode_output_fn("get_announced_storage_location_hashes", &hashes)
+            .expect("location hash output should decode");
     }
 
     #[test]

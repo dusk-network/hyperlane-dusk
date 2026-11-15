@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- `DuskMailbox.quoteDispatchForSender()` quotes the dispatch fee for an explicit sender as a read-only query, and the `rkyv_serialize_quote_dispatch_for_sender` binding encodes its arguments.
+
+### Removed
+
+- `DuskMailbox.deliveredAt()` and `DuskMailbox.processedCount()`. The Mailbox (`state_version` 5) no longer stores delivery heights or a list of deliveries; index its `process_id` events instead.
+
 ### Changed
 
 - `DomainGasConfig` fields use `bigint` ([#11]).
