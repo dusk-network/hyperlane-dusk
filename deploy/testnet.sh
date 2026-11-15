@@ -204,7 +204,11 @@ SCALE = 10**10                   # both IGPs' TOKEN_EXCHANGE_RATE_SCALE
 LUX, WEI = 10**9, 10**18         # per DUSK, per ETH
 DEFAULT_GAS = 50_000             # the Dusk IGP's gas for a message without hook metadata
 IGP_MAX_GAS_LIMIT = 10**9        # the largest gas limit the Dusk IGP prices
-EVM_HANDLE_GAS = 64_000          # HypERC20.handle, Hyperlane's default for synthetic routes
+# A route transfer's delivery on the EVM chain, Mailbox.process with an m-of-n
+# MessageId multisig ISM and HypERC20.handle: at most this. The local
+# rehearsal measured 140,569 gas at 2 of 3 (a StorageMessageIdMultisigIsm,
+# minting to a new holder); each signature and validator adds at most this.
+EVM_DELIVERY_BASE, EVM_DELIVERY_PER_SIGNATURE, EVM_DELIVERY_PER_VALIDATOR = 125_000, 7_500, 2_500
 DUSK_PROCESS_BASE, DUSK_PROCESS_PER_SIGNATURE = 1_950_000, 220_000
 
 def whole(name, low, high):
@@ -265,22 +269,20 @@ if dusk_quote(1 + dusk_overhead) == 0:
 if dusk_quote(IGP_MAX_GAS_LIMIT + dusk_overhead) > U64:
     errors.append("The Dusk IGP's pricing makes the largest payment overflow a u64")
 
-# Dusk -> EVM: a route transfer pays for DEFAULT_GAS + overhead. Delivering
-# it takes Mailbox.process with m-of-n MessageId multisig verification
-# (at most this, by Hyperlane's multisigIsmVerifyCosts) plus the route's
-# handle.
+# Dusk -> EVM: a route transfer pays for DEFAULT_GAS + overhead, which must
+# cover its delivery with DUSK_ORIGIN_THRESHOLD of the DUSK_ORIGIN_VALIDATORS.
 dusk_to_evm_gas = DEFAULT_GAS + dusk_overhead
 evm_delivery = None
 if dusk_threshold and validators:
-    evm_process = 152_500 + 7_000 * (dusk_threshold - 1) + 500 * (validators - 1)
-    evm_delivery = evm_process + EVM_HANDLE_GAS
+    evm_delivery = (EVM_DELIVERY_BASE + EVM_DELIVERY_PER_SIGNATURE * dusk_threshold
+                    + EVM_DELIVERY_PER_VALIDATOR * validators)
     if dusk_to_evm_gas < evm_delivery:
         errors.append(
             f"DUSK_IGP_GAS_OVERHEAD is {dusk_overhead:,}: a transfer to {evm_name} would pay for "
             f"{dusk_to_evm_gas:,} gas, but delivering it with {dusk_threshold} of {validators} "
-            f"signatures takes up to {evm_delivery:,} ({evm_process:,} for process and "
-            f"verification plus {EVM_HANDLE_GAS:,} for the route's handle). Set it to at least "
-            f"{evm_delivery - DEFAULT_GAS:,}.")
+            f"signatures takes up to {evm_delivery:,} ({EVM_DELIVERY_BASE:,} plus "
+            f"{EVM_DELIVERY_PER_SIGNATURE:,} per signature and {EVM_DELIVERY_PER_VALIDATOR:,} per "
+            f"validator). Set it to at least {evm_delivery - DEFAULT_GAS:,}.")
 
 # EVM -> Dusk: the route asks for no gas beyond the overhead, which must
 # cover a relayed `process` at EVM_ORIGIN_THRESHOLD signatures, the route's
@@ -324,15 +326,16 @@ result = {
     "dusk_to_evm": {
         "gas": dusk_to_evm_gas,
         "quote_lux": str(dusk_quote(dusk_to_evm_gas)),
-        "cost_wei": str(dusk_to_evm_gas * evm_gas_price),
-        "cost_lux": str(int(dusk_to_evm_gas * evm_gas_price * ratio * LUX / WEI)),
+        # What the gas paid for costs at the prices, without the margin.
+        "gas_cost_wei": str(dusk_to_evm_gas * evm_gas_price),
+        "gas_cost_lux": str(int(dusk_to_evm_gas * evm_gas_price * ratio * LUX / WEI)),
         "delivery_gas": evm_delivery,
     },
     "evm_to_dusk": {
         "gas": evm_overhead,
         "quote_wei": str(evm_quote(evm_overhead)),
-        "cost_lux": str(evm_overhead * dusk_gas_price),
-        "cost_wei": str(int(evm_overhead * dusk_gas_price * WEI / (ratio * LUX))),
+        "gas_cost_lux": str(evm_overhead * dusk_gas_price),
+        "gas_cost_wei": str(int(evm_overhead * dusk_gas_price * WEI / (ratio * LUX))),
         "delivery_gas": dusk_process,
     },
     "relayer": {
@@ -364,11 +367,11 @@ def summary(r):
         f"token exchange rate {dusk_rate:,}, gas price {evm_gas_price:,} wei",
         f"  a transfer pays for {d['gas']:,} {evm_name} gas: the {DEFAULT_GAS:,} the IGP charges "
         f"a message without hook metadata, plus the overhead",
-        f"  quote {amount(int(d['quote_lux']), 9)} DUSK; delivering costs the relayer "
-        f"{amount(int(d['cost_wei']), 18)} ETH, {amount(int(d['cost_lux']), 9)} DUSK, at these prices",
+        f"  quote {amount(int(d['quote_lux']), 9)} DUSK: that gas costs {amount(int(d['gas_cost_wei']), 18)} ETH, "
+        f"{amount(int(d['gas_cost_lux']), 9)} DUSK, at these prices, plus the margin",
     ]
     if d["delivery_gas"]:
-        lines.append(f"  delivery with {dusk_threshold} of {validators} signatures takes up to "
+        lines.append(f"  delivering a transfer with {dusk_threshold} of {validators} signatures takes up to "
                      f"{d['delivery_gas']:,} gas")
     lines += [
         "",
@@ -376,9 +379,10 @@ def summary(r):
         f"  pricing for domain {s['DUSK_DOMAIN']}: gas overhead {evm_overhead:,}, "
         f"token exchange rate {evm_rate:,}, gas price {dusk_gas_price} LUX",
         f"  a transfer pays for {e['gas']:,} Dusk gas: the overhead (the route adds none)",
-        f"  quote {amount(int(e['quote_wei']), 18)} ETH ({int(e['quote_wei']):,} wei); delivering costs "
-        f"the relayer {amount(int(e['cost_lux']), 9)} DUSK, {amount(int(e['cost_wei']), 18)} ETH, at these prices",
-        f"  a relayed process at EVM_ORIGIN_THRESHOLD {evm_threshold} takes about "
+        f"  quote {amount(int(e['quote_wei']), 18)} ETH ({int(e['quote_wei']):,} wei): that gas costs "
+        f"{amount(int(e['gas_cost_lux']), 9)} DUSK, {amount(int(e['gas_cost_wei']), 18)} ETH, at these prices, "
+        f"plus the margin",
+        f"  a relayed process at EVM_ORIGIN_THRESHOLD {evm_threshold} takes up to about "
         f"{e['delivery_gas']:,} gas",
         "",
         "The relayer (agent-configs) relays any message, once it is paid for:",

@@ -53,7 +53,7 @@ DEPLOYER_KEY = "0x" + "11" * 32
 DEPLOYER = "0x000000000000000000000000000000000000dead"
 
 # What deploy/testnet.env.example's defaults charge (docs/costs.md).
-DEFAULT_DUSK_IGP = {"gas_overhead": "200000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
+DEFAULT_DUSK_IGP = {"gas_overhead": "110000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
 DEFAULT_EVM_IGP = {"gas_overhead": "2170000", "token_exchange_rate": "600000000000000", "gas_price": "1"}
 
 
@@ -680,7 +680,7 @@ class TestnetDeployedIsmChecks(DeployedTestnet):
         self.assert_both_commands(False, "the Mailbox's default ISM, which is not set")
 
 
-def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=200000,
+def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=110000,
                   evm_overhead=2170000, dusk_gas_price=1):
     """docs/costs.md's formula, worked out here independently of the script."""
     ratio = Fraction(ratio)
@@ -695,7 +695,7 @@ def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead
         "evm_igp": {"gas_overhead": str(evm_overhead), "token_exchange_rate": str(evm_rate),
                     "gas_price": str(dusk_gas_price)},
         "dusk_quote_lux": gas * evm_gas_price * dusk_rate // 10**10,
-        # What delivering costs, in LUX, at the prices, before the margin.
+        # What the gas paid for costs, in LUX, at the prices, before the margin.
         "dusk_cost_lux": gas * evm_gas_price * ratio * 10**9 / 10**18,
         "evm_quote_wei": evm_overhead * dusk_gas_price * evm_rate // 10**10,
         "evm_cost_wei": evm_overhead * dusk_gas_price * Fraction(10**18) / (ratio * 10**9),
@@ -712,22 +712,22 @@ class TestnetFees(TestnetScript):
 
     def test_default_settings_charge_the_documented_amounts(self):
         fees = self.fees()
-        self.assertEqual(fees["dusk_igp"]["config"], f"{EVM_DOMAIN}:200000:375000:1000000000")
+        self.assertEqual(fees["dusk_igp"]["config"], f"{EVM_DOMAIN}:110000:375000:1000000000")
         self.assertEqual(fees["evm_igp"], {"domain": DUSK_DOMAIN, **DEFAULT_EVM_IGP})
-        # 250,000 EVM gas at 1 gwei is 0.00025 ETH, 6.25 DUSK at 25,000 DUSK
-        # per ETH; with the 50% margin, 9.375 DUSK.
-        self.assertEqual(fees["dusk_to_evm"]["quote_lux"], "9375000000")
-        self.assertEqual(fees["dusk_to_evm"]["cost_lux"], "6250000000")
+        # 160,000 EVM gas at 1 gwei is 0.00016 ETH, 4 DUSK at 25,000 DUSK per
+        # ETH; with the 50% margin, 6 DUSK.
+        self.assertEqual(fees["dusk_to_evm"]["quote_lux"], "6000000000")
+        self.assertEqual(fees["dusk_to_evm"]["gas_cost_lux"], "4000000000")
         # 2,170,000 Dusk gas at 1 LUX is 0.00217 DUSK, 8.68e10 wei; with the
         # margin, 1.302e11 wei.
         self.assertEqual(fees["evm_to_dusk"]["quote_wei"], "130200000000")
-        self.assertEqual(fees["evm_to_dusk"]["cost_wei"], "86800000000")
+        self.assertEqual(fees["evm_to_dusk"]["gas_cost_wei"], "86800000000")
         self.assertEqual(fees["relayer"], {"dusk_origin_gas_fraction": "2/3",
                                            "evm_origin_gas_fraction": "217/500",
                                            "evm_origin_required_gas": 2170000})
         summary = self.run_script("fees")
         self.assert_ok(summary)
-        self.assertIn("quote 9.375 DUSK", summary.stdout)
+        self.assertIn("quote 6 DUSK", summary.stdout)
         self.assertIn("quote 0.0000001302 ETH (130,200,000,000 wei)", summary.stdout)
 
     def test_pricing_follows_the_formula(self):
@@ -771,12 +771,16 @@ class TestnetFees(TestnetScript):
                 self.assert_fails(self.run_script("fees", **settings), expected)
 
     def test_gas_overheads_must_cover_delivery(self):
+        # 125,000 + 7,500 x 6 + 2,500 x 6 = 185,000 EVM gas, less the 50,000.
         six = ",".join(validators(6))
         self.assert_fails(
             self.run_script("fees", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6),
-            "Set it to at least 204,000")
+            "Set it to at least 135,000")
         self.assert_ok(self.run_script("fees", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6,
-                                       DUSK_IGP_GAS_OVERHEAD=204000))
+                                       DUSK_IGP_GAS_OVERHEAD=135000))
+        # The default covers 3 of 5.
+        self.assert_ok(self.run_script("fees", DUSK_ORIGIN_VALIDATORS=",".join(validators(5)),
+                                       DUSK_ORIGIN_THRESHOLD=3))
         self.assert_fails(
             self.run_script("fees", EVM_ORIGIN_THRESHOLD=2, EVM_ORIGIN_VALIDATORS=",".join(validators(2))),
             "takes about 2,390,000 Dusk gas")
@@ -848,7 +852,7 @@ class TestnetFeeCommands(DeployedTestnet):
         rows = [line.split() for line in result.stderr.splitlines() if line.split()[:1] in (["now"], ["new"])]
         # The pricing deploy/testnet.sh used to deploy charged 25,000 LUX.
         self.assertEqual(rows, [["now", "200000", "1", "1000000000", "25000"],
-                                ["new", "200000", "375000", "1000000000", "9375000000"]])
+                                ["new", "110000", "375000", "1000000000", "6000000000"]])
         self.assertIn("Dry run: nothing was sent", result.stderr)
         self.assertEqual(self.traced("dusk-tx set-igp-config"), [])
 
@@ -856,7 +860,7 @@ class TestnetFeeCommands(DeployedTestnet):
         self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"] = 1
         self.assert_ok(self.run_script("dusk-igp", "--apply"))
         [sent] = self.traced("dusk-tx set-igp-config")
-        self.assertIn(f"--igp {IGP} --igp-domain-config {EVM_DOMAIN}:200000:375000:1000000000", sent)
+        self.assertIn(f"--igp {IGP} --igp-domain-config {EVM_DOMAIN}:110000:375000:1000000000", sent)
         self.assertEqual(self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"],
                          375000)
         result = self.run_script("dusk-igp")
@@ -893,14 +897,14 @@ class TestnetFeeCommands(DeployedTestnet):
                          [self.oracle, 2390000])
 
     def test_claim_collects_both_chains(self):
-        self.queries[f"{IGP}/claimable_fees"] = {"value": 9375000000}
+        self.queries[f"{IGP}/claimable_fees"] = {"value": 6000000000}
         self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 1000000}
         beneficiary = "0x" + "be" * 20
         self.evm["contracts"][self.evm_igp]["beneficiary"] = beneficiary
         self.evm["balances"][self.evm_igp] = 130200000000
         result = self.run_script("revenue")
         self.assert_ok(result)
-        self.assertIn(f"holds 9375000000 LUX for the account with hash {DEPLOYER_H256}", result.stderr)
+        self.assertIn(f"holds 6000000000 LUX for the account with hash {DEPLOYER_H256}", result.stderr)
         self.assertIn(f"holds 130200000000 wei for {beneficiary}", result.stderr)
         self.assert_ok(self.run_script("claim"))
         self.assertEqual(self.traced("cast send"), [f"cast send {self.evm_igp} claim()"])
@@ -924,7 +928,7 @@ class TestnetDeploy(TestnetScript):
         result = self.run_script("deploy")
         self.assert_ok(result)
         [deploy] = self.traced("dusk-tx deploy-hyperlane")
-        self.assertIn(f"--igp-domain-config {EVM_DOMAIN}:200000:375000:1000000000", deploy)
+        self.assertIn(f"--igp-domain-config {EVM_DOMAIN}:110000:375000:1000000000", deploy)
         state = self.state()
         evm = self.evm["contracts"]
         oracle, igp, hook, token = (state["evm"][key] for key in
