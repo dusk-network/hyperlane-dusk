@@ -70,7 +70,7 @@ behaviour the script can't tell, and `deploy` stops.
 | Key | Network | Needs | Used for |
 |---|---|---|---|
 | Deployer | Dusk testnet | about 400 DUSK | Contract deploys, about 220 DUSK (a local rehearsal spent 207.4 DUSK on 11 transactions; the native route has since grown by 48 KB, about 10 DUSK). Each deploy also needs its gas limit times the deploy gas price, 100 DUSK, in the balance when it is submitted. `preflight` checks the balance. |
-| Deployer | Sepolia | about 0.1 ETH | ISM, IGP, gas oracle, hook, token and enrollment transactions: 10.1M gas in the local rehearsal, which deploys its ISM from source; less with Hyperlane's ISM factory. |
+| Deployer | Sepolia | about 0.1 ETH | ISM, IGP, gas oracle, hook, token and enrollment transactions: 10.4M gas in 10 transactions against the local rehearsal's core, which deploys its ISM from source; less with Hyperlane's ISM factory. The IGP and the token are each an implementation and a proxy that initializes it, 211,323 and 294,652 gas. |
 | Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each, and 0.005 DUSK for one that fails. Senders pay it back to the Sepolia IGP. |
 | Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. Senders pay it back to the Dusk IGP. |
 | Each Dusk-origin validator | EVM key, no funds | | Signing checkpoints. Its address goes in `DUSK_ORIGIN_VALIDATORS`. |
