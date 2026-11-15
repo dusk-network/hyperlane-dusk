@@ -3558,7 +3558,7 @@ fn test_warp_drc20_init() {
             .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        6
+        7
     );
 }
 

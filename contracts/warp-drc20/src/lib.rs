@@ -49,7 +49,8 @@ mod warp_drc20 {
 
     use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::drc20::{
-        self, Account, Allowance, ApproveCall, BalanceOf, TransferCall, TransferFromCall,
+        self, account_id, Account, AccountId, Allowance, ApproveCall, BalanceOf, TransferCall,
+        TransferFromCall,
     };
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
@@ -66,10 +67,13 @@ mod warp_drc20 {
     /// WarpDrc20 contract state.
     pub struct WarpDrc20 {
         // -- DRC20 token state --
-        /// Token balances per account.
-        balances: BTreeMap<Account, u64>,
-        /// Allowances keyed by token owner and approved spender.
-        allowances: BTreeMap<Account, BTreeMap<Account, u64>>,
+        /// Token balances, keyed by the holder's [`account_id`]. A zero
+        /// balance has no entry.
+        balances: BTreeMap<AccountId, u64>,
+        /// Allowances, keyed by the owner's and then the spender's
+        /// [`account_id`]. A zero allowance has no entry, and an owner with
+        /// none has no map.
+        allowances: BTreeMap<AccountId, BTreeMap<AccountId, u64>>,
         /// Total token supply.
         supply: u64,
         /// Token name.
@@ -251,12 +255,14 @@ mod warp_drc20 {
             self.pending_total
         }
 
-        /// Deployment compatibility version. Version 6: `claim_pending_for`
-        /// mints to the decoded key, and `claim_pending` registers the
-        /// sender. Version 5 added `claim_pending_for`.
+        /// Deployment compatibility version. Version 7 stores balances and
+        /// allowances under 32-byte account IDs instead of the principals;
+        /// the ABI is unchanged. Version 6: `claim_pending_for` mints to the
+        /// decoded key, and `claim_pending` registers the sender. Version 5
+        /// added `claim_pending_for`.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            6
+            7
         }
 
         // =================================================================
@@ -285,27 +291,26 @@ mod warp_drc20 {
 
         /// Returns the balance of an account.
         pub fn balance_of(&self, args: BalanceOf) -> u64 {
-            self.balances.get(&args.account).copied().unwrap_or(0)
+            self.balance(&account_id(&args.account))
         }
 
         /// Returns the allowance granted by an owner to a spender.
         pub fn allowance(&self, args: Allowance) -> u64 {
-            self.allowances
-                .get(&args.owner)
-                .and_then(|allowances| allowances.get(&args.spender).copied())
-                .unwrap_or(0)
+            self.allowance_of(&account_id(&args.owner), &account_id(&args.spender))
         }
 
         /// Transfer tokens from the caller to a recipient.
         pub fn transfer(&mut self, args: TransferCall) {
-            self.do_transfer(drc20::sender_account(), args.to, args.amount);
+            let from = drc20::sender_account();
+            let from_id = account_id(&from);
+            self.do_transfer(from, from_id, args.to, args.amount);
         }
 
         /// Approve a spender to transfer tokens on behalf of the caller.
         pub fn approve(&mut self, args: ApproveCall) {
             assert!(!args.spender.is_zero(), "WarpDrc20: spender cannot be zero");
             let owner = drc20::sender_account();
-            self.set_allowance(owner, args.spender, args.amount);
+            self.set_allowance(account_id(&owner), account_id(&args.spender), args.amount);
             abi::emit(
                 events::Drc20Approval::TOPIC,
                 events::Drc20Approval {
@@ -318,16 +323,14 @@ mod warp_drc20 {
 
         /// Transfer tokens from an owner using the caller's allowance.
         pub fn transfer_from(&mut self, args: TransferFromCall) {
-            let spender = drc20::sender_account();
-            let current = self.allowance(Allowance {
-                owner: args.owner,
-                spender,
-            });
+            let owner_id = account_id(&args.owner);
+            let spender_id = account_id(&drc20::sender_account());
+            let current = self.allowance_of(&owner_id, &spender_id);
             assert!(current >= args.amount, "WarpDrc20: allowance too low");
             if args.amount > 0 {
-                self.set_allowance(args.owner, spender, current - args.amount);
+                self.set_allowance(owner_id, spender_id, current - args.amount);
             }
-            self.do_transfer(args.owner, args.to, args.amount);
+            self.do_transfer(args.owner, owner_id, args.to, args.amount);
         }
 
         // =================================================================
@@ -363,8 +366,7 @@ mod warp_drc20 {
 
             // Burn tokens from sender only after the fee contribution is
             // authenticated. Any later failure rolls the whole call back.
-            let sender = drc20::sender_account();
-            self.burn(sender, amount);
+            self.burn(drc20::sender_account(), amount);
 
             // Dispatch via Mailbox
             let message_id: MessageId = abi::call(
@@ -654,30 +656,46 @@ mod warp_drc20 {
                 .expect("WarpDrc20: insufficient supply capacity");
         }
 
-        /// Transfer tokens between accounts.
-        fn do_transfer(&mut self, from: Account, to: Account, value: u64) {
+        /// Returns the balance stored under `id`.
+        fn balance(&self, id: &AccountId) -> u64 {
+            self.balances.get(id).copied().unwrap_or(0)
+        }
+
+        /// Stores `balance` under `id`, or removes the entry when it is zero.
+        fn set_balance(&mut self, id: AccountId, balance: u64) {
+            if balance == 0 {
+                self.balances.remove(&id);
+            } else {
+                self.balances.insert(id, balance);
+            }
+        }
+
+        /// Returns the allowance stored for an owner and spender ID.
+        fn allowance_of(&self, owner: &AccountId, spender: &AccountId) -> u64 {
+            self.allowances
+                .get(owner)
+                .and_then(|allowances| allowances.get(spender).copied())
+                .unwrap_or(0)
+        }
+
+        /// Transfer tokens between accounts. `from_id` is `from`'s account ID.
+        fn do_transfer(&mut self, from: Account, from_id: AccountId, to: Account, value: u64) {
             // No call ever resolves to a Phoenix principal, so tokens sent to
             // one could never be spent again.
             assert!(
                 !matches!(to, Account::Phoenix(_)),
                 "WarpDrc20: Phoenix recipients are not supported"
             );
-            let from_balance = self.balances.get(&from).copied().unwrap_or(0);
+            let from_balance = self.balance(&from_id);
             assert!(from_balance >= value, "WarpDrc20: insufficient balance");
             if value > 0 && from != to {
-                let remaining = from_balance - value;
-                if remaining == 0 {
-                    self.balances.remove(&from);
-                } else {
-                    self.balances.insert(from, remaining);
-                }
-                let to_balance = self.balances.get(&to).copied().unwrap_or(0);
-                self.balances.insert(
-                    to,
-                    to_balance
-                        .checked_add(value)
-                        .expect("WarpDrc20: balance overflow"),
-                );
+                self.set_balance(from_id, from_balance - value);
+                let to_id = account_id(&to);
+                let to_balance = self
+                    .balance(&to_id)
+                    .checked_add(value)
+                    .expect("WarpDrc20: balance overflow");
+                self.set_balance(to_id, to_balance);
             }
             abi::emit(
                 events::Drc20Transfer::TOPIC,
@@ -692,13 +710,12 @@ mod warp_drc20 {
         /// Mint tokens to an account.
         fn mint(&mut self, account: Account, amount: u64) {
             if amount > 0 {
-                let balance = self.balances.get(&account).copied().unwrap_or(0);
-                self.balances.insert(
-                    account,
-                    balance
-                        .checked_add(amount)
-                        .expect("WarpDrc20: balance overflow"),
-                );
+                let id = account_id(&account);
+                let balance = self
+                    .balance(&id)
+                    .checked_add(amount)
+                    .expect("WarpDrc20: balance overflow");
+                self.set_balance(id, balance);
             }
             self.supply = self
                 .supply
@@ -716,15 +733,11 @@ mod warp_drc20 {
 
         /// Burn tokens from an account.
         fn burn(&mut self, account: Account, amount: u64) {
-            let balance = self.balances.get(&account).copied().unwrap_or(0);
+            let id = account_id(&account);
+            let balance = self.balance(&id);
             assert!(balance >= amount, "WarpDrc20: insufficient balance to burn");
             if amount > 0 {
-                let remaining = balance - amount;
-                if remaining == 0 {
-                    self.balances.remove(&account);
-                } else {
-                    self.balances.insert(account, remaining);
-                }
+                self.set_balance(id, balance - amount);
             }
             self.supply = self
                 .supply
@@ -750,7 +763,7 @@ mod warp_drc20 {
         }
 
         /// Set or clear a sparse allowance entry.
-        fn set_allowance(&mut self, owner: Account, spender: Account, value: u64) {
+        fn set_allowance(&mut self, owner: AccountId, spender: AccountId, value: u64) {
             if value == 0 {
                 let remove_owner = if let Some(spenders) = self.allowances.get_mut(&owner) {
                     spenders.remove(&spender);
