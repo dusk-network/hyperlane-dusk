@@ -525,7 +525,14 @@ holder, 106,193 to one that already held tokens; a transfer from
 Anvil paid 130,200,000,000 wei to the EVM IGP and its delivery on Dusk took
 2,141,372 gas, against the 2,170,000 paid for. A short message from Dusk to
 a TestRecipient took 113,834 gas to deliver, and a message to Dusk's
-TestRecipient 2,105,513.
+TestRecipient 2,105,513. A 2 KiB message from Dusk paid for 160,000 gas at
+dispatch, against the relayer's estimate of 1,616,077 for its delivery. It
+wasn't delivered once a `dusk-tx pay-for-gas` top-up had brought that to
+618,692, and was 181 seconds after a second one brought it to 1,169,123,
+past two-thirds of the estimate; its delivery took 1,547,346 gas. The
+top-ups paid a dispatch's 37,500 LUX per gas, 37.84 DUSK for 1,009,123 gas,
+and the Dusk IGP's fees to claim came to exactly that plus the three
+dispatches' 18 DUSK.
 
 On testnet the ETH is Sepolia ETH, and the relayer pays Sepolia's gas
 price, which can be far below or above 1 gwei; the pricing is set as it
