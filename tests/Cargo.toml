@@ -17,6 +17,9 @@ dusk-data-driver = { workspace = true }
 dusk-core = { workspace = true }
 dusk-bytes = "0.1.7"
 dusk-vm = { workspace = true, default-features = false }
+# Curve points that aren't valid keys, for the key-decoding tests. The
+# version dusk-core's BLS keys use.
+dusk-bls12_381 = { version = "0.14", default-features = false, features = ["groups"] }
 
 # Test utilities
 ff = { workspace = true }

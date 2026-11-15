@@ -7929,6 +7929,141 @@ fn test_warp_collateral_forged_key_cannot_redirect_registered_account() {
     assert_forged_key_cannot_redirect_registered_account(Route::Collateral);
 }
 
+/// `pk` with its raw infinity byte set to 2. The archive check accepts any
+/// byte there; a real key has 0, and the identity 1.
+fn malformed_infinity_key(pk: &AccountPublicKey) -> AccountPublicKey {
+    let mut raw = pk.to_raw_bytes();
+    raw[192] = 2;
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    unsafe { AccountPublicKey::from_slice_unchecked(&raw) }
+}
+
+/// The compressed encoding the route computes for
+/// [`malformed_infinity_key`]`(pk)`, and so the hash it looked up before it
+/// decoded keys. `to_bytes` selects in constant time on the infinity byte.
+/// With the byte at 2, those selects keep only bit 0 of each x limb and set
+/// the infinity flag, next to an x that isn't zero: an encoding no key
+/// decodes from. (This repeats dusk-bls12_381 0.14's `to_bytes`: calling it
+/// here trips `subtle`'s debug assertion that a choice is 0 or 1, which the
+/// release-built contract doesn't have.)
+fn malformed_infinity_encoding(pk: &AccountPublicKey) -> [u8; 96] {
+    let mut raw = pk.to_raw_bytes();
+    for limb in raw[..96].chunks_exact_mut(8) {
+        let low_bit = u64::from_le_bytes(limb.try_into().unwrap()) & 1;
+        limb.copy_from_slice(&low_bit.to_le_bytes());
+    }
+    raw[192] = 0;
+    // SAFETY: a 193-byte raw key encoding.
+    let mut encoding = unsafe { AccountPublicKey::from_slice_unchecked(&raw) }.to_bytes();
+    encoding[0] |= 1 << 6;
+    encoding
+}
+
+/// A key whose point is on the curve but outside the prime-order subgroup,
+/// so no secret key has it. Its compressed encoding is well formed, and
+/// decoding it fails only the subgroup check. x is the first small integer
+/// with a point on the curve.
+fn non_subgroup_key() -> AccountPublicKey {
+    use dusk_bls12_381::G2Affine;
+    let point = (1u8..=u8::MAX)
+        .find_map(|x| {
+            let mut compressed = [0u8; 96];
+            compressed[0] = 0x80; // compressed, not infinity, smaller y
+            compressed[95] = x; // x = x + 0u
+            Option::<G2Affine>::from(G2Affine::from_compressed_unchecked(&compressed))
+        })
+        .expect("a small x has a point on the curve");
+    assert!(bool::from(point.is_on_curve()));
+    assert!(!bool::from(point.is_torsion_free()));
+    // SAFETY: a 193-byte raw point encoding of a point on the curve.
+    unsafe { AccountPublicKey::from_slice_unchecked(&point.to_raw_bytes()) }
+}
+
+/// Neither fixture decodes, and each one's hash is distinct from the
+/// recipient's.
+#[test]
+fn test_malformed_and_non_subgroup_keys_do_not_decode() {
+    let malformed = malformed_infinity_encoding(&FRESH_PK);
+    assert_eq!(malformed[0] & 0xC0, 0xC0, "compressed, at infinity");
+    let mut x = malformed;
+    x[0] &= 0x1F;
+    assert_ne!(x, [0u8; 96], "an infinity flag next to a non-zero x");
+    assert!(AccountPublicKey::from_bytes(&malformed).is_err());
+
+    let key = non_subgroup_key();
+    assert!(!key.is_valid());
+    assert!(AccountPublicKey::from_bytes(&key.to_bytes()).is_err());
+
+    for encoding in [malformed, key.to_bytes()] {
+        assert_ne!(message::keccak256(&encoding), *FRESH_ID);
+    }
+}
+
+/// `claim_pending_for` reverts for a key with a malformed infinity byte and
+/// for a point outside the subgroup, even with escrow waiting under the hash
+/// the route computes for it, and changes nothing: escrow, registrations and
+/// balances stay as they were.
+fn assert_claim_for_undecodable_keys_changes_nothing(route: Route) {
+    let amount = 200_000u64;
+    let (mut session, remote_router) = route.session(3 * amount);
+    let invalid_message = format!("{}: invalid account public key", route.name());
+    route.deliver(&mut session, remote_router, 100, *FRESH_ID, amount);
+
+    let non_subgroup = non_subgroup_key();
+    let keys = [
+        (
+            "malformed infinity byte",
+            malformed_infinity_key(&FRESH_PK),
+            message::keccak256(&malformed_infinity_encoding(&FRESH_PK)),
+        ),
+        (
+            "outside the subgroup",
+            non_subgroup,
+            message::keccak256(&non_subgroup.to_bytes()),
+        ),
+    ];
+    for (nonce, (_, _, h)) in (101..).zip(&keys) {
+        route.deliver(&mut session, remote_router, nonce, *h, amount);
+    }
+    let pending_total = |session: &mut TestSession| {
+        session
+            .direct_call::<_, u64>(route.id(), "pending_total", &())
+            .unwrap()
+            .data
+    };
+    assert_eq!(pending_total(&mut session), 3 * amount);
+
+    for (name, key, h) in &keys {
+        assert_contract_panic(route.claim_for(&mut session, key), &invalid_message);
+        for escrowed in [*h, *FRESH_ID] {
+            assert_eq!(route.pending(&mut session, escrowed), amount, "{name}");
+            assert!(
+                !route_is_registered(&mut session, route.id(), escrowed),
+                "{name}"
+            );
+        }
+        assert_eq!(pending_total(&mut session), 3 * amount, "{name}");
+        for pk in [key, &*FRESH_PK] {
+            assert_eq!(route.paid_to(&mut session, pk), 0, "{name}");
+        }
+    }
+}
+
+#[test]
+fn test_warp_native_claim_for_undecodable_keys_changes_nothing() {
+    assert_claim_for_undecodable_keys_changes_nothing(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_claim_for_undecodable_keys_changes_nothing() {
+    assert_claim_for_undecodable_keys_changes_nothing(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_claim_for_undecodable_keys_changes_nothing() {
+    assert_claim_for_undecodable_keys_changes_nothing(Route::Collateral);
+}
+
 // =============================================================================
 // Self claims
 // =============================================================================
@@ -8097,6 +8232,89 @@ fn test_relayed_process_fits_the_relayer_gas_limit() {
                 receipt.gas_spent
             );
         }
+    }
+}
+
+/// `deploy/testnet.sh` accepts a 5M relayer limit up to a threshold of 6,
+/// where it needs 4,905,000. At that threshold a relayed transfer must
+/// succeed in a transaction whose gas limit really is 5M, not just cost less
+/// than 5M under a bigger limit, on every route and both delivery paths: a
+/// payout (or mint) to a registered account and a new escrow entry. The
+/// costliest is a payout from the collateral route that locks the upstream
+/// DRC20, at about 3.27M gas.
+#[test]
+fn test_relayed_process_at_threshold_6_fits_a_5m_gas_limit() {
+    const RELAYER_GAS_LIMIT: u64 = 5_000_000;
+    const THRESHOLD: u8 = 6;
+    let amount = 1_000u64;
+    let signers = checkpoint_signer_set(THRESHOLD);
+    let validators: Vec<EthAddress> = signers.iter().map(|(address, _)| *address).collect();
+    let signing: Vec<&SecpSecretKey> = signers.iter().map(|(_, key)| key).collect();
+
+    for route in [
+        Route::Native,
+        Route::Synthetic,
+        Route::Collateral,
+        Route::CanonicalCollateral,
+    ] {
+        let (mut session, remote_router) = route.session(10 * amount);
+        session
+            .deploy(
+                ISM_MULTISIG_BYTECODE,
+                dusk_vm::ContractData::builder()
+                    .owner(DEPLOYER)
+                    .init_arg(&(*OWNER_ID, validators.clone(), THRESHOLD))
+                    .contract_id(ISM_MULTISIG_ID),
+            )
+            .expect("Deploying MessageIdMultisigISM should succeed");
+        session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                MAILBOX_ID,
+                "set_default_ism",
+                &(ISM_MULTISIG_ID,),
+            )
+            .expect("the owner sets the default ISM");
+        session
+            .call_public::<_, ()>(&OWNER_SK, route.id(), "register_account", &())
+            .expect("register_account should succeed");
+
+        let escrow = [0x7E; 32];
+        let paid_before = route.paid_to(&mut session, &OWNER_PK);
+        for (nonce, (path, recipient)) in
+            (0u32..).zip([("payout", *OWNER_ID), ("new escrow", escrow)])
+        {
+            let inbound = inbound_transfer(route.id(), remote_router, nonce, recipient, amount);
+            let metadata = signed_checkpoint_metadata(&inbound, &signing);
+            let receipt = session
+                .call_public_with_gas_limit::<_, ()>(
+                    &RELAYER_SK,
+                    MAILBOX_ID,
+                    "process",
+                    &(metadata, inbound.clone()),
+                    RELAYER_GAS_LIMIT,
+                )
+                .unwrap_or_else(|e| panic!("{route:?} {path}: process failed with 5M gas: {e}"));
+            assert!(
+                session
+                    .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message::id(&inbound),))
+                    .unwrap()
+                    .data,
+                "{route:?} {path}"
+            );
+            // The guard's 1.5x headroom holds at its highest threshold.
+            assert!(
+                receipt.gas_spent * 3 / 2 <= RELAYER_GAS_LIMIT,
+                "{route:?} {path}: process took {} gas, too close to {RELAYER_GAS_LIMIT}",
+                receipt.gas_spent
+            );
+        }
+        assert_eq!(
+            route.paid_to(&mut session, &OWNER_PK),
+            paid_before + amount,
+            "{route:?}"
+        );
+        assert_eq!(route.pending(&mut session, escrow), amount, "{route:?}");
     }
 }
 

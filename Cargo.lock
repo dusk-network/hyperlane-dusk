@@ -2079,6 +2079,7 @@ dependencies = [
  "blake3",
  "bytecheck",
  "constant_time_eq",
+ "dusk-bls12_381",
  "dusk-bytes",
  "dusk-core 1.7.1",
  "dusk-data-driver",
