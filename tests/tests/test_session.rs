@@ -68,6 +68,7 @@ impl TestSession {
     }
 
     /// Returns the current block-height.
+    #[allow(dead_code)]
     pub fn block_height(&self) -> u64 {
         rkyv_deserialize(self.0.meta(Metadata::BLOCK_HEIGHT).unwrap())
     }
@@ -106,6 +107,7 @@ impl TestSession {
     }
 
     /// Query the transfer contract for a contract's transparent DUSK balance.
+    #[allow(dead_code)]
     pub fn contract_balance(&mut self, contract: &ContractId) -> Result<u64, VMError> {
         let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
             PlonkVersion::V3,
