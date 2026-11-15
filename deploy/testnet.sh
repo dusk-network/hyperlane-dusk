@@ -849,10 +849,14 @@ deploy_evm_igp() {
     # it first. Then it is theirs; deploy another.
     [ "$(lower "$owner")" = "$(lower "$deployer")" ] \
         || fail "The EVM IGP $igp is owned by $owner, not the EVM deployer $deployer. Remove .evm.igp from $STATE and deploy again."
-    if [ "$(lower "$(evm_call "$igp" "beneficiary()(address)")")" != "$(lower "$beneficiary")" ]; then
-        info "Making $beneficiary the EVM IGP's beneficiary..."
-        evm_send "$igp" "setBeneficiary(address)" "$beneficiary"
+    # EVM_IGP_BENEFICIARY, when set, wins over what the IGP has; when it isn't,
+    # the beneficiary stays what it is, as on Dusk.
+    if [ -n "${EVM_IGP_BENEFICIARY:-}" ] \
+        && [ "$(lower "$(evm_call "$igp" "beneficiary()(address)")")" != "$(lower "$EVM_IGP_BENEFICIARY")" ]; then
+        info "Making $EVM_IGP_BENEFICIARY the EVM IGP's beneficiary..."
+        evm_send "$igp" "setBeneficiary(address)" "$EVM_IGP_BENEFICIARY"
     fi
+    beneficiary="$(evm_call "$igp" "beneficiary()(address)")" || fail "Can't read the EVM IGP's beneficiary"
     state_set --arg b "$beneficiary" '.evm.igp_beneficiary = $b'
 
     current="$(evm_igp_pricing)" || exit 1

@@ -990,6 +990,16 @@ class TestnetDeploy(TestnetScript):
         self.assertEqual(len(sent), 2)
         self.assertTrue(all("--beneficiary fixture-treasury" in line for line in sent))
 
+    def test_an_unset_beneficiary_leaves_the_igps_alone(self):
+        self.assert_ok(self.run_script("deploy"))
+        igp = self.state()["evm"]["igp"]
+        self.evm["contracts"][igp]["beneficiary"] = "0x" + "be" * 20
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.evm["contracts"][igp]["beneficiary"], "0x" + "be" * 20)
+        self.assertEqual(self.state()["evm"]["igp_beneficiary"], "0x" + "be" * 20)
+        self.assertEqual(self.traced("cast send"), [])
+        self.assertEqual(self.traced("dusk-tx set-beneficiary"), [])
+
     def test_an_older_deployment_gets_our_igp_and_a_route_hook(self):
         # deploy/testnet.sh before relaying fees: Hyperlane's IGP recorded as
         # .evm.igp, and a token on the Mailbox's default hook.
