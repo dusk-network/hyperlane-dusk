@@ -89,7 +89,7 @@ signatures.
 
 The transfer contract's own work in a Moonlight transaction, mostly the
 BLS signature check, is 1,795,675 gas plus 80 gas per transaction byte,
-within 2,500 gas over all 108 transactions measured: 1.82M for a 250-byte
+within 2,500 gas over all 110 transactions measured: 1.82M for a 250-byte
 call, 1.84M for a relayed delivery at one signature, 1.87M at six, and
 6.9M for a 63.5 KB transaction. Call gas is tx gas minus this.
 
@@ -107,14 +107,14 @@ largest whose transaction fits 64 KiB.
 
 | Call | Tx gas | Call gas | Calls | Depth | Events | Event bytes | Tx bytes |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| WarpNative transfer_remote | 2,131,717 | 302,075 | 27 | 7 | 14 | 1,937 | 404 |
-| WarpNative transfer_remote, first message on the Mailbox | 2,136,133 | 306,513 | 27 | 7 | 14 | 1,937 | 404 |
-| WarpDrc20 transfer_remote | 2,169,148 | 339,447 | 27 | 7 | 15 | 2,351 | 404 |
-| WarpDrc20Collateral transfer_remote | 2,191,752 | 362,051 | 30 | 7 | 15 | 2,351 | 404 |
-| Mailbox dispatch_default, empty body | 2,016,241 | 194,426 | 16 | 6 | 10 | 1,399 | 305 |
-| Mailbox dispatch_default, 64-byte body | 2,070,565 | 243,643 | 16 | 6 | 10 | 1,463 | 369 |
-| Mailbox dispatch_default, 1 KiB body | 3,008,655 | 1,104,883 | 16 | 6 | 10 | 2,423 | 1,329 |
-| Mailbox dispatch_default, largest body (63,252 bytes) | 62,352,491 | 55,470,050 | 16 | 6 | 10 | 64,651 | 63,557 |
+| WarpNative transfer_remote | 2,131,074 | 301,432 | 27 | 7 | 14 | 1,937 | 404 |
+| WarpNative transfer_remote, first message on the Mailbox | 2,135,492 | 305,872 | 27 | 7 | 14 | 1,937 | 404 |
+| WarpDrc20 transfer_remote | 2,168,505 | 338,804 | 27 | 7 | 15 | 2,351 | 404 |
+| WarpDrc20Collateral transfer_remote | 2,191,109 | 361,408 | 30 | 7 | 15 | 2,351 | 404 |
+| Mailbox dispatch_default, empty body | 2,015,598 | 193,783 | 16 | 6 | 10 | 1,399 | 305 |
+| Mailbox dispatch_default, 64-byte body | 2,069,922 | 243,000 | 16 | 6 | 10 | 1,463 | 369 |
+| Mailbox dispatch_default, 1 KiB body | 3,008,012 | 1,104,240 | 16 | 6 | 10 | 2,423 | 1,329 |
+| Mailbox dispatch_default, largest body (63,252 bytes) | 62,351,848 | 55,469,407 | 16 | 6 | 10 | 64,651 | 63,557 |
 | Mailbox dispatch, 64-byte body, free hook instead of the IGP | 2,052,907 | 223,791 | 14 | 6 | 8 | 1,312 | 401 |
 | Mailbox fund_dispatch, new payer | 1,828,799 | 8,779 | 1 | 3 | 3 | 971 | 298 |
 | Mailbox fund_dispatch, existing payer | 1,828,643 | 8,623 | 1 | 3 | 3 | 971 | 298 |
@@ -142,16 +142,24 @@ largest whose transaction fits 64 KiB.
 | WarpDrc20Collateral claim_pending | 1,878,294 | 62,634 | 5 | 3 | 4 | 1,185 | 258 |
 | WarpDrc20Collateral claim_pending_for | 58,671,271 | 56,838,748 | 5 | 3 | 4 | 1,185 | 462 |
 | WarpDrc20Collateral claim_pending_contract, by the red-team contract | 1,850,382 | 28,488 | 6 | 4 | 3 | 1,135 | 332 |
+| IGP pay_for_gas | 1,832,737 | 11,460 | 1 | 3 | 3 | 971 | 312 |
+| IGP pay_for_gas, with a refund | 1,848,140 | 26,863 | 2 | 3 | 4 | 1,230 | 312 |
 
 - A transfer makes 27 to 30 inter-contract calls, 7 frames deep: route,
   Mailbox, quotes from every hook, the fee forwarding through the transfer
   contract, and the AggregationHook's payment to the ProtocolFee.
-- The first message on a fresh Mailbox costs 4,416 gas more than the next:
+- The first message on a fresh Mailbox costs 4,418 gas more than the next:
   starting the first chunk of every log takes 2 pages in each of the
   Mailbox, the MerkleTreeHook and the IGP. Memory isn't priced by size.
 - A dispatch costs about 980 gas per body byte beyond 64.
 - Withdrawing credit and sponsored claims decode a public key on chain,
   about 57M gas ([security.md](security.md), LOW-7 and CRITICAL-1).
+- A top-up (`pay_for_gas`, [operations.md](operations.md#topping-up-a-message))
+  takes 11,460 gas of its own, 15,403 more when the IGP sends part of the
+  deposit back: the deposit's transfer to the IGP, its record and event,
+  and the refund. Its deposit, here 10,000 LUX for 100,000 gas at the
+  profile's pricing, is on top. `dusk-tx pay-for-gas` defaults to a 3M
+  gas limit.
 
 ### Relayed deliveries
 
@@ -230,7 +238,7 @@ larger message has to pay for more gas
 | ISM set_validators_and_threshold, 255 validators | 2,504,250 | 277,004 | 0 | 2 | 2 | 5,797 | 5,385 |
 | ISM set_validators_and_threshold, 6 validators | 1,870,410 | 42,632 | 0 | 2 | 2 | 817 | 405 |
 | ISM transfer_ownership | 1,857,047 | 37,649 | 0 | 2 | 2 | 742 | 295 |
-| IGP claim | 1,867,033 | 52,453 | 1 | 3 | 2 | 916 | 250 |
+| IGP claim | 1,867,137 | 52,557 | 1 | 3 | 2 | 916 | 250 |
 | IGP set_beneficiary | 1,856,690 | 37,432 | 0 | 2 | 2 | 704 | 292 |
 | IGP set_domain_gas_config | 1,857,078 | 37,457 | 0 | 2 | 2 | 710 | 298 |
 | IGP set_domain_gas_configs, 2 domains | 1,862,850 | 40,030 | 0 | 2 | 3 | 763 | 339 |
@@ -318,6 +326,7 @@ an ISM with 255 validators, the most it takes.
 | IGP owner | 828 | 33 |
 | IGP quote_dispatch | 1,441 | 8 |
 | IGP quote_gas_payment | 913 | 8 |
+| IGP quote_pay_for_gas | 904 | 8 |
 | IGP state_version | 82 | 4 |
 | IGP total_gas_payments | 99 | 8 |
 | ISM module_type | 82 | 1 |
@@ -394,7 +403,7 @@ transaction, or a whole transaction where each needs its own.
 
 | Path | Contract | Bytes per entry | Gas per entry |
 |---|---|---:|---:|
-| Dispatch through the deployed hooks | Mailbox | 32 | 180,027 marginal |
+| Dispatch through the deployed hooks | Mailbox | 32 | 179,384 marginal |
 |  | MerkleTreeHook | 32 |  |
 |  | IGP | 64 |  |
 | | ProtocolFee, AggregationHook | 0 | |
@@ -410,6 +419,7 @@ transaction, or a whole transaction where each needs its own.
 | WarpDrc20Collateral escrow for a new recipient | WarpDrc20Collateral | 74 | 59,886 marginal |
 |  | Mailbox | 26 |  |
 | Mailbox credit for a new payer | Mailbox | 64 | 1,831,125 per tx |
+| IGP top-up (`pay_for_gas`) for any message ID | IGP | 64 | 1,832,296 per tx |
 | WarpNative registration of a new account | WarpNative | 336 | 1,854,495 per tx |
 | WarpDrc20 registration of a new account | WarpDrc20 | 336 | 1,854,613 per tx |
 | WarpDrc20Collateral registration of a new account | WarpDrc20Collateral | 336 | 1,854,613 per tx |
@@ -550,10 +560,12 @@ the IGP's price to make that gas worth what it costs:
   overhead, 2,170,000 Dusk gas, as a warp transfer does.
 
 A message that passes is sent with the larger of the estimate and the gas
-it paid for as its gas limit. A sender can pay more on the EVM side at any
-time, with the IGP's `payForGas` for the message ID; payments for one
-message add up. On Dusk only `dispatch` pays, through the Mailbox's default
-hook.
+it paid for as its gas limit. Anyone can pay more for a message at any
+time, on either side: on the EVM IGP with `payForGas`, and on the Dusk IGP
+with `pay_for_gas`, for the message's ID and destination
+([operations.md](operations.md#topping-up-a-message)). Payments for one
+message add up, and the relayer checks a message that hasn't paid enough
+again later, less often the longer it waits.
 
 `minimum`, the other policy that checks payments, compares a payment's
 value with a fixed amount of the origin's token. It would have to change
@@ -588,13 +600,16 @@ in one transaction, where the path allows it; "one tx each" is a
 transaction per entry. At the pricing `deploy/testnet.env.example`
 configures, a dispatch through the IGP to the EVM chain pays 6.001 DUSK,
 about 49,200 DUSK per MiB, and filling the IGP costs about 400 million DUSK
-of fees.
+of fees. A top-up pays no fee beyond the gas it buys, at least one gas's
+price, 37,500 LUX there, so at that pricing top-ups are the cheaper way
+into the IGP's memory; they stop at 3 GiB (below).
 
 | Path | Contract | Bytes per entry | Gas per entry, batched | Gas per entry, one tx each | Fees per entry | DUSK per MiB, batched | DUSK per MiB, one tx each |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Delivery to a recipient that is its own ISM | Mailbox | 26 | 35,128 | 1,844,055 | none | 1.4 | 74.4 |
-| Dispatch through the IGP | Mailbox, MerkleTreeHook, IGP | 128 | 180,027 | 2,016,241 | 0.001025 DUSK | 9.9 | 24.9 |
+| Dispatch through the IGP | Mailbox, MerkleTreeHook, IGP | 128 | 179,384 | 2,015,598 | 0.001025 DUSK | 9.9 | 24.9 |
 | Credit for a new payer | Mailbox | 64 | no | 1,831,125 | 1 LUX | no | 30.0 |
+| Top-up for any message ID | IGP | 64 | no | 1,832,296 | its quote, at least 1 LUX | no | 30.0 |
 | New validator, 1-byte location | ValidatorAnnounce | 108 | 253,089 | 2,068,800 | none | 2.5 | 20.1 |
 | Transfer to a new holder | WarpDrc20 | 62 | 56,304 | 1,874,197 | 1 token unit | 1.0 | 31.7 |
 | Approval of a new spender | WarpDrc20 | 60 | 53,043 | 1,873,133 | none | 0.9 | 32.7 |
@@ -609,6 +624,11 @@ of fees.
 - Escrow is paid for by the relayer, on Dusk, through its `process` at one
   signature. The attacker pays an EVM transfer per entry, and the EVM IGP
   for the relayer's gas, without which the relayer doesn't deliver it.
+- A top-up records a payment for any message ID, from its transaction's
+  deposit, which only the transaction's own call can take, so it takes a
+  transaction per entry and can't be batched. That makes it as dear per
+  byte as credit for a new payer, and dearer than dispatching through the
+  IGP, one transaction at a time or batched.
 
 What filling each contract to its ceiling costs, with the cheapest path:
 
@@ -619,7 +639,8 @@ What filling each contract to its ceiling costs, with the cheapest path:
 | Mailbox, dispatch closed at 3 GiB | credit for new payers | 50M | about 92,200 | new; one transaction each |
 | Mailbox, dispatch closed at 3 GiB | dispatches with a free hook | about 100M | about 15,500 of gas plus 100,000 of protocol fees | storage.md |
 | MerkleTreeHook | dispatches | not reachable |  | the Mailbox closes dispatch first |
-| IGP, full at 4 GiB | dispatches through the IGP | 67M | about 12,100 of gas plus 68,800 of fees | each pays the protocol fee too |
+| IGP, full at 4 GiB | dispatches through the IGP | 67M | about 12,000 of gas plus 68,800 of fees | each pays the protocol fee too |
+| IGP, top-ups closed at 3 GiB | top-ups for any message ID | 50M | about 92,200 of gas, plus the quote for 1 gas each | one transaction each; dispatches still pay the IGP |
 | ValidatorAnnounce, full at 4 GiB | new validators, 1-byte locations | 40M | about 10,100 | storage.md's 17,400 is for 1 KiB locations |
 | WarpDrc20, full at 4 GiB | transfers to new holders | 69M | about 3,900, plus a token unit each |  |
 | WarpDrc20, full at 4 GiB | approvals of new spenders | 72M | about 3,800 |  |
@@ -630,6 +651,16 @@ What filling each contract to its ceiling costs, with the cheapest path:
 - ProtocolFee and AggregationHook have no state anyone can add to: neither
   grew over 32,768 dispatches. The ISM's state is its owner's validator
   set.
+- Top-ups stop when the IGP's memory would pass 3 GiB (`IGP: storage full,
+  top-ups are closed`), so the last GiB stays for the payments dispatches
+  make. At the profile's pricing, dispatches are the cheaper way to fill
+  the IGP anyway. At the testnet pricing, top-ups are: about 92,200 DUSK of
+  gas and 1,900 DUSK of payments take it to 3 GiB, where they close and
+  stuck messages can no longer be topped up. Making dispatches through the
+  IGP revert then still takes the last GiB in dispatches, 16.8M of them:
+  about 20,200 DUSK at the profile's pricing, and 100 million DUSK of IGP
+  fees at the testnet pricing. The owner can then point the Mailbox's
+  default hook at a new IGP.
 - A route's escrow grows only through deliveries from its enrolled router,
   each a transfer someone sent from the EVM chain, and the relayer pays for
   each delivery on Dusk. Filling a native route's 4 GiB with escrow takes
@@ -649,9 +680,9 @@ limits.
 | Relayed delivery, 1 signature | 2,142,500 | 544 | 1,400 | 1,882 | 1,000 | 1,000 |
 | Relayed delivery, 6 signatures | 3,231,735 | 868 | 928 | 1,190 | 1,000 | 928 |
 | Relayed delivery to a collateral route, 6 signatures | 3,270,197 | 868 | 917 | 1,190 | 1,000 | 917 |
-| WarpNative transfer_remote | 2,131,717 | 404 | 1,407 | 2,514 | 1,000 | 1,000 |
-| WarpDrc20Collateral transfer_remote | 2,191,752 | 404 | 1,368 | 2,514 | 1,000 | 1,000 |
-| Dispatch from an account | 2,016,241 | 305 | 1,487 | 3,297 | 1,000 | 1,000 |
+| WarpNative transfer_remote | 2,131,074 | 404 | 1,407 | 2,514 | 1,000 | 1,000 |
+| WarpDrc20Collateral transfer_remote | 2,191,109 | 404 | 1,369 | 2,514 | 1,000 | 1,000 |
+| Dispatch from an account | 2,015,598 | 305 | 1,488 | 3,297 | 1,000 | 1,000 |
 
 - Relayed deliveries are capped by the 1,000-transaction limit at one
   signature (gas would allow 1,400) and by gas at six: 928 to the native
@@ -660,7 +691,7 @@ limits.
 - Transfers out of Dusk are capped at 1,000 a block by the transaction
   limit, 100 a second.
 - From a contract, one transaction can make many calls, so gas is the only
-  limit: 16,664 dispatches or 85,401 deliveries to a recipient that is its
+  limit: 16,723 dispatches or 85,401 deliveries to a recipient that is its
   own ISM per block. Closing the Mailbox's dispatch with deliveries, about
   122M of them, takes about 1,430 full blocks, 4 hours.
 

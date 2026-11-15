@@ -218,12 +218,13 @@ skips steps already recorded there. If it stops halfway, fix the cause and run
 it again. Router enrollment is re-checked on chain each time. If the recorded
 contracts aren't on chain, for example after a testnet reset, or a recorded
 contract reports another `state_version` than this checkout's (Mailbox 5,
-MerkleTreeHook 2, IGP 3, ValidatorAnnounce 2, native route 4), `deploy`
+MerkleTreeHook 2, IGP 4, ValidatorAnnounce 2, native route 4), `deploy`
 stops; move the directory aside and deploy again. Older routes may pay
 sponsored escrow claims to forged keys
-([security notes](security.md#issues-found-and-fixed), CRITICAL-1), and
-older core contracts keep storage anyone can fill
-([storage.md](storage.md)), so `agent-configs` refuses them too.
+([security notes](security.md#issues-found-and-fixed), CRITICAL-1), older
+core contracts keep storage anyone can fill
+([storage.md](storage.md)), and an older IGP can't be topped up (LOW-15),
+so `agent-configs` refuses them too.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
@@ -387,7 +388,16 @@ cast send $IGP "payForGas(bytes32,uint32,uint256,address)" <message id> 11464425
 ```
 
 A message from Dusk pays when it is dispatched, through the Mailbox's
-default hook, and can't be paid for afterwards.
+default hook, and can be paid for afterwards too, by anyone, with
+`dusk-tx pay-for-gas` ([operations.md](operations.md#topping-up-a-message)).
+`--quote-only` prints the IGP's quote and signs nothing; then pay from any
+funded account:
+
+```bash
+IGP=$(jq -r .dusk.igp $S)
+dusk-tx pay-for-gas --rues-url $DUSK_RUES_URL --igp $IGP --nonce <nonce> --gas-amount <gas> --quote-only
+dusk-tx pay-for-gas --rues-url $DUSK_RUES_URL --keys <your keys> --igp $IGP --nonce <nonce> --gas-amount <gas>
+```
 
 ## Reproduce the contracts
 
@@ -457,8 +467,9 @@ bash deploy/local-fees-check.sh          # the relaying fees, end to end
 delivered, checks that a message from Anvil that paid our IGP nothing, and
 then only half of what it needs, isn't, and that topping it up delivers it,
 checks that a message from Dusk whose delivery costs far more than it paid
-for isn't delivered, and claims the fees on both chains. It takes about ten
-minutes.
+for isn't delivered either, nor once `dusk-tx pay-for-gas` has paid half of
+what it lacks, and is once the rest is paid, and claims the fees on both
+chains. It takes about fifteen minutes.
 
 The deploy takes about four minutes. Then run the commands from
 [Check it works](#check-it-works) with the local values: Dusk at

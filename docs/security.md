@@ -43,8 +43,8 @@ and which design decisions are still open.
 | Area | Dusk behaviour |
 |---|---|
 | Caller identity | No `msg.sender`. A shared resolver maps a root Moonlight call to `keccak256(public_sender)` and a nested call to the caller's `ContractId`, both as `H256`. All owner checks use this. |
-| Native value | No `msg.value`. WarpNative and Mailbox fee funding check the exact Moonlight deposit through the transfer contract. Hook payments use authenticated contract-to-contract transfers. |
-| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. |
+| Native value | No `msg.value`. WarpNative, Mailbox fee funding and IGP top-ups check the exact Moonlight deposit through the transfer contract. Hook payments use authenticated contract-to-contract transfers. |
+| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. Anyone can top up a message's IGP payment (`pay_for_gas`, as `payForGas` on EVM) from a Moonlight transaction's deposit; the IGP keeps its quote, sends the rest of the deposit back to the signer, and records the payment as it records a dispatch's. |
 | Account recipients | An account is `keccak256(bls_public_key)` and must be registered on a route before it can receive. Transfers to unregistered recipients go to escrow, which is only ever paid to the key with that hash. |
 | Reverts | `assert!` and `expect(...)` panics instead of custom errors. |
 | Upgrades | None. Contract IDs are deterministic; an upgrade is a new deployment. Redeploying over existing state is refused. |
@@ -194,6 +194,7 @@ before the public testnet, found:
 | LOW-12 | The TypeScript SDK's `RuesClient` accepted an RPC URL with a username and password. `fetch` then failed every request with an error that quoted the whole URL, credentials included. Other transport errors, and the URL parser's error for a URL that doesn't parse, passed through with the URL in them too. | Fixed. The client refuses a URL with a username or password, and its errors name no part of the URL; a network failure keeps only an error code such as `ECONNREFUSED` (`ts-sdk/tests/rues-credentials.test.mjs`). |
 | LOW-13 | `demo/gen-agent-configs.sh` decrypted the consensus keys a second time, in Python, with the password pasted into the Python source as `${CONSENSUS_PASSWORD@Q}`, which is Bash quoting. An apostrophe, a trailing backslash or a tab broke the script, and Python's syntax error printed the password; other backslashes were read as Python escapes, so it derived another key. | Fixed. The script writes the key file with `dusk-tx export-signer-key`, as `deploy/local-agents.sh` does, passing the password in the environment. `scripts/test-deploy-scripts.py` runs it with passwords holding quotes, backslashes, `$`, backticks, a tab and non-ASCII, through a stub and through the real `dusk-tx`. |
 | LOW-14 | `dusk-tx` reported a write as done once `tx(hash)` showed it with no error, which only proves the transaction was included. Until its block is final, a revert can drop it or run it again with another result, and nothing in the output said which it was. | Fixed. Every write's output also has `block_height`, `gas_spent` and `finalized`, whether its block was final when checked right after inclusion (with `block_hash` once it is); the existing fields are unchanged, so the agents' parsing is too. `--wait-finality` waits until the block is final, and only then reports an execution error; it is opt-in, and the agents don't use it. |
+| LOW-15 | The Dusk IGP only took a payment when a message was dispatched. Once the relayer enforced payment (`onChainFeeQuoting`), a Dusk message whose dispatch paid for too little gas, such as one whose recipient's `handle` takes more than a transfer's, or whose delivery got more expensive after it was sent, could never be relayed: nothing could add to its payment, as `payForGas` does on EVM. | Fixed. The IGP, at `state_version` 4, takes top-ups: `pay_for_gas(message_id, destination, gas_amount, deposit)`, priced by `quote_pay_for_gas` without the overhead. It takes the calling transaction's deposit through the transfer contract, which hands a deposit over once, at its exact value and only to the transaction's target, before it records anything, and sends the deposit beyond its price back to the signer. The record and the `gas_payment` event are a dispatch's, so the agents index top-ups unchanged and the relayer adds them up. `dusk-tx pay-for-gas` quotes and checks a top-up before signing it, both deploy scripts refuse an IGP below 4, and the local rehearsal tops up a stuck message until it is delivered. See [Design decisions](#design-decisions). |
 
 ## Owner powers
 
@@ -241,6 +242,37 @@ Accepted:
   or a key `claim_pending_for` has decoded, and only one canonical key has a
   given hash. A new key produces a new recipient hash anyway, and remapping
   would give an admin control over where user funds go.
+- **Top-ups aren't checked against the Mailbox**, as on EVM. `pay_for_gas`
+  records a payment for any message ID and destination it is given. The
+  Mailbox stores no message by ID, nor any destination, so checking would
+  need the payer to send the nonce or the whole message, and would only
+  protect payers from their own mistakes: a payment can only add to what a
+  message has paid, the relayer looks payments up by the ID and destination
+  of a message it has indexed, and a payment for anything else only costs
+  its payer. `dusk-tx pay-for-gas --nonce` reads the message's ID and
+  destination from the Mailbox and its `Dispatch` event for the payer.
+- **Top-ups come from the transaction's own deposit.** `pay_for_gas` must be
+  the Moonlight transaction's own call: the transfer contract only lets the
+  transaction's target take its deposit, once and at its exact value, so a
+  contract can't top up with the deposit of a transaction that calls it,
+  and one deposit can't pay twice. The IGP takes the whole deposit before
+  it records anything, and sends what it doesn't charge back to the account
+  that signed, which is the account the deposit came from, in the same
+  transaction. That needs no refund address: a key given as an argument
+  would have to be decoded first (CRITICAL-1, LOW-7), for about 57M gas.
+  The deposit is the most the payer pays, so a margin over the quote
+  survives a price update before the transaction is included, where an
+  exact payment would fail and pay its whole gas limit. Shielded
+  transactions are refused, as everywhere else.
+- **Top-ups close at 3 GiB.** A top-up takes a transaction, about 1.83M
+  gas, for its 64-byte record, but pays no fee beyond the gas it buys, so
+  at the testnet pricing it is a cheaper way to fill the IGP than a
+  dispatch, which also pays 6 DUSK of IGP fees and the protocol fee.
+  `pay_for_gas` refuses a top-up that could take the IGP's memory past
+  3 GiB, as `dispatch` does the Mailbox's, so the last GiB stays for the
+  payments dispatches make: filling the IGP to the point where dispatches
+  through it revert still takes dispatches
+  ([costs.md](costs.md#attack-costs)).
 - **Sender resolution through the transfer contract** (issue #4). A frame
   whose only caller is the transfer contract (call-stack depth 1) is a
   Moonlight transaction's own top-level call, and its sender is
@@ -300,10 +332,10 @@ Accepted:
   delivers at a loss until the owner updates them, and if the owner sets
   them too high, nobody can afford a transfer. It counts gas, not money, so
   a message priced at an IGP's old rate still passes. Anyone can pay for
-  any message on the Sepolia IGP (`payForGas`), and payments for one
-  message add up; on Dusk only `dispatch` pays. A message that paid for more
-  gas is sent with that much as its limit, so a sender can buy the gas an
-  expensive `handle` needs. A Sepolia-origin message sent through the
+  any message, on the Sepolia IGP with `payForGas` and on the Dusk IGP with
+  `pay_for_gas`, and payments for one message add up. A message that paid
+  for more gas is sent with that much as its limit, so a sender can buy the
+  gas an expensive `handle` needs. A Sepolia-origin message sent through the
   Mailbox's default hook pays no IGP for Dusk (it falls back to the Merkle
   tree alone), so it isn't relayed until someone pays our IGP for it.
 - **Recipients must not read `public_sender()`.** A recipient's `handle`,
@@ -327,7 +359,8 @@ Accepted:
 - The Mailbox keeps 32 bytes per dispatched message, plus 16 bytes per block
   that has any, and about 26 bytes per delivered message. The Merkle hook
   keeps 32 bytes per message plus 16 per block, and the IGP 64 bytes per
-  payment. `dispatch` closes for good when the Mailbox reaches 3 GiB: after
+  payment, from dispatches and top-ups alike; top-ups stop at 3 GiB.
+  `dispatch` closes for good when the Mailbox reaches 3 GiB: after
   about 100M messages, or fewer when deliveries share the memory.
   Deliveries alone close it after about 122M, which anyone can pay for with
   about 4,300 DUSK of gas by delivering messages to a recipient that names

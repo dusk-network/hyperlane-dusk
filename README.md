@@ -23,7 +23,9 @@ in `rust/main/chains/hyperlane-dusk`.
 - Relaying is paid for in both directions: each side's IGP charges the
   sender for the destination gas, with the operator's margin, and the
   generated relayer config relays any message once it is paid for
-  ([docs/costs.md](docs/costs.md#fee-coverage)).
+  ([docs/costs.md](docs/costs.md#fee-coverage)). Anyone can top up a
+  message that paid for too little, on either side
+  ([docs/operations.md](docs/operations.md#topping-up-a-message)).
 - No external audit is recorded in this repository. See
   [docs/security.md](docs/security.md) for the internal review.
 
@@ -35,7 +37,7 @@ in `rust/main/chains/hyperlane-dusk`.
 | `merkle-tree-hook` | `MerkleTreeHook` | Incremental Merkle tree that validators checkpoint. |
 | `aggregation-hook` | `StaticAggregationHook` | Fixed child set. Used as the required hook (MerkleTreeHook + ProtocolFee). |
 | `protocol-fee` | `ProtocolFee` | Fixed fee per dispatch, claimable by the owner to a beneficiary. |
-| `igp` | `InterchainGasPaymaster` | Per-domain gas pricing. The default hook. |
+| `igp` | `InterchainGasPaymaster` | Per-domain gas pricing. The default hook. Anyone can pay for more gas for a message (`pay_for_gas`). |
 | `ism-multisig` | `MessageIdMultisigIsm` | m-of-n ECDSA validator signatures via `secp256k1_recover`. |
 | `validator-announce` | `ValidatorAnnounce` | Registry of validator checkpoint storage locations. |
 | `warp-drc20` | `HypERC20` (synthetic) | Mints and burns a bridged token. |
@@ -68,7 +70,9 @@ implemented. The agents return an explicit error if a deployment points at one.
   deposit includes the quoted dispatch fee (for native DUSK, the amount plus
   the fee), and the route passes the fee on to the Mailbox. Contracts and
   accounts that call `dispatch` directly prepay Mailbox credit with
-  `fund_dispatch` instead, and can withdraw what they don't use.
+  `fund_dispatch` instead, and can withdraw what they don't use. A top-up
+  of a message's gas payment (`pay_for_gas`) is paid from its
+  transaction's deposit too, and the IGP sends back what it doesn't charge.
 - **Reentrancy.** The Dusk VM allows a callee to call back into its caller.
   The Mailbox holds an explicit guard across hook calls during dispatch, and
   marks a message delivered before any external call during `process`. The

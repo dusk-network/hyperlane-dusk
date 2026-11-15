@@ -37,7 +37,7 @@ not fail before the memory is actually full.
 | | | Dispatch credit, per payer that funded some | about 60 bytes |
 | MerkleTreeHook | 2 | Inserted message IDs, by leaf index | 32 bytes |
 | | | Insertion block heights | 16 bytes per block with an insertion |
-| IGP | 3 | Gas payment records | 64 bytes |
+| IGP | 4 | Gas payment records, from dispatches and top-ups | 64 bytes |
 | ValidatorAnnounce | 2 | Validators, in order of first announcement | 20 bytes |
 | | | keccak256 of each announced location, at most 16 per validator | 32 bytes, plus about 58 for a validator's first |
 | WarpDrc20 | 7 | Balances, keyed by account ID | about 61 bytes |
@@ -214,6 +214,11 @@ the doubling `Vec`s.
 - Withdrawing dispatch credit costs 34M gas more. It used to check the
   recipient key with `is_valid()`, 22M gas, which accepts a forged twin of
   the key; decoding it costs 57M ([security.md](security.md), LOW-7).
+- The IGP at `state_version` 4, which takes top-ups, records a dispatch's
+  payment for 643 gas less than the IGP measured here: a dispatch through
+  the deployed hooks takes 2,020,167 gas, 179,667 marginal, and the IGP
+  payment 25,085. [costs.md](costs.md) has the current figures, top-ups
+  included.
 
 ## Ceilings
 
@@ -244,8 +249,10 @@ What happens at each ceiling:
   gas; closing only dispatch, about 122M and 4,300 DUSK.
 - **MerkleTreeHook.** Not reachable: the Mailbox closes dispatch at about
   100M messages, the hook holds 134M.
-- **IGP.** Payments fail, so dispatches through the IGP revert; dispatches
-  with another hook still work. The owner can set a new default hook.
+- **IGP.** Top-ups stop at 3 GiB, and the last GiB is left to the
+  payments dispatches make. When it is full, payments fail, so dispatches
+  through the IGP revert; dispatches with another hook still work. The
+  owner can set a new default hook.
 - **ValidatorAnnounce.** New validators can't announce; existing
   announcements stay readable. Agents need a new ValidatorAnnounce.
 - **WarpDrc20.** New holders and new allowances can't be added, which
@@ -263,13 +270,15 @@ They need these changes before they can run against these contracts.
 |---|---|---|
 | Mailbox | 5 | 4 |
 | MerkleTreeHook | 2 | 1 |
-| IGP | 3 | 2 |
+| IGP | 4 | 2 |
 | ValidatorAnnounce | 2 | 1 |
 | WarpDrc20 | 7 | 6 |
 
 The agents' chain identity check should require Mailbox 5, MerkleTreeHook 2
 and ValidatorAnnounce 2: all three removed queries the agents use. The IGP's
-queries are unchanged.
+queries are unchanged. IGP 3 stored its records in chunks; 4 adds top-ups,
+which write the same records and events, so the agents need no IGP
+version.
 
 ### Mailbox
 
@@ -386,6 +395,17 @@ The locations come from events. Each successful `announce` emits topic
 Queries and events are unchanged: `gas_payment_count`, `gas_payment_at`,
 `gas_payments` (pages of 256) and `gas_payment`. `gas_payment_at` past the
 end now panics with `IGP: gas payment index out of bounds`.
+
+`state_version` 4 adds `pay_for_gas(message_id, destination, gas_amount,
+deposit)`, which anyone can call to pay for more gas for a message, and
+`quote_pay_for_gas(destination, gas_amount) -> u64`, its price. A top-up
+appends a record to the same log, `GasPaymentRecord { message_id,
+destination, gas_limit, payment, block_height }` with `gas_limit` the gas
+it bought (a dispatch's record counts the overhead in), and emits the same
+topic `gas_payment`, `GasPayment { message_id, gas_limit, payment }`. Index
+both alike and add up the gas of every record with a message's ID and
+destination, as hyperlane-base does. Several records can name one message,
+and identical ones can share a block.
 
 ### WarpDrc20
 
