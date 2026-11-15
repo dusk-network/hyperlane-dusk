@@ -7683,9 +7683,17 @@ fn test_collateral_route_guard_refuses_nested_transfer_handle_and_claims() {
     assert_eq!(dispatched_token_amounts(&receipt), vec![100]);
     assert_eq!(callback_token_balance(&mut session, custody), 600);
     assert!(!rt_delivered(&mut session, message::id(&late)));
-    assert_eq!(route_u64(&mut session, route, "pending_balance", *FRESH_ID), escrowed);
     assert_eq!(
-        route_u64(&mut session, route, "pending_balance", REDTEAM_ID.to_bytes()),
+        route_u64(&mut session, route, "pending_balance", *FRESH_ID),
+        escrowed
+    );
+    assert_eq!(
+        route_u64(
+            &mut session,
+            route,
+            "pending_balance",
+            REDTEAM_ID.to_bytes()
+        ),
         escrowed
     );
 
@@ -7695,9 +7703,17 @@ fn test_collateral_route_guard_refuses_nested_transfer_handle_and_claims() {
         .direct_call::<_, ()>(REDTEAM_ID, "run", &(nested, true))
         .expect("each call works outside another route call");
     assert!(rt_delivered(&mut session, message::id(&late)));
-    assert_eq!(route_u64(&mut session, route, "pending_balance", *FRESH_ID), 0);
     assert_eq!(
-        route_u64(&mut session, route, "pending_balance", REDTEAM_ID.to_bytes()),
+        route_u64(&mut session, route, "pending_balance", *FRESH_ID),
+        0
+    );
+    assert_eq!(
+        route_u64(
+            &mut session,
+            route,
+            "pending_balance",
+            REDTEAM_ID.to_bytes()
+        ),
         0
     );
     assert_eq!(
