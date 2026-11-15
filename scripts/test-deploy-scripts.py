@@ -1190,7 +1190,7 @@ class TestnetFeeCommands(DeployedTestnet):
         # as consecutive transactions, which can share a block.
         self.assert_ok(self.run_script("agent-configs"))
         relayer = json.loads(self.relayer_config.read_text())
-        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 32)
+        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 16)
         self.assertNotIn("maxBatchSize", relayer["chains"]["sepolia"])
         validator = json.loads((self.out / "validator-dusk.json").read_text())
         self.assertNotIn("maxBatchSize", validator["chains"]["dusk"])
@@ -2128,7 +2128,7 @@ class AgentEnvironment(unittest.TestCase):
                 self.assert_clean(environments[name], agents / f"{name}.json", expected[name])
                 self.assertEqual(environments[name]["DUSK_TX_BIN"], str(dusk_tx))
         # The relayer sends deliveries to Dusk together.
-        self.assertEqual(json.loads((agents / "relayer.json").read_text())["chains"]["dusk"]["maxBatchSize"], 32)
+        self.assertEqual(json.loads((agents / "relayer.json").read_text())["chains"]["dusk"]["maxBatchSize"], 16)
         stop = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "stop"],
                               env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(stop.returncode, 0, stop.stderr)
@@ -2274,7 +2274,7 @@ class GenAgentConfigsPassword(unittest.TestCase):
         generated = json.loads(result.stdout)
         relayer = json.loads(Path(generated["relayer"]).read_text())
         shutil.rmtree(generated["runDir"])
-        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 32)
+        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 16)
         self.assertNotIn("maxBatchSize", relayer["chains"]["anvil"])
 
     def test_agents_batch_contract_reads_through_the_multicall(self):

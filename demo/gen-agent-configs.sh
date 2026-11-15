@@ -167,8 +167,9 @@ DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-1}"
 # How many deliveries to Dusk the relayer sends together, as consecutive
 # transactions of its account that can share a block (maxBatchSize). At most
 # 64, the most of an account's transactions Rusk queues ahead of its next
-# nonce; deploy/testnet.env.example has why 32.
-DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-32}"
+# nonce; deploy/testnet.env.example has why 16, and which agents batches
+# need (set 1 for older ones).
+DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-16}"
 [[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
     || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
 

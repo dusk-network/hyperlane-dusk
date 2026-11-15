@@ -45,7 +45,7 @@ DUSK_TX="${DUSK_TX:-$DUSK_DIR/target/release/dusk-tx}"
 AGENT_STATE_DIR="${AGENT_STATE_DIR:-/var/lib/hyperlane}"
 DUSK_SIGNER_KEY_FILE="${DUSK_SIGNER_KEY_FILE:-/run/secrets/dusk-signer.key}"
 DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
-DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-32}"
+DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-16}"
 DUSK_MULTICALL="${DUSK_MULTICALL-93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4}"
 WASM_DIR="${WASM_DIR:-$DUSK_DIR/target/contract/wasm32-unknown-unknown/release}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
@@ -777,7 +777,7 @@ check_relayer_gas_limit() {
 # How many deliveries to Dusk the relayer sends together, as consecutive
 # transactions of its account (its maxBatchSize for Dusk): 1 to 64, the most
 # of an account's transactions Rusk queues ahead of its next nonce
-# (deploy/testnet.env.example has why 32).
+# (deploy/testnet.env.example has why 16, and which agents batches need).
 check_relayer_batch_size() {
     [[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
         || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, the most of an account's transactions Rusk queues ahead of its next nonce, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"

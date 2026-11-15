@@ -911,7 +911,7 @@ EVM to Dusk, 60 messages, one every 25 s:
   8.5 s, then went in one every 20.3 s, the last 778 s after its dispatch.
   That is 3 messages a minute per relayer key, against the 1,000 a block
   can hold ([Throughput](#throughput)). The configs `agent-configs` writes
-  now set `maxBatchSize` to 32, so the relayer sends the deliveries it has
+  now set `maxBatchSize` to 16, so the relayer sends the deliveries it has
   ready as consecutive transactions that share a block
   ([operations.md](operations.md#uncertain-transactions)); the bench above
   ran without it.
@@ -1041,8 +1041,9 @@ In order of what they save:
 5. **Pipeline Dusk deliveries.** Done: with `maxBatchSize` above 1 the
    relayer submits the next delivery before the last is in a block, with the
    account's next nonce (Rusk queues up to 64 per account), and the
-   generated configs set 32. One at a time, a relayer key delivered at most
-   about 4,300 messages a day to Dusk.
+   generated configs set 16, with agents from the `testnet/dusk-agents`
+   branch dated 2026-11-16 or later. One at a time, a relayer key delivered
+   at most about 4,300 messages a day to Dusk.
 6. **Cache `lastBlockPair` for a block.** Every indexer looks every 5 s,
    twice per 10 s block, and `lastBlockPair` is the most frequent request
    on a new deployment. Keeping it until the next block is due would cut

@@ -328,10 +328,15 @@ node doesn't confirm is reported as `... Propagation outcome unknown ...`.
 The relayer pipelines Dusk deliveries with both flags when its Dusk chain's
 `maxBatchSize` is above 1 and `dusk-tx call --help` lists them, and sends
 them one at a time otherwise. `agent-configs` sets `maxBatchSize` to
-`DUSK_RELAYER_MAX_BATCH_SIZE`, 32 by default and at most 64, the most of an
+`DUSK_RELAYER_MAX_BATCH_SIZE`, 16 by default and at most 64, the most of an
 account's transactions Rusk queues ahead of its next nonce: a batch goes out
 one transaction at a time, each once the node holds the one before, and a
-refused one ends the batch, sending the rest one at a time.
+refused one ends the batch, sending the rest one at a time. Pipelining needs
+agents from the `testnet/dusk-agents` branch dated 2026-11-16 or later.
+Older agents send a batch that stays in the mempool for about 12 minutes
+again, with new nonces, and the copies revert and pay their whole gas
+limit: run them with `DUSK_RELAYER_MAX_BATCH_SIZE=1`. The default stays at
+16 until batches from the fixed agents have been measured.
 
 ## CI
 
