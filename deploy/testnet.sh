@@ -37,6 +37,7 @@ WASM_DIR="${WASM_DIR:-$DUSK_DIR/target/contract/wasm32-unknown-unknown/release}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
 STATE="$OUT_DIR/deployment.json"
 ZERO_ADDRESS=0x0000000000000000000000000000000000000000
+ZERO_ID=0000000000000000000000000000000000000000000000000000000000000000
 TRANSFER_CONTRACT=0100000000000000000000000000000000000000000000000000000000000000
 # The state_version of each warp route this checkout builds. Older routes may
 # pay a sponsored escrow claim to the key as given, which a forged twin of the
@@ -192,11 +193,44 @@ preflight_keys() {
 # A relayed `process` costs about 1.95M gas plus 0.22M per signature the
 # Dusk ISM checks (test_relayed_process_fits_the_relayer_gas_limit). Below
 # that every delivery runs out of gas and pays the whole limit, which the
-# relayer's simulation can't catch, so insist on 1.5 times the cost.
+# relayer's simulation can't catch, so insist on 1.5 times the cost. Once the
+# contracts are deployed, the threshold that counts is the one on chain, which
+# the owner can change after deploying: check the larger of the two.
 check_relayer_gas_limit() {
-    local need=$(((1950000 + 220000 * EVM_ORIGIN_THRESHOLD) * 3 / 2))
+    local threshold="$EVM_ORIGIN_THRESHOLD" basis="EVM_ORIGIN_THRESHOLD" deployed need
+    deployed="$(deployed_ism_threshold)" || exit 1
+    if [ -n "$deployed" ] && [ "$deployed" -gt "$threshold" ]; then
+        threshold="$deployed" basis="the deployed ISM's threshold"
+    fi
+    need=$(((1950000 + 220000 * threshold) * 3 / 2))
     [ "$DUSK_RELAYER_GAS_LIMIT" -ge "$need" ] \
-        || fail "DUSK_RELAYER_GAS_LIMIT is $DUSK_RELAYER_GAS_LIMIT; with EVM_ORIGIN_THRESHOLD $EVM_ORIGIN_THRESHOLD it must be at least $need"
+        || fail "DUSK_RELAYER_GAS_LIMIT is $DUSK_RELAYER_GAS_LIMIT; with $basis of $threshold it must be at least $need"
+}
+
+# The threshold of the ISM that checks messages to the deployed route: the
+# route's own ISM if it has one, otherwise the Mailbox's default. Prints
+# nothing before the Dusk contracts are deployed, or if that ISM isn't a
+# multisig ISM (module type 5) and so checks no signatures.
+deployed_ism_threshold() {
+    local route mailbox ism type threshold
+    route="$(state_get '.dusk.warp_native')"
+    mailbox="$(state_get '.dusk.mailbox')"
+    [ -n "$route" ] && [ -n "$mailbox" ] || return 0
+    ism="$(dusk_query --contract "$route" --method interchain_security_module \
+        --return-type bytes32 2>/dev/null | jq -r '.value // empty')" || true
+    if [ "$ism" = "$ZERO_ID" ]; then
+        ism="$(dusk_query --contract "$mailbox" --method default_ism \
+            --return-type bytes32 2>/dev/null | jq -r '.value // empty')" || true
+    fi
+    [ -n "$ism" ] && [ "$ism" != "$ZERO_ID" ] \
+        || fail "Can't read the ISM of the Dusk route $route recorded in $STATE. If the network was reset, move $OUT_DIR aside and deploy again."
+    type="$(dusk_query --contract "$ism" --method module_type --return-type u8 2>/dev/null \
+        | jq -r '.value // empty')" || true
+    [ "$type" = 5 ] || return 0
+    threshold="$(dusk_query --contract "$ism" --method threshold --return-type u8 2>/dev/null \
+        | jq -r '.value // empty')" || true
+    [[ "$threshold" =~ ^[0-9]+$ ]] || fail "Can't read the threshold of the Dusk multisig ISM $ism"
+    printf '%s' "$threshold"
 }
 
 cmd_preflight() {

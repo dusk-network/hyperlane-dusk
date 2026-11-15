@@ -74,9 +74,12 @@ Gas on Dusk:
   native transfer at 1.95M gas plus 0.22M per signature the Dusk ISM checks
   (`EVM_ORIGIN_THRESHOLD`): 2.14M at one signature and 3.01M at five. 5M is
   2.3 times the cost at the default threshold of 1 and still 1.5 times it at
-  6. `agent-configs` refuses a limit below 1.5 times the cost at
-  `EVM_ORIGIN_THRESHOLD`, so raise it with the threshold. Validators keep
-  `DUSK_AGENT_GAS_LIMIT` (30M) for their one-time announcement.
+  6. `preflight` and `agent-configs` refuse a limit below 1.5 times the
+  cost at `EVM_ORIGIN_THRESHOLD` or, once the contracts are deployed, at
+  the threshold of the ISM the route uses on chain, whichever is higher.
+  The owner can raise that threshold after deploying, so raise the
+  relayer's limit with it. Validators keep `DUSK_AGENT_GAS_LIMIT` (30M)
+  for their one-time announcement.
 - Claiming your own escrow (`claim-pending`) takes about 1.9M gas, and
   `dusk-tx` gives it a 3M limit. Claiming someone else's
   (`claim-pending --for`) takes about 59M, because the route decodes their
