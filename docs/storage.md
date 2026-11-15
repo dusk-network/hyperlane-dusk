@@ -130,8 +130,11 @@ that much of the 3 GiB at most stays unused.
 `test_dispatch_never_takes_the_mailbox_past_3_gib` runs the deployed
 Mailbox code in a memory that starts 12 pages below the limit, dispatches
 until it closes, and checks that every admitted dispatch leaves the memory
-at or below 3 GiB, that the Mailbox admits exactly the dispatches whose
-bound fits, and that deliveries keep working past the limit.
+at or below 3 GiB and that the Mailbox admits exactly the dispatches whose
+bound fits. It then delivers messages until the memory is past 3 GiB,
+17,664 of them from the 5 pages below the limit where dispatch closed, and
+checks that a fresh message is still reserved, handled and refused as a
+replay there.
 
 Deliveries share the Mailbox's memory and count toward the 3 GiB too, so
 inbound traffic closes dispatch sooner, and deliveries alone close it after

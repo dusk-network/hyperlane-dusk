@@ -9181,9 +9181,10 @@ fn dispatch_memory_bound(
 /// under 3 GiB, so it never takes the Mailbox past that and the last GiB
 /// stays free for `process`. The Mailbox here starts 12 pages below the
 /// limit, as if it were nearly full. Every dispatch it admits leaves its
-/// memory at or below 3 GiB, it admits exactly the dispatches whose
-/// allocations fit, and once it closes, deliveries still succeed past the
-/// limit.
+/// memory at or below 3 GiB, and it admits exactly the dispatches whose
+/// allocations fit. Once it closes, deliveries go on until they have taken
+/// the memory past 3 GiB, and a fresh message is still reserved, handled
+/// and refused as a replay there.
 #[test]
 fn test_dispatch_never_takes_the_mailbox_past_3_gib() {
     let limit_pages = DISPATCH_MEMORY_LIMIT / WASM_PAGE;
@@ -9257,22 +9258,85 @@ fn test_dispatch_never_takes_the_mailbox_past_3_gib() {
         "Mailbox: storage full, dispatch is closed",
     );
 
-    // Deliveries keep working, in the memory dispatch left for them.
-    for nonce in 0..200u32 {
-        let inbound = message::encode(
+    assert_deliveries_continue_past_the_dispatch_limit(&mut s, closed_at);
+}
+
+/// Delivers messages until the Mailbox's memory is past 3 GiB, the limit
+/// dispatch stops at, then delivers one more fresh message there. From
+/// where dispatch closes, 5 pages below the limit, that takes about 18,000
+/// deliveries at 22 to 26 bytes each; the red-team contract, a recipient
+/// that names itself as its ISM, takes them 256 to a transaction.
+fn assert_deliveries_continue_past_the_dispatch_limit(s: &mut HyperlaneSession, closed_at: u64) {
+    const PER_BATCH: u32 = 256;
+    // 7 pages at 26 bytes a delivery, with room for the allocator's free
+    // space; the loop stops at the first batch past the limit.
+    const MAX_DELIVERIES: u32 = 64 * 1024;
+    rt_set_returns(&mut s.session, 0, REDTEAM_ID);
+    let filler = |nonce: u32| {
+        message::encode(
             VERSION,
             nonce,
             REMOTE_DOMAIN,
             [0xABu8; 32],
             LOCAL_DOMAIN,
-            TEST_RECIPIENT_ID.to_bytes(),
-            b"after dispatch closed",
+            REDTEAM_ID.to_bytes(),
+            b"",
+        )
+    };
+    let mut delivered = 0u32;
+    while mailbox_memory(&mut s.session) <= DISPATCH_MEMORY_LIMIT {
+        assert!(
+            delivered < MAX_DELIVERIES,
+            "{delivered} deliveries from {closed_at} bytes never passed the limit"
         );
-        s.mailbox_process(Vec::new(), inbound)
-            .expect("process should succeed once dispatch is closed");
+        let actions = (delivered..delivered + PER_BATCH)
+            .map(|nonce| rt_action(MAILBOX_ID, "process", &(Vec::<u8>::new(), filler(nonce))))
+            .collect();
+        let receipt = run_batch(&mut s.session, actions)
+            .unwrap_or_else(|e| panic!("deliveries from nonce {delivered} failed: {e}"));
+        assert_eq!(delivered_ids(&receipt).len(), PER_BATCH as usize);
+        delivered += PER_BATCH;
     }
-    assert_eq!(s.recipient_handled_count(), 200);
-    assert!(mailbox_memory(&mut s.session) <= DISPATCH_MEMORY_LIMIT + 8 * WASM_PAGE);
+    let crossed = mailbox_memory(&mut s.session);
+    assert!(
+        crossed > DISPATCH_MEMORY_LIMIT,
+        "{delivered} deliveries took the Mailbox from {closed_at} to {crossed} bytes"
+    );
+    assert_eq!(rt_counters(&mut s.session).0, delivered);
+    assert_contract_panic_contains(
+        s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xD1u8; 32], b"later".to_vec()),
+        "Mailbox: storage full, dispatch is closed",
+    );
+
+    // Past the limit, a relayed message is still reserved and handled, and
+    // its replay refused.
+    let body = b"delivered past 3 GiB".to_vec();
+    let fresh = message::encode(
+        VERSION,
+        delivered,
+        REMOTE_DOMAIN,
+        [0xCDu8; 32],
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        &body,
+    );
+    let id = message::id(&fresh);
+    assert!(!s.mailbox_delivered(id));
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), fresh.clone())
+        .expect("a fresh message is delivered past the dispatch limit");
+    assert_eq!(delivered_ids(&receipt), vec![id]);
+    assert!(s.mailbox_delivered(id));
+    assert_eq!(s.recipient_handled_count(), 1);
+    assert_eq!(s.recipient_last_origin(), REMOTE_DOMAIN);
+    assert_eq!(s.recipient_last_sender(), [0xCDu8; 32]);
+    assert_eq!(s.recipient_last_body(), body);
+    assert_contract_panic(
+        s.mailbox_process(Vec::new(), fresh),
+        "Mailbox: already delivered",
+    );
+    assert_eq!(s.recipient_handled_count(), 1);
+    assert!(mailbox_memory(&mut s.session) > DISPATCH_MEMORY_LIMIT);
 }
 
 /// The Mailbox records a delivered message by the first 16 bytes of its ID.
