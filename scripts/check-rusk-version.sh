@@ -7,10 +7,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 source <(grep -E '^RUSK_(TAG|COMMIT)=' "$ROOT/RUSK_VERSION")
-RUSK_DIR="$ROOT/../../rusk-private"
+# Cargo builds the Rusk crates through this link, ../../rusk-private.
+RUSK_DIR="$ROOT/rusk"
 
 if [ ! -d "$RUSK_DIR/core" ]; then
-    echo "error: no rusk-private checkout at $RUSK_DIR (see README, Building)" >&2
+    echo "error: no rusk-private checkout at $RUSK_DIR, which links to $(readlink "$RUSK_DIR" || echo nothing) (see README, Building)" >&2
     exit 1
 fi
 

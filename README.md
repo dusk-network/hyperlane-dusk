@@ -104,11 +104,12 @@ docs/            Security notes, storage design and operations guide
 
 ## Building
 
-The workspace builds against Dusk's private Rusk repository by relative path,
-so you need access to `dusk-network/rusk-private`, checked out at the commit
-in [`RUSK_VERSION`](RUSK_VERSION). `make` refuses to build against any other
-commit (override with `ALLOW_RUSK_MISMATCH=1`). Lay out the checkouts like
-this:
+The workspace builds against Dusk's private Rusk repository, so you need
+access to `dusk-network/rusk-private`, checked out at the commit in
+[`RUSK_VERSION`](RUSK_VERSION). `make` refuses to build against any other
+commit (override with `ALLOW_RUSK_MISMATCH=1`). Cargo reaches it through the
+`rusk` link in this repository, which points at `../../rusk-private`, so lay
+out the checkouts like this:
 
 ```
 <workspace>/
@@ -128,6 +129,12 @@ git -C ~/rusk-private worktree add --detach <workspace>/rusk-private \
 
 The Rust toolchain is pinned in `rust-toolchain.toml`. rustup installs it,
 along with `rust-src` and the `wasm32-unknown-unknown` target.
+
+The contract WASMs are reproducible: the same commits of this repository and
+`rusk-private` and the pinned toolchain give the same bytes, and so the same
+contract IDs, wherever the checkouts, the toolchain and Cargo's home are.
+[docs/testnet.md](docs/testnet.md#reproduce-the-contracts) shows how to check
+a deployed contract.
 
 ```bash
 make all               # build every contract WASM into target/contract/

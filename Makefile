@@ -15,16 +15,16 @@ STACK_SIZE := 65536
 # Contract WASMs must be byte-for-byte reproducible: a contract ID is derived
 # from its bytecode, so anyone should be able to rebuild a release and check a
 # deployed ID. Panic locations embed source paths, so map the machine-specific
-# prefixes (Cargo home, the toolchain's library sources, the Rusk checkout and
-# this checkout) to fixed ones.
+# prefixes (Cargo home, the toolchain's library sources and this checkout) to
+# fixed ones. The Rusk crates are inside this checkout, through the `rusk`
+# link, so their paths are relative already and don't depend on where
+# rusk-private is (see Cargo.toml).
 CARGO_HOME ?= $(HOME)/.cargo
 RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
-RUSK_DIR := $(abspath $(CURDIR)/../../rusk-private)
 WASM_REMAP := \
 	--remap-path-prefix=$(CARGO_HOME)/registry/src/= \
 	--remap-path-prefix=$(CARGO_HOME)/git/checkouts/=git/ \
 	--remap-path-prefix=$(RUST_SYSROOT)/lib/rustlib/src/rust/=rust/ \
-	--remap-path-prefix=$(RUSK_DIR)/=rusk/ \
 	--remap-path-prefix=$(CURDIR)/=
 CONTRACTS := mailbox merkle-tree-hook aggregation-hook ism-multisig validator-announce test-recipient plain-recipient test-mock reentrant-hook redteam-attacker callback-fee-token protocol-fee igp warp-drc20 warp-drc20-collateral warp-native
 CONTRACT_CHECK_PACKAGES := $(addprefix -p hyperlane-dusk-,$(CONTRACTS))

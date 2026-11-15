@@ -85,10 +85,10 @@ if [ ! -f "$RUSK_BIN" ]; then
 fi
 ok "Rusk binary: $RUSK_BIN"
 
-# Contract dependencies are relative paths (`../../rusk-private`). Refuse a
-# split-brain run where WASMs build from one Rusk checkout and the node runs
-# from another.
-CARGO_RUSK_DIR="$DUSK_DIR/../../rusk-private"
+# Contract dependencies come through the `rusk` link (`../../rusk-private`).
+# Refuse a split-brain run where WASMs build from one Rusk checkout and the
+# node runs from another.
+CARGO_RUSK_DIR="$DUSK_DIR/rusk"
 if [ ! -d "$CARGO_RUSK_DIR/core" ]; then
     fail "Contract Rusk dependency not found at $CARGO_RUSK_DIR"
 fi

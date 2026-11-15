@@ -314,6 +314,55 @@ without paying for it. The tokens stay where they are: burned on Sepolia,
 or locked in the Dusk route. Add such messages to the relayer's denylist to
 stop the retries.
 
+## Reproduce the contracts
+
+A contract's ID is the BLAKE2b-256 hash of its WASM, its deploy nonce (a
+little-endian u64) and the deployer's 96-byte public key, so anyone can
+check a deployed contract by rebuilding its WASM:
+
+1. Check out this repository at the deployment's commit, and `rusk-private`
+   at the commit in [`RUSK_VERSION`](../RUSK_VERSION) where the `rusk` link
+   reaches it: at `../../rusk-private`, as in the
+   [README](../README.md#building), or anywhere else with the link pointed
+   there.
+2. Run `make all`. rustup installs the toolchain `rust-toolchain.toml` pins,
+   and `Cargo.lock` pins everything else.
+3. Hash each WASM with its deploy nonce and the deployer's key, and compare
+   the result with the contract ID:
+
+   ```bash
+   python3 - target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_mailbox.wasm \
+       <deploy nonce> <deployer public key, 96 bytes in hex> <<'PY'
+   import hashlib, sys
+   h = hashlib.blake2b(digest_size=32)
+   h.update(open(sys.argv[1], 'rb').read())
+   h.update(int(sys.argv[2]).to_bytes(8, 'little'))
+   h.update(bytes.fromhex(sys.argv[3]))
+   print(h.hexdigest())
+   PY
+   ```
+
+   `deploy/testnet.sh` deploys with `dusk-tx deploy-hyperlane`, which uses
+   nonces 0 to 9 in this order: TestMock, TestRecipient, MerkleTreeHook,
+   the MessageIdMultisig ISM, ProtocolFee, AggregationHook, Mailbox,
+   ValidatorAnnounce, IGP and WarpNative.
+
+Where the checkouts are, where rustup and Cargo keep their files, and the
+user's name don't change the bytes. Panic locations are remapped to relative
+paths, and Cargo reaches `rusk-private` through the `rusk` link, inside this
+workspace. That matters: Cargo hashes a path dependency outside the
+workspace by its absolute path into every symbol name, which in a stripped,
+LTO-built WASM still reorders functions and data. When the workspace
+depended on `../../rusk-private` directly, two checkouts built the same
+WASMs only if `rusk-private` was at the same absolute path. Now builds with
+`rusk-private` behind a symlink elsewhere, as a copy in another directory,
+and with the toolchain installed at another path all give the same bytes.
+
+Anything else does change them: another commit of either repository, a
+changed `Cargo.lock`, another toolchain, or building the contracts some
+other way than `make all`, which sets the profile, the stack size and the
+path remapping.
+
 ## Rehearse locally
 
 To run the whole procedure without touching real networks, use the local

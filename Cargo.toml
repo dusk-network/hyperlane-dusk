@@ -24,6 +24,9 @@ members = [
     "e2e",
     "dusk-tx",
 ]
+# `rusk` links to the rusk-private checkout (../../rusk-private) and isn't a
+# member. See [workspace.dependencies].
+exclude = ["rusk"]
 
 [workspace.package]
 edition = "2021"
@@ -36,9 +39,13 @@ hyperlane-dusk-types = { path = "./types" }
 # Dusk
 # Contract ABI, VM tests and host functions come from a rusk-private checkout
 # at the release in RUSK_VERSION, which is what testnet and mainnet run.
-dusk-core = { path = "../../rusk-private/core" }
+# They're reached through the `rusk` link, inside this workspace: Cargo hashes
+# a path dependency outside the workspace by its absolute path into every
+# symbol name, which reorders the contract WASMs, so the build would depend on
+# where rusk-private is checked out. Inside, it hashes the relative path.
+dusk-core = { path = "rusk/core" }
 dusk-forge = { git = "https://github.com/dusk-network/forge", rev = "d1e39a16ad5e2cd0675c7aafa6e2c459310bcb1a" }
-dusk-data-driver = { path = "../../rusk-private/data-drivers/data-driver" }
+dusk-data-driver = { path = "rusk/data-drivers/data-driver" }
 
 # Serialization
 bytecheck = { version = "0.6.12", default-features = false }
@@ -53,10 +60,10 @@ serde = { version = "1", default-features = false, features = [
 serde_json = { version = "1", default-features = false }
 
 # Testing
-dusk-vm = { path = "../../rusk-private/vm", default-features = false }
+dusk-vm = { path = "rusk/vm", default-features = false }
 rand = "0.8"
 ff = { version = "0.13", default-features = false }
-rusk-prover = { path = "../../rusk-private/rusk-prover" }
+rusk-prover = { path = "rusk/rusk-prover" }
 wasmtime = "36"
 
 # Pin to avoid edition2024 issues
