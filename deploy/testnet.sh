@@ -663,11 +663,18 @@ check_dusk_igp_pricing() {
     ok "The Dusk IGP charges $(fee '.dusk_to_evm.quote_lux') LUX for a transfer to $EVM_CHAIN_NAME"
 }
 
+# Before `deploy`, an IGP it hasn't finished configuring only warns: deploy
+# configures it.
 check_evm_igp_pricing() {
-    local igp current wanted
+    local when="${1:-}" igp current wanted
     igp="$(state_get '.evm.igp')"
     [ -n "$igp" ] && [ -n "$(state_get '.evm.storage_gas_oracle')" ] || return 0
     current="$(evm_igp_pricing)" || exit 1
+    if [ "$when" = before-deploy ] \
+        && jq -e '.oracle == "0x0000000000000000000000000000000000000000" or .gas_price == "0"' <<<"$current" >/dev/null; then
+        warn "The EVM IGP $igp isn't priced for Dusk yet; deploy prices it"
+        return 0
+    fi
     wanted="$(fee '.evm_igp | {gas_overhead, token_exchange_rate, gas_price}')"
     [ "$(lower "$(jq -r .oracle <<<"$current")")" = "$(lower "$(state_get '.evm.storage_gas_oracle')")" ] \
         || fail "The EVM IGP $igp reads domain $DUSK_DOMAIN's pricing from $(jq -r .oracle <<<"$current"), not the StorageGasOracle $(state_get '.evm.storage_gas_oracle') recorded in $STATE"
@@ -720,7 +727,7 @@ cmd_preflight() {
     check_deployed_ism
     check_relayer_gas_limit
     check_dusk_igp_pricing
-    check_evm_igp_pricing
+    check_evm_igp_pricing before-deploy
     check_evm_route_hook before-deploy
 }
 

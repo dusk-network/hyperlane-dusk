@@ -956,6 +956,21 @@ class TestnetDeploy(TestnetScript):
         self.assertEqual(self.evm["contracts"][state["evm"]["route_hook"]]["hooks"],
                          [EVM_MERKLE, state["evm"]["igp"]])
 
+    def test_an_interrupted_deploy_finishes_configuring_the_igp(self):
+        # deploy stopped after deploying the oracle and the IGP.
+        oracle, igp = "0x" + "66" * 20, "0x" + "44" * 20
+        self.evm["contracts"][oracle] = {"type": "oracle", "owner": DEPLOYER, "data": {}}
+        self.evm["contracts"][igp] = {"type": "igp", "hook_type": 4, "owner": "0x" + "00" * 20,
+                                      "beneficiary": "0x" + "00" * 20, "configs": {}}
+        self.write_state({"evm": {"mailbox": EVM_MAILBOX, "storage_gas_oracle": oracle, "igp": igp,
+                                  "index_from": 1}})
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("isn't priced for Dusk yet; deploy prices it", result.stderr)
+        self.assertEqual(self.evm["contracts"][igp]["owner"], DEPLOYER)
+        self.assertEqual(self.evm["contracts"][igp]["configs"][str(DUSK_DOMAIN)], [oracle, 2170000])
+        self.assertEqual(self.state()["evm"]["igp"], igp)
+
     def test_a_front_run_igp_initialization_stops_the_deploy(self):
         self.evm["front_run"] = "0x" + "ee" * 20
         self.assert_fails(self.run_script("deploy"), "Remove .evm.igp from")
