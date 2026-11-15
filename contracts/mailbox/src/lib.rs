@@ -260,12 +260,14 @@ mod mailbox {
         /// withdraws that account's credit, while an inter-contract call
         /// withdraws the calling contract's credit. The payer may direct the
         /// funds to any explicit Moonlight account.
+        ///
+        /// `recipient` is decoded to its canonical form first, and the
+        /// payout and the event use that key: the one its owner signs with,
+        /// whatever limbs the caller sends (see [`canonical_recipient`]).
+        /// Decoding costs about 57M gas.
         pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
             assert!(amount > 0, "Mailbox: withdrawal amount is zero");
-            assert!(
-                recipient.is_valid(),
-                "Mailbox: invalid withdrawal recipient"
-            );
+            let recipient = canonical_recipient(&recipient);
 
             let payer = Self::resolve_sender();
             let credit = self.fee_credits.get(&payer).copied().unwrap_or(0);
@@ -934,5 +936,30 @@ mod mailbox {
             return 0;
         }
         (bytes as u64 + ALLOCATOR_OVERHEAD).next_multiple_of(WASM_PAGE_BYTES)
+    }
+
+    /// Decode a withdrawal recipient to the key its owner signs with, as the
+    /// warp routes decode a sponsored claim's key.
+    ///
+    /// The archive check accepts any limbs in a public key. Its compressed
+    /// encoding (`to_bytes`), which the event's recipient hash covers,
+    /// depends only on x reduced mod p, the infinity flag and the sign of y,
+    /// but the transfer contract pays the raw limbs (`to_raw_bytes`). A twin
+    /// of the recipient's key would be debited and named in the event, and
+    /// paid to an account nobody can spend from. Decoding the compressed
+    /// bytes gives the one canonical key with that encoding.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the encoding isn't a valid public key, including the
+    /// identity, which nobody can sign for.
+    fn canonical_recipient(recipient: &AccountPublicKey) -> AccountPublicKey {
+        AccountPublicKey::from_bytes(&recipient.to_bytes())
+            .ok()
+            // `from_bytes` checks that the point is on the curve and in G2,
+            // so `is_valid` would only add the identity check, at the cost
+            // of a second subgroup check. The default key is the identity.
+            .filter(|pk| *pk != AccountPublicKey::default())
+            .expect("Mailbox: invalid withdrawal recipient")
     }
 }

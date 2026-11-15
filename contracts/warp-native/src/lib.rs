@@ -496,7 +496,10 @@ mod warp_native {
         /// Withdraw this route's unused Mailbox dispatch-fee credit.
         ///
         /// Owner only. The Mailbox sees this route as the payer and sends the
-        /// withdrawn native DUSK to the explicit Moonlight recipient.
+        /// withdrawn native DUSK to the explicit Moonlight recipient. It
+        /// decodes the recipient's key first and pays the account that signs
+        /// with it, so a forged twin of the key can't divert the payout; the
+        /// decoding costs about 57M gas.
         pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
             self.only_owner();
             let _: () = abi::call(

@@ -56,6 +56,11 @@ const CLAIM_PENDING_GAS_LIMIT: u64 = 3_000_000;
 /// (`claim_pending_for`): decoding the account's key costs about 57M gas, so
 /// a claim takes about 59M.
 const CLAIM_PENDING_FOR_GAS_LIMIT: u64 = 80_000_000;
+/// Default gas limit for `withdraw-dispatch`: the Mailbox decodes the
+/// recipient's key before paying it, which costs about 57M gas, so a
+/// withdrawal takes about 59M, directly or through a route's owner-only
+/// wrapper. The VM tests check this limit covers both.
+const WITHDRAW_DISPATCH_GAS_LIMIT: u64 = 80_000_000;
 
 // ── CLI definition ──────────────────────────────────────────────────────────
 
@@ -271,7 +276,9 @@ enum Command {
         /// signer is read or a transaction is constructed.
         #[arg(long)]
         expected_chain_id: u8,
-        #[arg(long, default_value = "30000000")]
+        /// Gas limit. The Mailbox decodes the recipient's key, so a
+        /// withdrawal takes about 59M gas.
+        #[arg(long, default_value_t = WITHDRAW_DISPATCH_GAS_LIMIT)]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
         #[arg(long, default_value = "1")]
@@ -1297,6 +1304,32 @@ mod tests {
         assert!(resolve_signing_chain_id(Some(1), 2)
             .unwrap_err()
             .contains("does not match endpoint chain ID"));
+    }
+
+    #[test]
+    fn withdrawal_gas_limit_covers_decoding_the_recipient() {
+        let target = "11".repeat(32);
+        let gas_limit = |extra: &[&str]| {
+            let args = [
+                "dusk-tx",
+                "withdraw-dispatch",
+                "--target",
+                &target,
+                "--amount",
+                "1",
+                "--expected-chain-id",
+                "1",
+            ];
+            match Cli::try_parse_from(args.iter().chain(extra))
+                .unwrap()
+                .command
+            {
+                super::Command::WithdrawDispatch { gas_limit, .. } => gas_limit,
+                _ => unreachable!("parsed withdraw-dispatch"),
+            }
+        };
+        assert_eq!(gas_limit(&[]), super::WITHDRAW_DISPATCH_GAS_LIMIT);
+        assert_eq!(gas_limit(&["--gas-limit", "90000000"]), 90_000_000);
     }
 
     #[test]

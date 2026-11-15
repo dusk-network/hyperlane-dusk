@@ -138,7 +138,9 @@ const REENTRANT_HOOK_ID: ContractId = ContractId::from_bytes([24; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
-const WITHDRAW_DEFAULT_GAS_LIMIT: u64 = 30_000_000;
+/// `dusk-tx withdraw-dispatch`'s default gas limit: the Mailbox decodes the
+/// recipient key, about 57M gas.
+const WITHDRAW_DEFAULT_GAS_LIMIT: u64 = 80_000_000;
 
 /// Local domain for the Dusk chain in tests.
 const LOCAL_DOMAIN: u32 = 4242;
@@ -3445,6 +3447,26 @@ fn assert_route_dispatch_credit_withdrawal(
         recipient_balance_before_rejection,
         "downstream Mailbox rejection must not pay the recipient"
     );
+
+    // The Mailbox decodes the recipient's key behind the route's wrapper
+    // too: a forged twin of the key pays the account that signs with it.
+    for (name, twin) in forged_twins(&FRESH_PK) {
+        let before = moonlight_balance(&mut session, &FRESH_PK);
+        session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                route,
+                "withdraw_dispatch_credit",
+                &(twin, 1_000u64),
+            )
+            .unwrap_or_else(|e| panic!("{name}: the route's withdrawal should succeed: {e}"));
+        assert_eq!(
+            moonlight_balance(&mut session, &FRESH_PK),
+            before + 1_000,
+            "{name}"
+        );
+        assert_eq!(moonlight_balance(&mut session, &twin), 0, "{name}");
+    }
 }
 
 fn canonical_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u64 {
@@ -8995,4 +9017,253 @@ fn test_delivered_set_keys_on_the_first_16_id_bytes() {
     let mut other_prefix = id;
     other_prefix[15] ^= 0xff;
     assert!(!s.mailbox_delivered(other_prefix));
+}
+
+/// LOW-7: the Mailbox decodes a withdrawal's recipient key. A payer who names
+/// a forged twin of the recipient's key, which has the recipient's
+/// compressed encoding but other raw limbs, pays the recipient's real
+/// account, and the event names it. The routes' owner-only wrappers go
+/// through the same decoding (`assert_route_dispatch_credit_withdrawal`).
+#[test]
+fn test_withdrawal_to_a_forged_twin_pays_the_canonical_key() {
+    let mut s = HyperlaneSession::new();
+    let amount = 1_000_000u64;
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, 2 * amount),
+            2 * amount,
+        )
+        .expect("funding should succeed");
+
+    let mut paid = 0;
+    for (name, twin) in forged_twins(&FRESH_PK) {
+        let receipt = s
+            .session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                MAILBOX_ID,
+                "withdraw_dispatch_credit",
+                &(twin, amount),
+            )
+            .unwrap_or_else(|e| panic!("{name}: withdrawal should succeed: {e}"));
+        paid += amount;
+        assert_eq!(moonlight_balance(&mut s.session, &FRESH_PK), paid, "{name}");
+        assert_eq!(moonlight_balance(&mut s.session, &twin), 0, "{name}");
+        let event = receipt
+            .events
+            .iter()
+            .find(|e| e.source == MAILBOX_ID && e.topic == events::DispatchFeeWithdrawn::TOPIC)
+            .map(|e| test_session::rkyv_deserialize::<events::DispatchFeeWithdrawn>(&e.data))
+            .expect("the withdrawal event");
+        assert_eq!(
+            event,
+            events::DispatchFeeWithdrawn {
+                payer: *OWNER_ID,
+                recipient: *FRESH_ID,
+                amount,
+            },
+            "{name}"
+        );
+        assert!(
+            receipt.gas_spent < WITHDRAW_DEFAULT_GAS_LIMIT,
+            "{name}: withdrawal spent {} gas, over the CLI default {WITHDRAW_DEFAULT_GAS_LIMIT}",
+            receipt.gas_spent
+        );
+    }
+    assert_eq!(
+        query::<_, u64>(&mut s.session, MAILBOX_ID, "fee_credit", &(*OWNER_ID,)),
+        0
+    );
+}
+
+/// WarpDrc20 stores balances and allowances under `account_id`, a 32-byte
+/// hash of the principal, but takes and emits principals as before. A
+/// transfer to oneself changes no balance, and balances and allowances
+/// moved or set to zero read back as zero.
+#[test]
+fn test_warp_drc20_balances_and_allowances_use_account_ids() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    assert_eq!(state_version(&mut session, WARP_DRC20_ID), 7);
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let owner = Drc20Account::moonlight(&OWNER_PK);
+    let relayer = Drc20Account::moonlight(&RELAYER_PK);
+    let contract = Drc20Account::Contract(TEST_RECIPIENT_ID);
+    let inbound = inbound_transfer(WARP_DRC20_ID, remote_router, 0, *OWNER_ID, 1_000);
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound))
+        .expect("the inbound transfer should mint");
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 1_000);
+
+    let transfer = |session: &mut TestSession, sk: &AccountSecretKey, to, amount| {
+        let receipt = session
+            .call_public::<_, ()>(
+                sk,
+                WARP_DRC20_ID,
+                "transfer",
+                &hyperlane_dusk_types::drc20::TransferCall { to, amount },
+            )
+            .expect("transfer should succeed");
+        receipt
+            .events
+            .iter()
+            .filter(|e| e.source == WARP_DRC20_ID && e.topic == events::Drc20Transfer::TOPIC)
+            .map(|e| test_session::rkyv_deserialize::<events::Drc20Transfer>(&e.data))
+            .collect::<Vec<_>>()
+    };
+
+    // To oneself: no balance changes, and the event names the principal.
+    assert_eq!(
+        transfer(&mut session, &OWNER_SK, owner, 400),
+        vec![events::Drc20Transfer {
+            from: owner,
+            to: owner,
+            amount: 400,
+        }]
+    );
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 1_000);
+
+    // The whole balance there and back.
+    transfer(&mut session, &OWNER_SK, relayer, 1_000);
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 0);
+    assert_eq!(warp_drc20_balance_of(&mut session, relayer), 1_000);
+    transfer(&mut session, &RELAYER_SK, owner, 1_000);
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 1_000);
+    assert_eq!(warp_drc20_balance_of(&mut session, relayer), 0);
+    assert_eq!(
+        query::<_, u64>(&mut session, WARP_DRC20_ID, "total_supply", &()),
+        1_000
+    );
+
+    let allowance = |session: &mut TestSession, owner, spender| {
+        query::<_, u64>(
+            session,
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance { owner, spender },
+        )
+    };
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender: relayer,
+                amount: 300,
+            },
+        )
+        .expect("approve should succeed");
+    assert_eq!(allowance(&mut session, owner, relayer), 300);
+    assert_eq!(allowance(&mut session, relayer, owner), 0);
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_ID,
+            "transfer_from",
+            &hyperlane_dusk_types::drc20::TransferFromCall {
+                owner,
+                to: contract,
+                amount: 100,
+            },
+        )
+        .expect("transfer_from should succeed");
+    assert_eq!(allowance(&mut session, owner, relayer), 200);
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 900);
+    assert_eq!(warp_drc20_balance_of(&mut session, contract), 100);
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender: relayer,
+                amount: 0,
+            },
+        )
+        .expect("approving zero should succeed");
+    assert_eq!(allowance(&mut session, owner, relayer), 0);
+    assert_contract_panic(
+        session.call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_ID,
+            "transfer_from",
+            &hyperlane_dusk_types::drc20::TransferFromCall {
+                owner,
+                to: contract,
+                amount: 1,
+            },
+        ),
+        "WarpDrc20: allowance too low",
+    );
+}
+
+/// An allowance set to zero leaves no entry: after a contract approves 2048
+/// spenders and then zeroes every allowance, approving 2048 new spenders
+/// reuses the memory instead of growing it.
+#[test]
+fn test_warp_drc20_zeroed_allowances_free_their_entries() {
+    let (mut session, _) = session_with_warp_drc20_flow();
+    rt_deploy(&mut session);
+    let approve_all = |session: &mut TestSession, seed: u8, amount: u64| {
+        // 128 approvals fill most of a transaction's 64 KiB of arguments.
+        for batch in 0..16u32 {
+            let actions: Vec<RtAction> = (0..128u32)
+                .map(|index| {
+                    let mut key = [seed; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES];
+                    key[..4].copy_from_slice(&(batch * 128 + index).to_le_bytes());
+                    rt_action(
+                        WARP_DRC20_ID,
+                        "approve",
+                        &Drc20ApproveCall {
+                            spender: Drc20Account::Moonlight(key),
+                            amount,
+                        },
+                    )
+                })
+                .collect();
+            run_batch(session, actions).expect("the batch of approvals should succeed");
+        }
+    };
+    let before = session.memory_len(WARP_DRC20_ID);
+    approve_all(&mut session, 0x51, 1);
+    let approved = session.memory_len(WARP_DRC20_ID);
+    assert!(approved > before, "2048 allowances take memory");
+    approve_all(&mut session, 0x51, 0);
+    approve_all(&mut session, 0x52, 1);
+    assert_eq!(session.memory_len(WARP_DRC20_ID), approved);
+
+    let attacker = Drc20Account::Contract(REDTEAM_ID);
+    let mut key = [0x51; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES];
+    key[..4].copy_from_slice(&7u32.to_le_bytes());
+    assert_eq!(
+        query::<_, u64>(
+            &mut session,
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance {
+                owner: attacker,
+                spender: Drc20Account::Moonlight(key),
+            },
+        ),
+        0
+    );
+    let mut key = [0x52; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES];
+    key[..4].copy_from_slice(&7u32.to_le_bytes());
+    assert_eq!(
+        query::<_, u64>(
+            &mut session,
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance {
+                owner: attacker,
+                spender: Drc20Account::Moonlight(key),
+            },
+        ),
+        1
+    );
 }
