@@ -835,8 +835,11 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("IGP hook_type", &[87, 2]),
     ("IGP mailbox", &[215, 36]),
     ("IGP owner", &[870, 37]),
+    ("IGP pay_for_gas", &[1_924_374, 12_033, 1, 3, 3, 1_069, 344]),
+    ("IGP pay_for_gas, with a refund", &[1_940_547, 28_207, 2, 3, 4, 1_353, 344]),
     ("IGP quote_dispatch", &[1_514, 9]),
     ("IGP quote_gas_payment", &[959, 9]),
+    ("IGP quote_pay_for_gas", &[950, 9]),
     ("IGP set_beneficiary", &[1_949_525, 39_304, 0, 2, 2, 775, 322]),
     ("IGP set_domain_gas_config", &[1_949_932, 39_330, 0, 2, 2, 782, 328]),
     ("IGP set_domain_gas_configs, 2 domains", &[1_955_993, 42_032, 0, 2, 3, 840, 373]),
@@ -1352,6 +1355,29 @@ fn user_flows_fit_their_budgets() {
             ),
         ),
     );
+
+    // Paying for more gas for a message whose dispatch paid for too little,
+    // as its sender or anyone else can: the exact quote, and a deposit with
+    // a margin the IGP sends back.
+    let id: H256 = net.query(MAILBOX_ID, "latest_dispatched_id", &());
+    let quote: u64 = net.query(IGP_ID, "quote_pay_for_gas", &(REMOTE_DOMAIN, 100_000u64));
+    assert_eq!(
+        quote, 10_000,
+        "100,000 gas at 1 gwei and 1e-10, no overhead"
+    );
+    for (label, deposit) in [("", quote), (", with a refund", quote + 1_000)] {
+        p.tx(
+            &format!("IGP pay_for_gas{label}"),
+            measure(
+                &mut net,
+                &USER_SK,
+                IGP_ID,
+                "pay_for_gas",
+                &(id, REMOTE_DOMAIN, 100_000u64, deposit),
+                deposit,
+            ),
+        );
+    }
     p.check();
 }
 
@@ -2009,6 +2035,12 @@ fn agent_queries_fit_their_budgets_and_reply_limits() {
         &(REMOTE_DOMAIN, 50_000u64)
     );
     q!(
+        "IGP quote_pay_for_gas",
+        IGP_ID,
+        "quote_pay_for_gas",
+        &(REMOTE_DOMAIN, 100_000u64)
+    );
+    q!(
         "IGP domain_gas_config",
         IGP_ID,
         "domain_gas_config",
@@ -2437,6 +2469,21 @@ fn route_growth(batched_entries: u32, tx_entries: u32) -> Vec<Growth> {
                 .gas_spent
         },
     ));
+    // A top-up records a payment for any message ID, paid from its
+    // transaction's deposit, so each takes a transaction. 1,000 gas costs
+    // 100 LUX at the profile's pricing; the amount doesn't change the gas.
+    let quote: u64 = net.query(IGP_ID, "quote_pay_for_gas", &(REMOTE_DOMAIN, 1_000u64));
+    rows.push(grow_per_tx(&mut net, "IGP top-up", tx_entries, |net, i| {
+        let id = message::keccak256(&i.to_le_bytes());
+        net.call(
+            &OWNER_SK,
+            IGP_ID,
+            "pay_for_gas",
+            &(id, REMOTE_DOMAIN, 1_000u64, quote),
+            quote,
+        )
+        .gas_spent
+    }));
     for route in ROUTES {
         rows.push(grow_per_tx(
             &mut net,
@@ -2481,6 +2528,7 @@ const PRECISE_GROWTH_BUDGETS: &[(&str, &str, f64)] = &[
     ("WarpDrc20Collateral escrow for a new recipient", "Mailbox", 29.0),
     ("WarpDrc20Collateral escrow for a new recipient", "WarpDrc20Collateral", 82.0),
     ("Mailbox credit for a new payer", "Mailbox", 71.0),
+    ("IGP top-up", "IGP", 71.0),
     ("WarpNative registration of a new account", "WarpNative", 370.0),
     ("WarpDrc20 registration of a new account", "WarpDrc20", 370.0),
     ("WarpDrc20Collateral registration of a new account", "WarpDrc20Collateral", 370.0),
@@ -2499,6 +2547,7 @@ const PRECISE_GAS_BUDGETS: &[(&str, u64)] = &[
     ("WarpDrc20 escrow for a new recipient", 60_973),
     ("WarpDrc20Collateral escrow for a new recipient", 62_881),
     ("Mailbox credit for a new payer", 1_922_682),
+    ("IGP top-up", 1_923_911),
     ("WarpNative registration of a new account", 1_947_220),
     ("WarpDrc20 registration of a new account", 1_947_344),
     ("WarpDrc20Collateral registration of a new account", 1_947_344),
