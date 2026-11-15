@@ -78,6 +78,17 @@ impl TestSession {
         let _ = self.0.set_meta(Metadata::BLOCK_HEIGHT, block_height);
     }
 
+    /// The size of a contract's linear memory in bytes. It only grows.
+    #[allow(dead_code)]
+    pub fn memory_len(&mut self, contract: ContractId) -> u64 {
+        let len = self
+            .0
+            .memory_len(contract)
+            .expect("memory_len should succeed")
+            .expect("the contract should exist");
+        u64::try_from(len).expect("memory length fits u64")
+    }
+
     /// Query the chain-id.
     fn chain_id(&self) -> u8 {
         rkyv_deserialize(self.0.meta(Metadata::CHAIN_ID).unwrap())
@@ -185,6 +196,35 @@ impl TestSession {
         R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
     {
         self.call_public_with(sender_sk, contract, fn_name, fn_arg, 0, gas_limit)
+    }
+
+    /// Call through the transfer contract with arguments already serialized,
+    /// for arguments too large for [`rkyv_serialize`]'s scratch space, such
+    /// as long batches of calls. Returns the raw return value.
+    #[allow(dead_code)]
+    pub fn call_public_raw(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_args: Vec<u8>,
+    ) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+        let contract_call = ContractCall {
+            contract,
+            fn_name: String::from(fn_name),
+            fn_args,
+        };
+        let receipt = self.execute_moonlight(sender_sk, None, 0, 0, GAS_LIMIT, contract_call);
+        match receipt.data {
+            Ok(data) => Ok(CallReceipt {
+                gas_limit: receipt.gas_limit,
+                gas_spent: receipt.gas_spent,
+                events: receipt.events,
+                call_tree: receipt.call_tree,
+                data,
+            }),
+            Err(e) => Err(e),
+        }
     }
 
     fn call_public_with<A, R>(

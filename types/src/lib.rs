@@ -67,15 +67,6 @@ pub struct Checkpoint {
     pub message_id: MessageId,
 }
 
-/// Record of a delivered message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
-#[archive_attr(derive(CheckBytes))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct DeliveryRecord {
-    /// Who processed the message (the tx sender's contract or external address).
-    pub block_height: u64,
-}
-
 /// ISM module types, matching the Solidity `IInterchainSecurityModule.Types` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

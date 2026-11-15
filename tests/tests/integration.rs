@@ -184,6 +184,11 @@ impl HyperlaneSession {
     /// The `#[dusk_forge::contract]` macro wires the `init()` method as the
     /// WASM init export, so `init_arg` during deployment IS the initialization.
     fn new() -> Self {
+        Self::with_mailbox(MAILBOX_BYTECODE)
+    }
+
+    /// As [`Self::new`], with the Mailbox deployed from `mailbox_bytecode`.
+    fn with_mailbox(mailbox_bytecode: &[u8]) -> Self {
         let mut session = TestSession::instantiate(vec![
             (&*OWNER_PK, INITIAL_DUSK_BALANCE),
             (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
@@ -222,7 +227,7 @@ impl HyperlaneSession {
         // Deploy Mailbox with init_arg (calls init(local_domain, owner, ism, hook, required_hook))
         session
             .deploy(
-                MAILBOX_BYTECODE,
+                mailbox_bytecode,
                 dusk_vm::ContractData::builder()
                     .owner(DEPLOYER)
                     .init_arg(&(
@@ -311,20 +316,6 @@ impl HyperlaneSession {
             .expect("the receipt should carry the Dispatch event");
         assert_eq!(message::id(&encoded), self.mailbox_dispatched_id(nonce));
         encoded
-    }
-
-    fn mailbox_processed_at_index(&mut self, index: u32) -> MessageId {
-        self.session
-            .direct_call::<_, MessageId>(MAILBOX_ID, "processed_at_index", &(index,))
-            .expect("processed_at_index should succeed")
-            .data
-    }
-
-    fn mailbox_processed_count(&mut self) -> u32 {
-        self.session
-            .direct_call::<_, u32>(MAILBOX_ID, "processed_count", &())
-            .expect("processed_count should succeed")
-            .data
     }
 
     // =================================================================
@@ -472,6 +463,18 @@ fn assert_deploy_panic(result: Result<ContractId, VMError>, expected_panic: &str
     }
 }
 
+/// The message IDs of the deliveries a receipt records: its `ProcessId`
+/// events from the Mailbox that weren't rolled back. Agents index deliveries
+/// from these events; the Mailbox keeps no list of them.
+fn delivered_ids<R>(receipt: &CallReceipt<R>) -> Vec<MessageId> {
+    receipt
+        .events
+        .iter()
+        .filter(|e| e.source == MAILBOX_ID && e.topic == events::ProcessId::TOPIC && !e.reverted)
+        .map(|e| test_session::rkyv_deserialize::<events::ProcessId>(&e.data).message_id)
+        .collect()
+}
+
 fn sample_encoded_message(recipient: ContractId) -> Vec<u8> {
     message::encode(
         VERSION,
@@ -493,7 +496,7 @@ fn test_mailbox_init() {
     let mut s = HyperlaneSession::new();
 
     for (contract, label, expected) in [
-        (MAILBOX_ID, "Mailbox", 4),
+        (MAILBOX_ID, "Mailbox", 5),
         (TEST_MOCK_ID, "TestMock", 1),
         (TEST_RECIPIENT_ID, "TestRecipient", 1),
     ] {
@@ -721,8 +724,7 @@ fn test_process_rejects_replay_during_recipient_ism_resolution() {
             .data
     );
     assert!(s.mailbox_delivered(message::id(&encoded)));
-    assert_eq!(s.mailbox_processed_count(), 1);
-    assert_eq!(s.mailbox_processed_at_index(0), message::id(&encoded));
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&encoded)]);
     assert_eq!(
         receipt
             .events
@@ -768,15 +770,15 @@ fn test_process_rejected_ism_rolls_back_delivery_reservation() {
         r#"Mailbox: ISM call failed: Panic("MultisigISM: metadata too short")"#,
     );
     assert!(!s.mailbox_delivered(message::id(&encoded)));
-    assert_eq!(s.mailbox_processed_count(), 0);
     assert_eq!(s.recipient_handled_count(), 0);
     s.session
         .call_public::<_, ()>(&OWNER_SK, MAILBOX_ID, "set_default_ism", &(TEST_MOCK_ID,))
         .unwrap();
-    s.mailbox_process_via_tx(Vec::new(), encoded.clone())
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), encoded.clone())
         .unwrap();
     assert!(s.mailbox_delivered(message::id(&encoded)));
-    assert_eq!(s.mailbox_processed_count(), 1);
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&encoded)]);
     assert_eq!(s.recipient_handled_count(), 1);
 }
 
@@ -867,45 +869,57 @@ fn test_process_multiple_messages() {
 }
 
 // =============================================================================
-// Tests: Indexer query methods (dispatched_id, processed_at_index)
+// Tests: Delivery indexing from events
 // =============================================================================
 
+/// The Mailbox keeps no list of deliveries (`processed_count`,
+/// `processed_at_index` and `delivered_at` are gone). Each delivery emits one
+/// `Process` event, with the origin, sender and recipient, and one
+/// `ProcessId` event with the message ID; agents index those.
 #[test]
-fn test_indexer_queries() {
+fn test_process_events_index_deliveries() {
     let mut s = HyperlaneSession::new();
+    for name in [
+        "processed_count",
+        "processed_at_index",
+        "processed_block_height_at_index",
+        "delivered_at",
+    ] {
+        let result = s.session.direct_call::<_, u32>(MAILBOX_ID, name, &(0u32,));
+        assert!(result.is_err(), "{name} should no longer exist");
+    }
 
-    // Initial state: no dispatched messages, no processed messages
-    assert_eq!(s.mailbox_processed_count(), 0);
-
-    // Process three messages with different nonces
-    let mut message_ids = Vec::new();
     for i in 0u32..3 {
-        let body = format!("message {i}");
+        let sender = [0xA0 + i as u8; 32];
         let encoded = message::encode(
             VERSION,
             i,
             REMOTE_DOMAIN,
-            [0xABu8; 32],
+            sender,
             LOCAL_DOMAIN,
             TEST_RECIPIENT_ID.to_bytes(),
-            body.as_bytes(),
+            format!("message {i}").as_bytes(),
         );
         let id = message::id(&encoded);
-        message_ids.push(id);
-
-        s.mailbox_process(Vec::new(), encoded)
+        assert!(!s.mailbox_delivered(id));
+        let receipt = s
+            .mailbox_process_via_tx(Vec::new(), encoded)
             .expect("process should succeed");
-    }
-
-    // Verify processed_count
-    assert_eq!(s.mailbox_processed_count(), 3);
-
-    // Verify processed_at_index returns the correct message IDs in order
-    for i in 0u32..3 {
+        assert!(s.mailbox_delivered(id));
+        assert_eq!(delivered_ids(&receipt), vec![id]);
+        let process: Vec<events::Process> = receipt
+            .events
+            .iter()
+            .filter(|e| e.source == MAILBOX_ID && e.topic == events::Process::TOPIC)
+            .map(|e| test_session::rkyv_deserialize(&e.data))
+            .collect();
         assert_eq!(
-            s.mailbox_processed_at_index(i),
-            message_ids[i as usize],
-            "processed_at_index({i}) should match"
+            process,
+            vec![events::Process {
+                origin: REMOTE_DOMAIN,
+                sender,
+                recipient: TEST_RECIPIENT_ID.to_bytes(),
+            }]
         );
     }
 }
@@ -953,7 +967,7 @@ fn test_dispatch_via_transaction() {
             .direct_call::<_, u32>(MAILBOX_ID, "state_version", &())
             .expect("Mailbox state_version should succeed")
             .data,
-        4
+        5
     );
     assert_eq!(s.merkle_count(), 0);
     assert_eq!(
@@ -6977,9 +6991,9 @@ fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
         "speculative tree insert must roll back"
     );
     assert!(!rt_delivered(&mut s.session, message::id(&honest_msg)));
+    assert!(rt_delivered(&mut s.session, message::id(&attacker_msg)));
     assert_eq!(s.recipient_handled_count(), 0);
-    assert_eq!(s.mailbox_processed_count(), 1);
-    assert_eq!(s.mailbox_processed_at_index(0), message::id(&attacker_msg));
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&attacker_msg)]);
     // Piecrust keeps the rolled-back events in the receipt but flags them;
     // the Dusk agent skips flagged events and cross-checks contract state.
     for event in &receipt.events {
@@ -7003,10 +7017,11 @@ fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
         1
     );
 
-    s.mailbox_process_via_tx(Vec::new(), honest_msg.clone())
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), honest_msg.clone())
         .expect("the honest message must stay deliverable");
     assert_eq!(s.recipient_handled_count(), 1);
-    assert_eq!(s.mailbox_processed_count(), 2);
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&honest_msg)]);
 }
 
 /// A recipient nominates itself as ISM and replays the message from both
@@ -7030,12 +7045,13 @@ fn redteam_nominated_ism_and_handle_replay_rejected() {
     rt_configure(&mut s.session, RT_VERIFY, vec![replay.clone()], false);
     rt_configure(&mut s.session, RT_HANDLE, vec![replay], false);
 
-    s.mailbox_process_via_tx(Vec::new(), msg.clone())
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), msg.clone())
         .expect("outer delivery succeeds");
 
     assert_eq!(rt_results(&mut s.session), vec![false, false]);
     assert_eq!(rt_counters(&mut s.session).0, 1);
-    assert_eq!(s.mailbox_processed_count(), 1);
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&msg)]);
 }
 
 /// The attacker contract is both the dispatch sender and its own hook, and
@@ -8470,4 +8486,443 @@ fn test_mailbox_reports_memory_below_dispatch_limit() {
         "whole wasm pages: {bytes}"
     );
     assert!(bytes < 3 * 1024 * 1024 * 1024);
+}
+
+// =============================================================================
+// Storage layout (docs/storage.md)
+// =============================================================================
+
+/// Size of a wasm32 memory page.
+const WASM_PAGE: u64 = 64 * 1024;
+
+/// The Mailbox's `DISPATCH_MEMORY_LIMIT`.
+const DISPATCH_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+
+fn query<A, R>(session: &mut TestSession, contract: ContractId, fn_name: &str, args: &A) -> R
+where
+    A: for<'b> rkyv::Serialize<dusk_core::abi::StandardBufSerializer<'b>>,
+    A::Archived: for<'b> bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+    R: rkyv::Archive,
+    R::Archived: rkyv::Deserialize<R, rkyv::Infallible>
+        + for<'b> bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    session
+        .direct_call::<A, R>(contract, fn_name, args)
+        .unwrap_or_else(|e| panic!("{fn_name} should succeed: {e}"))
+        .data
+}
+
+fn mailbox_memory(session: &mut TestSession) -> u64 {
+    query(session, MAILBOX_ID, "memory_bytes", &())
+}
+
+/// The IDs of the messages a receipt dispatched, in order, from its
+/// `DispatchId` events.
+fn dispatched_ids<R>(receipt: &CallReceipt<R>) -> Vec<MessageId> {
+    receipt
+        .events
+        .iter()
+        .filter(|e| e.source == MAILBOX_ID && e.topic == events::DispatchId::TOPIC && !e.reverted)
+        .map(|e| test_session::rkyv_deserialize::<events::DispatchId>(&e.data).message_id)
+        .collect()
+}
+
+/// Has the red-team contract make `actions` in one transaction; any failure
+/// fails them all.
+fn run_batch(
+    session: &mut TestSession,
+    actions: Vec<RtAction>,
+) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+    let args = rkyv::to_bytes::<_, 4096>(&(actions, true))
+        .expect("the batch should serialize")
+        .to_vec();
+    session.call_public_raw(&OWNER_SK, REDTEAM_ID, "run", args)
+}
+
+/// The red-team contract dispatches messages `first..first + count` in one
+/// transaction, each with its index as body; any failure fails them all.
+fn dispatch_batch(
+    session: &mut TestSession,
+    first: u32,
+    count: u32,
+) -> Result<Vec<MessageId>, ContractError> {
+    let actions: Vec<RtAction> = (first..first + count)
+        .map(|index| {
+            rt_action(
+                MAILBOX_ID,
+                "dispatch_default",
+                &(REMOTE_DOMAIN, [0xD1u8; 32], index.to_le_bytes().to_vec()),
+            )
+        })
+        .collect();
+    let receipt = run_batch(session, actions)?;
+    let ids = dispatched_ids(&receipt);
+    assert_eq!(ids.len(), count as usize);
+    Ok(ids)
+}
+
+/// The Mailbox and the Merkle hook keep message IDs in 64 KiB chunks of 2048
+/// and block heights once per block. Every index reads back across chunk and
+/// block boundaries, and the root a validator computes from the stored IDs is
+/// the hook's root each time.
+#[test]
+fn test_dispatch_logs_read_back_across_chunks_and_blocks() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    let mut ids = Vec::new();
+    let mut heights = Vec::new();
+    let mut tree = hyperlane_dusk_types::merkle::IncrementalMerkle::new();
+    // Nine blocks, three apart, of 256 messages each: 2304 messages, past the
+    // first chunk of 2048.
+    let first_height = s.session.block_height() + 1;
+    for block in 0..9u64 {
+        let height = first_height + 3 * block;
+        s.session.set_block_height(height);
+        let batch = dispatch_batch(&mut s.session, u32::try_from(ids.len()).unwrap(), 256)
+            .expect("the batch of dispatches should succeed");
+        for id in &batch {
+            tree.insert(*id);
+        }
+        heights.extend(core::iter::repeat_n(height, batch.len()));
+        ids.extend(batch);
+        // The root a validator computes for the last index so far: 255, 511,
+        // ..., 2047 (the end of the first chunk) and 2303.
+        assert_eq!(s.merkle_root(), tree.root(), "index {}", ids.len() - 1);
+    }
+
+    let count = u32::try_from(ids.len()).unwrap();
+    assert_eq!(s.mailbox_nonce(), count);
+    assert_eq!(s.merkle_count(), count);
+    for (index, (id, height)) in (0u32..).zip(ids.iter().zip(&heights)) {
+        let session = &mut s.session;
+        assert_eq!(
+            query::<_, MessageId>(session, MAILBOX_ID, "dispatched_id", &(index,)),
+            *id
+        );
+        assert_eq!(
+            query::<_, u64>(session, MAILBOX_ID, "dispatched_block_height", &(index,)),
+            *height
+        );
+        assert_eq!(
+            query::<_, H256>(session, MERKLE_TREE_HOOK_ID, "message_id_at", &(index,)),
+            *id
+        );
+        assert_eq!(
+            query::<_, u64>(
+                session,
+                MERKLE_TREE_HOOK_ID,
+                "inserted_block_height",
+                &(index,)
+            ),
+            *height
+        );
+    }
+    let mut paged = Vec::new();
+    for start in (0..count).step_by(256) {
+        paged.extend(query::<_, Vec<H256>>(
+            &mut s.session,
+            MERKLE_TREE_HOOK_ID,
+            "message_ids",
+            &(start, 256u32),
+        ));
+    }
+    assert_eq!(paged, ids);
+    // A page can start in one chunk and end in the next.
+    assert_eq!(
+        query::<_, Vec<H256>>(
+            &mut s.session,
+            MERKLE_TREE_HOOK_ID,
+            "message_ids",
+            &(2040u32, 16u32)
+        ),
+        ids[2040..2056]
+    );
+    assert!(query::<_, Vec<H256>>(
+        &mut s.session,
+        MERKLE_TREE_HOOK_ID,
+        "message_ids",
+        &(count, 256u32)
+    )
+    .is_empty());
+
+    for (contract, name, error) in [
+        (MAILBOX_ID, "dispatched_id", "Mailbox: nonce out of range"),
+        (
+            MAILBOX_ID,
+            "dispatched_block_height",
+            "Mailbox: nonce out of range",
+        ),
+        (
+            MERKLE_TREE_HOOK_ID,
+            "message_id_at",
+            "MerkleTreeHook: insertion index out of bounds",
+        ),
+        (
+            MERKLE_TREE_HOOK_ID,
+            "inserted_block_height",
+            "MerkleTreeHook: insertion index out of bounds",
+        ),
+    ] {
+        assert_contract_panic(
+            s.session.direct_call::<_, H256>(contract, name, &(count,)),
+            error,
+        );
+    }
+    assert_contract_panic(
+        s.session.direct_call::<_, Vec<H256>>(
+            MERKLE_TREE_HOOK_ID,
+            "message_ids",
+            &(count + 1, 1u32),
+        ),
+        "MerkleTreeHook: insertion index out of bounds",
+    );
+    assert_contract_panic(
+        s.session
+            .direct_call::<_, Vec<H256>>(MERKLE_TREE_HOOK_ID, "message_ids", &(0u32, 257u32)),
+        "MerkleTreeHook: page too large",
+    );
+}
+
+/// `wasm` with its memory's initial size set to `pages`. Piecrust gives a
+/// new contract the memory its module declares, so this is the deployed code
+/// in a memory that is as large as if it had grown that far.
+fn with_initial_memory_pages(wasm: &[u8], pages: u64) -> Vec<u8> {
+    fn read_leb(bytes: &[u8], position: &mut usize) -> u64 {
+        let mut value = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = bytes[*position];
+            *position += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return value;
+            }
+        }
+        panic!("LEB128 value too long");
+    }
+    fn write_leb(out: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0", "a wasm module");
+    let mut out = wasm[..8].to_vec();
+    let mut position = 8;
+    let mut patched = false;
+    while position < wasm.len() {
+        let id = wasm[position];
+        position += 1;
+        let size = usize::try_from(read_leb(wasm, &mut position)).unwrap();
+        let payload = &wasm[position..position + size];
+        position += size;
+        let payload = if id == 5 {
+            // The memory section: one 32-bit memory, its limits flag, its
+            // minimum and, if the flag says so, its maximum.
+            let mut at = 0;
+            assert_eq!(read_leb(payload, &mut at), 1, "one memory");
+            let flags = payload[at];
+            at += 1;
+            assert_eq!(flags & !1, 0, "a 32-bit, unshared memory");
+            read_leb(payload, &mut at);
+            let mut section = vec![1, flags];
+            write_leb(&mut section, pages);
+            section.extend_from_slice(&payload[at..]);
+            patched = true;
+            section
+        } else {
+            payload.to_vec()
+        };
+        out.push(id);
+        write_leb(&mut out, payload.len() as u64);
+        out.extend_from_slice(&payload);
+    }
+    assert!(patched, "the module defines its memory");
+    out
+}
+
+/// The most a dispatch of an `encoded`-byte message with `metadata` bytes of
+/// metadata can still grow the Mailbox's memory once it is quoted, the bound
+/// the Mailbox checks: each allocation it makes, plus dlmalloc's overhead,
+/// in whole pages. `ids` and `heights` mirror the Mailbox's logs. The chunk
+/// table is twice as large here as in wasm32, which the page rounding hides
+/// while it stays under 32 KiB.
+fn dispatch_memory_bound(
+    ids: &hyperlane_dusk_types::storage::ChunkedLog<MessageId>,
+    heights: &hyperlane_dusk_types::storage::BlockHeights,
+    height: u64,
+    encoded: usize,
+    metadata: usize,
+) -> u64 {
+    let [ids_chunk, ids_table] = ids.push_allocations();
+    let [heights_chunk, heights_table] = heights.push_allocations(height);
+    assert!(ids_table < 32 * 1024 && heights_table < 32 * 1024);
+    [
+        ids_chunk,
+        ids_table,
+        heights_chunk,
+        heights_table,
+        encoded,
+        metadata,
+        encoded,
+        "receive_payment".len(),
+        "receive_payment".len(),
+    ]
+    .into_iter()
+    .map(|bytes| {
+        if bytes == 0 {
+            0
+        } else {
+            (bytes as u64 + 64).next_multiple_of(WASM_PAGE)
+        }
+    })
+    .sum()
+}
+
+/// `dispatch` refuses a message unless everything it can still allocate fits
+/// under 3 GiB, so it never takes the Mailbox past that and the last GiB
+/// stays free for `process`. The Mailbox here starts 12 pages below the
+/// limit, as if it were nearly full. Every dispatch it admits leaves its
+/// memory at or below 3 GiB, it admits exactly the dispatches whose
+/// allocations fit, and once it closes, deliveries still succeed past the
+/// limit.
+#[test]
+fn test_dispatch_never_takes_the_mailbox_past_3_gib() {
+    let limit_pages = DISPATCH_MEMORY_LIMIT / WASM_PAGE;
+    let mailbox = with_initial_memory_pages(MAILBOX_BYTECODE, limit_pages - 12);
+    let mut s = HyperlaneSession::with_mailbox(&mailbox);
+    rt_deploy(&mut s.session);
+    // Deploying takes a page for the allocator's first block.
+    let start = mailbox_memory(&mut s.session);
+    assert!(
+        (DISPATCH_MEMORY_LIMIT - 12 * WASM_PAGE..=DISPATCH_MEMORY_LIMIT - 10 * WASM_PAGE)
+            .contains(&start),
+        "starts at {start}"
+    );
+
+    let mut ids = hyperlane_dusk_types::storage::ChunkedLog::<MessageId>::new();
+    let mut heights = hyperlane_dusk_types::storage::BlockHeights::new();
+    let height = s.session.block_height();
+    // `dispatch_batch` sends 4-byte bodies and no metadata.
+    let encoded = message::MIN_MESSAGE_LENGTH + 4;
+    let per_chunk = hyperlane_dusk_types::storage::ChunkedLog::<MessageId>::PER_CHUNK;
+    let mut admitted_chunks = 0;
+    loop {
+        let nonce = s.mailbox_nonce();
+        assert_eq!(nonce, ids.len());
+        let memory = mailbox_memory(&mut s.session);
+        let bound = dispatch_memory_bound(&ids, &heights, height, encoded, 0);
+        let starts_chunk = ids.push_allocations()[0] > 0;
+        let fits = memory + bound <= DISPATCH_MEMORY_LIMIT;
+        // Up to the next chunk, dispatches keep nothing new beyond their
+        // IDs, so they go in batches; the rest go one at a time.
+        let count = if fits && !starts_chunk {
+            (per_chunk - nonce % per_chunk).min(256)
+        } else {
+            1
+        };
+        match dispatch_batch(&mut s.session, nonce, count) {
+            Ok(batch) => {
+                assert!(fits, "nonce {nonce}: admitted at {memory} + {bound}");
+                for id in batch {
+                    ids.push(id);
+                    heights.push(height);
+                }
+                admitted_chunks += u32::from(starts_chunk);
+                let after = mailbox_memory(&mut s.session);
+                assert!(
+                    after <= DISPATCH_MEMORY_LIMIT,
+                    "nonce {nonce}: dispatch took the Mailbox to {after} bytes"
+                );
+            }
+            Err(error) => {
+                assert!(
+                    !fits,
+                    "nonce {nonce}: refused at {memory} + {bound}: {error}"
+                );
+                assert_contract_panic_contains(
+                    Err::<CallReceipt<()>, _>(error),
+                    "Mailbox: storage full, dispatch is closed",
+                );
+                break;
+            }
+        }
+    }
+    // It ran until the next chunk no longer fit: with less room left than
+    // a dispatch here (no metadata, one block) can take when it starts a
+    // chunk and grows the chunk table, 7 pages.
+    assert!(admitted_chunks >= 2, "admitted {admitted_chunks} chunks");
+    let closed_at = mailbox_memory(&mut s.session);
+    assert!(DISPATCH_MEMORY_LIMIT - closed_at < 7 * WASM_PAGE);
+    assert_contract_panic_contains(
+        s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xD1u8; 32], b"late".to_vec()),
+        "Mailbox: storage full, dispatch is closed",
+    );
+
+    // Deliveries keep working, in the memory dispatch left for them.
+    for nonce in 0..200u32 {
+        let inbound = message::encode(
+            VERSION,
+            nonce,
+            REMOTE_DOMAIN,
+            [0xABu8; 32],
+            LOCAL_DOMAIN,
+            TEST_RECIPIENT_ID.to_bytes(),
+            b"after dispatch closed",
+        );
+        s.mailbox_process(Vec::new(), inbound)
+            .expect("process should succeed once dispatch is closed");
+    }
+    assert_eq!(s.recipient_handled_count(), 200);
+    assert!(mailbox_memory(&mut s.session) <= DISPATCH_MEMORY_LIMIT + 8 * WASM_PAGE);
+}
+
+/// The Mailbox records a delivered message by the first 16 bytes of its ID.
+/// The same message is refused a second time and distinct messages are
+/// delivered. An ID that shares only the last 16 bytes with a delivered one
+/// is not reported delivered; one that shares the first 16 is, which for a
+/// real message would take a second preimage of 128 bits of keccak256.
+#[test]
+fn test_delivered_set_keys_on_the_first_16_id_bytes() {
+    let mut s = HyperlaneSession::new();
+    let messages: Vec<Vec<u8>> = (0..300u32)
+        .map(|nonce| {
+            message::encode(
+                VERSION,
+                nonce,
+                REMOTE_DOMAIN,
+                [0xABu8; 32],
+                LOCAL_DOMAIN,
+                TEST_RECIPIENT_ID.to_bytes(),
+                b"same body, distinct nonces",
+            )
+        })
+        .collect();
+    for encoded in &messages {
+        assert!(!s.mailbox_delivered(message::id(encoded)));
+        s.mailbox_process(Vec::new(), encoded.clone())
+            .expect("a distinct message should be delivered");
+    }
+    assert_eq!(s.recipient_handled_count(), 300);
+    for encoded in &messages {
+        assert!(s.mailbox_delivered(message::id(encoded)));
+        assert_contract_panic(
+            s.mailbox_process(Vec::new(), encoded.clone()),
+            "Mailbox: already delivered",
+        );
+    }
+    assert_eq!(s.recipient_handled_count(), 300);
+
+    let id = message::id(&messages[0]);
+    let mut same_prefix = id;
+    same_prefix[31] ^= 0xff;
+    assert!(s.mailbox_delivered(same_prefix));
+    let mut other_prefix = id;
+    other_prefix[15] ^= 0xff;
+    assert!(!s.mailbox_delivered(other_prefix));
 }
