@@ -21,7 +21,10 @@
 #   4. A message from Anvil sent through the Mailbox's default hook pays our
 #      IGP nothing and isn't delivered; paying for half the gas it needs
 #      doesn't deliver it; paying for the rest does.
-#   5. `deploy/testnet.sh claim` pays the Dusk IGP's and ProtocolFee's fees
+#   5. The 2 KiB message from Dusk, which paid for too little gas, is topped
+#      up with `dusk-tx pay-for-gas`: half of what it lacks doesn't deliver
+#      it; the rest, found by its nonce, does.
+#   6. `deploy/testnet.sh claim` pays the Dusk IGP's and ProtocolFee's fees
 #      to the deployer, and the Anvil IGP's to its beneficiary.
 #
 # Every Dusk transaction here is signed with DUSK_KEYS, which the rehearsal's
@@ -140,12 +143,15 @@ dtx fund-dispatch --mailbox "$DUSK_MAILBOX" --payer "$DUSK_RECIPIENT" --amount 2
 dtx dispatch --mailbox "$DUSK_MAILBOX" --test-recipient "$DUSK_RECIPIENT" --destination "$EVM_DOMAIN" \
     --recipient "$(pad32 "$recipient")" --body 0x736d616c6c >/dev/null || fail "Dusk dispatch failed"
 small_id="$(dusk_latest_id)"
+heavy_body="0x$(printf 'ab%.0s' $(seq 2048))"
 dtx dispatch --mailbox "$DUSK_MAILBOX" --test-recipient "$DUSK_RECIPIENT" --destination "$EVM_DOMAIN" \
-    --recipient "$(pad32 "$recipient")" --body "0x$(printf 'ab%.0s' $(seq 2048))" >/dev/null || fail "Dusk dispatch failed"
+    --recipient "$(pad32 "$recipient")" --body "$heavy_body" >/dev/null || fail "Dusk dispatch failed"
 heavy_id="$(dusk_latest_id)"
-info "Dusk -> TestRecipient $recipient: 5-byte message 0x$small_id, 2 KiB message 0x$heavy_id"
+heavy_nonce=$(( $(dq --contract "$DUSK_MAILBOX" --method nonce --return-type u32) - 1 ))
+info "Dusk -> TestRecipient $recipient: 5-byte message 0x$small_id, 2 KiB message 0x$heavy_id (nonce $heavy_nonce)"
 wait_until "$DELIVERY_TIMEOUT" "the 5-byte message from Dusk was delivered" evm_delivered "$small_id"
-info "delivering it used $(evm_delivery_gas "$small_id") gas"
+small_gas="$(evm_delivery_gas "$small_id")"
+info "delivering it used $small_gas gas"
 
 # ── 3. A warp transfer from Anvil ────────────────────────────────────────────
 
@@ -199,7 +205,49 @@ wait_until "$DELIVERY_TIMEOUT" "the message was delivered once it had paid for $
 evm_delivered "$heavy_id" && fail "the relayer delivered the 2 KiB message from Dusk, which paid for $PAID_GAS gas"
 ok "the 2 KiB message from Dusk is still undelivered; the relayer: $(relayer_on "$heavy_id")"
 
-# ── 5. Collect the fees ──────────────────────────────────────────────────────
+# ── 5. Top up the 2 KiB message from Dusk ────────────────────────────────────
+
+# What delivering it takes, at most: the 5-byte message's delivery, plus
+# what the recipient's handle takes for the 2 KiB body (which counts the
+# transaction's base cost a second time). The relayer relays a message from
+# Dusk once the gas it paid for covers its gas fraction of its estimate.
+handle_gas="$(cast estimate "$recipient" "handle(uint32,bytes32,bytes)" "$DUSK_DOMAIN" "0x$DUSK_RECIPIENT" \
+    "$heavy_body" --from "$EVM_MAILBOX" --rpc-url "$EVM_RPC" | num)" || fail "Can't estimate the 2 KiB handle"
+fraction="$(jq -r '.gasPaymentEnforcement[0].gasFraction' "$DUSK_DIR/deploy/out/$DEPLOY_NAME/relayer.json")"
+needed=$(( ((small_gas + handle_gas) * ${fraction%/*} + ${fraction#*/} - 1) / ${fraction#*/} ))
+missing=$(( needed - PAID_GAS ))
+[ "$missing" -gt 1 ] || fail "the 2 KiB message isn't delivered, yet it paid for the $needed gas estimated for it"
+info "the 2 KiB message needs about $((small_gas + handle_gas)) gas, so $needed paid for at $fraction; it paid for $PAID_GAS"
+
+igp_count() { dq --contract "$DUSK_IGP" --method gas_payment_count --return-type u32; }
+records="$(igp_count)"
+first=$(( missing / 2 ))
+out="$(dtx pay-for-gas --igp "$DUSK_IGP" --message-id "$heavy_id" --destination "$EVM_DOMAIN" --gas-amount "$first")" \
+    || fail "the first top-up failed: $out"
+info "paid the Dusk IGP $(jq -r .paid <<<"$out") LUX for $first more gas for it"
+never_within "$UNPAID_WATCH" "the relayer delivered the 2 KiB message from Dusk with $((PAID_GAS + first)) of the $needed gas it needs paid for" \
+    evm_delivered "$heavy_id"
+ok "not delivered after ${UNPAID_WATCH}s with $((PAID_GAS + first)) gas paid for; the relayer: $(relayer_on "$heavy_id")"
+
+# The rest, with a tenth more for the estimate, for the message dusk-tx
+# finds at its nonce, and a deposit twice the quote: the IGP keeps its price
+# and sends the rest back.
+rest=$(( missing - first + missing / 10 ))
+quote="$("$DUSK_TX" pay-for-gas --rues-url "$DUSK_RUES_URL" --igp "$DUSK_IGP" --nonce "$heavy_nonce" \
+    --gas-amount "$rest" --quote-only | jq -er '.quote')" || fail "Can't quote the second top-up"
+out="$(dtx pay-for-gas --igp "$DUSK_IGP" --nonce "$heavy_nonce" --gas-amount "$rest" --max-payment $((2 * quote)))" \
+    || fail "the second top-up failed: $out"
+[ "$(jq -r .message_id <<<"$out")" = "$heavy_id" ] && [ "$(jq -r .destination <<<"$out")" = "$EVM_DOMAIN" ] \
+    || fail "pay-for-gas --nonce $heavy_nonce paid for $(jq -c '{message_id, destination}' <<<"$out"), not the 2 KiB message"
+[ "$(jq -r .paid <<<"$out")" = "$quote" ] && [ "$(jq -r .refunded <<<"$out")" = "$quote" ] \
+    || fail "the second top-up paid $(jq -r .paid <<<"$out") of its $((2 * quote)) LUX deposit, not the $quote quoted"
+[ "$(igp_count)" = $((records + 2)) ] || fail "the Dusk IGP recorded $(( $(igp_count) - records )) payments, not 2"
+info "paid $quote LUX for $rest more gas, and got the other $quote back"
+wait_until "$DELIVERY_TIMEOUT" "the 2 KiB message from Dusk was delivered once it had paid for $((PAID_GAS + first + rest)) gas" \
+    evm_delivered "$heavy_id"
+info "delivering it used $(evm_delivery_gas "$heavy_id") gas"
+
+# ── 6. Collect the fees ──────────────────────────────────────────────────────
 
 beneficiary="$(cast call "$EVM_IGP" "beneficiary()(address)" --rpc-url "$EVM_RPC")"
 evm_before="$(cast balance "$beneficiary" --rpc-url "$EVM_RPC")"
