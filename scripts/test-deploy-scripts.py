@@ -902,6 +902,85 @@ class TestnetDeployedIsmChecks(DeployedTestnet):
         self.assert_both_commands(False, "the Mailbox's default ISM, which is not set")
 
 
+class TestnetRouteHookPlan(TestnetScript):
+    """`deploy` follows the EVM Mailbox's required hook through
+    aggregations and routing hooks to count how often it inserts a message to
+    Dusk into the Merkle tree validators sign, so that the route's hook makes
+    it exactly once, and refuses graphs it can't follow."""
+
+    NESTED, ROUTING, OTHER = "0x" + "a1" * 20, "0x" + "a2" * 20, "0x" + "a3" * 20
+
+    def require(self, hook, **contracts):
+        self.evm["contracts"].update(contracts)
+        self.evm["contracts"][EVM_MAILBOX]["requiredHook"] = hook
+
+    def assert_route_hook_is_the_igp(self):
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("inserts a message to Dusk into EVM_MERKLE_TREE_HOOK once", result.stderr)
+        state = self.state()["evm"]
+        self.assertEqual(state["route_hook"], state["igp"])
+        self.assert_ok(self.run_script("agent-configs"))
+
+    def test_a_nested_aggregation_that_inserts(self):
+        # Before, only the required hook's own children counted: the route's
+        # hook aggregated the Merkle hook again and each message went into
+        # the tree twice.
+        self.require(self.OTHER, **{
+            self.NESTED: {"type": "aggregation", "hook_type": 2, "hooks": [EVM_MERKLE, EVM_PROTOCOL_FEE]},
+            self.OTHER: {"type": "aggregation", "hook_type": 2, "hooks": [EVM_PROTOCOL_FEE, self.NESTED]},
+        })
+        self.assert_route_hook_is_the_igp()
+
+    def test_a_routing_hook_that_inserts_for_dusk(self):
+        for routing in (
+            {"type": "routing", "hook_type": 1, "routes": {str(DUSK_DOMAIN): EVM_MERKLE}},
+            {"type": "fallback_routing", "hook_type": 5, "routes": {}, "fallback": self.NESTED},
+        ):
+            with self.subTest(routing=routing["type"]):
+                self.evm = sepolia()
+                if (self.out / "deployment.json").exists():
+                    (self.out / "deployment.json").unlink()
+                self.require(self.ROUTING, **{
+                    self.ROUTING: routing,
+                    self.NESTED: {"type": "aggregation", "hook_type": 2, "hooks": [EVM_PROTOCOL_FEE, EVM_MERKLE]},
+                })
+                self.assert_route_hook_is_the_igp()
+
+    def test_a_routing_hook_that_inserts_elsewhere_for_dusk(self):
+        # Another tree, or none, for Dusk: the route's hook inserts.
+        self.require(self.ROUTING, **{
+            self.ROUTING: {"type": "fallback_routing", "hook_type": 5,
+                           "routes": {str(DUSK_DOMAIN): self.NESTED}, "fallback": EVM_MERKLE},
+            self.NESTED: {"type": "merkle", "hook_type": 3, "mailbox": EVM_MAILBOX},
+        })
+        self.assert_ok(self.run_script("deploy"))
+        state = self.state()["evm"]
+        self.assertEqual(self.evm["contracts"][state["route_hook"]]["hooks"], [EVM_MERKLE, state["igp"]])
+
+    def test_graphs_it_cant_follow_are_refused(self):
+        cases = [
+            ("inserts each message to Dusk into EVM_MERKLE_TREE_HOOK 2 times",
+             {self.OTHER: {"type": "aggregation", "hook_type": 2, "hooks": [EVM_MERKLE, self.NESTED]},
+              self.NESTED: {"type": "routing", "hook_type": 1, "routes": {str(DUSK_DOMAIN): EVM_MERKLE}}}),
+            (f"reaches {self.NESTED}, of hook type 14, which deploy/testnet.sh can't follow",
+             {self.OTHER: {"type": "aggregation", "hook_type": 2, "hooks": [EVM_PROTOCOL_FEE, self.NESTED]},
+              self.NESTED: {"type": "amount_routing", "hook_type": 14}}),
+            (f"has no hook for domain {DUSK_DOMAIN}: every dispatch to Dusk would revert",
+             {self.OTHER: {"type": "routing", "hook_type": 1, "routes": {"1": EVM_MERKLE}}}),
+            ("nests hooks more than 8 deep",
+             {self.OTHER: {"type": "routing", "hook_type": 1, "routes": {str(DUSK_DOMAIN): self.OTHER}}}),
+        ]
+        for expected, contracts in cases:
+            with self.subTest(expected=expected):
+                self.evm = sepolia()
+                self.require(self.OTHER, **contracts)
+                for command in ("preflight", "deploy"):
+                    result = self.run_script(command)
+                    self.assert_fails(result, expected)
+                    self.assertEqual(self.traced("cast send") + self.traced("forge"), [])
+
+
 class TestnetEvmCreationChecks(DeployedTestnet):
     """Every command that relies on the EVM IGP and token checks, from the
     receipt of the transaction that created each, that the deployer created

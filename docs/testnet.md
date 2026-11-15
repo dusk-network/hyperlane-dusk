@@ -44,10 +44,12 @@ Mailbox only adds its required hook, a ProtocolFee. The Merkle insertion
 the validators sign comes from the default hook, so a hook of our IGP alone
 would leave the token's messages out of the tree, and nothing would ever
 deliver them. The token's hook therefore aggregates Hyperlane's
-MerkleTreeHook, `EVM_MERKLE_TREE_HOOK`, and our IGP. `deploy` reads the
-Mailbox's required hook first: had it inserted into the tree itself, the
-IGP alone would do, and adding the tree again would insert every message
-twice.
+MerkleTreeHook, `EVM_MERKLE_TREE_HOOK`, and our IGP. `deploy` first follows
+the Mailbox's required hook, through aggregations and domain routing hooks,
+and counts how often it inserts a message to Dusk into that tree. Had it
+inserted once, the IGP alone would do, and adding the tree again would
+insert every message twice. More than once, or through a hook whose
+behaviour the script can't tell, and `deploy` stops.
 
 `relayer.json` enforces payment per origin, against this deployment's IGPs
 (`onChainFeeQuoting`). The operator collects what the IGPs take, and
@@ -191,9 +193,10 @@ transfer pays for. `fees` prints what they come to.
 - the Dusk node is on the expected chain, has both host queries active, allows
   third-party contracts and serves the archive queries the agents need;
 - the Sepolia Mailbox, Merkle hook and ValidatorAnnounce belong together;
-  whether the Mailbox's required hook inserts into the Merkle tree, which
-  decides the route's hook; and that `EVM_AGGREGATION_HOOK_FACTORY`, when
-  set, is a contract;
+  how often the Mailbox's required hook inserts a message to Dusk into the
+  Merkle tree, following aggregation and routing hooks, which decides the
+  route's hook; and that `EVM_AGGREGATION_HOOK_FACTORY`, when set, is a
+  contract;
 - the fee settings are valid and their gas overheads cover delivery:
   `DUSK_IGP_GAS_OVERHEAD` for `DUSK_ORIGIN_THRESHOLD` of the
   `DUSK_ORIGIN_VALIDATORS`, `EVM_IGP_GAS_OVERHEAD` for

@@ -67,9 +67,15 @@ ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=7 warp_drc20_collateral=6"
 MESSAGE_ID_MULTISIG_ISM=5
 TEST_MOCK_ISM=6
 # Hook types the EVM hooks report (Hyperlane's IPostDispatchHook.HookTypes).
+HOOK_ROUTING=1
 HOOK_AGGREGATION=2
 HOOK_MERKLE_TREE=3
 HOOK_IGP=4
+HOOK_FALLBACK_ROUTING=5
+HOOK_PAUSABLE=7
+HOOK_PROTOCOL_FEE=8
+# How deep route_hook_plan follows hooks inside hooks.
+MAX_HOOK_DEPTH=8
 # The gas the Dusk IGP charges a message without hook metadata for, as the
 # warp routes send none (types/src/metadata.rs, DEFAULT_GAS_USAGE).
 DUSK_IGP_DEFAULT_GAS=50000
@@ -649,27 +655,67 @@ preflight_evm() {
 }
 
 # The route's hook replaces the Mailbox's default hook, and only the required
-# hook runs as well. Validators sign EVM_MERKLE_TREE_HOOK's tree, so unless the
-# required hook already inserts into it, the route's hook must: it aggregates
-# the Merkle hook and our IGP. Sets ROUTE_HOOK_NEEDS_MERKLE.
+# hook runs as well. Validators sign EVM_MERKLE_TREE_HOOK's tree, and each
+# message must be in it exactly once. So the route's hook is the IGP alone
+# when the required hook already inserts a message to Dusk once, and
+# aggregates the Merkle hook and the IGP when it doesn't. Sets
+# ROUTE_HOOK_NEEDS_MERKLE.
 ROUTE_HOOK_NEEDS_MERKLE=""
 route_hook_plan() {
-    local required type children
+    local required count
     required="$(evm_call "$EVM_MAILBOX" "requiredHook()(address)")" || fail "Can't read the EVM Mailbox's required hook"
-    type="$(evm_number "$required" "hookType()(uint8)")" || fail "Can't read the hook type of the EVM Mailbox's required hook $required"
-    ROUTE_HOOK_NEEDS_MERKLE=1
-    if [ "$(lower "$required")" = "$(lower "$EVM_MERKLE_TREE_HOOK")" ]; then
-        ROUTE_HOOK_NEEDS_MERKLE=0
-    elif [ "$type" = "$HOOK_AGGREGATION" ]; then
-        children="$(evm_call "$required" "hooks(bytes)(address[])" 0x)" \
-            || fail "Can't read the hooks of the EVM Mailbox's required aggregation hook $required"
-        grep -qi "${EVM_MERKLE_TREE_HOOK#0x}" <<<"$children" && ROUTE_HOOK_NEEDS_MERKLE=0
-    fi
-    if [ "$ROUTE_HOOK_NEEDS_MERKLE" = 1 ]; then
-        ok "The EVM Mailbox's required hook $required (type $type) doesn't insert into EVM_MERKLE_TREE_HOOK: the route's hook aggregates it and the IGP"
-    else
-        ok "The EVM Mailbox's required hook $required inserts into EVM_MERKLE_TREE_HOOK: the route's hook is the IGP"
-    fi
+    count="$(merkle_insertions "$required")" || exit 1
+    case "$count" in
+        0)
+            ROUTE_HOOK_NEEDS_MERKLE=1
+            ok "The EVM Mailbox's required hook $required doesn't insert a message to Dusk into EVM_MERKLE_TREE_HOOK: the route's hook aggregates it and the IGP" ;;
+        1)
+            ROUTE_HOOK_NEEDS_MERKLE=0
+            ok "The EVM Mailbox's required hook $required inserts a message to Dusk into EVM_MERKLE_TREE_HOOK once: the route's hook is the IGP" ;;
+        *)
+            fail "The EVM Mailbox's required hook $required inserts each message to Dusk into EVM_MERKLE_TREE_HOOK $count times, which no route's hook can undo" ;;
+    esac
+}
+
+# How often a dispatch to Dusk through `hook` inserts the message into
+# EVM_MERKLE_TREE_HOOK, following the hooks whose behaviour is known: an
+# aggregation runs each of its hooks, a domain routing hook the one for Dusk
+# (or its fallback), a Merkle tree hook inserts into its own tree, and an
+# IGP, a ProtocolFee or a pausable hook inserts nothing. Any other kind, a
+# routing hook with nothing for Dusk, or hooks nested deeper than
+# MAX_HOOK_DEPTH stop the script: it can't tell how often a message would be
+# inserted. Prints the count.
+merkle_insertions() {
+    local hook="$1" depth="${2:-0}" type children child route count=0 n
+    [ "$depth" -lt "$MAX_HOOK_DEPTH" ] \
+        || fail "The EVM Mailbox's required hook nests hooks more than $MAX_HOOK_DEPTH deep at $hook: deploy/testnet.sh can't tell how often it inserts a message to Dusk into EVM_MERKLE_TREE_HOOK"
+    [ "$(lower "$hook")" != "$ZERO_ADDRESS" ] \
+        || fail "The EVM Mailbox's required hook reaches the zero address: every dispatch would revert"
+    type="$(evm_number "$hook" "hookType()(uint8)")" || fail "Can't read the hook type of $hook, in the EVM Mailbox's required hook"
+    case "$type" in
+        "$HOOK_MERKLE_TREE")
+            [ "$(lower "$hook")" != "$(lower "$EVM_MERKLE_TREE_HOOK")" ] || count=1 ;;
+        "$HOOK_AGGREGATION")
+            children="$(evm_call "$hook" "hooks(bytes)(address[])" 0x)" \
+                || fail "Can't read the hooks of the aggregation hook $hook, in the EVM Mailbox's required hook"
+            for child in $(tr -d '[],' <<<"$children"); do
+                n="$(merkle_insertions "$child" $((depth + 1)))" || exit 1
+                count=$((count + n))
+            done ;;
+        "$HOOK_ROUTING"|"$HOOK_FALLBACK_ROUTING")
+            route="$(evm_call "$hook" "hooks(uint32)(address)" "$DUSK_DOMAIN")" \
+                || fail "Can't read where the routing hook $hook, in the EVM Mailbox's required hook, sends domain $DUSK_DOMAIN"
+            if [ "$(lower "$route")" = "$ZERO_ADDRESS" ] && [ "$type" = "$HOOK_FALLBACK_ROUTING" ]; then
+                route="$(evm_call "$hook" "fallbackHook()(address)")" || fail "Can't read the fallback hook of $hook"
+            fi
+            [ "$(lower "$route")" != "$ZERO_ADDRESS" ] \
+                || fail "The routing hook $hook, in the EVM Mailbox's required hook, has no hook for domain $DUSK_DOMAIN: every dispatch to Dusk would revert"
+            count="$(merkle_insertions "$route" $((depth + 1)))" || exit 1 ;;
+        "$HOOK_IGP"|"$HOOK_PROTOCOL_FEE"|"$HOOK_PAUSABLE") ;;
+        *)
+            fail "The EVM Mailbox's required hook reaches $hook, of hook type $type, which deploy/testnet.sh can't follow: it can't tell how often a message to Dusk is inserted into EVM_MERKLE_TREE_HOOK" ;;
+    esac
+    printf '%s' "$count"
 }
 
 preflight_keys() {
