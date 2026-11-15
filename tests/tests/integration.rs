@@ -463,6 +463,13 @@ fn assert_deploy_panic(result: Result<ContractId, VMError>, expected_panic: &str
     }
 }
 
+fn state_version(session: &mut TestSession, contract: ContractId) -> u32 {
+    session
+        .direct_call::<_, u32>(contract, "state_version", &())
+        .expect("state_version should succeed")
+        .data
+}
+
 /// The message IDs of the deliveries a receipt records: its `ProcessId`
 /// events from the Mailbox that weren't rolled back. Agents index deliveries
 /// from these events; the Mailbox keeps no list of them.
@@ -1407,31 +1414,15 @@ fn test_validator_announce_rejects_oversized_location_before_storage() {
     assert_contract_panic(result, "ValidatorAnnounce: storage location too long");
 }
 
+/// Pages of validators hold 1 to 256. The queries that returned location
+/// strings are gone: the contract only stores their hashes.
 #[test]
-fn test_validator_announce_rejects_unbounded_legacy_batch_query() {
+fn test_validator_announce_pages_hold_up_to_256_validators() {
     let mut session = session_with_validator_announce();
-    let result = session.direct_call::<_, Vec<Vec<alloc::string::String>>>(
-        VALIDATOR_ANNOUNCE_ID,
-        "get_announced_storage_locations",
-        &(vec![
-            EthAddress([1; 20]),
-            EthAddress([2; 20]),
-            EthAddress([3; 20]),
-        ],),
-    );
-    assert_contract_panic(result, "ValidatorAnnounce: query batch too large");
-}
-
-#[test]
-fn test_validator_announce_bounds_signed_location_history() {
-    let mut session = session_with_validator_announce();
+    let location = alloc::string::String::from("s3://validator/checkpoints");
     let mut expected = Vec::new();
-    let mut validator = EthAddress([0u8; 20]);
-
-    for index in 0..16 {
-        let location = alloc::format!("s3://validator/checkpoints/{index}");
-        let (signed_validator, signature) = validator_announcement(&location);
-        validator = signed_validator;
+    for index in 1..=3 {
+        let (validator, signature) = validator_announcement_with_index(&location, index);
         session
             .call_public::<_, bool>(
                 &OWNER_SK,
@@ -1439,19 +1430,98 @@ fn test_validator_announce_bounds_signed_location_history() {
                 "announce",
                 &(validator, location.clone(), signature),
             )
-            .expect("a valid bounded validator announcement should succeed");
-        expected.push(location);
+            .expect("announcement should succeed");
+        expected.push(validator);
     }
-
-    let locations = session
-        .direct_call::<_, Vec<alloc::string::String>>(
+    let page = |session: &mut TestSession, start: u32, limit: u32| {
+        session.direct_call::<_, Vec<EthAddress>>(
             VALIDATOR_ANNOUNCE_ID,
-            "get_announced_storage_locations_for_validator",
+            "get_announced_validators",
+            &(start, limit),
+        )
+    };
+    assert_eq!(page(&mut session, 0, 256).unwrap().data, expected);
+    assert_eq!(page(&mut session, 1, 256).unwrap().data, expected[1..]);
+    assert!(page(&mut session, 3, 256).unwrap().data.is_empty());
+    assert_contract_panic(
+        page(&mut session, 0, 257),
+        "ValidatorAnnounce: query batch too large",
+    );
+    assert_contract_panic(
+        page(&mut session, 0, 0),
+        "ValidatorAnnounce: query limit is zero",
+    );
+    for name in [
+        "get_announced_storage_locations",
+        "get_announced_storage_locations_for_validator",
+    ] {
+        assert!(session
+            .direct_call::<_, Vec<alloc::string::String>>(
+                VALIDATOR_ANNOUNCE_ID,
+                name,
+                &(expected[0],),
+            )
+            .is_err());
+    }
+}
+
+/// The location in a receipt's `ValidatorAnnouncement` event.
+fn announced_location<R>(receipt: &CallReceipt<R>) -> events::ValidatorAnnouncement {
+    let events: Vec<_> = receipt
+        .events
+        .iter()
+        .filter(|e| {
+            e.source == VALIDATOR_ANNOUNCE_ID && e.topic == events::ValidatorAnnouncement::TOPIC
+        })
+        .map(|e| test_session::rkyv_deserialize::<events::ValidatorAnnouncement>(&e.data))
+        .collect();
+    assert_eq!(events.len(), 1, "one announcement per call");
+    events[0].clone()
+}
+
+fn announced_location_hashes(session: &mut TestSession, validator: EthAddress) -> Vec<H256> {
+    session
+        .direct_call::<_, Vec<H256>>(
+            VALIDATOR_ANNOUNCE_ID,
+            "get_announced_storage_location_hashes",
             &(validator,),
         )
-        .expect("the per-validator bounded query should succeed")
-        .data;
-    assert_eq!(locations, expected);
+        .expect("location hash query should succeed")
+        .data
+}
+
+#[test]
+fn test_validator_announce_bounds_signed_location_history() {
+    let mut session = session_with_validator_announce();
+    let mut expected = Vec::new();
+    let mut validator = EthAddress([0u8; 20]);
+    assert_eq!(state_version(&mut session, VALIDATOR_ANNOUNCE_ID), 2);
+
+    for index in 0..16 {
+        let location = alloc::format!("s3://validator/checkpoints/{index}");
+        let (signed_validator, signature) = validator_announcement(&location);
+        validator = signed_validator;
+        let receipt = session
+            .call_public::<_, bool>(
+                &OWNER_SK,
+                VALIDATOR_ANNOUNCE_ID,
+                "announce",
+                &(validator, location.clone(), signature),
+            )
+            .expect("a valid bounded validator announcement should succeed");
+        // The location is only in the event; the contract keeps its hash.
+        assert_eq!(
+            announced_location(&receipt),
+            events::ValidatorAnnouncement {
+                validator,
+                storage_location: location.clone(),
+            }
+        );
+        expected.push(message::keccak256(location.as_bytes()));
+    }
+
+    assert_eq!(announced_location_hashes(&mut session, validator), expected);
+    assert!(announced_location_hashes(&mut session, EthAddress([9; 20])).is_empty());
 
     let overflow_location = alloc::string::String::from("s3://validator/checkpoints/16");
     let (_, overflow_signature) = validator_announcement(&overflow_location);
@@ -1468,6 +1538,8 @@ fn test_validator_announce_bounds_signed_location_history() {
         .expect("validator registry count should succeed")
         .data;
     assert_eq!(count, 1);
+
+    assert_eq!(announced_location_hashes(&mut session, validator), expected);
 
     let validators = session
         .direct_call::<_, Vec<EthAddress>>(
