@@ -12,6 +12,11 @@ const TRANSFER_CONTRACT: &str = "01000000000000000000000000000000000000000000000
 const MAX_TRANSACTION_STATUS_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CONTRACT_QUERY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+/// How Rusk's preverify refuses a Moonlight transaction whose nonce is
+/// ahead of the account's next one (`TxAcceptanceError::MissingIntermediateNonce`
+/// in rusk-private's node/src/mempool.rs). Propagate queues such a
+/// transaction instead.
+const MISSING_INTERMEDIATE_NONCE: &str = "Missing intermediate nonce";
 
 pub struct RuesClient {
     client: reqwest::Client,
@@ -161,7 +166,16 @@ impl RuesClient {
     }
 
     /// Preverify then propagate a serialized transaction.
-    pub async fn propagate_tx(&self, tx_bytes: &[u8]) -> Result<(), String> {
+    ///
+    /// With `queue_future_nonce`, preverify refusing the transaction only
+    /// because its nonce is ahead of the account's next one doesn't stop it:
+    /// propagate holds such a transaction until the transactions with the
+    /// nonces before it arrive, and checks it then.
+    pub async fn propagate_tx(
+        &self,
+        tx_bytes: &[u8],
+        queue_future_nonce: bool,
+    ) -> Result<(), String> {
         // Preverify first
         let url = self.endpoint("/on/transactions/preverify");
         let response = self
@@ -178,10 +192,12 @@ impl RuesClient {
             let body = read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "preverify")
                 .await
                 .map_err(|error| format!("Preverify failed before propagation: {error}"))?;
-            return Err(format!(
-                "Preverify rejected before propagation ({status}): {}",
-                String::from_utf8_lossy(&body)
-            ));
+            let body = String::from_utf8_lossy(&body);
+            if !(queue_future_nonce && body.contains(MISSING_INTERMEDIATE_NONCE)) {
+                return Err(format!(
+                    "Preverify rejected before propagation ({status}): {body}"
+                ));
+            }
         }
 
         // Propagate
@@ -675,7 +691,7 @@ mod tests {
                 .unwrap()
                 .is_final());
             assert!(client.contract_exists(&"02".repeat(32)).await.unwrap());
-            client.propagate_tx(&[1]).await.unwrap();
+            client.propagate_tx(&[1], false).await.unwrap();
             let query = if suffix.contains('?') {
                 "?token=fixture%2Fvalue"
             } else {
@@ -711,7 +727,7 @@ mod tests {
         let errors = [
             client.query_chain_id().await.unwrap_err(),
             client.contract_exists(&"02".repeat(32)).await.unwrap_err(),
-            client.propagate_tx(&[0]).await.unwrap_err(),
+            client.propagate_tx(&[0], false).await.unwrap_err(),
             client
                 .query_transaction_status(&"ab".repeat(32))
                 .await

@@ -287,6 +287,22 @@ last deploy, which can only be final once every earlier one is, and then
 checks that each earlier one still executed. The agents don't pass the flag:
 they only act on finalized events and reconcile their own transactions.
 
+`dusk-tx call` has two flags for a sender that keeps several transactions
+in flight. `--nonce <N>` signs with Moonlight nonce N instead of the
+account's next one, without looking the account up. `--no-wait` returns
+once the node has taken the transaction, after preverify and propagate,
+and prints `success`, `tx_id`, `nonce` and `submitted: true` without block
+fields. The node can still drop a transaction it took, so whoever runs it
+reconciles the hash. With `--nonce`, preverify refusing an otherwise valid
+transaction only because the transactions with the nonces before its own
+haven't arrived (`Missing intermediate nonce`) doesn't stop it: propagate
+holds it, retrying every 500 ms, and drops it if they haven't arrived after
+about 5 seconds. Any other refusal still stops it, as `... submission
+failed: Preverify rejected before propagation ...`, and a propagation the
+node doesn't confirm is reported as `... Propagation outcome unknown ...`.
+The relayer pipelines Dusk deliveries with both flags when
+`dusk-tx call --help` lists them, and sends them one at a time otherwise.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request: workflow lint,

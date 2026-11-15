@@ -143,7 +143,7 @@ enum Command {
         #[arg(long)]
         contract: String,
         /// Function name.
-        #[arg(long, name = "fn")]
+        #[arg(long, name = "fn", alias = "fn")]
         fn_name: String,
         /// rkyv-serialized arguments as hex.
         #[arg(long, default_value = "")]
@@ -161,6 +161,19 @@ enum Command {
         /// Reserved until Rusk supports a non-replayable simulation envelope.
         #[arg(long)]
         simulate_only: bool,
+        /// Sign with this Moonlight nonce instead of the account's next one
+        /// (its nonce plus one), for a sender that has transactions of its
+        /// own in flight. The node holds a transaction whose nonce is ahead
+        /// of the account's next one for about 5 seconds, until the ones
+        /// before it arrive.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        nonce: Option<u64>,
+        /// Return once the node has taken the transaction, after preverify
+        /// and propagate, without waiting for its block. The output has its
+        /// `tx_id` and `submitted: true` but no block fields. The node can
+        /// still drop it: reconcile that hash to learn whether it executed.
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Deploy the full Hyperlane contract stack.
     DeployHyperlane {
@@ -847,6 +860,8 @@ async fn main() {
             gas_price,
             expected_chain_id,
             simulate_only,
+            nonce,
+            no_wait,
         } => {
             cmd_call(
                 &rues_url,
@@ -862,6 +877,7 @@ async fn main() {
                 gas_price,
                 expected_chain_id,
                 simulate_only,
+                CallSubmission { nonce, no_wait },
             )
             .await
         }
@@ -1972,6 +1988,290 @@ mod tests {
         assert!(parse(&["dusk-tx", "set-igp-config", "--igp", &contract]).is_err());
     }
 
+    /// The agents pipeline Dusk deliveries with `call --nonce <N> --no-wait`,
+    /// once `call --help` lists both flags, and pass the function as
+    /// `--fn-name` (`--fn` works too).
+    #[test]
+    fn call_takes_a_nonce_and_can_return_without_waiting() {
+        use clap::CommandFactory;
+        let contract = "11".repeat(32);
+        for fn_flag in ["--fn-name", "--fn"] {
+            let agent = Cli::try_parse_from([
+                "dusk-tx",
+                "call",
+                "--rues-url-stdin",
+                "--expected-chain-id",
+                "1",
+                "--secret-key-stdin",
+                "--contract",
+                &contract,
+                fn_flag,
+                "process",
+                "--args",
+                "00",
+                "--gas-limit",
+                "5000000",
+                "--gas-price",
+                "1",
+                "--nonce",
+                "9",
+                "--no-wait",
+            ])
+            .unwrap();
+            match agent.command {
+                super::Command::Call {
+                    fn_name,
+                    nonce,
+                    no_wait,
+                    gas_limit,
+                    rues_url_stdin,
+                    secret_key_stdin,
+                    ..
+                } => {
+                    assert_eq!(fn_name, "process");
+                    assert_eq!((nonce, no_wait, gas_limit), (Some(9), true, 5_000_000));
+                    assert!(rues_url_stdin && secret_key_stdin);
+                }
+                _ => unreachable!("parsed call"),
+            }
+        }
+        let base = [
+            "dusk-tx",
+            "call",
+            "--contract",
+            &contract,
+            "--fn-name",
+            "process",
+        ];
+        match Cli::try_parse_from(base).unwrap().command {
+            super::Command::Call { nonce, no_wait, .. } => {
+                assert_eq!((nonce, no_wait), (None, false))
+            }
+            _ => unreachable!("parsed call"),
+        }
+        // A Moonlight transaction's nonce is at least 1: an account's first
+        // transaction has nonce 1.
+        assert!(Cli::try_parse_from(base.iter().copied().chain(["--nonce", "0"])).is_err());
+        assert!(Cli::try_parse_from(base.iter().copied().chain(["--nonce"])).is_err());
+        let help = Cli::command()
+            .find_subcommand_mut("call")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(
+            help.contains("--nonce") && help.contains("--no-wait"),
+            "{help}"
+        );
+        // `--wait-finality` waits for more than inclusion; `--no-wait` waits
+        // for none of it, so they can't go together. `--wait-finality` is
+        // global and may come before `call`, so `call` checks this itself.
+        let no_wait = super::CallSubmission {
+            nonce: Some(3),
+            no_wait: true,
+        };
+        let waiting = super::CallSubmission {
+            nonce: Some(3),
+            no_wait: false,
+        };
+        let finality = Some(Duration::from_secs(300));
+        assert!(super::check_call_submission(no_wait, finality)
+            .unwrap_err()
+            .contains("--wait-finality"));
+        assert!(super::check_call_submission(no_wait, None).is_ok());
+        assert!(super::check_call_submission(waiting, finality).is_ok());
+        assert!(super::parse_call_inputs(&contract, "", false, no_wait).is_ok());
+    }
+
+    /// The paths and bodies of the requests a mock RUES endpoint got.
+    type MockRequests = Vec<(String, Vec<u8>)>;
+
+    /// A RUES endpoint on localhost that answers requests in order, one a
+    /// connection: each request's path must end with the next reply's
+    /// suffix, and gets its status and body. Returns the base URL and the
+    /// requests' paths and bodies, once every reply is sent or 20 seconds
+    /// pass with no request.
+    fn mock_rues(
+        replies: Vec<(&'static str, u16, Vec<u8>)>,
+    ) -> (String, std::thread::JoinHandle<MockRequests>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (suffix, status, body) in replies {
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => return requests,
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                let path = first.split_whitespace().nth(1).unwrap().to_owned();
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    assert_ne!(reader.read_line(&mut header).unwrap(), 0);
+                    if header == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut input = vec![0; length];
+                reader.read_exact(&mut input).unwrap();
+                assert!(path.ends_with(suffix), "expected {suffix}, got {path}");
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+                requests.push((path, input));
+            }
+            requests
+        });
+        (url, server)
+    }
+
+    /// With `--nonce`, `call` signs with that nonce and doesn't look the
+    /// account up; with `--no-wait` it returns once preverify and propagate
+    /// accept the transaction, without asking for its block, and its output
+    /// has the transaction's ID and nonce but no block fields.
+    #[tokio::test]
+    async fn call_signs_with_a_given_nonce_and_returns_once_submitted() {
+        use dusk_core::transfer::Transaction;
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![7]),
+            ("/on/transactions/preverify", 200, Vec::new()),
+            ("/on/transactions/propagate", 200, Vec::new()),
+        ]);
+        let contract = "22".repeat(32);
+        let output = super::call(
+            &url,
+            None,
+            "",
+            Some("11".repeat(32)),
+            false,
+            &contract,
+            "process",
+            "0102",
+            5_000_000,
+            1,
+            Some(7),
+            false,
+            super::CallSubmission {
+                nonce: Some(42),
+                no_wait: true,
+            },
+        )
+        .await
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests.len(),
+            3,
+            "the chain ID, preverify and propagate only"
+        );
+        assert_eq!(
+            requests[1].1, requests[2].1,
+            "the same transaction both times"
+        );
+        let tx = Transaction::from_slice(&requests[2].1).unwrap();
+        let Transaction::Moonlight(moonlight) = &tx else {
+            panic!("a Moonlight transaction");
+        };
+        assert_eq!(moonlight.nonce(), 42);
+        assert_eq!(moonlight.gas_limit(), 5_000_000);
+        let tx_id = hex::encode(tx.hash().to_bytes());
+        assert_eq!(
+            output,
+            serde_json::json!({
+                "success": true,
+                "contract": contract,
+                "fn_name": "process",
+                "tx_id": tx_id,
+                "nonce": 42,
+                "submitted": true,
+            })
+        );
+    }
+
+    /// With a chosen nonce, preverify refusing the transaction only because
+    /// the nonce is ahead of the account's next one doesn't stop it: the
+    /// node's propagate queues it. Any other refusal still does, and keeps
+    /// the "before propagation" prefix the agents read as a definite
+    /// refusal; a propagation the node doesn't confirm has an unknown
+    /// outcome.
+    #[tokio::test]
+    async fn a_chosen_nonce_passes_a_nonce_gap_and_errors_keep_their_prefixes() {
+        let tx_id = "ab".repeat(32);
+        let gap = b"Tx ab not accepted: Missing intermediate nonce 8".to_vec();
+        let submit = |url: String, queue: bool| async move {
+            let client = super::RuesClient::new(&url).unwrap();
+            super::propagate_with(&client, &"ab".repeat(32), &[1, 2], queue).await
+        };
+
+        let (url, server) = mock_rues(vec![("/on/transactions/preverify", 400, gap.clone())]);
+        let error = submit(url, false).await.unwrap_err();
+        assert!(
+            error.starts_with(&format!(
+                "Transaction {tx_id} submission failed: Preverify rejected before propagation (400 Bad Request): "
+            )) && error.contains("Missing intermediate nonce 8"),
+            "{error}"
+        );
+        assert_eq!(server.join().unwrap().len(), 1, "nothing propagated");
+
+        let (url, server) = mock_rues(vec![
+            ("/on/transactions/preverify", 400, gap),
+            ("/on/transactions/propagate", 200, Vec::new()),
+        ]);
+        submit(url, true).await.unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].1, vec![1, 2]);
+
+        let invalid = b"Tx ab not accepted: this transaction is invalid".to_vec();
+        let (url, server) = mock_rues(vec![("/on/transactions/preverify", 400, invalid)]);
+        let error = submit(url, true).await.unwrap_err();
+        assert!(
+            error.starts_with(&format!(
+                "Transaction {tx_id} submission failed: Preverify rejected before propagation"
+            )),
+            "{error}"
+        );
+        assert_eq!(server.join().unwrap().len(), 1, "nothing propagated");
+
+        let (url, server) = mock_rues(vec![
+            ("/on/transactions/preverify", 200, Vec::new()),
+            ("/on/transactions/propagate", 500, b"lost".to_vec()),
+        ]);
+        let error = submit(url, true).await.unwrap_err();
+        assert!(
+            error.starts_with(&format!(
+                "Transaction {tx_id} submission failed: Propagation outcome unknown"
+            )),
+            "{error}"
+        );
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
     /// `pay-for-gas` takes a message ID with its destination, as `payForGas`
     /// does, or a nonce to look the message up by; never both. Its gas limit
     /// defaults to the low one a top-up needs.
@@ -2879,6 +3179,17 @@ where
 
 // ── cmd_call ────────────────────────────────────────────────────────────────
 
+/// How `call` signs and submits its transaction.
+#[derive(Debug, Clone, Copy)]
+struct CallSubmission {
+    /// Sign with this Moonlight nonce instead of the account's next one.
+    nonce: Option<u64>,
+    /// Return once the node has taken the transaction, without waiting
+    /// for its block.
+    no_wait: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn cmd_call(
     rues_url: &str,
     rues_url_stdin: bool,
@@ -2893,7 +3204,46 @@ async fn cmd_call(
     gas_price: u64,
     expected_chain_id: Option<u8>,
     simulate_only: bool,
+    submission: CallSubmission,
 ) -> Result<(), String> {
+    let stdin_url;
+    let rues_url = if rues_url_stdin {
+        // Reject malformed public inputs before reading stdin, as `call`
+        // does before reading the key.
+        parse_call_inputs(contract_hex, args_hex, simulate_only, submission)?;
+        stdin_url = read_rues_url(std::io::stdin().lock())?;
+        &stdin_url
+    } else {
+        rues_url
+    };
+    let output = call(
+        rues_url,
+        keys_path,
+        password,
+        secret_key_hex,
+        secret_key_stdin,
+        contract_hex,
+        fn_name,
+        args_hex,
+        gas_limit,
+        gas_price,
+        expected_chain_id,
+        simulate_only,
+        submission,
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// The contract and the arguments `call` sends, checked before anything is
+/// read from stdin or the node.
+fn parse_call_inputs(
+    contract_hex: &str,
+    args_hex: &str,
+    simulate_only: bool,
+    submission: CallSubmission,
+) -> Result<(ContractId, Vec<u8>), String> {
     // Reject malformed public inputs before reading one-shot signer material.
     let contract_bytes =
         hex::decode(contract_hex).map_err(|e| format!("Invalid contract hex: {e}"))?;
@@ -2922,20 +3272,55 @@ async fn cmd_call(
                 .into(),
         );
     }
-    let stdin_url;
-    let rues_url = if rues_url_stdin {
-        stdin_url = read_rues_url(std::io::stdin().lock())?;
-        &stdin_url
-    } else {
-        rues_url
-    };
+    check_call_submission(submission, finality_wait())?;
+    Ok((contract_id, fn_args))
+}
+
+/// `--no-wait` returns before the transaction is included, so it can't also
+/// wait for its block to be final, as `--wait-finality` asks.
+fn check_call_submission(
+    submission: CallSubmission,
+    finality_wait: Option<Duration>,
+) -> Result<(), String> {
+    if submission.no_wait && finality_wait.is_some() {
+        return Err(
+            "--no-wait returns before the transaction is included, so it can't wait for finality (--wait-finality)"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Sign and submit a contract call, and return `call`'s JSON output.
+#[allow(clippy::too_many_arguments)]
+async fn call(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    contract_hex: &str,
+    fn_name: &str,
+    args_hex: &str,
+    gas_limit: u64,
+    gas_price: u64,
+    expected_chain_id: Option<u8>,
+    simulate_only: bool,
+    submission: CallSubmission,
+) -> Result<serde_json::Value, String> {
+    let (contract_id, fn_args) =
+        parse_call_inputs(contract_hex, args_hex, simulate_only, submission)?;
     let client = RuesClient::new(rues_url)?;
     let observed_chain_id = client.query_chain_id().await?;
     let chain_id = resolve_signing_chain_id(expected_chain_id, observed_chain_id)?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
-    // Query the account only after endpoint identity is bound.
-    let (nonce, _balance) = client.query_account(&pk).await?;
+    // Query the account only after endpoint identity is bound, and only if
+    // the caller didn't choose the nonce.
+    let nonce = match submission.nonce {
+        Some(nonce) => nonce,
+        None => next_moonlight_nonce(client.query_account(&pk).await?.0)?,
+    };
 
     // Build and submit TX
     let tx = moonlight_call(
@@ -2945,23 +3330,51 @@ async fn cmd_call(
         fn_args,
         gas_limit,
         gas_price,
-        next_moonlight_nonce(nonce)?,
+        nonce,
         chain_id,
     )?;
 
     let tx_id = hex::encode(tx.hash().to_bytes());
     let tx_bytes = tx.to_var_bytes();
-    let confirmation = propagate_and_wait(&client, &tx_id, &tx_bytes).await?;
+    // A chosen nonce may be ahead of the account's next one while the
+    // caller's earlier transactions are in flight: the node holds it.
+    let queue_future_nonce = submission.nonce.is_some();
+    let confirmation = if submission.no_wait {
+        propagate_with(&client, &tx_id, &tx_bytes, queue_future_nonce).await?;
+        None
+    } else {
+        Some(propagate_and_wait_with(&client, &tx_id, &tx_bytes, queue_future_nonce).await?)
+    };
+    Ok(call_output(
+        contract_hex,
+        fn_name,
+        &tx_id,
+        nonce,
+        confirmation.as_ref(),
+    ))
+}
 
+/// `call`'s output: what was sent, and where it was included, or, with
+/// `--no-wait`, that it was submitted (`submitted`) and no block fields.
+fn call_output(
+    contract_hex: &str,
+    fn_name: &str,
+    tx_id: &str,
+    nonce: u64,
+    confirmation: Option<&Confirmation>,
+) -> serde_json::Value {
     let mut output = json!({
         "success": true,
         "contract": contract_hex,
         "fn_name": fn_name,
         "tx_id": tx_id,
+        "nonce": nonce,
     });
-    confirmation.record(&mut output);
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    Ok(())
+    match confirmation {
+        Some(confirmation) => confirmation.record(&mut output),
+        None => output["submitted"] = json!(true),
+    }
+    output
 }
 
 fn resolve_signing_chain_id(expected: Option<u8>, observed: u8) -> Result<u8, String> {
@@ -3872,7 +4285,17 @@ async fn propagate_and_wait(
     tx_id: &str,
     tx_bytes: &[u8],
 ) -> Result<Confirmation, String> {
-    propagate(client, tx_id, tx_bytes).await?;
+    propagate_and_wait_with(client, tx_id, tx_bytes, false).await
+}
+
+/// [`propagate_and_wait`], submitting with [`propagate_with`].
+async fn propagate_and_wait_with(
+    client: &RuesClient,
+    tx_id: &str,
+    tx_bytes: &[u8],
+    queue_future_nonce: bool,
+) -> Result<Confirmation, String> {
+    propagate_with(client, tx_id, tx_bytes, queue_future_nonce).await?;
     match finality_wait() {
         Some(timeout) => wait_for_finality(client, tx_id, timeout).await,
         None => {
@@ -3884,6 +4307,18 @@ async fn propagate_and_wait(
 
 /// Submit a transaction while preserving its exact reconciliation hash.
 async fn propagate(client: &RuesClient, tx_id: &str, tx_bytes: &[u8]) -> Result<(), String> {
+    propagate_with(client, tx_id, tx_bytes, false).await
+}
+
+/// [`propagate`]. With `queue_future_nonce`, a preverify refusal only
+/// because the nonce is ahead of the account's next one doesn't stop the
+/// transaction: the node holds it until the nonces before it arrive.
+async fn propagate_with(
+    client: &RuesClient,
+    tx_id: &str,
+    tx_bytes: &[u8],
+    queue_future_nonce: bool,
+) -> Result<(), String> {
     // Emit the locally computed reconciliation identity before the first
     // remote write. This gives an interrupted operator a concrete hash to
     // reconcile before deciding whether a non-idempotent operation may be
@@ -3892,7 +4327,7 @@ async fn propagate(client: &RuesClient, tx_id: &str, tx_bytes: &[u8]) -> Result<
         "  Prepared TX {tx_id}; reconcile this exact hash before retrying if submission is interrupted"
     );
     client
-        .propagate_tx(tx_bytes)
+        .propagate_tx(tx_bytes, queue_future_nonce)
         .await
         .map_err(|error| submission_error_with_hash(tx_id, &error))
 }
