@@ -116,9 +116,12 @@ const SYNTHETIC_ROUTER: H256 = [0xA2; 32];
 const COLLATERAL_ROUTER: H256 = [0xA3; 32];
 const NO_HOOK: ContractId = ContractId::from_bytes([0; 32]);
 
-/// What `dusk-tx deploy-hyperlane` and deploy/testnet.env.example set up:
-/// a 0.001 DUSK protocol fee, and IGP pricing for the EVM chain of 200,000
-/// gas overhead at 1 gwei and an exchange rate of 1 (1e-10).
+/// What `dusk-tx deploy-hyperlane` sets up: a 0.001 DUSK protocol fee, and
+/// IGP pricing for the EVM chain of 200,000 gas overhead at 1 gwei, as
+/// deploy/testnet.env.example has it, but at an exchange rate of 1 (1e-10
+/// LUX per wei) instead of its 375,000, so a transfer's fee stays at 25,000
+/// LUX. A call's gas doesn't depend on the price; tests/tests/fee_pricing.rs
+/// checks the configured one.
 const PROTOCOL_FEE: u64 = 1_000_000;
 const MAX_PROTOCOL_FEE: u64 = 100_000_000;
 const EVM_PRICING: DomainGasConfig = DomainGasConfig {
