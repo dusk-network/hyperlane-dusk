@@ -151,22 +151,17 @@ fn upstream_trees_have_the_hooks_root_but_not_its_branch() {
         assert_eq!(zeroed.root(), dusk.root(), "root at count {count}");
 
         assert_ne!(upstream.branch, dusk.branch, "branch at count {count}");
-        for level in 0..TREE_DEPTH {
+        let slots = upstream.branch.iter().zip(&dusk.branch).zip(&zero_hashes);
+        for (level, ((upstream_slot, dusk_slot), zero_hash)) in slots.enumerate() {
             let written = (1usize << level) <= count;
             if written {
                 assert_eq!(
-                    upstream.branch[level], dusk.branch[level],
+                    upstream_slot, dusk_slot,
                     "count {count}, level {level}: written by both"
                 );
             } else {
-                assert_eq!(
-                    dusk.branch[level], [0u8; 32],
-                    "count {count}, level {level}"
-                );
-                assert_eq!(
-                    upstream.branch[level], zero_hashes[level],
-                    "count {count}, level {level}"
-                );
+                assert_eq!(*dusk_slot, [0u8; 32], "count {count}, level {level}");
+                assert_eq!(upstream_slot, zero_hash, "count {count}, level {level}");
             }
             if count & (1 << level) != 0 {
                 assert!(written, "count {count}, level {level}");
