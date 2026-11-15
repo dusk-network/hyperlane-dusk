@@ -1839,6 +1839,33 @@ class AnvilEvmDeploy(unittest.TestCase):
         # deploy never sent initialize in a transaction of its own.
         self.assertNotRegex(self.deploy_trace, r"cast send [^\n]*initialize")
 
+    def test_the_other_evm_contracts_have_nothing_to_initialize(self):
+        evm = self.state["evm"]
+        settings = dict(line.split("=", 1) for line in (self.root / "deploy" / "local.env").read_text().splitlines()
+                        if "=" in line and not line.startswith(("#", "export", "source")))
+        attack = ("--private-key", ANVIL_ATTACKER_KEY)
+        # The StorageGasOracle is Ownable: its constructor made the deployer
+        # its owner, and it has no initialize.
+        self.assertEqual(self.cast_ok("call", evm["storage_gas_oracle"], "owner()(address)").lower(), ANVIL_DEPLOYER)
+        self.assertNotEqual(self.cast("send", evm["storage_gas_oracle"], "initialize(address)", ANVIL_ATTACKER,
+                                      *attack).returncode, 0)
+        # The ISM, deployed from source, took its validators in its
+        # constructor, which disabled initialize; nobody owns it.
+        result = self.cast("send", evm["ism"], "initialize(address,address[],uint8)", ANVIL_ATTACKER,
+                           f"[{ANVIL_ATTACKER}]", "1", *attack)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Initializable: contract is already initialized", result.stderr)
+        self.assertEqual(int(self.cast_ok("call", evm["ism"], "owner()(address)"), 16), 0)
+        # The route's hook is the factory's CREATE2 address for exactly these
+        # hooks, which are part of its code; it has no initialize either.
+        children = f"[{evm['merkle_tree_hook']},{evm['igp']}]"
+        self.assertEqual(self.cast_ok("call", settings["EVM_AGGREGATION_HOOK_FACTORY"], "getAddress(address[])(address)",
+                                      children).lower(), evm["route_hook"].lower())
+        self.assertEqual(self.cast_ok("call", evm["route_hook"], "hooks(bytes)(address[])", "0x").lower(),
+                         children.replace(",", ", ").lower())
+        self.assertNotEqual(self.cast("send", evm["route_hook"], "initialize(address)", ANVIL_ATTACKER,
+                                      *attack).returncode, 0)
+
     def test_initializing_them_again_reverts(self):
         evm = self.state["evm"]
         attempts = {
