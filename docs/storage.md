@@ -200,7 +200,7 @@ the doubling `Vec`s.
 | DRC20 transfer to a new holder, transaction | 1,851,206 | 1,875,847 | | |
 | Same, marginal | 32,835 | 57,098 | 356 bytes | 60 bytes |
 | DRC20 approval of a new spender, transaction | 1,845,349 | 1,873,039 | | |
-| Same, marginal | 29,923 | 53,134 | 358 bytes | 62 bytes |
+| Same, marginal | 29,923 | 53,156 | 358 bytes | 62 bytes |
 | Withdraw dispatch credit, transaction | 24,380,024 | 58,696,092 | | |
 
 - Dispatch is 246,758 gas cheaper: the MerkleTreeHook no longer computes

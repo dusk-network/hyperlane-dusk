@@ -4057,9 +4057,11 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     let mut dn = 0u64; // deploy nonce
     let mut deployed = Vec::new();
 
-    // Deploy contracts one at a time, waiting for block inclusion between each.
-    // Rusk requires sequential nonce confirmation — a TX with nonce N+1 won't be
-    // accepted until nonce N is included in a block.
+    // Deploy contracts one at a time, each once the one before is included
+    // and executed. Rusk would take the next nonce as soon as the last
+    // transaction is in its mempool, but a deploy that fails pays its whole
+    // gas limit, and so would every deploy sent after it: stopping at the
+    // first failure saves them.
 
     // 1. TestMock (no init)
     deploy_one(
