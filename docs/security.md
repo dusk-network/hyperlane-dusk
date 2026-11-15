@@ -30,8 +30,10 @@ and which design decisions are still open.
   inter-contract call within a transaction. Bound calls into untrusted
   contracts with `call_with_limit`, and check before submitting.
 - **Contract memory.** A wasm32 contract's state is its linear memory: at
-  most 4 GiB, and it never shrinks. Anything a caller can make a contract
-  store must be bounded or priced.
+  most 4 GiB, and it never shrinks. No single allocation can reach 2 GiB, so
+  a `Vec` that doubles as it grows fails with most of the memory still free.
+  Anything a caller can make a contract store must be bounded or priced, and
+  kept in fixed-size chunks. See [storage.md](storage.md).
 - **Host queries.** All on-chain hashing uses the `keccak256` host query.
   `ism-multisig` and `validator-announce` use `secp256k1_recover`. Both must be
   active on the target network.
@@ -49,7 +51,11 @@ and which design decisions are still open.
 | Multisig metadata | Stricter than Solidity: validators must be sorted, the threshold valid, and the signature section an exact multiple of 65 bytes. |
 | Default ISM | One MessageIdMultisig ISM verifies messages from every origin, since Routing ISMs are unsupported. Any origin whose checkpoints the configured validators sign is trusted by the Mailbox; warp routes still accept only their enrolled router per origin. |
 | Recipient ISM lookup | Runs with 1M gas. A recipient without `interchain_security_module`, or whose getter panics, gets the default ISM, as in Solidity. A getter that runs out of gas fails the delivery instead, so the submitter's gas limit can't pick the ISM. |
-| Dispatched messages | The Mailbox stores each message's ID and block height, not the message. Agents read the message from the finalized `Dispatch` event and check it against the stored ID. `dispatch` closes once the Mailbox's memory reaches 3 GiB of its 4 GiB; `process` and claims keep working. |
+| Dispatched messages | The Mailbox stores each message's ID, in 64 KiB chunks, and each block's height once, not the message. Agents read the message from the finalized `Dispatch` event and check it against the stored ID. `dispatch` refuses a message if what it would allocate could take the Mailbox's memory past 3 GiB of its 4 GiB; `process` and withdrawals keep working. |
+| Delivered messages | The Mailbox records a delivery by the first 16 bytes of the message ID, and keeps no list of deliveries and no delivery heights. Agents index deliveries from the `ProcessId` events. Another message is refused as delivered only if its ID shares those 16 bytes: someone else's message only through a second preimage of 128 bits of keccak256, one's own after about 2^64 hashes ([storage.md](storage.md#the-16-byte-delivery-key)). |
+| Merkle roots | The MerkleTreeHook stores every inserted message ID and block height, but no root per insertion. Validators compute the root at an index from the stored IDs. |
+| Validator locations | ValidatorAnnounce stores the keccak256 of each announced location, not the location. The location is in the `ValidatorAnnouncement` event; agents check it against the stored hash. |
+| DRC20 storage | WarpDrc20 stores balances and allowances under a 32-byte hash of each principal (`drc20::account_id`). The ABI and events still use principals. |
 | Escrow claims | A recipient claims its own escrow with `claim_pending`, which registers the transaction's sender and pays it, for about 1.9M gas. Anyone can call `claim_pending_for(key)` and pay the gas. The route decodes `key` from its compressed encoding and reverts if that isn't a valid key; the escrow lookup, the registration and the payout all use the decoded key, the one the recipient signs with. The decoding costs about 57M gas, so that claim takes about 59M. Either claim reverts with nothing in escrow and then registers nothing, so neither can register a key nobody sent anything to, and routes have no other call that registers someone else. |
 | Unsupported | Routing, Aggregation and CCIP-read ISMs; rate-limited hooks and ISMs. |
 
@@ -71,7 +77,7 @@ and which design decisions are still open.
 | MEDIUM-5 | TestRecipient, which `deploy-hyperlane` always deploys, let anyone set its ISM, for example to the always-true TestMock. Unsigned messages to it were then delivered by the real Mailbox. | The setter is removed; TestRecipient always uses the Mailbox's default ISM. |
 | LOW-3 | WarpDrc20 let holders transfer to Phoenix principals, which no call can ever spend from. | Phoenix recipients are rejected. |
 | LOW-2 | The multisig ISM and ValidatorAnnounce accepted signatures OpenZeppelin rejects (`v` of 0/1, high `s`), because the host query does. No double counting was possible. | Both require canonical signatures (`types::signature::is_canonical`). |
-| HIGH-7 | The Mailbox stored every dispatched message in its wasm32 memory, which is capped at 4 GiB and never shrinks. About 57k maximum-size dispatches (a few hundred DUSK) would fill it, after which `process` could not allocate either and the bridge stopped both ways. | Only the message ID is stored, and `dispatch` closes at 3 GiB (`memory_bytes` reports usage). |
+| HIGH-7 | The Mailbox stored every dispatched message in its wasm32 memory, which is capped at 4 GiB and never shrinks. About 57k maximum-size dispatches (a few hundred DUSK) would fill it, after which `process` could not allocate either and the bridge stopped both ways. | Only the message ID is stored, in 64 KiB chunks, and `dispatch` refuses a message whose allocations could take the Mailbox past 3 GiB, counting them before it makes them (`memory_bytes` reports usage). The first fix stored IDs in growing `Vec`s, which the storage study below found still failed early. |
 | MEDIUM-6 | The Mailbox looked up a recipient's ISM with an unbounded call. A recipient without the getter was charged about 93% of the remaining gas, roughly 26M of a 30M transaction. | 1M gas allowance; running out of it fails the delivery rather than falling back. |
 | MEDIUM-7 | A recipient whose only DUSK was in escrow couldn't pay gas to claim it, so every first-time Dusk user needed DUSK from elsewhere. | `claim_pending_for`, payable by anyone. |
 | MEDIUM-8 | Dusk charges a failed transaction its whole gas limit. The relayer submitted `process` without a pre-check, so a message whose delivery always fails (for example to the zero recipient) cost 30M gas on every retry. | The relayer simulates `process` as a read-only query first (hyperlane-monorepo). |
@@ -93,9 +99,9 @@ these, some of them in the fixes' own claims:
 
 | ID | Issue | Status |
 |---|---|---|
-| MEDIUM-10 | Routes still register any number of keys. Without `register_account_for` (MEDIUM-9) every entry costs a transaction signed by its key, but anyone can fund new keys and call `register_account` from each, and no entry is ever removed. A test said that nobody could fill a route's memory with registrations. | **Open**, see [below](#open-registry-growth). The test now says what holds. |
+| MEDIUM-10 | Routes still register any number of keys. Without `register_account_for` (MEDIUM-9) every entry costs a transaction signed by its key, but anyone can fund new keys and call `register_account` from each, and no entry is ever removed. A test said that nobody could fill a route's memory with registrations. | **Open**, see [below](#open-registry-growth). The test now says what holds. The storage redesign left route registries as they are. |
 | MEDIUM-11 | Routes deployed before the CRITICAL-1 fix reported the same `state_version` as fixed ones, so `deploy/testnet.sh deploy` and `demo/deploy.sh --skip-deploy` would reuse a recorded deployment whose sponsored claims still pay forged keys. | Fixed. Routes are at `state_version` 4 (WarpNative), 6 (WarpDrc20) and 5 (WarpDrc20Collateral), and both scripts refuse a recorded route below that and say to redeploy. `agent-configs` and `preflight` check it too. |
-| LOW-7 | The Mailbox's `withdraw_dispatch_credit`, and each route's owner-only wrapper of it, pay the recipient key as given. A payer who passes a twin of the recipient's key (see CRITICAL-1) is debited and the event names the recipient, but the DUSK goes to an account nobody can spend from. Only the caller's own credit, or a route's credit by its owner, is at risk. | **Open.** The fix belongs in the Mailbox, which waits on a separate study of its storage. |
+| LOW-7 | The Mailbox's `withdraw_dispatch_credit`, and each route's owner-only wrapper of it, pay the recipient key as given. A payer who passes a twin of the recipient's key (see CRITICAL-1) is debited and the event names the recipient, but the DUSK goes to an account nobody can spend from. Only the caller's own credit, or a route's credit by its owner, is at risk. | Fixed. The Mailbox decodes the key from its compressed encoding, reverts if that fails or gives the identity, and pays and names the decoded key; the routes' wrappers go through it. Decoding costs about 57M gas, so a withdrawal takes 58.7M, and `dusk-tx withdraw-dispatch` defaults to an 80M limit. |
 | LOW-8 | `claim_pending` paid the sender but didn't register it, unlike `claim_pending_for`, so every later transfer to that account went to escrow again. The contracts' comments said a recipient had to register before claiming, which it didn't. | Fixed. `claim_pending` registers the sender, then pays it. |
 | LOW-9 | `dusk-tx claim-pending` called `claim_pending_for` with an 80M gas limit even for the signer's own escrow: about 59M gas where 1.9M would do, and 80M, 0.08 DUSK, when the claim failed. | Fixed. The signer's own claim (no `--for`, or `--for` naming the signer) calls `claim_pending` with a 3M limit: 1.5 times the costliest route's 1.91M, rounded up. |
 | LOW-10 | `deploy/testnet.sh` checked the relayer's gas limit against `EVM_ORIGIN_THRESHOLD`, not against the threshold deployed on chain, which the owner can raise later. | Fixed. Once the contracts are deployed it reads the threshold of the ISM the route uses (its own, or the Mailbox's default) and checks the larger of the two. |
@@ -148,11 +154,33 @@ entry, about 15,600 blocks filled to their 3 billion gas limit. For
 comparison, `register_account_for` (MEDIUM-9) did the same for about
 500 DUSK.
 
-This is the same class of problem as the Mailbox's process path after
-HIGH-7, which stores every processed message ID and isn't covered by the
-3 GiB dispatch limit: storage anyone can add to, bounded only by the cost of
-the transactions. It stays open until the storage design being worked out
-separately bounds or prices both. Routes don't report their memory use yet.
+The Mailbox's process path had the same problem, worse: it stored every
+processed message ID in a growing `Vec`, which failed at 33.5M deliveries
+for about 1,074 DUSK. The storage redesign removed that list
+([storage.md](storage.md)); the Mailbox now keeps 16 bytes per delivery,
+about 26 bytes of memory, and filling it takes about 163M deliveries and
+5,700 DUSK, or 122M and 4,300 DUSK to close dispatch. Registrations are
+the most expensive storage on any contract to fill, so they stay as they
+are for testnet. Routes don't report their memory use yet.
+
+## Storage study
+
+A study ran each contract's storage under a metered host until it failed,
+at 1 LUX per gas, with an attacker contract batching calls in one
+transaction. Every growing `Vec` failed at 2^25 entries or fewer, long
+before 4 GiB, because no allocation can reach 2 GiB on wasm32:
+
+| Storage | Failed at | Cost to cause | Fix ([storage.md](storage.md)) |
+|---|---|---|---|
+| Mailbox processed-message list | 33.5M deliveries, to a recipient that names itself as ISM | about 1,074 DUSK | Removed. Deliveries are recorded by 16-byte keys in a `BTreeSet`; agents index `ProcessId` events. |
+| Mailbox and MerkleTreeHook dispatch logs | 33.5M dispatches; the 3 GiB dispatch limit never fired, and in mixed traffic a 1.25 GiB reallocation overshot it and `process` failed at 16.8M | about 10,500 DUSK | 64 KiB chunks, heights once per block, no root per insertion, and an exact limit. |
+| IGP payment records | 16.8M payments | about 5,600 DUSK plus IGP fees | 64 KiB chunks. |
+| WarpDrc20 allowances and balances | 14.3M approvals to new spenders, 14.3M new holders | about 156 and 227 DUSK | Keyed by 32-byte account IDs. |
+| ValidatorAnnounce locations | 3.5M announcements of 1 KiB locations by new keys | about 1,257 DUSK | Location hashes; the locations are in the events. |
+
+Everything the contracts used before failed with the memory still mostly
+free, and nothing could recover it: the contracts can't be upgraded, so the
+Mailbox and its routes would have to be redeployed.
 
 ## Owner powers
 
@@ -251,10 +279,15 @@ Accepted:
   transaction's deposit, which only the transaction's target contract can
   claim. A smart wallet or router contract calling a warp route always
   reverts.
-- The Mailbox keeps the ID and block height of every dispatched message and
-  every processed message ID, about 100 bytes per message, plus 72 bytes per
-  message in the Merkle hook. That is tens of millions of messages before the
-  3 GiB dispatch limit, but the limit is permanent: monitor `memory_bytes`.
+- The Mailbox keeps 32 bytes per dispatched message, plus 16 bytes per block
+  that has any, and about 26 bytes per delivered message. The Merkle hook
+  keeps 32 bytes per message plus 16 per block, and the IGP 64 bytes per
+  payment. `dispatch` closes for good when the Mailbox reaches 3 GiB: after
+  about 100M messages, or fewer when deliveries share the memory.
+  Deliveries alone close it after about 122M, which anyone can pay for with
+  about 4,300 DUSK of gas by delivering messages to a recipient that names
+  itself as its ISM ([storage.md](storage.md#ceilings)). Monitor
+  `memory_bytes`.
 - `dispatch` is permissionless, as in Hyperlane. Security comes from the
   destination ISM.
 - Dispatch credit can only be withdrawn to Moonlight accounts, not to

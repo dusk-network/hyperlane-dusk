@@ -67,6 +67,12 @@ implemented. The agents return an explicit error if a deployment points at one.
   marks a message delivered before any external call during `process`.
 - **No upgrades.** Contract IDs are deterministic and contracts are
   immutable. An upgrade means a new deployment plus a config migration.
+- **Storage.** A contract's state is its wasm32 memory, at most 4 GiB, and
+  it never shrinks. The contracts keep growing state in 64 KiB chunks and
+  store only what they check: message IDs, not messages; 16 bytes of each
+  delivered message's ID; hashes of validator locations. Agents read the
+  rest from finalized events. [docs/storage.md](docs/storage.md) has the
+  layouts, what filling each contract costs, and what agents read.
 - **Finality.** Agents only index finalized events, and validators only
   checkpoint finalized Merkle state.
 
@@ -88,7 +94,7 @@ data-driver/     Data driver that lets the Dusk explorer decode these contracts
 demo/            Local bridge environment, deploy scripts and E2E/fault tests
 e2e/             Rust E2E test against a running node
 scripts/         Build and check helpers
-docs/            Security notes and operations guide
+docs/            Security notes, storage design and operations guide
 ```
 
 ## Building

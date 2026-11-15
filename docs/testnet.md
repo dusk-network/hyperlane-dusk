@@ -58,9 +58,9 @@ make each other's transactions fail. See [Dusk keys](#dusk-keys).
 Gas on Dusk:
 
 - Deployments are charged 100 gas per WASM byte, at the network's minimum
-  deploy gas price of 2000 LUX. The Mailbox is about 176 KB, so 17.6M gas
-  (35 DUSK), the native warp route 172 KB (34 DUSK), and each other contract
-  27–94 KB (5–19 DUSK). Initialisation adds a little to each.
+  deploy gas price of 2000 LUX. The Mailbox is about 187 KB, so 18.7M gas
+  (37 DUSK), the native warp route 172 KB (34 DUSK), and each other contract
+  27–95 KB (5–19 DUSK). Initialisation adds a little to each.
 - Ordinary transactions only need a gas price above zero. `dusk-tx` uses
   1 LUX for everything except `deploy-hyperlane`, and the agent configs use
   `DUSK_AGENT_GAS_PRICE` (1 LUX). A relayed `process` takes about 2.2M gas
@@ -83,6 +83,9 @@ Gas on Dusk:
   is higher. The owner can raise that threshold after deploying, so raise
   the relayer's limit with it. Validators keep `DUSK_AGENT_GAS_LIMIT` (30M)
   for their one-time announcement.
+- Withdrawing dispatch credit (`withdraw-dispatch`) takes about 59M gas,
+  because the Mailbox decodes the recipient's public key, and `dusk-tx`
+  gives it an 80M limit.
 - Claiming your own escrow (`claim-pending`) takes about 1.9M gas, and
   `dusk-tx` gives it a 3M limit. Claiming someone else's
   (`claim-pending --for`) takes about 59M, because the route decodes their
@@ -158,17 +161,19 @@ bash deploy/testnet.sh agent-configs
   a dispatch to the Dusk domain can be quoted;
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
-  chain, and its warp route is at this checkout's `state_version`.
+  chain, and its contracts are at this checkout's `state_version`s.
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
 skips steps already recorded there. If it stops halfway, fix the cause and run
 it again. Router enrollment is re-checked on chain each time. If the recorded
-contracts aren't on chain, for example after a testnet reset, or the recorded
-warp route reports an older `state_version` than this checkout's (4 for the
-native route), `deploy` stops; move the directory aside and deploy again.
-Older routes may pay sponsored escrow claims to forged keys
-([security notes](security.md#issues-found-and-fixed), CRITICAL-1), so
-`agent-configs` refuses them too.
+contracts aren't on chain, for example after a testnet reset, or a recorded
+contract reports another `state_version` than this checkout's (Mailbox 5,
+MerkleTreeHook 2, IGP 3, ValidatorAnnounce 2, native route 4), `deploy`
+stops; move the directory aside and deploy again. Older routes may pay
+sponsored escrow claims to forged keys
+([security notes](security.md#issues-found-and-fixed), CRITICAL-1), and
+older core contracts keep storage anyone can fill
+([storage.md](storage.md)), so `agent-configs` refuses them too.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
@@ -222,8 +227,11 @@ Before each delivery to Dusk, the relayer runs `process` as a read-only
 contract query (`POST /on/contracts:<mailbox>/process`) and only submits if
 it succeeds. Its RUES endpoint must allow that query: behind a proxy that
 refuses it, nothing is delivered and the relayer logs `not submitting the
-message`. The agents need contracts at the current `state_version`
-(Mailbox 4).
+message`. The agents need contracts at the current `state_version`s
+(Mailbox 5, MerkleTreeHook 2, ValidatorAnnounce 2), and an agent build that
+reads them: deliveries come from `ProcessId` events, checkpoint roots are
+computed from the Merkle hook's message IDs, and validator locations come
+from `ValidatorAnnouncement` events ([storage.md](storage.md#what-agents-read)).
 
 Each Dusk transaction an agent sends is logged as `dusk-tx call succeeded`
 with its `tx_id`. Its gas use and result are in the node's GraphQL API:
@@ -346,11 +354,14 @@ Testnet runs on trust choices and tooling that mainnet can't:
 - **Gas payments.** Price the Dusk IGP for the EVM destination, get Dusk
   pricing into the EVM side's hook, and turn on gas-payment enforcement in the
   relayer.
-- **Storage.** Anyone can add keys to a route's registry, and processed
-  message IDs to the Mailbox, for good, paying only gas. Filling a route's
-  4 GiB with registrations takes roughly 23,000 to 47,000 DUSK
-  ([security notes](security.md#open-registry-growth)), and routes don't
-  report their memory yet. Bound or price both.
+- **Storage.** Anyone can add to most contracts' storage for good, paying
+  gas and, for messages, fees. [storage.md](storage.md#ceilings) lists what
+  filling each contract costs: about 3,700 DUSK for a WarpDrc20's
+  allowances, 4,300 DUSK of deliveries to close the Mailbox's dispatch, and
+  23,000 to 47,000 DUSK for a route's registry
+  ([security notes](security.md#open-registry-growth)). Only the Mailbox
+  reports its memory. Decide which limits mainnet needs, and price or bound
+  the rest.
 - **Upgrades.** The contracts are immutable. Plan how a fix ships: a pause
   limited to `dispatch` and `transfer_remote` (never `process` or claims), a
   redeploy, and a migration of route custody that doesn't depend on forging
@@ -367,5 +378,5 @@ Testnet runs on trust choices and tooling that mainnet can't:
   - validator checkpoint lag;
   - signer balances;
   - WarpNative custody against the EVM token's supply;
-  - the Mailbox's `memory_bytes`, as dispatch closes at 3 GiB.
+  - the Mailbox's `memory_bytes`, as dispatch closes just below 3 GiB.
 - **Disclosure.** Publish a security contact and response process.

@@ -77,6 +77,11 @@ dusk-tx withdraw-dispatch --target <mailbox> --amount <lux> \
 dusk-tx withdraw-dispatch --target <route> --amount <lux> --expected-chain-id <id>
 ```
 
+The Mailbox decodes the recipient's public key before paying it, so the
+DUSK reaches the account that signs with that key even if the key passed
+was a forged twin of it. Decoding costs about 57M gas: a withdrawal takes
+about 59M, and `withdraw-dispatch` defaults to an 80M gas limit.
+
 Withdraw credit that is no longer needed, such as credit funded for a route
 by an older deployment script.
 
