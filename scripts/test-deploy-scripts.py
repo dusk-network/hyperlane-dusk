@@ -37,6 +37,7 @@ IGP = "a2" * 32
 VALIDATOR_ANNOUNCE = "a3" * 32
 MERKLE_TREE_HOOK = "a4" * 32
 PROTOCOL_FEE = "a5" * 32
+AGGREGATION_HOOK = "a6" * 32
 MULTISIG = "b1" * 32
 OTHER_MULTISIG = "b2" * 32
 TEST_MOCK = "c1" * 32
@@ -616,14 +617,21 @@ def dusk_queries():
     """A Dusk deployment as deploy/testnet.sh leaves it: every contract at
     this checkout's state_version, the route with no ISM of its own, the
     Mailbox's default a 1-of-1 multisig ISM, and the IGP priced as the
-    example settings say."""
+    example settings say. The hooks are wired as dusk-tx deploy-hyperlane
+    wires them: the IGP is the Mailbox's default hook, and its required hook
+    is an aggregation hook that calls the Merkle tree hook and the
+    ProtocolFee, which take their calls from it, not from the Mailbox."""
     return {
         f"{MAILBOX}/local_domain": {"value": DUSK_DOMAIN},
         f"{MAILBOX}/default_ism": {"value": MULTISIG},
         f"{MAILBOX}/state_version": {"value": 5},
         f"{MAILBOX}/default_hook": {"value": IGP},
+        f"{MAILBOX}/required_hook": {"value": AGGREGATION_HOOK},
+        f"{AGGREGATION_HOOK}/mailbox": {"value": MAILBOX},
+        f"{AGGREGATION_HOOK}/hooks": {"value": [MERKLE_TREE_HOOK, PROTOCOL_FEE]},
         f"{IGP}/mailbox": {"value": MAILBOX},
-        f"{PROTOCOL_FEE}/mailbox": {"value": MAILBOX},
+        f"{PROTOCOL_FEE}/mailbox": {"value": AGGREGATION_HOOK},
+        f"{MERKLE_TREE_HOOK}/mailbox": {"value": AGGREGATION_HOOK},
         f"{MERKLE_TREE_HOOK}/state_version": {"value": 2},
         f"{IGP}/state_version": {"value": 4},
         f"{IGP}/domain_gas_config/{EVM_DOMAIN}": {"value": {
@@ -646,7 +654,7 @@ def dusk_queries():
 DUSK_CONTRACTS = {
     "mailbox": MAILBOX, "igp": IGP, "validator_announce": VALIDATOR_ANNOUNCE,
     "merkle_tree_hook": MERKLE_TREE_HOOK, "protocol_fee": PROTOCOL_FEE, "warp_native": ROUTE,
-    "ism_multisig": MULTISIG, "test_mock": TEST_MOCK,
+    "aggregation_hook": AGGREGATION_HOOK, "ism_multisig": MULTISIG, "test_mock": TEST_MOCK,
 }
 
 
@@ -1412,10 +1420,19 @@ class TestnetFeeCommands(DeployedTestnet):
             # Dispatches pay another IGP than the one dusk-igp would price.
             ({f"{MAILBOX}/default_hook": {"value": other}}, ["dusk-igp", "--apply"],
              f"The Dusk Mailbox {MAILBOX}'s default hook is {other}, not the IGP {IGP}"),
+            # The recorded IGP or ProtocolFee is another deployment's.
             ({f"{IGP}/mailbox": {"value": other}}, ["dusk-igp", "--apply"],
-             f"The Dusk igp {IGP} belongs to the Mailbox {other}, not {MAILBOX}"),
+             f"The Dusk igp {IGP} takes its calls from {other}, which is neither the Mailbox {MAILBOX}"),
             ({f"{PROTOCOL_FEE}/mailbox": {"value": other}}, ["claim"],
-             f"The Dusk protocol_fee {PROTOCOL_FEE} belongs to the Mailbox {other}, not {MAILBOX}"),
+             f"The Dusk protocol_fee {PROTOCOL_FEE} takes its calls from {other}, which is neither the Mailbox {MAILBOX}"),
+            # A ProtocolFee anyone deployed for this Mailbox's aggregation
+            # hook, which doesn't call it.
+            ({f"{AGGREGATION_HOOK}/hooks": {"value": [MERKLE_TREE_HOOK]}}, ["claim"],
+             f"The Dusk protocol_fee {PROTOCOL_FEE} takes its calls from the Mailbox's required_hook "
+             f"{AGGREGATION_HOOK}, which doesn't call it"),
+            # The aggregation hook takes its calls from another Mailbox.
+            ({f"{AGGREGATION_HOOK}/mailbox": {"value": other}}, ["claim"],
+             f"{AGGREGATION_HOOK}, which takes its own from {other}, not the Mailbox {MAILBOX}"),
             ({f"{MAILBOX}/local_domain": {"value": 7}}, ["claim"],
              f"The Dusk Mailbox {MAILBOX} recorded in"),
         ]
@@ -1443,6 +1460,17 @@ class TestnetFeeCommands(DeployedTestnet):
         self.write_state({**state, "evm": {**state["evm"], "mailbox": "0x" + "12" * 20}})
         self.assert_fails(self.run_script("evm-igp", "--apply"), f"was made for EVM Mailbox 0x{'12' * 20}")
         self.assertEqual(self.traced("cast send"), [])
+
+    def test_fee_contracts_may_take_their_calls_from_a_hook_of_the_mailbox(self):
+        # As dusk-tx deploy-hyperlane wires it (dusk_queries), the ProtocolFee
+        # takes its calls from the aggregation hook that is the Mailbox's
+        # required hook. A deployment may also bind it to the Mailbox itself.
+        for caller in (AGGREGATION_HOOK, MAILBOX):
+            with self.subTest(caller=caller):
+                self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 5}
+                self.queries[f"{PROTOCOL_FEE}/mailbox"] = {"value": caller}
+                self.assert_ok(self.run_script("claim"))
+                self.assertIn(f"--contract {PROTOCOL_FEE}", " ".join(self.traced("dusk-tx claim-fees")))
 
     def test_claim_collects_both_chains(self):
         self.queries[f"{IGP}/claimable_fees"] = {"value": 6000000000}

@@ -550,12 +550,40 @@ check_evm_chain() {
         || fail "EVM RPC $EVM_RPC reports chain ID $chain_id, expected EVM_CHAIN_ID $EVM_CHAIN_ID"
 }
 
+# A Dusk hook takes calls only from the contract it was initialized with
+# (its `mailbox`). dusk-tx deploy-hyperlane binds the IGP, the Mailbox's
+# default hook, to the Mailbox, and the ProtocolFee to the aggregation hook
+# that is the Mailbox's required hook and calls it. So a fee contract of
+# this deployment takes its calls from the Mailbox, or from one of the
+# Mailbox's hooks that takes its own from the Mailbox and calls it.
+check_dusk_hook_binding() {
+    local name="$1" contract="$2" mailbox="$3" bound method hook hook_bound hooks
+    bound="$(dusk_value "the caller of the Dusk $name $contract" \
+        --contract "$contract" --method mailbox --return-type bytes32)" || exit 1
+    [ "$bound" != "$mailbox" ] || return 0
+    for method in required_hook default_hook; do
+        hook="$(dusk_value "the $method of the Dusk Mailbox $mailbox" \
+            --contract "$mailbox" --method "$method" --return-type bytes32)" || exit 1
+        [ "$bound" = "$hook" ] || continue
+        hook_bound="$(dusk_value "the caller of the Dusk Mailbox's $method $hook" \
+            --contract "$hook" --method mailbox --return-type bytes32)" || exit 1
+        [ "$hook_bound" = "$mailbox" ] \
+            || fail "The Dusk $name $contract takes its calls from the Mailbox's $method $hook, which takes its own from $hook_bound, not the Mailbox $mailbox recorded in $STATE"
+        hooks="$(dusk_value "the hooks the Dusk Mailbox's $method $hook calls" \
+            --contract "$hook" --method hooks --return-type contract-id-list)" || exit 1
+        jq -e --arg c "$contract" 'any(.[]; . == $c)' <<<"$hooks" >/dev/null 2>&1 \
+            || fail "The Dusk $name $contract takes its calls from the Mailbox's $method $hook, which doesn't call it (it calls $hooks)"
+        return 0
+    done
+    fail "The Dusk $name $contract takes its calls from $bound, which is neither the Mailbox $mailbox recorded in $STATE nor one of its hooks"
+}
+
 # The Dusk contracts the fee commands use must be this deployment's: the
 # recorded Mailbox on the expected chain at DUSK_DOMAIN, the contracts at
-# this checkout's state versions, and the IGP and ProtocolFee bound to that
-# Mailbox.
+# this checkout's state versions, and the IGP and ProtocolFee taking their
+# calls from that Mailbox or its hooks (check_dusk_hook_binding).
 check_dusk_deployment() {
-    local mailbox domain name contract bound
+    local mailbox domain name contract
     check_dusk_chain
     mailbox="$(state_get '.dusk.mailbox')"
     [ -n "$mailbox" ] || fail "No Dusk deployment recorded in $STATE; run deploy first"
@@ -569,10 +597,7 @@ check_dusk_deployment() {
     for name in igp protocol_fee; do
         contract="$(state_get ".dusk.$name")"
         [ -n "$contract" ] || continue
-        bound="$(dusk_value "the Mailbox of the Dusk $name $contract" \
-            --contract "$contract" --method mailbox --return-type bytes32)" || exit 1
-        [ "$bound" = "$mailbox" ] \
-            || fail "The Dusk $name $contract belongs to the Mailbox $bound, not $mailbox recorded in $STATE"
+        check_dusk_hook_binding "$name" "$contract" "$mailbox"
     done
 }
 
