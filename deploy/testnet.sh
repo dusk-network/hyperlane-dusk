@@ -46,6 +46,7 @@ AGENT_STATE_DIR="${AGENT_STATE_DIR:-/var/lib/hyperlane}"
 DUSK_SIGNER_KEY_FILE="${DUSK_SIGNER_KEY_FILE:-/run/secrets/dusk-signer.key}"
 DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
 DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-32}"
+DUSK_MULTICALL="${DUSK_MULTICALL-93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4}"
 WASM_DIR="${WASM_DIR:-$DUSK_DIR/target/contract/wasm32-unknown-unknown/release}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
 STATE="$OUT_DIR/deployment.json"
@@ -782,6 +783,37 @@ check_relayer_batch_size() {
         || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, the most of an account's transactions Rusk queues ahead of its next nonce, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
 }
 
+# Multicall for Dusk, through which the agents batch their contract reads
+# (batchContractAddress). It must answer `version` with 1, the ABI the
+# agents speak. On a chain without it, or with another version, the configs
+# leave it out, with a warning, and the agents make single queries: an
+# address that answers nothing would only make every batch fail first. Any
+# other failure to ask stops the script. Sets DUSK_MULTICALL_ID.
+DUSK_MULTICALL_ID=""
+check_dusk_multicall() {
+    local id out version
+    DUSK_MULTICALL_ID=""
+    id="$(lower "${DUSK_MULTICALL#0x}")"
+    if [ -z "$id" ]; then
+        info "DUSK_MULTICALL is empty: the agents make single contract queries"
+        return 0
+    fi
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] || fail "DUSK_MULTICALL must be a contract ID of 64 hex characters, not '$DUSK_MULTICALL'"
+    if ! out="$(dusk_query --contract "$id" --method version --return-type u32 2>/dev/null)"; then
+        grep -qiE 'ContractDoesNotExist|contract does not exist|contract owner not found' <<<"$out" \
+            || fail "Can't ask Multicall for Dusk at $id for its version: $(jq -r '.error // "the query failed"' <<<"$out" 2>/dev/null)"
+        warn "Multicall for Dusk isn't on this chain at $id (DUSK_MULTICALL): the agent configs leave batchContractAddress out, and the agents make single contract queries"
+        return 0
+    fi
+    version="$(jq -r '.value // empty' <<<"$out")"
+    if [ "$version" != 1 ]; then
+        warn "The contract at DUSK_MULTICALL $id answers version '$version', not 1, the Multicall for Dusk ABI the agents speak: the agent configs leave batchContractAddress out"
+        return 0
+    fi
+    DUSK_MULTICALL_ID="$id"
+    ok "Multicall for Dusk answers at $id (version 1): the agents batch their contract reads through it"
+}
+
 # Check the ISM that verifies messages to the deployed route: the route's
 # own ISM if it has one, otherwise the Mailbox's default. It must be a
 # MessageIdMultisig ISM whose validators and threshold are
@@ -1046,6 +1078,7 @@ cmd_preflight() {
     load_fees
     check_relayer_batch_size
     preflight_dusk
+    check_dusk_multicall
     preflight_evm
     preflight_keys
     check_state_matches_chain
@@ -1525,13 +1558,15 @@ cmd_claim() {
 
 # The Dusk chain of an agent config. The relayer's has a maxBatchSize: it
 # sends that many deliveries to Dusk together, as consecutive transactions
-# of its account, with a dusk-tx that takes `call --nonce --no-wait`.
+# of its account, with a dusk-tx that takes `call --nonce --no-wait`. Both
+# batch their contract reads through Multicall for Dusk when it answers
+# (check_dusk_multicall).
 dusk_chain_json() {
     local cursor_dir="$1" gas_limit="$2" max_batch_size="${3:-null}"
     jq -n --arg url "$DUSK_RUES_URL" --argjson domain "$DUSK_DOMAIN" \
         --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --arg cursors "$cursor_dir" \
         --argjson gl "$gas_limit" --argjson gp "$DUSK_AGENT_GAS_PRICE" \
-        --argjson batch "$max_batch_size" \
+        --argjson batch "$max_batch_size" --arg multicall "$DUSK_MULTICALL_ID" \
         --arg key_file "$DUSK_SIGNER_KEY_FILE" --slurpfile s "$STATE" '{
           name: "dusk", protocol: "dusk", domainId: $domain, chainId: $chain,
           rpcUrls: [{http: $url}], eventCursorDir: $cursors,
@@ -1542,7 +1577,8 @@ dusk_chain_json() {
           merkleTreeHook: ("0x" + $s[0].dusk.merkle_tree_hook),
           submitter: "Classic",
           signer: {type: "duskKey", keyFile: $key_file}
-        } + (if $batch == null then {} else {maxBatchSize: $batch} end)'
+        } + (if $batch == null then {} else {maxBatchSize: $batch} end)
+          + (if $multicall == "" then {} else {batchContractAddress: ("0x" + $multicall)} end)'
 }
 
 cmd_agent_configs() {
@@ -1552,6 +1588,7 @@ cmd_agent_configs() {
     check_relayer_batch_size
     check_dusk_deployment
     check_evm_deployment
+    check_dusk_multicall
     check_deployed_ism
     check_relayer_gas_limit
     route_hook_plan

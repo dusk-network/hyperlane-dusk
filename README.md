@@ -208,6 +208,7 @@ A Dusk chain entry in an agent config looks like this:
   "gasLimit": 5000000,
   "gasPrice": 1,
   "maxBatchSize": 32,
+  "batchContractAddress": "0x93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4",
   "mailbox": "0x<mailbox contract id>",
   "interchainGasPaymaster": "0x<igp contract id>",
   "validatorAnnounce": "0x<validator-announce contract id>",
@@ -221,6 +222,11 @@ has ready together, as consecutive transactions of its account that can
 share a block; one at a time, a relayer key delivers one message every two
 blocks. It needs a `dusk-tx` that takes `call --nonce --no-wait`, as this
 repository's does.
+
+`batchContractAddress` names Multicall for Dusk, which runs at that ID on
+mainnet and testnet: the agents batch their contract reads through it, and
+make single queries without it. `deploy/testnet.sh agent-configs` writes it
+only after the contract answers `version` with 1.
 
 Every agent process needs its own `eventCursorDir`. The `duskKey` signer takes
 exactly one of `keyFile` (a file with no group or world permissions),

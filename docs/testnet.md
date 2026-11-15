@@ -192,6 +192,10 @@ transfer pays for. `fees` prints what they come to.
 `preflight` checks that:
 - the Dusk node is on the expected chain, has both host queries active, allows
   third-party contracts and serves the archive queries the agents need;
+- Multicall for Dusk answers `version` with 1 at `DUSK_MULTICALL` (by
+  default its ID on mainnet and testnet). `agent-configs` names it in both
+  configs (`batchContractAddress`), so the agents batch their contract
+  reads, and leaves it out, with a warning, on a chain where it isn't;
 - the Sepolia Mailbox, Merkle hook and ValidatorAnnounce belong together;
   how often the Mailbox's required hook inserts a message to Dusk into the
   Merkle tree, following aggregation and routing hooks, which decides the

@@ -217,6 +217,25 @@ if [ "$ISM" = "messageIdMultisig" ]; then
     done
 fi
 
+# Multicall for Dusk, through which the agents batch their contract reads
+# (batchContractAddress): the one demo/deploy.sh recorded, or the ID it has
+# on every chain. Included only when it answers `version` with 1 on this
+# chain, as deploy/testnet.sh checks it; otherwise the agents make single
+# queries. DUSK_MULTICALL= leaves it out.
+DUSK_MULTICALL="${DUSK_MULTICALL-$(jq -r '.dusk.multicall // "93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4"' "$STATE_FILE")}"
+DUSK_MULTICALL_JSON=""
+MULTICALL_ID="$(printf '%s' "${DUSK_MULTICALL#0x}" | tr '[:upper:]' '[:lower:]')"
+if [ -n "$MULTICALL_ID" ]; then
+    [[ "$MULTICALL_ID" =~ ^[0-9a-f]{64}$ ]] || fail "DUSK_MULTICALL must be a contract ID of 64 hex characters"
+    MULTICALL_VERSION="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$MULTICALL_ID" \
+        --method version --return-type u32 2>/dev/null | jq -r '.value // empty' 2>/dev/null)" || true
+    if [ "$MULTICALL_VERSION" = 1 ]; then
+        DUSK_MULTICALL_JSON="\"batchContractAddress\": \"0x${MULTICALL_ID}\","
+    else
+        echo "[WARN] Multicall for Dusk doesn't answer version 1 at $MULTICALL_ID on this chain: the agent configs leave batchContractAddress out, and the agents make single contract queries" >&2
+    fi
+fi
+
 # ── Dusk Deployer Key (consensus.keys) ──────────────────────────────────────
 
 [ -f "$CONSENSUS_KEYS" ] || fail "Consensus keys not found at $CONSENSUS_KEYS"
@@ -285,6 +304,7 @@ cat > "$RELAYER_CONFIG" <<JSON
       "gasLimit": ${DUSK_RELAYER_GAS_LIMIT},
       "gasPrice": ${DUSK_GAS_PRICE},
       "maxBatchSize": ${DUSK_RELAYER_MAX_BATCH_SIZE},
+      ${DUSK_MULTICALL_JSON}
       "mailbox": "0x${DUSK_MAILBOX}",
       "interchainGasPaymaster": "0x${DUSK_IGP}",
       "validatorAnnounce": "0x${DUSK_VALIDATOR_ANNOUNCE}",
@@ -368,6 +388,7 @@ JSON
       "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
       "gasLimit": ${DUSK_GAS_LIMIT},
       "gasPrice": ${DUSK_GAS_PRICE},
+      ${DUSK_MULTICALL_JSON}
       "mailbox": "0x${DUSK_MAILBOX}",
       "interchainGasPaymaster": "0x${DUSK_IGP}",
       "validatorAnnounce": "0x${DUSK_VALIDATOR_ANNOUNCE}",

@@ -41,6 +41,8 @@ MULTISIG = "b1" * 32
 OTHER_MULTISIG = "b2" * 32
 TEST_MOCK = "c1" * 32
 DEPLOYER_H256 = "d0" * 32
+# Multicall for Dusk, at the ID it has on every chain.
+MULTICALL = "93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4"
 DUSK_DOMAIN = 1146442572
 EVM_DOMAIN = 11155111
 VALIDATOR = "0x3c659e0fe8d01b80d7828b421630085777346e7c"
@@ -632,6 +634,7 @@ def dusk_queries():
         f"{MULTISIG}/validators_and_threshold": {"value": {"validators": [VALIDATOR], "threshold": 1}},
         f"{MULTISIG}/threshold": {"value": 1},
         f"{TEST_MOCK}/module_type": {"value": 6},
+        f"{MULTICALL}/version": {"value": 1},
     }
 
 
@@ -1193,6 +1196,43 @@ class TestnetFeeCommands(DeployedTestnet):
                 self.assert_fails(self.run_script("agent-configs", DUSK_RELAYER_MAX_BATCH_SIZE=value),
                                   "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64")
                 self.assertFalse(self.relayer_config.exists())
+
+    def test_the_agents_batch_contract_reads_through_the_multicall(self):
+        self.assert_ok(self.run_script("agent-configs"))
+        relayer = json.loads(self.relayer_config.read_text())
+        validator = json.loads((self.out / "validator-dusk.json").read_text())
+        for config in (relayer, validator):
+            self.assertEqual(config["chains"]["dusk"]["batchContractAddress"], "0x" + MULTICALL)
+        self.assertNotIn("batchContractAddress", relayer["chains"]["sepolia"])
+
+    def test_a_chain_without_the_multicall_gets_single_queries(self):
+        for case, entry, expected in [
+            ("absent", None, f"Multicall for Dusk isn't on this chain at {MULTICALL}"),
+            ("another version", {"value": 2}, "answers version '2', not 1"),
+        ]:
+            with self.subTest(case=case):
+                self.queries.pop(f"{MULTICALL}/version", None)
+                if entry is not None:
+                    self.queries[f"{MULTICALL}/version"] = entry
+                for command in ("agent-configs", "preflight"):
+                    result = self.run_script(command)
+                    self.assert_ok(result)
+                    self.assertIn(expected, result.stderr)
+                relayer = json.loads(self.relayer_config.read_text()) if self.relayer_config.exists() else None
+                validator = json.loads((self.out / "validator-dusk.json").read_text())
+                self.assertNotIn("batchContractAddress", validator["chains"]["dusk"])
+                self.assertTrue(relayer is None or "batchContractAddress" not in relayer["chains"]["dusk"])
+        # A failure that doesn't say the contract is missing stops the script.
+        self.queries[f"{MULTICALL}/version"] = {"error": "Query failed (500): connection reset"}
+        self.assert_fails(self.run_script("agent-configs"), "Can't ask Multicall for Dusk")
+        self.assertFalse(self.relayer_config.exists())
+        # Empty: left out, and not asked for.
+        result = self.run_script("agent-configs", DUSK_MULTICALL="")
+        self.assert_ok(result)
+        self.assertNotIn("batchContractAddress", json.loads(self.relayer_config.read_text())["chains"]["dusk"])
+        self.assertFalse([line for line in self.traced("dusk-tx query") if "--method version" in line])
+        self.assert_fails(self.run_script("agent-configs", DUSK_MULTICALL="0x1234"),
+                          "DUSK_MULTICALL must be a contract ID of 64 hex characters")
 
     def test_agent_configs_follow_the_margin(self):
         self.settings["OPERATOR_MARGIN_BPS"] = 2000
@@ -2045,10 +2085,20 @@ TRICKY_PASSWORDS = [
     "tab\tand unicode é中",
 ]
 
-# Records the password export-signer-key gets, and writes a key file.
+# Records the password export-signer-key gets, and writes a key file. Also
+# answers Multicall for Dusk's `version` with FIXTURE_MULTICALL_VERSION (1, or
+# nothing when it is empty).
 EXPORT_STUB = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
+if args[0] == "query":
+    assert args[args.index("--method") + 1] == "version", args
+    version = os.environ.get("FIXTURE_MULTICALL_VERSION", "1")
+    if not version:
+        print(json.dumps({"success": False, "error": "Query failed (500): ContractDoesNotExist"}))
+        sys.exit(1)
+    print(json.dumps({"success": True, "value": int(version)}))
+    sys.exit(0)
 assert args[0] == "export-signer-key", args
 assert "--password" not in args, "the password must not be on the command line"
 out = args[args.index("--out") + 1]
@@ -2091,7 +2141,7 @@ class GenAgentConfigsPassword(unittest.TestCase):
         self.tmp = self.root / "tmp"
         self.tmp.mkdir()
 
-    def generate(self, password, dusk_tx):
+    def generate(self, password, dusk_tx, **extra_env):
         (self.demo / ".env.bridge").write_text("".join(f"{key}={shlex.quote(str(value))}\n" for key, value in {
             "BRIDGE_STATE_FILE": self.state, "CONSENSUS_KEYS": self.keys, "DUSK_TX": dusk_tx,
             "DUSK_RUES_URL": "http://localhost:8080/", "ANVIL_RPC": "http://localhost:8545",
@@ -2103,6 +2153,7 @@ class GenAgentConfigsPassword(unittest.TestCase):
             "TMPDIR": str(self.tmp),
             "CONSENSUS_PASSWORD": password,
             "FIXTURE_PASSWORD_SEEN": str(self.seen),
+            **extra_env,
         }
         return subprocess.run(["bash", str(self.demo / "gen-agent-configs.sh"), "--ism", "testMock"],
                               env=env, capture_output=True, text=True, timeout=60)
@@ -2153,6 +2204,23 @@ class GenAgentConfigsPassword(unittest.TestCase):
         shutil.rmtree(generated["runDir"])
         self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 32)
         self.assertNotIn("maxBatchSize", relayer["chains"]["anvil"])
+
+    def test_agents_batch_contract_reads_through_the_multicall(self):
+        stub = self.bin / "dusk-tx"
+        write_executable(stub, EXPORT_STUB)
+        for version, included in (("1", True), ("", False), ("2", False)):
+            with self.subTest(version=version):
+                result = self.generate("password", stub, FIXTURE_MULTICALL_VERSION=version)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                generated = json.loads(result.stdout)
+                relayer = json.loads(Path(generated["relayer"]).read_text())
+                shutil.rmtree(generated["runDir"])
+                if included:
+                    self.assertEqual(relayer["chains"]["dusk"]["batchContractAddress"], "0x" + MULTICALL)
+                else:
+                    self.assertNotIn("batchContractAddress", relayer["chains"]["dusk"])
+                    self.assertIn("leave batchContractAddress out", result.stderr)
+                self.assertNotIn("batchContractAddress", relayer["chains"]["anvil"])
 
     def test_real_dusk_tx_decrypts_with_a_tricky_password(self):
         dusk_tx = Path(os.environ.get("DUSK_TX_BIN", ROOT / "target" / "release" / "dusk-tx"))
