@@ -208,6 +208,25 @@ A review of the relaying fees before the public testnet found:
 | MEDIUM-16 | `demo/bench/agents.sh` and `deploy/local-agents.sh` started the agents with the operator's whole environment. Hyperlane applies `HYP_*` variables over the config files, so a `HYP_CHAINS_DUSK_CUSTOMRPCURLS` left in the shell sent the bench's agents past its proxy to whatever node it named, with the development keys, and other variables (`CONFIG_FILES`, `RUST_LOG`, `AWS_*`) changed what they did; the rehearsal's agents also inherited the env file's `EVM_DEPLOYER_KEY` and Dusk key password. | Fixed. Both start each agent with `env -i` and only `PATH`, `HOME`, `DUSK_TX_BIN`, its config, its keys and, in the bench, the shim's variables. `scripts/test-deploy-scripts.py` starts them with such a shell and checks each agent's environment. |
 | LOW-16 | Choosing the Sepolia route's hook, `deploy/testnet.sh` counted the Mailbox's required hook as inserting into the Merkle tree only when it was that tree's hook or an aggregation with it among its own hooks. One that reached the tree through a nested aggregation or a routing hook counted as not inserting, so the route's hook added the tree again and every message went into it twice; and any hook it didn't know passed. | Fixed. `deploy` follows the required hook through aggregations and domain routing hooks (the hook for Dusk, or the fallback) and counts the insertions into `EVM_MERKLE_TREE_HOOK`. A Merkle hook, an IGP, a ProtocolFee and a pausable hook are leaves. Twice or more, any other kind of hook, a routing hook with nothing for Dusk, or nesting deeper than 8 stops `preflight` and `deploy`. |
 
+## Fifth review
+
+A last review of the operator tooling before the public testnet found
+these. Each fix has a test that fails without it.
+
+| ID | Issue | Status |
+|---|---|---|
+| MEDIUM-17 | `deploy/testnet.sh` checked the Sepolia IGP's pricing by its quote signers and by what it quoted a transfer asked as the route's token and as the zero address. The IGP resolves standing quotes by sender, and a standing quote outlives the signer that stored it. An adopted IGP whose former signer, since removed, left an unexpired zero-price quote for any other sender passed, and that sender's messages to Dusk paid nothing for the gas the relayer credited them with. | Fixed. This deployment uses no signed quotes, so `preflight`, `deploy`, `evm-igp` and `agent-configs` also refuse an IGP that has ever had a quote signer: they read its `QuoteSignerAdded` events from the block that created it, `EVM_LOG_BLOCK_RANGE` blocks a request, and record in the state how far they read. A new IGP has none; [operations.md](operations.md#an-igp-that-had-a-quote-signer) says how to replace one that had. The tests store the free quote for a sender that is neither the token nor the zero address, and on Anvil a real signer signs one, which the IGP honours after the signer is removed. |
+| MEDIUM-18 | The commands that use the recorded Sepolia token only proved that the deployer created and initialized it as a proxy of the recorded implementation. Mixed or restored state could name this deployment's Mailbox with a genuine token of another deployment by the same deployer: the checks passed, the fee commands adopted it, and `deploy` set its hook and enrolled this route on it. | Fixed. Every command that uses the token first checks that its `mailbox()` is `EVM_MAILBOX`, that it verifies messages from Dusk with the ISM recorded in the state, and that this ISM is a MessageIdMultisig ISM of exactly `DUSK_ORIGIN_VALIDATORS` and `DUSK_ORIGIN_THRESHOLD`. |
+| MEDIUM-19 | Only `withdraw-dispatch` and the fee commands (MEDIUM-15) required `--expected-chain-id`. `fund-dispatch`, `transfer-remote`, `enroll-router`, `deploy-hyperlane`, `register-account`, `claim-pending`, `dispatch`, `process` and `drc20-approve` signed for whatever chain the endpoint reported, several of them after reading the key, and `call` and `deploy-wasm` took the flag only optionally. | Fixed. Every `dusk-tx` command that sends a transaction requires `--expected-chain-id`, and checks it against the node before it queries a contract, reads the key or builds a transaction; `pay-for-gas --quote-only` signs nothing and needs none. The agents already passed it to `call`. Every script and documented example passes the chain it means, and a `dusk-tx` test drives each command against a node on another chain and sees it stop after one request. |
+| MEDIUM-20 | `dusk-tx deploy-wasm`, which the local scripts use to put Multicall for Dusk at its published ID, reported success for a contract already at the ID its Wasm, deploy nonce and owner give, without looking at it. An existing contract at the expected ID is not trusted without verification. | Fixed. `deploy-wasm` takes an existing contract only when Rusk reports exactly the given owner for it and, with `--check-multicall`, it answers `version` with 1 and an `aggregate` of the transfer contract's `chain_id` with the node's chain ID. Otherwise, or when it can't tell, it fails and sends nothing. It checks a contract it deploys the same way, and the scripts pass `--check-multicall`. |
+| LOW-17 | `check_dusk_hook_binding` accepted a fee contract that took its calls from the recorded Mailbox without checking that the Mailbox calls it: a detached ProtocolFee bound to the Mailbox passed, and `claim` signed a claim for it. | Fixed. A fee contract bound to the Mailbox must be its required or default hook, as one bound to one of those hooks must be called by it. |
+| LOW-18 | The checks on the Sepolia IGP and token read EIP-1967's implementation slot but not its admin slot. The `ERC1967Proxy` `deploy` creates has no admin; a proxy with one, such as a `TransparentUpgradeableProxy` the same deployer created and initialized the same way, passed while its admin could change its code. | Fixed. Every command that adopts them requires the admin slot to be zero, as the Anvil test already asserted of a new deployment. |
+
+The same round left the agents' experimental pipelined deliveries to Dusk
+out of every generated config (see [Design decisions](#design-decisions)),
+and stopped `dusk-tx transfer-remote --native` from asking a native route
+for views only DRC20 routes have.
+
 ## Owner powers
 
 `dusk-tx deploy-hyperlane` makes the deployer key the owner, fee beneficiary
@@ -291,6 +310,14 @@ Accepted:
   payments dispatches make: filling the IGP to the point where dispatches
   through it revert still takes dispatches
   ([costs.md](costs.md#attack-costs)).
+- **Deliveries to Dusk go one at a time.** A relayer key delivers about
+  one message every two blocks. The agents' pipelined deliveries, several
+  of the relayer's transactions sharing a block, are experimental: only a
+  chain with both `pipelineDeliveries: true` and a `maxBatchSize` above 1
+  pipelines, `agent-configs` writes neither, and they stay off on testnet
+  and mainnet until the six issues their last review found are fixed
+  ([operations.md](operations.md#deliveries-to-dusk)). The default path
+  has none of them.
 - **Sender resolution through the transfer contract** (issue #4). A frame
   whose only caller is the transfer contract (call-stack depth 1) is a
   Moonlight transaction's own top-level call, and its sender is
