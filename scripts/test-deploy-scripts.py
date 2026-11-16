@@ -1150,8 +1150,9 @@ class TestnetEvmCreationChecks(DeployedTestnet):
 
 class TestnetTokenBinding(DeployedTestnet):
     """The recorded EVM token must be this deployment's: bound to EVM_MAILBOX,
-    and verifying messages from Dusk with the recorded ISM, a MessageIdMultisig
-    ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD, before any
+    verifying messages from Dusk with the recorded ISM, a MessageIdMultisig
+    ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD, and enrolled with
+    the recorded Dusk route, or with none and holding no tokens, before any
     command adopts it or deploy rewires it."""
 
     COMMANDS = ["preflight", "agent-configs", "evm-igp", "claim", "deploy"]
@@ -1161,8 +1162,36 @@ class TestnetTokenBinding(DeployedTestnet):
             with self.subTest(command=command):
                 result = self.run_script(command)
                 self.assert_fails(result, expected)
-                self.assertEqual(self.traced("cast send") + self.traced("forge"), [])
+                self.assertEqual(self.traced("cast send") + self.traced("forge")
+                                 + self.traced("dusk-tx enroll-router") + self.traced("dusk-tx set-beneficiary"), [])
                 self.assertFalse(self.relayer_config.exists())
+
+    def test_a_token_enrolled_with_another_dusk_route_is_refused(self):
+        # Deployments A and B by the same deployer, through the same Mailbox
+        # and validators, share the ISM the factory gives, so B's token, put
+        # in A's state, passed the binding checks. deploy then enrolled A's
+        # route on it in place of B's, and the token on A's route: B's
+        # tokens, backed by B's custody, could be redeemed for A's DUSK.
+        other = "e2" * 32
+        self.evm["contracts"][self.token]["routers"] = {str(DUSK_DOMAIN): "0x" + other}
+        self.assert_refused(f"is enrolled with the Dusk route {other}, not the route recorded in")
+        self.assertEqual(self.evm["contracts"][self.token]["routers"], {str(DUSK_DOMAIN): "0x" + other})
+
+    def test_a_token_holding_tokens_without_a_route_is_refused(self):
+        # No route enrolled, but a supply, minted when it was initialized:
+        # nothing on Dusk backs those tokens.
+        self.evm["contracts"][self.token].update(routers={}, supply=10**18)
+        self.assert_refused(f"has a supply of {10**18} but no Dusk route")
+
+    def test_a_token_without_a_route_or_tokens_gets_this_route(self):
+        # deploy stopped after creating the token: it has neither yet, and
+        # deploy enrolls this deployment's route on it, and it on the route.
+        self.evm["contracts"][self.token].update(routers={}, supply=0)
+        self.queries.pop(f"{ROUTE}/enrolled_router/{EVM_DOMAIN}")
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.evm["contracts"][self.token]["routers"], {str(DUSK_DOMAIN): "0x" + ROUTE})
+        self.assertEqual(self.queries[f"{ROUTE}/enrolled_router/{EVM_DOMAIN}"], {"value": "00" * 12 + "11" * 20})
+        self.assert_ok(self.run_script("agent-configs"))
 
     def test_a_token_of_another_mailbox_is_refused(self):
         # Mixed or restored state: deployment B's token, created by the same

@@ -273,13 +273,14 @@ check_evm_creations() {
 }
 
 # The recorded token must be this deployment's route on the EVM chain: bound
-# to EVM_MAILBOX (a HypERC20's mailbox() is fixed in its implementation), and
+# to EVM_MAILBOX (a HypERC20's mailbox() is fixed in its implementation),
 # verifying messages from Dusk with the ISM recorded in $STATE, a
 # MessageIdMultisig ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD
-# that lists each validator once. A token another deployment of the same
-# deployer created, the same way, passes the creation checks; this keeps
-# every command from adopting it, and deploy from rewiring it, before either
-# uses it.
+# that lists each validator once, and routed to the recorded Dusk route or
+# to none yet (check_evm_token_router). A token another deployment of the
+# same deployer created, the same way, passes the creation checks; this
+# keeps every command from adopting it, and deploy from rewiring it, before
+# either uses it.
 check_evm_token_binding() {
     local token mailbox ism recorded type policy validators repeated threshold expected
     token="$(state_get '.evm.token')"
@@ -307,6 +308,33 @@ check_evm_token_binding() {
     expected="$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")"
     [ "$validators" = "$expected" ] && [ "$threshold" = "$DUSK_ORIGIN_THRESHOLD" ] \
         || fail "The EVM DUSK token's ISM $ism needs $threshold of [$validators], but DUSK_ORIGIN_THRESHOLD and DUSK_ORIGIN_VALIDATORS say $DUSK_ORIGIN_THRESHOLD of [$expected]"
+    check_evm_token_router "$token"
+}
+
+# The token's router for Dusk must be the Dusk route recorded in $STATE, or
+# none yet, and with none the token must have no supply. Deployments by the
+# same deployer through the same Mailbox and validators share the ISM, so
+# another deployment's token passes the binding checks; its router is that
+# deployment's route, whose custody backs its supply. Enrolling this route
+# on it would let those tokens be redeemed for this route's DUSK, and so
+# would supply minted before any route was enrolled, which nothing backs.
+# deploy creates the token with no supply and enrolls the route after it,
+# so a new or resumed deployment passes. Runs before deploy writes to it.
+check_evm_token_router() {
+    local token="$1" route router supply
+    route="$(lower "$(state_get '.dusk.warp_native')")"
+    router="$(evm_call "$token" "routers(uint32)(bytes32)" "$DUSK_DOMAIN")" \
+        || fail "Can't read the Dusk router of the EVM DUSK token $token"
+    router="$(lower "$router")"
+    if [ -n "$route" ] && [ "$router" = "0x$route" ]; then
+        return 0
+    fi
+    [[ "$router" =~ ^0x0{64}$ ]] \
+        || fail "The EVM DUSK token $token is enrolled with the Dusk route ${router#0x}, not the route recorded in $STATE (${route:-none}): it is another deployment's, and that route's DUSK backs its tokens. Move $OUT_DIR aside and deploy again."
+    supply="$(evm_number "$token" "totalSupply()(uint256)")" && [[ "$supply" =~ ^[0-9]+$ ]] \
+        || fail "Can't read the supply of the EVM DUSK token $token"
+    [ "$supply" = 0 ] \
+        || fail "The EVM DUSK token $token has a supply of $supply but no Dusk route: nothing on Dusk backs those tokens, and enrolling this deployment's route would let them be redeemed for its DUSK. deploy creates the token with none. Move $OUT_DIR aside and deploy again."
 }
 
 sorted_addresses() {
