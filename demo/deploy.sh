@@ -961,7 +961,9 @@ ok "Dusk contracts deployed"
 # Multicall for Dusk, which the local genesis lacks, at the ID it has on
 # testnet and mainnet: its v0.1.0 Wasm, deploy nonce 0 and its published
 # owner give that ID on any chain, and dusk-tx checks they do before it sends
-# anything. Without DUSK_MULTICALL_WASM the agents make single queries.
+# anything. A contract already at the ID is taken only once its owner and its
+# answers check out (--check-multicall). Without DUSK_MULTICALL_WASM the
+# agents make single queries.
 DUSK_MULTICALL=""
 if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
     step "Deploying Multicall for Dusk..."
@@ -972,7 +974,7 @@ if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
         --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" \
         --owner r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW \
         --deploy-nonce 0 --expected-id 93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4 \
-        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" --check-multicall)" \
         || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' <<<"$MULTICALL_OUT" 2>/dev/null)"
     DUSK_MULTICALL="$(jq -r '.contract_id' <<<"$MULTICALL_OUT")"
     ok "Multicall for Dusk at $DUSK_MULTICALL"

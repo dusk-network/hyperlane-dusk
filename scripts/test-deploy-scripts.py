@@ -2018,7 +2018,7 @@ class AnvilEvmDeploy(unittest.TestCase):
             # At the ID it has on every chain: nonce 0 and the published owner.
             [deploy] = deploys
             for part in (f"--wasm {MULTICALL_WASM}", f"--owner {MULTICALL_OWNER}", "--deploy-nonce 0",
-                         f"--expected-id {MULTICALL}", "--expected-chain-id 2"):
+                         f"--expected-id {MULTICALL}", "--expected-chain-id 2", "--check-multicall"):
                 self.assertIn(part, deploy)
             self.assertIn(f"DUSK_MULTICALL={MULTICALL}\n", local_env)
             self.assertEqual(relayer["chains"]["dusk"]["batchContractAddress"], "0x" + MULTICALL)

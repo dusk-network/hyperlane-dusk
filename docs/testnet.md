@@ -528,7 +528,10 @@ In the rehearsal:
   `dusk-tx deploy-wasm`, with deploy nonce 0 and the published owner, so it
   lands at the ID it has on testnet. `deploy-wasm` checks the Wasm, nonce
   and owner give that ID before it sends anything; the deploy takes about
-  6.9M gas. The agents then batch their contract reads through it, as on
+  6.9M gas. An existing contract at the expected ID is not trusted without
+  verification: `deploy-wasm` takes one only once Rusk reports the
+  published owner for it and it answers `version` and an `aggregate` as the
+  multicall does (`--check-multicall`), and otherwise stops. The agents then batch their contract reads through it, as on
   testnet. Without it, `local.env` sets `DUSK_MULTICALL` empty and they make
   single queries.
 - `local-agents.sh` starts each agent with only `PATH`, `HOME`,

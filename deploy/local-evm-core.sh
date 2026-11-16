@@ -65,13 +65,16 @@ if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
     [ "$(sha256sum "$DUSK_MULTICALL_WASM" 2>/dev/null | awk '{print $1}')" = "$MULTICALL_SHA256" ] \
         || fail "DUSK_MULTICALL_WASM ($DUSK_MULTICALL_WASM) isn't Multicall for Dusk v0.1.0, whose Wasm has SHA-256 $MULTICALL_SHA256"
     # dusk-tx checks the Wasm, nonce and owner give the published ID before
-    # it sends anything, and reports a multicall already there.
+    # it sends anything. It takes a contract already at the ID only once Rusk
+    # reports the published owner for it and it answers as the multicall
+    # does (--check-multicall), and checks the contract it deploys the same
+    # way.
     multicall="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-wasm --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" --owner "$MULTICALL_OWNER" --deploy-nonce 0 \
-        --expected-id "$MULTICALL_ID" --expected-chain-id "$DUSK_CHAIN_ID")" \
+        --expected-id "$MULTICALL_ID" --expected-chain-id "$DUSK_CHAIN_ID" --check-multicall)" \
         || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' <<<"$multicall" 2>/dev/null)"
     DUSK_MULTICALL="$MULTICALL_ID"
-    ok "Multicall for Dusk at $MULTICALL_ID: $(jq -r 'if .deployed then "deployed, \(.gas_spent) gas" else "already there" end' <<<"$multicall")"
+    ok "Multicall for Dusk at $MULTICALL_ID: $(jq -r 'if .deployed then "deployed, \(.gas_spent) gas" else "already there, checked (\(.verified | join(", ")))" end' <<<"$multicall")"
 else
     warn "DUSK_MULTICALL_WASM is not set: the local chain has no Multicall for Dusk, and the rehearsal's agents make single contract queries"
 fi

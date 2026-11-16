@@ -12,6 +12,9 @@ const TRANSFER_CONTRACT: &str = "01000000000000000000000000000000000000000000000
 const MAX_TRANSACTION_STATUS_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CONTRACT_QUERY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+/// A contract's owner as Rusk reports it: the bytes its deploy named, 96 for
+/// a Moonlight account.
+const MAX_CONTRACT_OWNER_RESPONSE_BYTES: usize = 64 * 1024;
 /// How Rusk's preverify refuses a Moonlight transaction whose nonce is
 /// ahead of the account's next one (`TxAcceptanceError::MissingIntermediateNonce`
 /// in rusk-private's node/src/mempool.rs). Propagate queues such a
@@ -342,6 +345,13 @@ impl RuesClient {
     ///
     /// This does **not** invoke contract code.
     pub async fn contract_exists(&self, contract_hex: &str) -> Result<bool, String> {
+        Ok(self.contract_owner(contract_hex).await?.is_some())
+    }
+
+    /// The owner Rusk recorded for a contract, the bytes the deploy that
+    /// created it named, or `None` when no contract has the ID. Read from
+    /// VM metadata; this does **not** invoke contract code.
+    pub async fn contract_owner(&self, contract_hex: &str) -> Result<Option<Vec<u8>>, String> {
         // RUES requires a non-empty topic; "owner" is conventional here.
         let url = self.endpoint(&format!("/on/contract_owner:{contract_hex}/owner"));
         let response = self
@@ -355,7 +365,15 @@ impl RuesClient {
 
         let status = response.status();
         if status.is_success() {
-            return Ok(true);
+            // A binary request gets the owner's raw bytes back.
+            let owner = read_response_body(
+                response,
+                MAX_CONTRACT_OWNER_RESPONSE_BYTES,
+                "contract owner",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            return Ok(Some(owner));
         }
 
         let body = read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "contract existence")
@@ -371,7 +389,7 @@ impl RuesClient {
                 || body_lc.contains("contract does not exist")
                 || body_lc.contains("contract owner not found"))
         {
-            return Ok(false);
+            return Ok(None);
         }
 
         Err(format!(

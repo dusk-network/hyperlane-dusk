@@ -120,7 +120,8 @@ cmd_setup() {
 
     # Multicall for Dusk, which the local genesis lacks, at the ID it has on
     # testnet, as deploy/local-evm-core.sh deploys it. dusk-tx checks that the
-    # Wasm, nonce and owner give that ID before it sends anything.
+    # Wasm, nonce and owner give that ID before it sends anything, and takes a
+    # contract already there only once its owner and answers check out.
     local dusk_multicall=""
     mkdir -p "$BENCH_DIR/deploy"
     if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
@@ -129,7 +130,7 @@ cmd_setup() {
         info "Deploying Multicall for Dusk..."
         DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-wasm --rues-url "$RUSK_URL/" \
             --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" --owner "$MULTICALL_OWNER" --deploy-nonce 0 \
-            --expected-id "$MULTICALL_ID" --expected-chain-id "$chain_id" > "$MULTICALL_RECORD" \
+            --expected-id "$MULTICALL_ID" --expected-chain-id "$chain_id" --check-multicall > "$MULTICALL_RECORD" \
             || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' "$MULTICALL_RECORD" 2>/dev/null)"
         # testnet.sh checks the multicall and names it in its configs only
         # when the agents are to batch through it.

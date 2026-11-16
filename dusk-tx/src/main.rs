@@ -49,6 +49,7 @@ use rkyv::Serialize;
 use serde_json::json;
 
 mod keys;
+mod multicall;
 mod rues;
 
 use rues::{BlockStatus, Inclusion, RuesClient, TransactionStatus, TransactionStatusQueryError};
@@ -260,7 +261,11 @@ enum Command {
     /// Wasm, the nonce (8 bytes, little-endian) and the owner's key, and of
     /// nothing else, so the same three give the same ID on any chain. The ID
     /// is computed, and checked against --expected-id, before anything is
-    /// sent; a contract already at that ID is reported, not deployed again.
+    /// sent. An existing contract at the expected ID is not trusted without
+    /// verification: it is taken, and not deployed again, only when Rusk
+    /// reports the given owner for it and, with --check-multicall, it answers
+    /// as Multicall for Dusk; otherwise nothing is sent and the command
+    /// fails. A contract it deploys is checked the same way.
     DeployWasm {
         #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
@@ -296,6 +301,11 @@ enum Command {
         /// constructed.
         #[arg(long)]
         expected_chain_id: u8,
+        /// The Wasm is Multicall for Dusk: the contract at the ID must answer
+        /// `version` with 1, and an `aggregate` of the transfer contract's
+        /// `chain_id` with the node's chain ID.
+        #[arg(long)]
+        check_multicall: bool,
         /// Gas limit. Defaults to the bytecode charge, 100 gas per Wasm
         /// byte, plus 10M.
         #[arg(long)]
@@ -1063,6 +1073,7 @@ async fn run(command: Command) -> Result<(), String> {
             deploy_nonce,
             expected_id,
             expected_chain_id,
+            check_multicall,
             gas_limit,
             gas_price,
         } => {
@@ -1077,6 +1088,7 @@ async fn run(command: Command) -> Result<(), String> {
                 deploy_nonce,
                 expected_id.as_deref(),
                 expected_chain_id,
+                check_multicall,
                 gas_limit,
                 gas_price,
             )
@@ -2818,21 +2830,59 @@ mod tests {
         }
     }
 
+    /// Multicall for Dusk's published owner, and the IDs a test Wasm gives
+    /// with it: BLAKE2b-256(Wasm, nonce as 8 bytes LE, owner key), worked out
+    /// independently for nonces 0 and 7.
+    const MULTICALL_OWNER: &str = "r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW";
+    const ID_0: &str = "01f65d8939a6c50847df38fe73558052aa8e3f6aea2666add3f82bc279ff36e2";
+    const ID_7: &str = "497ea159f075a1ffade355beddc1fbe3f153fb19c81ffe057a15c1143e018a74";
+
+    /// A `deploy-wasm` of a test Wasm with Multicall for Dusk's owner and
+    /// deploy nonce 0, expecting `expected`, against `url`, on chain 2.
+    fn deploy_wasm(
+        wasm: &std::path::Path,
+        url: &str,
+        expected: &str,
+        extra: &[&str],
+    ) -> super::Command {
+        let wasm = wasm.to_str().unwrap();
+        let args = [
+            "dusk-tx",
+            "deploy-wasm",
+            "--rues-url",
+            url,
+            "--wasm",
+            wasm,
+            "--owner",
+            MULTICALL_OWNER,
+            "--deploy-nonce",
+            "0",
+            "--expected-id",
+            expected,
+            "--expected-chain-id",
+            "2",
+        ];
+        Cli::try_parse_from(args.iter().chain(extra).copied())
+            .unwrap()
+            .command
+    }
+
+    fn test_wasm(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dusk-tx-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wasm = dir.join("contract.wasm");
+        std::fs::write(&wasm, b"\0asm\x01\0\0\0").unwrap();
+        (dir, wasm)
+    }
+
     /// `deploy-wasm` computes the contract ID as Rusk does, from the Wasm,
     /// the deploy nonce and the owner, which need not be the signer; with
     /// the owner given it checks the ID against `--expected-id` before it
-    /// asks the node anything, and reports a contract already there without
-    /// reading a key.
+    /// asks the node anything.
     #[tokio::test]
     async fn deploy_wasm_checks_the_contract_id_before_anything_is_sent() {
-        // Multicall for Dusk's published owner.
-        const OWNER: &str = "r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW";
-        // BLAKE2b-256(Wasm, nonce as 8 bytes LE, owner key), worked out
-        // independently for nonces 0 and 7.
-        const ID_0: &str = "01f65d8939a6c50847df38fe73558052aa8e3f6aea2666add3f82bc279ff36e2";
-        const ID_7: &str = "497ea159f075a1ffade355beddc1fbe3f153fb19c81ffe057a15c1143e018a74";
         let bytecode = b"\0asm\x01\0\0\0".to_vec();
-        let owner = super::parse_account_arg(OWNER).unwrap();
+        let owner = super::parse_account_arg(MULTICALL_OWNER).unwrap();
         let id_0 = super::parse_bytes32(ID_0).unwrap();
         assert_eq!(
             super::check_deploy_id(&bytecode, 0, &owner, &id_0),
@@ -2844,60 +2894,202 @@ mod tests {
             "{error}"
         );
 
-        let dir = std::env::temp_dir().join(format!("dusk-tx-deploy-wasm-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let wasm = dir.join("contract.wasm");
-        std::fs::write(&wasm, &bytecode).unwrap();
-        let no_keys = || Some(std::path::PathBuf::from("/nonexistent/dusk-tx-test.keys"));
-
-        // Another expected ID: nothing reaches the node.
+        let (dir, wasm) = test_wasm("deploy-wasm-id");
         let (url, server) = mock_rues(vec![]);
-        let error = super::cmd_deploy_wasm(
-            &url,
-            no_keys(),
-            "",
-            None,
-            false,
-            &wasm,
-            Some(OWNER),
-            0,
-            Some(ID_7),
-            0,
-            None,
-            2000,
-        )
-        .await
-        .unwrap_err();
+        let error = super::run(deploy_wasm(&wasm, &url, ID_7, &[]))
+            .await
+            .unwrap_err();
         assert!(error.contains("nothing was sent"), "{error}");
         assert!(server.join().unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(super::deploy_wasm_gas_limit(50_745), 15_074_500);
+    }
 
-        // The contract is there already: reported, and no key is read.
+    /// An existing contract at the expected ID is not trusted without
+    /// verification. It is taken, without a key being read (the key file
+    /// here doesn't exist), only when Rusk reports exactly the given owner
+    /// for it and, with `--check-multicall`, it answers `version` with 1 and
+    /// an `aggregate` of the transfer contract's `chain_id` with the chain's
+    /// ID. Otherwise the command fails and sends nothing.
+    #[tokio::test]
+    async fn deploy_wasm_takes_an_existing_contract_only_once_it_checks_out() {
+        let (dir, wasm) = test_wasm("deploy-wasm-existing");
+        let owner = super::parse_account_arg(MULTICALL_OWNER)
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        let (_, other) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let other = other.to_bytes().to_vec();
+        let version = |v: u32| super::rkyv_serialize(&v);
+        let aggregate = |results: Vec<Result<Vec<u8>, super::multicall::CallError>>| {
+            super::rkyv_serialize(&super::multicall::Aggregate { height: 9, results })
+        };
+        let no_keys = ["--keys", "/nonexistent/dusk-tx-test.keys"];
+        let check = [
+            "--keys",
+            "/nonexistent/dusk-tx-test.keys",
+            "--check-multicall",
+        ];
+
+        // Taken: Rusk reports the owner given.
         let (url, server) = mock_rues(vec![
-            ("/chain_id", 200, vec![0]),
-            ("/owner", 200, Vec::new()),
+            ("/chain_id", 200, vec![2]),
+            ("/owner", 200, owner.clone()),
         ]);
-        super::cmd_deploy_wasm(
-            &url,
-            no_keys(),
-            "",
-            None,
-            false,
-            &wasm,
-            Some(OWNER),
-            0,
-            Some(ID_0),
-            0,
-            None,
-            2000,
-        )
-        .await
-        .unwrap();
+        super::run(deploy_wasm(&wasm, &url, ID_0, &no_keys))
+            .await
+            .unwrap();
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 2);
         assert!(requests[1].0.contains(ID_0), "{}", requests[1].0);
-        std::fs::remove_dir_all(&dir).unwrap();
 
-        assert_eq!(super::deploy_wasm_gas_limit(50_745), 15_074_500);
+        // And with --check-multicall, once it answers as the multicall.
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/owner", 200, owner.clone()),
+            ("/version", 200, version(1)),
+            ("/aggregate", 200, aggregate(vec![Ok(vec![2])])),
+        ]);
+        super::run(deploy_wasm(&wasm, &url, ID_0, &check))
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(
+            requests[3].1,
+            super::rkyv_serialize(&super::multicall::chain_id_calls())
+        );
+
+        // Refused, with nothing sent and no key read.
+        let refusals: Vec<(Vec<(&'static str, u16, Vec<u8>)>, &[&str], &str)> = vec![
+            (
+                vec![("/owner", 200, other.clone())],
+                &no_keys,
+                "Rusk reports its owner as",
+            ),
+            (
+                vec![("/owner", 200, owner[..95].to_vec())],
+                &no_keys,
+                "Rusk reports its owner as 95 bytes",
+            ),
+            (
+                vec![("/owner", 200, [owner.as_slice(), &[0]].concat())],
+                &no_keys,
+                "Rusk reports its owner as 97 bytes",
+            ),
+            (
+                vec![("/owner", 500, b"node busy".to_vec())],
+                &no_keys,
+                "Can't tell whether a contract is at",
+            ),
+            (
+                vec![
+                    ("/owner", 200, owner.clone()),
+                    ("/version", 200, version(2)),
+                ],
+                &check,
+                "it answers version 2, not 1",
+            ),
+            (
+                vec![
+                    ("/owner", 200, owner.clone()),
+                    ("/version", 200, version(1)),
+                    ("/aggregate", 200, aggregate(vec![Ok(vec![3])])),
+                ],
+                &check,
+                "aggregate of the transfer contract's chain_id answered",
+            ),
+            (
+                vec![
+                    ("/owner", 200, owner.clone()),
+                    ("/version", 200, version(1)),
+                    ("/aggregate", 500, b"no such function".to_vec()),
+                ],
+                &check,
+                "its aggregate query failed",
+            ),
+        ];
+        for (replies, extra, expected) in refusals {
+            let (url, server) = mock_rues(
+                std::iter::once(("/chain_id", 200, vec![2]))
+                    .chain(replies)
+                    .collect(),
+            );
+            let error = super::run(deploy_wasm(&wasm, &url, ID_0, extra))
+                .await
+                .unwrap_err();
+            assert!(error.contains(expected), "{expected}: {error}");
+            assert!(
+                error.contains("nothing was sent") || error.contains("Nothing was sent"),
+                "{error}"
+            );
+            let requests = server.join().unwrap();
+            assert!(
+                !requests
+                    .iter()
+                    .any(|(path, _)| path.contains("/transactions/")),
+                "{requests:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A contract `deploy-wasm` deploys is checked as an existing one is.
+    #[tokio::test]
+    async fn deploy_wasm_checks_the_contract_it_deploys() {
+        use dusk_core::transfer::moonlight::AccountData;
+        let (dir, wasm) = test_wasm("deploy-wasm-new");
+        let owner = super::parse_account_arg(MULTICALL_OWNER)
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        let account = super::rkyv_serialize(&AccountData {
+            nonce: 0,
+            balance: 1_000_000_000_000_000,
+        });
+        let executed =
+            br#"{"data":{"tx":{"err":null,"gasSpent":6899157,"blockHeight":9}}}"#.to_vec();
+        let accepted =
+            br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Accepted"}}}"#.to_vec();
+        let signer = ["--secret-key", &"11".repeat(32), "--check-multicall"];
+        let deploy = |answer: u8| {
+            vec![
+                ("/chain_id", 200, vec![2]),
+                ("/owner", 404, b"Contract owner not found".to_vec()),
+                ("/account", 200, account.clone()),
+                ("/on/transactions/preverify", 200, Vec::new()),
+                ("/on/transactions/propagate", 200, Vec::new()),
+                ("/graphql", 200, executed.clone()),
+                ("/graphql", 200, accepted.clone()),
+                ("/owner", 200, owner.clone()),
+                ("/version", 200, super::rkyv_serialize(&1u32)),
+                (
+                    "/aggregate",
+                    200,
+                    super::rkyv_serialize(&super::multicall::Aggregate {
+                        height: 9,
+                        results: vec![Ok(vec![answer])],
+                    }),
+                ),
+            ]
+        };
+        let (url, server) = mock_rues(deploy(2));
+        super::run(deploy_wasm(&wasm, &url, ID_0, &signer))
+            .await
+            .unwrap();
+        assert_eq!(server.join().unwrap().len(), 10);
+
+        let (url, server) = mock_rues(deploy(3));
+        let error = super::run(deploy_wasm(&wasm, &url, ID_0, &signer))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("was included, but the contract at")
+                && error.contains("doesn't answer as Multicall for Dusk"),
+            "{error}"
+        );
+        assert_eq!(server.join().unwrap().len(), 10);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `top_up_quote` is the IGP's `quote_pay_for_gas`: gas x price x rate
@@ -4820,6 +5012,7 @@ async fn cmd_deploy_wasm(
     deploy_nonce: u64,
     expected_id: Option<&str>,
     expected_chain_id: u8,
+    check_multicall: bool,
     gas_limit: Option<u64>,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -4855,10 +5048,33 @@ async fn cmd_deploy_wasm(
         "deploy_nonce": deploy_nonce,
         "wasm_bytes": bytecode.len(),
     });
-    // Whoever deploys a Wasm with a nonce and an owner first takes the ID,
-    // and the same contract is there whoever it was.
-    if client.contract_exists(&contract_hex).await? {
+    // An existing contract at the expected ID is not trusted without
+    // verification: it is taken only when it checks out, and the command
+    // fails, with nothing sent, when it doesn't or can't be checked.
+    let existing = client.contract_owner(&contract_hex).await.map_err(|e| {
+        format!(
+            "Can't tell whether a contract is at {contract_hex}, or whose it is: {e}. \
+             Nothing was sent"
+        )
+    })?;
+    if let Some(found) = existing {
+        let verified = verify_deployed(
+            &client,
+            &contract_id,
+            &found,
+            &owner,
+            check_multicall,
+            chain_id,
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "A contract is already at {contract_hex}, but {e}. An existing contract at \
+                         the expected ID is not trusted without verification: nothing was sent"
+            )
+        })?;
         output["deployed"] = json!(false);
+        output["verified"] = json!(verified);
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
         return Ok(());
     }
@@ -4890,16 +5106,67 @@ async fn cmd_deploy_wasm(
     )?;
     let tx_id = hex::encode(tx.hash().to_bytes());
     let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-    if !client.contract_exists(&contract_hex).await? {
-        return Err(format!(
-            "Transaction {tx_id} was included, but there is no contract at {contract_hex}"
-        ));
-    }
+    let found = client.contract_owner(&contract_hex).await?.ok_or_else(|| {
+        format!("Transaction {tx_id} was included, but there is no contract at {contract_hex}")
+    })?;
+    let verified = verify_deployed(
+        &client,
+        &contract_id,
+        &found,
+        &owner,
+        check_multicall,
+        chain_id,
+    )
+    .await
+    .map_err(|e| {
+        format!("Transaction {tx_id} was included, but the contract at {contract_hex}: {e}")
+    })?;
     output["deployed"] = json!(true);
+    output["verified"] = json!(verified);
     output["tx_id"] = json!(tx_id);
     confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+/// Check the contract at `contract_id`, whose owner Rusk reports as
+/// `found`: it must be `owner`, byte for byte, and with `check_multicall`
+/// the contract must answer as Multicall for Dusk. Returns what was checked.
+async fn verify_deployed(
+    client: &RuesClient,
+    contract_id: &[u8; 32],
+    found: &[u8],
+    owner: &BlsPublicKey,
+    check_multicall: bool,
+    chain_id: u8,
+) -> Result<Vec<&'static str>, String> {
+    if found != owner.to_bytes().as_slice() {
+        return Err(format!(
+            "Rusk reports its owner as {}, not {}",
+            describe_owner(found),
+            account_identity(owner)["address"]
+                .as_str()
+                .unwrap_or_default()
+        ));
+    }
+    if !check_multicall {
+        return Ok(vec!["owner"]);
+    }
+    multicall::check(client, contract_id, chain_id)
+        .await
+        .map_err(|e| format!("it doesn't answer as Multicall for Dusk: {e}"))?;
+    Ok(vec!["owner", "version", "aggregate"])
+}
+
+/// An owner as Rusk reports it: a Moonlight address when it is a public
+/// key's 96 bytes, otherwise its length and first bytes.
+fn describe_owner(owner: &[u8]) -> String {
+    if owner.len() == 96 {
+        return bs58::encode(owner).into_string();
+    }
+    let shown = &owner[..owner.len().min(32)];
+    let more = if owner.len() > shown.len() { "..." } else { "" };
+    format!("{} bytes ({}{more})", owner.len(), hex::encode(shown))
 }
 
 /// The ID a deploy of `bytecode` with `nonce` and `owner` gives, which must
