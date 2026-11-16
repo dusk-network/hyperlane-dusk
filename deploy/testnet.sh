@@ -275,12 +275,13 @@ check_evm_creations() {
 # The recorded token must be this deployment's route on the EVM chain: bound
 # to EVM_MAILBOX (a HypERC20's mailbox() is fixed in its implementation), and
 # verifying messages from Dusk with the ISM recorded in $STATE, a
-# MessageIdMultisig ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD.
-# A token another deployment of the same deployer created, the same way,
-# passes the creation checks; this keeps every command from adopting it,
-# and deploy from rewiring it, before either uses it.
+# MessageIdMultisig ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD
+# that lists each validator once. A token another deployment of the same
+# deployer created, the same way, passes the creation checks; this keeps
+# every command from adopting it, and deploy from rewiring it, before either
+# uses it.
 check_evm_token_binding() {
-    local token mailbox ism recorded type policy validators threshold expected
+    local token mailbox ism recorded type policy validators repeated threshold expected
     token="$(state_get '.evm.token')"
     [ -n "$token" ] || return 0
     require DUSK_ORIGIN_VALIDATORS DUSK_ORIGIN_THRESHOLD
@@ -297,7 +298,11 @@ check_evm_token_binding() {
         || fail "The EVM DUSK token's ISM $ism is of module type $type; it must be a MessageIdMultisig ISM ($MESSAGE_ID_MULTISIG_ISM)"
     policy="$(evm_call "$ism" "validatorsAndThreshold(bytes)(address[],uint8)" 0x)" \
         || fail "Can't read the validators and threshold of the EVM ISM $ism"
-    validators="$(sorted_addresses "$(sed -n 1p <<<"$policy" | tr -d '[] ')")"
+    validators="$(sed -n 1p <<<"$policy" | tr -d '[] ')"
+    repeated="$(repeated_addresses "$validators")"
+    [ -z "$repeated" ] \
+        || fail "The EVM DUSK token's ISM $ism lists [$repeated] more than once among its validators. A MessageIdMultisig ISM counts a signature for each place its validator is listed, so fewer than DUSK_ORIGIN_THRESHOLD validators can sign for a message. This deployment's ISM lists each once: it is another's. Move $OUT_DIR aside and deploy again."
+    validators="$(sorted_addresses "$validators")"
     threshold="$(sed -n 2p <<<"$policy" | awk '{print $1}')"
     expected="$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")"
     [ "$validators" = "$expected" ] && [ "$threshold" = "$DUSK_ORIGIN_THRESHOLD" ] \
@@ -306,6 +311,14 @@ check_evm_token_binding() {
 
 sorted_addresses() {
     tr ',' '\n' <<<"$1" | tr '[:upper:]' '[:lower:]' | sed 's/^ *//; s/ *$//' | grep -v '^$' | sort -u | paste -sd, -
+}
+# The addresses a list names more than once, in any case, comma-separated,
+# or nothing. sorted_addresses folds them into one, so a validator set an ISM
+# reads on chain is checked with this first: Hyperlane's MessageIdMultisig
+# ISMs take a signature for each place a validator is listed, and [A,A,B]
+# at threshold 2 accepts A's signature twice.
+repeated_addresses() {
+    tr ',' '\n' <<<"$1" | tr '[:upper:]' '[:lower:]' | sed 's/^ *//; s/ *$//' | awk 'NF' | sort | uniq -d | paste -sd, -
 }
 count_addresses() { tr ',' '\n' <<<"$(sorted_addresses "$1")" | grep -c . || true; }
 
@@ -904,7 +917,7 @@ check_dusk_multicall() {
 # are deployed there is nothing to check.
 DEPLOYED_ISM_THRESHOLD=""
 check_deployed_ism() {
-    local route mailbox ism which type policy validators threshold expected
+    local route mailbox ism which type policy validators repeated threshold expected
     DEPLOYED_ISM_THRESHOLD=""
     route="$(state_get '.dusk.warp_native')"
     mailbox="$(state_get '.dusk.mailbox')"
@@ -937,6 +950,9 @@ check_deployed_ism() {
     validators="$(jq -er '.validators | join(",")' <<<"$policy")" \
         && threshold="$(jq -er '.threshold' <<<"$policy")" && [[ "$threshold" =~ ^[0-9]+$ ]] \
         || fail "The Dusk ISM $ism returned a malformed validator set"
+    repeated="$(repeated_addresses "$validators")"
+    [ -z "$repeated" ] \
+        || fail "The Dusk route uses $which which lists [$repeated] more than once among its validators, so fewer than its threshold of validators could sign for a message. This checkout's MessageIdMultisig ISM lists each once; point the route at one."
     validators="$(sorted_addresses "$validators")"
     expected="$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")"
     [ "$validators" = "$expected" ] \

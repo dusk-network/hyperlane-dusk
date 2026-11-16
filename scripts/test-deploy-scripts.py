@@ -947,6 +947,21 @@ class TestnetDeployedIsmChecks(DeployedTestnet):
         self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)][1] = 2390000
         self.assert_both_commands(True, "a MessageIdMultisig ISM: 2 of")
 
+    def test_a_validator_listed_twice_is_refused(self):
+        # This checkout's ISM keeps its validators strictly ascending, but
+        # the route's can be any contract that answers as one. Listed twice,
+        # a validator's signature could count twice; folded into one, the
+        # set compared equal to the settings.
+        a, b = validators(2)
+        self.set_default_multisig([a, a, b], 2)
+        self.settings["EVM_ORIGIN_VALIDATORS"] = f"{a},{b}"
+        self.settings["EVM_ORIGIN_THRESHOLD"] = 2
+        self.settings["EVM_IGP_GAS_OVERHEAD"] = 2390000
+        self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)][1] = 2390000
+        self.assert_both_commands(False, f"lists [{a}] more than once among its validators")
+        self.set_default_multisig([a, b], 2)
+        self.assert_both_commands(True, "a MessageIdMultisig ISM: 2 of")
+
     def test_route_ism_overrides_the_mailbox_default(self):
         self.queries[f"{ROUTE}/interchain_security_module"] = {"value": OTHER_MULTISIG}
         self.set_default_multisig(["0x" + "77" * 20], 1, ism=OTHER_MULTISIG)
@@ -1164,19 +1179,55 @@ class TestnetTokenBinding(DeployedTestnet):
         self.evm["contracts"][self.token]["ism"] = other
         self.assert_refused(f"verifies messages from Dusk with the ISM {other}, not {self.ism}")
 
+    def two_of_three(self):
+        """The settings' Dusk-origin validators, and the ISM's, 2 of
+        [A, B, C]. Returns A, B and C."""
+        a, b, c = validators(3)
+        self.settings.update(DUSK_ORIGIN_VALIDATORS=f"{a},{b},{c}", DUSK_ORIGIN_THRESHOLD=2)
+        self.evm["contracts"][self.ism].update(validators=[a, b, c], threshold=2)
+        return a, b, c
+
     def test_an_ism_other_than_the_settings_is_refused(self):
+        # Each case changes one thing: the validators at the same threshold,
+        # or the threshold with the same validators.
+        a, b, c = self.two_of_three()
+        other = "0x" + "77" * 20
         saved = dict(self.evm["contracts"][self.ism])
+        self.assert_ok(self.run_script("agent-configs"))
+        settings = f"but DUSK_ORIGIN_THRESHOLD and DUSK_ORIGIN_VALIDATORS say 2 of [{a},{b},{c}]"
         for change, expected in [
-            ({"validators": ["0x" + "77" * 20]}, f"needs 1 of [0x{'77' * 20}], but"),
-            ({"validators": sorted([VALIDATOR, "0x" + "77" * 20]), "threshold": 2}, "needs 2 of"),
+            ({"validators": [a, b, other]}, f"needs 2 of [{other},{a},{b}], {settings}"),
+            ({"validators": [a, b]}, f"needs 2 of [{a},{b}], {settings}"),
+            ({"validators": [a, b, c, other]}, f"needs 2 of [{other},{a},{b},{c}], {settings}"),
+            ({"threshold": 3}, f"needs 3 of [{a},{b},{c}], {settings}"),
+            ({"threshold": 1}, f"needs 1 of [{a},{b},{c}], {settings}"),
             ({"module_type": 6}, "is of module type 6; it must be a MessageIdMultisig ISM"),
         ]:
             with self.subTest(change=change):
                 self.evm["contracts"][self.ism] = {**saved, **change}
                 self.assert_refused(expected)
-        # Order and case don't matter.
-        self.evm["contracts"][self.ism] = {**saved, "validators": [VALIDATOR.upper().replace("0X", "0x")]}
+
+    def test_validator_order_and_case_do_not_matter(self):
+        a, b, c = self.two_of_three()
+        mixed = c.upper().replace("0X", "0x")
+        self.settings["DUSK_ORIGIN_VALIDATORS"] = f" {mixed}, {a},{b} "
+        self.evm["contracts"][self.ism]["validators"] = [b, mixed, a]
         self.assert_ok(self.run_script("agent-configs"))
+
+    def test_an_ism_that_lists_a_validator_twice_is_refused(self):
+        # Hyperlane's MessageIdMultisig ISMs take a validator listed twice and
+        # count its signature for each place: [A, A, B] at threshold 2 accepts
+        # A's signature twice, so A alone can sign for a message. Folded into
+        # [A, B], it passed as the settings' 2 of [A, B].
+        a, b = validators(2)
+        self.settings.update(DUSK_ORIGIN_VALIDATORS=f"{a},{b}", DUSK_ORIGIN_THRESHOLD=2)
+        self.evm["contracts"][self.ism].update(validators=[a, b], threshold=2)
+        self.assert_ok(self.run_script("agent-configs"))
+        for listed, repeated in (([a, a, b], a), ([a, b, b.upper().replace("0X", "0x")], b),
+                                 ([b, a, b, a], f"{a},{b}")):
+            with self.subTest(listed=listed):
+                self.evm["contracts"][self.ism]["validators"] = listed
+                self.assert_refused(f"lists [{repeated}] more than once among its validators")
 
 
 class TestnetQuoteSignerHistory(DeployedTestnet):

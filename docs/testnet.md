@@ -223,15 +223,17 @@ transfer pays for. `fees` prints what they come to.
 - the recorded Sepolia token is this deployment's: its `mailbox()` is
   `EVM_MAILBOX`, and it verifies messages from Dusk with the recorded ISM,
   a MessageIdMultisig ISM of exactly `DUSK_ORIGIN_VALIDATORS` and
-  `DUSK_ORIGIN_THRESHOLD`. A token another deployment created the same
-  way is refused before anything uses or rewires it;
+  `DUSK_ORIGIN_THRESHOLD`, which lists each validator once (a validator
+  listed twice counts its signature twice). A token another deployment
+  created the same way is refused before anything uses or rewires it;
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;
 - the ISM the recorded route uses on chain, its own or else the Mailbox's
   default, is a MessageIdMultisig ISM whose validators and threshold are
-  `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`. `deploy` checks it
-  again when it finishes, and `agent-configs` before it writes anything.
+  `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`, each validator listed
+  once. `deploy` checks it again when it finishes, and `agent-configs`
+  before it writes anything.
   Any other module type stops them, a TestMock ISM (which accepts every
   message) included, and so does a query that fails. If the owner changes
   the validators or the threshold on chain, update both settings.
