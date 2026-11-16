@@ -269,7 +269,6 @@ cat > "$RELAYER_CONFIG" <<JSON
   "db": "${RELAYER_DB}",
   "relayChains": "anvil,dusk",
   "allowLocalCheckpointSyncers": true,
-  "txIdIndexingEnabled": false,
   "igpIndexingEnabled": true,
   "gasPaymentEnforcement": [
     { "type": "onChainFeeQuoting", "gasFraction": "${DUSK_ORIGIN_GAS_FRACTION}", "matchingList": [{ "originDomain": ${DUSK_DOMAIN} }] },
