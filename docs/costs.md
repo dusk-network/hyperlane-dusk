@@ -1120,6 +1120,32 @@ the restart with 40 waiting, and 10 minutes idle after:
   spent the same 64 ms on the relayer either way: fewer requests, but each
   aggregate reads all of a range's heights (see What to change).
 
+### The launch default, one delivery at a time
+
+A last run on 2026-11-16 used the agents at `aac6b8606c` with the testnet
+configs (`maxBatchSize` 1, no `pipelineDeliveries`), dusk-tx at `3c3ce7f`,
+and the same tooling: 11 minutes idle on a new deployment, 5 Dusk to EVM
+transfers, 40 EVM to Dusk transfers with the relayer restarted in the
+middle of them, and 15 minutes idle after.
+
+- **Idle.** The relayer sent 21 requests a minute to Rusk and each Dusk
+  validator 20, as in the run above; after the load the relayer sent 29,
+  33 to 37 while delivery confirmations came due. Rusk refused nothing
+  (429) in the whole run.
+- **Deliveries.** The 40 went in 40 blocks, every other block, 780 s from
+  the first to the last: one message every 20 s per relayer key. Across
+  this run and the end-to-end, rehearsal and restart runs before it, 63
+  deliveries to Dusk took 63 transactions, none failed, and no delivery
+  was sent twice; the 21 deliveries to Anvil all went through.
+- **Restart.** The new process found the old one's transaction in the
+  mempool and waited 20 s for it before signing the next delivery, and
+  sent 143 requests to Rusk in its first 10 s (159 in the pipelined run
+  above, 705 with a backlog). The interrupted message's own transaction
+  landed meanwhile: its next attempt's simulation was refused with
+  `Mailbox: already delivered` and nothing was sent, but its gas was not
+  counted against the message, which matters only once a message is
+  retried, and a delivered one is not.
+
 ### What to change
 
 Of the previous run's list, these are done: the agents pace their
@@ -1127,24 +1153,30 @@ contract queries and back off from 429s with jitter (no request was
 refused here, without pacing at the proxy); they remember what is final
 (the validators' idle rate stays at 20 a minute with history); a restart
 doesn't read the history again (22 s and 731 requests for the backlog);
-deliveries to Dusk are pipelined (`maxBatchSize` 16, measured here: no
+deliveries to Dusk can be pipelined (`maxBatchSize` 16, measured here: no
 second copies, no failed deliveries, a restart in the middle of a batch
-reconciled); `lastBlockPair` is read once per tick for all indexers; and a
-delivery is simulated once. What remains, in order of what it would save:
+reconciled; experimental, and off in the testnet configs);
+`lastBlockPair` is read once per tick for all indexers; and a delivery is
+simulated once. Done since this run:
 
-1. **Remember the heights of final records.** With `txIdIndexingEnabled`
-   on (the default, and the testnet config's), the relayer looks up each
-   dispatch's IGP payment by its transaction, and the lookup searches the
-   payments' heights from the first one again. Through the multicall it
-   reads them 256 at a time: 29 `gas_payment_at` reads a Dusk to EVM
-   message here, rising with the IGP's history (99 for each lookup at 99
-   payments), and 7,922 in the first minute after the restart. Without the
-   multicall the lookups are binary searches, 5 `gas_payment_at` queries a
-   message. Heights never change once final, so keeping them, or a range
-   read that returns them, makes a lookup a few reads whatever the history;
-   turning `txIdIndexingEnabled` off, as the demo's relayer config does,
-   avoids these lookups.
-2. **Send the next batch before the last is in a block** (pipelined
+- **The heights of final records are kept.** Each contract's searches
+  keep the first and last record index of each block they read, for the
+  4,096 most recent blocks, and a search reads only between the closest
+  kept records. Four Dusk to EVM messages cost 84 requests to Rusk after
+  100 IGP payments and after 10,000 alike, with no `gas_payment_at` reads
+  in aggregates (88 and 92 requests, 414 and 1,176 reads before), and a
+  restart with 40 of 100 messages waiting reads each payment's height once
+  (100 reads, against 8,100).
+- **A delivery's transaction is looked up as often as a block can bring
+  it.** At once, again one block later, every 2.5 s until 20 s, then once
+  a block: 17 lookups over the 120 s wait instead of 61, and a transaction
+  included 10 to 20 s after it was sent is found within 6 and at most
+  2.5 s late. On the default path dusk-tx waits for inclusion itself,
+  reading `tx` about every 3 s, about 6 reads a delivery.
+
+What remains, in order of what it would save:
+
+1. **Send the next batch before the last is in a block** (pipelined
    deliveries only). The relayer waits
    for a batch's block before it sends the next, which then misses the
    block whose round has just started: batches land every other block, 48
@@ -1152,9 +1184,14 @@ delivery is simulated once. What remains, in order of what it would save:
    account's transactions ahead of its next nonce, so two batches in
    flight would fill every block, at the cost of more to reconcile when a
    batch fails.
-3. **Poll a delivery's transaction less often.** The relayer reads `tx`
-   9.3 times per delivery, about every 1.7 s, where a block takes 10 s and
-   a transaction waits 10 to 20 s for its block.
+2. **Let dusk-tx wait like the agent.** Its first `tx` read one block after
+   propagation, then every 2.5 s for two blocks, then once a block, would
+   take about 3.5 reads a delivery instead of 6, for about the same delay.
+3. **Count a delivery's gas when its own transaction lands during a
+   restart.** The relayer simulates a message before it looks up the
+   transaction it kept for it, so one that landed meanwhile fails the
+   simulation as already delivered and its gas goes uncounted (see above).
+   Looking the kept transaction up first would report its outcome.
 4. **Smaller items.** Validators sign 2.2 s later at the median, since they
    see finality once per 5 s tick. After a restart, the relayer simulates
    the deliveries the old process had in flight until their block is final
