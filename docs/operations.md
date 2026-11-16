@@ -394,9 +394,9 @@ pipelined on `maxBatchSize` alone. An env file from before that still sets
 `DUSK_RELAYER_MAX_BATCH_SIZE` gets a warning that it is no longer read. To
 try pipelining in a local rehearsal, add both settings to the relayer's Dusk
 chain by hand, or run the bench with `PIPELINE_DELIVERIES=1`
-([demo/bench](../demo/bench/README.md)). Turning it off needs no manual
-step: the relayer waits out the nonces a pipelined run left in
-`eventCursorDir`, which must not be deleted by hand.
+([demo/bench](../demo/bench/README.md)). Turning it off again needs no
+manual step, with the first issue above: the relayer waits out the nonces a
+pipelined run left in `eventCursorDir`, which must not be deleted by hand.
 
 ## CI
 
