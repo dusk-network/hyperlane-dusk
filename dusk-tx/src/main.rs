@@ -2961,7 +2961,8 @@ mod tests {
         );
 
         // Refused, with nothing sent and no key read.
-        let refusals: Vec<(Vec<(&'static str, u16, Vec<u8>)>, &[&str], &str)> = vec![
+        type Replies = Vec<(&'static str, u16, Vec<u8>)>;
+        let refusals: Vec<(Replies, &[&str], &str)> = vec![
             (
                 vec![("/owner", 200, other.clone())],
                 &no_keys,
