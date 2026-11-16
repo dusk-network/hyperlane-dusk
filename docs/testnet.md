@@ -217,6 +217,11 @@ transfer pays for. `fees` prints what they come to.
   slot is zero). The IGP must have no quote signers, and quote a transfer
   what its oracle's pricing comes to, asked as the token and as any other
   sender: a signed offchain quote would come before the oracle;
+- the recorded Sepolia token is this deployment's: its `mailbox()` is
+  `EVM_MAILBOX`, and it verifies messages from Dusk with the recorded ISM,
+  a MessageIdMultisig ISM of exactly `DUSK_ORIGIN_VALIDATORS` and
+  `DUSK_ORIGIN_THRESHOLD`. A token another deployment created the same
+  way is refused before anything uses or rewires it;
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;

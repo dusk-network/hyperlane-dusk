@@ -280,6 +280,11 @@ def contract(state, address):
 def log(address, *topics):
     return {"address": address.lower(), "topics": list(topics), "data": "0x"}
 
+def multisig(args):
+    # A MessageIdMultisig ISM of "[validator,...]" and a threshold.
+    validators = [v.strip().lower() for v in args[0].strip("[]").split(",") if v.strip()]
+    return {"type": "ism", "module_type": 5, "validators": validators, "threshold": int(args[1])}
+
 def igp_rate(state, c, domain, sender):
     # Signed offchain quotes come first: for the sender to the domain, for
     # anyone to the domain, for the sender to anywhere.
@@ -354,6 +359,10 @@ def call(state, address, signature, args, sender):
         return derive("ism", address.lower(), args[0].lower(), args[1])
     if name == "routers":
         return c["routers"].get(args[0], "0x" + "00" * 32)
+    if name == "moduleType" and c["type"] == "ism":
+        return str(c["module_type"])
+    if name == "validatorsAndThreshold" and c["type"] == "ism":
+        return "[" + ", ".join(c["validators"]) + "]\n" + str(c["threshold"])
     if name == "totalSupply":
         return num(c.get("supply", 0))
     die(f"stub cast: unexpected call {signature} on a {c['type']}")
@@ -406,7 +415,7 @@ def send(state, address, signature, args, sender):
         state["contracts"][derive("aggregation", address.lower(), args[0].lower())] = {
             "type": "aggregation", "hook_type": 2, "hooks": hooks}
     elif name == "deploy" and c["type"] == "ism_factory":
-        state["contracts"][derive("ism", address.lower(), args[0].lower(), args[1])] = {"type": "ism"}
+        state["contracts"][derive("ism", address.lower(), args[0].lower(), args[1])] = multisig(args)
     elif name == "setHook":
         only_owner(c, sender)
         c["hook"] = args[0].lower()
@@ -442,7 +451,7 @@ CREATED = {
     "HypERC20": lambda sender, args: {
         "type": "token", "mailbox": args[3].lower(), "hook": ZERO, "ism": ZERO, "owner": sender,
         "routers": {}, "supply": 0},
-    "StorageMessageIdMultisigIsm": lambda sender, args: {"type": "ism"},
+    "StorageMessageIdMultisigIsm": lambda sender, args: multisig(args),
 }
 
 def front_run(state, deployer, address, c):
@@ -767,7 +776,7 @@ class DeployedTestnet(TestnetScript):
         self.ism, self.token = "0x" + "55" * 20, "0x" + "11" * 20
         self.oracle, self.evm_igp, self.hook = "0x" + "66" * 20, "0x" + "44" * 20, "0x" + "77" * 20
         self.igp_impl, self.token_impl = "0x" + "4a" * 20, "0x" + "1a" * 20
-        evm[self.ism] = {"type": "ism"}
+        evm[self.ism] = {"type": "ism", "module_type": 5, "validators": [VALIDATOR], "threshold": 1}
         evm[self.oracle] = {"type": "oracle", "owner": DEPLOYER, "data": {
             str(DUSK_DOMAIN): [int(DEFAULT_EVM_IGP["token_exchange_rate"]), int(DEFAULT_EVM_IGP["gas_price"])]}}
         # The bare implementations, never initialized, and the proxies the
@@ -1084,6 +1093,52 @@ class TestnetEvmCreationChecks(DeployedTestnet):
     def test_quote_signers_are_refused(self):
         self.evm["contracts"][self.evm_igp]["quote_signers"] = [ATTACKER]
         self.assert_refused(f"has quote signers [{ATTACKER}]", ["preflight", "agent-configs", "evm-igp", "deploy"])
+
+
+class TestnetTokenBinding(DeployedTestnet):
+    """The recorded EVM token must be this deployment's: bound to EVM_MAILBOX,
+    and verifying messages from Dusk with the recorded ISM, a MessageIdMultisig
+    ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD, before any
+    command adopts it or deploy rewires it."""
+
+    COMMANDS = ["preflight", "agent-configs", "evm-igp", "claim", "deploy"]
+
+    def assert_refused(self, expected):
+        for command in self.COMMANDS:
+            with self.subTest(command=command):
+                result = self.run_script(command)
+                self.assert_fails(result, expected)
+                self.assertEqual(self.traced("cast send") + self.traced("forge"), [])
+                self.assertFalse(self.relayer_config.exists())
+
+    def test_a_token_of_another_mailbox_is_refused(self):
+        # Mixed or restored state: deployment B's token, created by the same
+        # deployer the same way, bound to Mailbox B, with its own hook and no
+        # router for this route yet. It passed the creation checks, and
+        # deploy set its hook and enrolled this route on it.
+        token = self.evm["contracts"][self.token]
+        token.update(mailbox="0x" + "bb" * 20, hook="0x" + "00" * 20, routers={})
+        self.assert_refused(f"through the Mailbox 0x{'bb' * 20}, not EVM_MAILBOX")
+
+    def test_a_token_with_another_ism_is_refused(self):
+        other = "0x" + "56" * 20
+        self.evm["contracts"][other] = {"type": "ism", "module_type": 5, "validators": [VALIDATOR], "threshold": 1}
+        self.evm["contracts"][self.token]["ism"] = other
+        self.assert_refused(f"verifies messages from Dusk with the ISM {other}, not {self.ism}")
+
+    def test_an_ism_other_than_the_settings_is_refused(self):
+        saved = dict(self.evm["contracts"][self.ism])
+        for change, expected in [
+            ({"validators": ["0x" + "77" * 20]}, f"needs 1 of [0x{'77' * 20}], but"),
+            ({"validators": sorted([VALIDATOR, "0x" + "77" * 20]), "threshold": 2}, "needs 2 of"),
+            ({"module_type": 6}, "is of module type 6; it must be a MessageIdMultisig ISM"),
+        ]:
+            with self.subTest(change=change):
+                self.evm["contracts"][self.ism] = {**saved, **change}
+                self.assert_refused(expected)
+        # Order and case don't matter.
+        self.evm["contracts"][self.ism] = {**saved, "validators": [VALIDATOR.upper().replace("0X", "0x")]}
+        self.assert_ok(self.run_script("agent-configs"))
 
 
 def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=110000,

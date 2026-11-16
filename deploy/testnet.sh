@@ -259,10 +259,44 @@ check_evm_creation() {
 }
 
 # The EVM contracts deploy initializes: our IGP, once the state records its
-# oracle (before, .evm.igp was Hyperlane's), and the token.
+# oracle (before, .evm.igp was Hyperlane's), and the token, which must also
+# be bound to this deployment (check_evm_token_binding).
 check_evm_creations() {
     [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_creation igp IGP
     check_evm_creation token "DUSK token"
+    check_evm_token_binding
+}
+
+# The recorded token must be this deployment's route on the EVM chain: bound
+# to EVM_MAILBOX (a HypERC20's mailbox() is fixed in its implementation), and
+# verifying messages from Dusk with the ISM recorded in $STATE, a
+# MessageIdMultisig ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD.
+# A token another deployment of the same deployer created, the same way,
+# passes the creation checks; this keeps every command from adopting it,
+# and deploy from rewiring it, before either uses it.
+check_evm_token_binding() {
+    local token mailbox ism recorded type policy validators threshold expected
+    token="$(state_get '.evm.token')"
+    [ -n "$token" ] || return 0
+    require DUSK_ORIGIN_VALIDATORS DUSK_ORIGIN_THRESHOLD
+    mailbox="$(evm_call "$token" "mailbox()(address)")" || fail "Can't read the Mailbox of the EVM DUSK token $token"
+    [ "$(lower "$mailbox")" = "$(lower "$EVM_MAILBOX")" ] \
+        || fail "The EVM DUSK token $token sends and takes its messages through the Mailbox $mailbox, not EVM_MAILBOX $EVM_MAILBOX: it is another deployment's. Move $OUT_DIR aside and deploy again."
+    ism="$(evm_call "$token" "interchainSecurityModule()(address)")" \
+        || fail "Can't read the ISM of the EVM DUSK token $token"
+    recorded="$(state_get '.evm.ism')"
+    [ "$(lower "$ism")" = "$(lower "$recorded")" ] \
+        || fail "The EVM DUSK token $token verifies messages from Dusk with the ISM $ism, not $recorded recorded in $STATE"
+    type="$(evm_number "$ism" "moduleType()(uint8)")" || fail "Can't read the module type of the EVM ISM $ism"
+    [ "$type" = "$MESSAGE_ID_MULTISIG_ISM" ] \
+        || fail "The EVM DUSK token's ISM $ism is of module type $type; it must be a MessageIdMultisig ISM ($MESSAGE_ID_MULTISIG_ISM)"
+    policy="$(evm_call "$ism" "validatorsAndThreshold(bytes)(address[],uint8)" 0x)" \
+        || fail "Can't read the validators and threshold of the EVM ISM $ism"
+    validators="$(sorted_addresses "$(sed -n 1p <<<"$policy" | tr -d '[] ')")"
+    threshold="$(sed -n 2p <<<"$policy" | awk '{print $1}')"
+    expected="$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")"
+    [ "$validators" = "$expected" ] && [ "$threshold" = "$DUSK_ORIGIN_THRESHOLD" ] \
+        || fail "The EVM DUSK token's ISM $ism needs $threshold of [$validators], but DUSK_ORIGIN_THRESHOLD and DUSK_ORIGIN_VALIDATORS say $DUSK_ORIGIN_THRESHOLD of [$expected]"
 }
 
 sorted_addresses() {
