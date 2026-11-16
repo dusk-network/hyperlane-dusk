@@ -706,10 +706,49 @@ limits.
 
 What the relayer and the validators cost a Rusk node: the requests each
 agent sends, at idle and per message, how long each stage of a message
-takes, and the agents' CPU, memory, disk and log use. Measured on one run
-of a local rehearsal of the testnet deployment, with every agent's traffic
-going through a logging proxy. [demo/bench/](../demo/bench/README.md) has
-the tooling and how to run it.
+takes, and the agents' CPU, memory, disk and log use. Measured on a local
+rehearsal of the testnet deployment, with every agent's traffic going
+through a logging proxy, twice: on 2026-11-15 with the agents at
+`1733ab9120` (the previous run), and on 2026-11-16 with the agents at
+`0d8af2dda2`, the heads of `testnet/dusk-agents` for the testnet launch
+(this run), plus a shorter run of the same agents without the multicall.
+[demo/bench/](../demo/bench/README.md) has the tooling and how to run it.
+
+### What changed in the agents
+
+Between the two runs, the agents' Dusk support changed in five ways a node
+sees:
+
+- **Pacing.** Every client of one endpoint in an agent process shares one
+  pace for contract queries: 100 a second (`contractQueriesPerSecond`),
+  bursts of 20 (`contractQueryBurst`), at most 8 in flight. A request the
+  node refuses for its rate limit holds back its class for the
+  `Retry-After` plus up to as long again at random, and goes again after a
+  wait that doubles, also at random, so indexers don't come back together.
+- **Shared reads per tick.** One `lastBlockPair` read per 5 s tick serves
+  every indexer of a process, and what the agent computed from final data
+  (record counts, the heights of final records, checkpoints, delivery
+  checks) is kept until the node's last final block changes. An indexer
+  looks up only the records past the last final one it knows, so idle
+  requests no longer grow with history.
+- **Multicall.** With `batchContractAddress` set to Multicall for Dusk,
+  reads that don't depend on each other go as one `aggregate` query: the
+  counts and delivery checks of each final block, a range's heights, IDs
+  and pages, a checkpoint's checks, and the deployment check at startup.
+  Record heights are searched 256 at a time.
+- **Pipelined deliveries.** With `maxBatchSize` 16, the relayer sends the
+  deliveries to Dusk it has ready as consecutive transactions of its
+  account (`dusk-tx call --nonce N --no-wait`), each once the node holds
+  the one before. Each delivery owns its nonce and transaction, kept in
+  `eventCursorDir` until it settles, so a restarted relayer follows the
+  deliveries in flight instead of sending them again.
+- **Finality-only confirmation.** The Mailbox reports a delivery as done
+  only once its `ProcessId` event is in a final block.
+
+Also: a restarted relayer's indexers start above the records their
+database holds instead of reading the history again, a delivery runs one
+`process` simulation instead of three, and each endpoint's deployment
+check runs once per process.
 
 ### Setup
 
@@ -720,337 +759,403 @@ the tooling and how to run it.
   ([testnet.md](testnet.md#rehearse-locally)), deployed with
   `deploy/testnet.sh`: the native DUSK route and MessageIdMultisig ISMs on
   both sides.
-- The agents at `hyperlane-monorepo` `1733ab9120`, debug build, with the
-  configs `deploy/testnet.sh agent-configs` writes, run as
-  `deploy/local-agents.sh` runs them: a relayer, three Dusk-origin
-  validators (2 of 3) and one EVM-origin validator (1 of 1, standing in for
-  Hyperlane's Sepolia validator). Validators run with `interval: 5`.
+- A relayer, three Dusk-origin validators (2 of 3) and one EVM-origin
+  validator (1 of 1, standing in for Hyperlane's Sepolia validator), debug
+  builds, with the configs `deploy/testnet.sh agent-configs` writes, run as
+  `deploy/local-agents.sh` runs them. Validators run with `interval: 5`.
   Default log level (info), pretty format.
-- This repository at `39fe282`, whose relayer config enforced no gas
-  payments and relayed only the route. Since `274431a` the relayer enforces
-  IGP payments (`onChainFeeQuoting`) and relays any paid message. It reads
-  the payments from the same IGP index, which the measured relayer kept
-  anyway (`igpIndexingEnabled` defaults to true).
 - Each agent reaches Rusk and Anvil through its own port of
-  `demo/bench/proxy.py`, which logs every request. The agents run `dusk-tx`
-  through a shim that logs each run and tags its requests, so they count
-  for the agent that ran it.
+  `demo/bench/proxy.py`, which logs every request and the reads inside
+  each `aggregate`. The agents run `dusk-tx` through a shim that logs each
+  run and tags its requests, so they count for the agent that ran it.
 - Transfers as in [testnet.md](testnet.md#check-it-works):
   `dusk-tx transfer-remote --native` from the deployer's account, and
-  `transferRemote` on the EVM token from Anvil's account #0. They share the
-  Dusk account with the agents, so Dusk to EVM transfers ran while the
-  relayer had nothing to deliver to Dusk.
+  `transferRemote` on the EVM token from Anvil's account #0, paying what
+  the route quotes. They share the Dusk account with the agents, so Dusk
+  to EVM transfers ran while the relayer had nothing to deliver to Dusk.
 
-| Phase | Minutes | What happened |
-|---|---:|---|
-| Baseline | 3.0 | Node and Anvil, no agents |
-| Idle | 11.0 | All five agents, no messages yet |
-| Dusk to EVM | 20.3 | 60 transfers, each sent when the last was in a block |
-| Backlog | 35.2 | Relayer stopped while 40 more were sent, then restarted |
-| EVM to Dusk | 25.0 | 60 transfers, one every 25 s |
-| Burst | 25.6 | 40 transfers at once (see below), with a relayer restart |
-| Outage | 3.7 | The agents' Rusk ports refused connections for 90 s while 6 transfers were sent |
-| Idle after | 8.0 | No traffic, with 100 Dusk and 106 EVM messages in |
+| | Previous run | This run | Without the multicall |
+|---|---|---|---|
+| Agents (`hyperlane-monorepo`) | `1733ab9120` | `0d8af2dda2` | `0d8af2dda2` |
+| This repository | `39fe282` | `d90fa5b` | `d90fa5b` |
+| `batchContractAddress` | none (no multicall on the local chain) | Multicall for Dusk v0.1.0 | none |
+| Relayer `maxBatchSize` | 1 | 16 | 16 |
+| Gas payments | not enforced, route only | enforced (`onChainFeeQuoting`) | enforced |
+| Relayer paced at the proxy | 150, then 100 a second, from 10.5 minutes into its first restart until the outage | no | no |
+| Phases | all | all | baseline, idle, Dusk to EVM, backlog, idle after |
 
-In the burst, 39 of the 40 transfers ran out of gas on Anvil, because each
-`cast send` estimated its gas before any of them was mined and later Merkle
-insertions cost more. The 39 were sent again at once 12.5 minutes later
-with a fixed gas limit, which `load.sh` now sets. The relayer restart in
-that phase came while nothing was waiting.
+| Phase | Previous, minutes | This run, minutes | What happened |
+|---|---:|---:|---|
+| Baseline | 3.0 | 3.0 | Node and Anvil, no agents |
+| Idle | 11.0 | 11.0 | All five agents, no messages yet |
+| Dusk to EVM | 20.3 | 20.3 | 60 transfers, each sent when the last was in a block |
+| Backlog | 35.2 | 13.8 | Relayer stopped while 40 more were sent, then restarted |
+| EVM to Dusk | 25.0 | 25.0 | 60 transfers, one every 25 s |
+| Burst | 25.6 | 1.6 | 40 transfers at once, with a relayer restart while it delivered them |
+| Outage | 3.7 | 3.0 | The agents' Rusk ports refused connections for 90 s while 6 transfers were sent |
+| Idle after | 8.0 | 10.0 | No traffic, with 100 Dusk and 106 EVM messages in |
+
+In the previous run's burst, 39 of the 40 transfers ran out of gas on Anvil
+and were sent again 12.5 minutes later, and its relayer restart came while
+nothing was waiting. In this run the burst's transfers carried a fixed gas
+limit, and the relayer was stopped about 2 s after it sent the first of
+their deliveries to Dusk, with the rest still to send. The host's load
+averaged 1.2 (on 22 cores) during this run.
 
 ### Idle
 
-| Agent | Rusk req/min, new deployment | KiB/min | Rusk req/min, after 100 messages | KiB/min | Anvil req/min |
-|---|---:|---:|---:|---:|---:|
-| Relayer | 75 | 28.7 | 305 | 106.8 | 39 to 51 |
-| Each Dusk validator | 26 | 9.9 | 109 | 37.1 | |
-| EVM validator | | | | | 25 to 27 |
-| All five | 153 | 58.4 | 632 | 218.1 | 64 to 78 |
+Requests a minute to Rusk, on a new deployment and after the load (the
+previous run after 100 messages, this run after 100 Dusk and 106 EVM
+messages, the run without the multicall after 100 Dusk messages):
 
-Serving these took 0.4% of one node thread on a new deployment and 2.4%
-after 100 messages, by the time Rusk spent answering. Rusk itself used 1.1%
-of a core with no agents, 1.2% with the agents idle on a new deployment and
-2.7% after 100 messages.
+| Agent | Previous: new | after | This run: new | after | Without the multicall: new | after |
+|---|---:|---:|---:|---:|---:|---:|
+| Relayer | 75 | 305 | 21 | 33 | 33 | 33 |
+| Each Dusk validator | 26 | 109 | 20 | 20 | 20 | 20 |
+| All four Dusk agents | 153 | 632 | 81 | 93 | 93 | 93 |
+| KiB a minute, all four | 58.4 | 218.1 | 35.1 | 43.0 | 36.6 | 36.7 |
 
-Requests a minute by kind, on a new deployment and after 100 messages:
+On Anvil the relayer sent 40 to 50 requests a minute and the EVM validator
+25 to 27, as before. Serving the Dusk agents took 0.29% of one node thread
+on a new deployment and 0.42% after the load, against 0.4% and 2.4%.
 
-| Request | Relayer, new | Relayer, after | Each Dusk validator, new | Each Dusk validator, after |
+Requests a minute by kind, this run:
+
+| Request | Relayer, new | Relayer, after | Each Dusk validator, new | after |
 |---|---:|---:|---:|---:|
-| `lastBlockPair` (GraphQL) | 36 | 38 | 12 | 14 |
-| MerkleTreeHook `count` | 12 | 12 | 12 | 13 |
-| Mailbox `nonce` | 12 | 12 | | |
-| IGP `gas_payment_count` | 12 | 12 | | |
-| MerkleTreeHook `inserted_block_height` | | 72 | | 78 |
-| Mailbox `dispatched_block_height` | | 72 | | |
-| IGP `gas_payment_at` | | 72 | | |
-| Other: metrics, `delivered`, `checkBlock`, `finalizedEvents` | 3 | 15 | 2 | 4 |
+| `lastBlockPair` (GraphQL) | 12 | 12 | 12 | 12 |
+| Multicall `aggregate` | 6 | 6.5 | | |
+| MerkleTreeHook `count` | | | 6 | 6 |
+| Delivery confirmations: `checkBlock`, `finalizedEvents`, `delivered` | | 12 | | |
+| Metrics: `blocks(last: 1)`, the gas price, the relayer's balance | 3 | 3 | 2 | 2 |
 
-- Each Dusk validator's Merkle insertion indexer reads `lastBlockPair` and
-  the hook's `count` every 5 s, the indexers' poll interval once they are
-  caught up. The validator reads the latest checkpoint as well, about once
-  a minute when nothing changes. The relayer's three Dusk indexers
-  (dispatches, Merkle insertions and IGP payments) each read
-  `lastBlockPair` and their contract's count every 5 s.
-- Once a minute every agent reports chain metrics: `blocks(last: 1)`, the
-  mempool gas price and, for the relayer, its balance.
-- The idle rate grows with the deployment's history. To learn how much of
-  a log is final, every tick binary-searches the block heights of all its
-  records for the first one past the last finalized block: about
-  log2(count) + 1 lookups. With 100 messages that is 6 lookups a tick, 72 a
-  minute per indexer, and it was 71% of what the node served at idle.
-  Validators search again whenever they read the latest checkpoint.
+- One `lastBlockPair` per 5 s tick serves all of an agent's indexers, 12 a
+  minute, where the relayer's three indexers read 36.
+- Per newly final block (6 a minute) the relayer's one aggregate carries
+  the Mailbox's `nonce`, the hook's `count` and the IGP's
+  `gas_payment_count`, and the delivery checks due; a validator reads the
+  hook's `count` alone, since an aggregate of one read gains nothing.
+  Nothing else is read while no record is new.
+- After the load, the relayer's 12 more a minute were delivery
+  confirmations: Hyperlane checks a delivery again 10 minutes after
+  submitting it, and the burst's and the outage's came due in that phase
+  (101 `delivered` reads in one minute). In the minutes without any it sent
+  21 to 25. The validators' rate didn't change with history.
 
 ### Per message
 
-What each message added over the idle rate. Dusk to EVM grew the Dusk
-history from 0 to 60 messages, so its range is over the idle rate of a new
-deployment (the high end) and over the rate after 100 messages (the low
-end). EVM to Dusk left the Dusk history alone and is over the rate after
-100 messages.
+What each message added over the idle rate: Dusk to EVM over the rate of a
+new deployment, EVM to Dusk over the rate after the load, which has the
+same Dusk history. The previous run's Dusk to EVM figures over its rate
+after 100 messages are in brackets: its idle rate grew with history, this
+run's barely does.
 
-| Agent | Dusk to EVM: Rusk req | Rusk KiB | Anvil req | Anvil KiB | EVM to Dusk: Rusk req | Rusk KiB | Anvil req | Anvil KiB |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Relayer | 49 to 128 | 22 to 49 | 24 to 28 | 34 to 36 | 25 | 14.3 | 5.5 | 23.9 |
-| Each Dusk validator | 16 to 44 | 7 to 16 | | | 0 | 0 | | |
-| EVM validator | | | 0 | 0 | | | 3.2 | 2.8 |
-| The sender | 17 | 6.7 | | | | | 8.0 | 11.4 |
+| Agent | Dusk to EVM: Rusk req, previous | this run | Rusk KiB, previous | this run | Anvil req, previous | this run |
+|---|---:|---:|---:|---:|---:|---:|
+| Relayer | 128 (49) | 24.1 | 49 (22) | 18.8 | 24 to 28 | 28.2 |
+| Each Dusk validator | 44 (16) | 6.0 | 16 (7) | 4.7 | | |
+| The sender | 17 | 16.6 | 6.7 | 6.7 | | |
 
-For a Dusk to EVM message, over the idle rate of a new deployment, the
-relayer's 128 requests were 35 IGP `gas_payment_at`, 32 Merkle
-`inserted_block_height` and 27 Mailbox `dispatched_block_height`. These are
-the binary searches above, plus the same searches to find the message's IGP
-payment and Merkle insertion by its dispatch transaction. The rest were 9
-`lastBlockPair`, 7 `checkBlock`, 3 `finalizedEvents` pages, 8 counts, and 7
-reads of the new records (`dispatched_id`, `message_id_at`, `gas_payments`,
-`tx`). Each validator's 44 were 31 `inserted_block_height`, 4
-`lastBlockPair`, 3 `count` and 6 reads of the new insertion and its row.
-On Anvil the relayer's largest item was `delivered`, 8.6 times a message.
-Hyperlane re-prepares a message every 0.5 s for 10 s while it waits for
-signatures, and every attempt starts by asking the destination whether the
-message was delivered.
+| Agent | EVM to Dusk: Rusk req, previous | this run | Rusk KiB, previous | this run | Anvil req, previous | this run |
+|---|---:|---:|---:|---:|---:|---:|
+| Relayer | 25 | 18.7 | 14.3 | 11.8 | 5.5 | 5.5 |
+| Each Dusk validator | 0 | 0 | 0 | 0 | | |
+| EVM validator | | | | | 3.2 | 3.2 |
+| The sender | | | | | 8.0 | 8.4 |
 
-For an EVM to Dusk message, the relayer's 25 requests to Rusk were:
+For a Dusk to EVM message the relayer's 24 requests to Rusk were 7.1
+`checkBlock` and 3.2 `finalizedEvents` pages (matching the records to their
+transactions in the archive), 4.0 aggregates, 2.0 each of the IGP's
+`gas_payment_at`, the Mailbox's `dispatched_block_height` and the hook's
+`inserted_block_height` read alone, 2.0 `tx` reads and 1.9 IGP
+`gas_payments`. The aggregates carried 29 `gas_payment_at` reads a message
+on average (see What to change). Each validator's 6 were 2 aggregates (a
+checkpoint's checks, `count`, `root`, `tree`, `message_id_at` and pages of
+`message_ids`, and record heights), 2 `inserted_block_height`, a
+`finalizedEvents` page and a `checkBlock`. Before, the binary searches over
+every record's height were 94 of the relayer's 128 and 31 of each
+validator's 44.
 
-| Request | Per message | Why |
-|---|---:|---|
-| Mailbox `delivered` | 9.6 | The same 0.5 s signature wait, now on Rusk |
-| `dusk-tx`: `tx` status | 6.0 | The helper polls every 3 s until the transaction is in a block |
-| `dusk-tx`: `chain_id`, `account`, `preverify`, `propagate`, `block` | 5.0 | One each per submission |
-| Mailbox `process`, as a query | 3.0 | Simulated by the relayer's prepare, again by its dry run before submitting, and again in the Dusk Mailbox's `process` |
-| Other: ISM `validators_and_threshold`, the relayer's own `tx` read | 1.3 | |
+For an EVM to Dusk message, the relayer's 19 requests to Rusk were:
 
-The relayer ran `dusk-tx` once per EVM to Dusk message and never otherwise.
-All 106 of its `process` transactions were included at the first attempt,
-at 2,141,379 to 2,146,175 gas, median 2,142,322 (0.0021 DUSK at 1 LUX),
-227.1M in all. The validators each sent one transaction, their
-announcement at startup, at about 2,087,000 gas. On Anvil the relayer's 100
-deliveries took 106,193 gas at the median and 140,369 at most.
+| Request | Previous | This run | Why |
+|---|---:|---:|---|
+| Mailbox `delivered` | 9.6 | 0.9 | The 0.5 s signature wait reads the answer kept for the last final block; new checks ride in the aggregate each final block sends anyway (3.8 reads a message) |
+| `tx` | 6.0 | 9.3 | Following the delivery to its block: dusk-tx polled every 3 s, the relayer now polls itself (about every 1.7 s) |
+| `dusk-tx`: `chain_id`, `account`, `preverify`, `propagate`, `block` | 5.0 | 3.0 | With `--no-wait` the helper only checks the chain, preverifies and propagates |
+| `mempoolTx`, `account` status | | 2.9 | The batch's checks that the node holds the transaction before, and the account's next nonce |
+| Mailbox `process`, as a query | 3.0 | 1.0 | One simulation where there were three; 3.1 a message in the burst, whose deliveries waited for earlier batches |
+| ISM `validators_and_threshold`, the recipient's ISM, its type | 1.3 | 1.6 | |
 
 ### What the node spends its time on
 
-Share of requests and of node time, all agents together:
+All agents together:
 
-| Request | Idle, new | Dusk to EVM | EVM to Dusk | Idle, after 100 messages |
-|---|---:|---:|---:|---:|
-| MerkleTreeHook `inserted_block_height` | | 40% / 41% | 44% / 39% | 48% / 46% |
-| Mailbox `dispatched_block_height` and IGP `gas_payment_at` | | 20% / 22% | 20% / 21% | 22% / 25% |
-| `lastBlockPair` | 47% / 35% | 15% / 9% | 11% / 7% | 13% / 9% |
-| MerkleTreeHook `count` | 31% / 36% | 9% / 11% | 7% / 9% | 8% / 11% |
-| Requests a minute | 153 | 918 | 690 | 632 |
-| One node thread busy | 0.4% | 2.9% | 2.8% | 2.4% |
-| Rusk CPU, one core | 1.2% | 3.7% | 3.2% | 2.7% |
+| | Idle, new | Dusk to EVM | EVM to Dusk | Burst | Idle after the load |
+|---|---:|---:|---:|---:|---:|
+| Requests a minute, previous | 153 | 918 | 690 | | 632 |
+| Requests a minute, this run | 81 | 205 | 138 | 479 | 93 |
+| One node thread busy, previous | 0.4% | 2.9% | 2.8% | | 2.4% |
+| One node thread busy, this run | 0.29% | 0.84% | 0.55% | 3.6% | 0.42% |
+| Rusk CPU, one core, previous | 1.2% | 3.7% | 3.2% | | 2.7% |
+| Rusk CPU, one core, this run | 1.4% | 2.6% | 1.8% | 5.2% | 1.6% |
 
-The block-height lookups were 60 to 71% of the requests and of the node's
-time whenever any history existed. No request kind was slow. Every kind
-took under 7 ms on average except the simulated `process`, 9 ms, and the
-archive's `finalizedEvents` pages were 0.9 KiB at the median because each
-scan starts from a saved position. Rusk's CPU includes the transfers' own
-transactions and the consensus work of a 10 s chain.
+"Busy" is the time Rusk took to answer, summed. Rusk used 1.1% of a core
+with no agents in both runs; its CPU includes the transfers' own
+transactions and the consensus work of a 10 s chain. At idle this run,
+`lastBlockPair` was 59% of the requests and 47% of the node's time, the
+validators' Merkle `count` 22% and 23%, the relayer's aggregates 7% and
+21%. Under Dusk to EVM load the aggregates were 17% of the requests and
+32% of the time, at 4.6 ms each against 1.4 to 3.8 ms for single requests.
+In the burst the `process` simulations were 30% of the time. The binary
+searches over every record's block height, 60 to 71% of the previous run's
+requests once there was history, are gone at idle; under load, a lookup by
+transaction still searches heights (see What to change).
 
 ### Latency
 
 Seconds from the block that holds the dispatch, by the node's log, to each
 stage. A validator has signed when its checkpoint file is written; the
 relayer's metadata is ready at its first `process` call (an estimate on
-Anvil, a simulation on Dusk); a Dusk delivery is submitted when the relayer
-starts `dusk-tx`.
+Anvil, a simulation on Dusk); a Dusk delivery is submitted when the
+relayer starts `dusk-tx`.
 
 Dusk to EVM, 60 messages:
 
-| Stage | Median | p90 | Max |
-|---|---:|---:|---:|
-| Final on Dusk | 10.1 | 10.1 | 10.1 |
-| First validator signed | 14.5 | 18.0 | 18.5 |
-| Second validator signed (quorum) | 15.1 | 18.5 | 18.8 |
-| Third validator signed | 15.4 | 18.9 | 19.5 |
-| Relayer metadata ready | 15.3 | 18.7 | 19.1 |
-| Delivery submitted, and included on Anvil | 15.6 | 19.0 | 19.3 |
+| Stage | Previous: median | p90 | max | This run: median | p90 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| Final on Dusk | 10.1 | 10.1 | 10.1 | 10.1 | 10.1 | 10.2 |
+| First validator signed | 14.5 | 18.0 | 18.5 | 17.0 | 17.8 | 18.1 |
+| Second validator signed (quorum) | 15.1 | 18.5 | 18.8 | 17.7 | 18.3 | 18.5 |
+| Third validator signed | 15.4 | 18.9 | 19.5 | 18.4 | 18.8 | 19.0 |
+| Relayer metadata ready | 15.3 | 18.7 | 19.1 | 18.1 | 18.6 | 20.0 |
+| Delivery submitted, and included on Anvil | 15.6 | 19.0 | 19.3 | 18.3 | 18.9 | 20.3 |
 
 EVM to Dusk, 60 messages, one every 25 s:
 
-| Stage | Median | p90 | Max |
-|---|---:|---:|---:|
-| EVM validator signed | 5.4 | 9.4 | 9.6 |
-| Relayer metadata ready | 5.6 | 9.6 | 9.9 |
-| Delivery submitted | 5.7 | 9.7 | 10.0 |
-| Included on Dusk | 21.2 | 26.2 | 26.9 |
-| Final on Dusk | 31.3 | 36.0 | 36.8 |
+| Stage | Previous: median | p90 | max | This run: median | p90 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| EVM validator signed | 5.4 | 9.4 | 9.6 | 7.5 | 8.2 | 8.4 |
+| Relayer metadata ready | 5.6 | 9.6 | 9.9 | 8.0 | 8.7 | 9.9 |
+| Delivery submitted | 5.7 | 9.7 | 10.0 | 8.1 | 8.8 | 10.0 |
+| Included on Dusk | 21.2 | 26.2 | 26.9 | 23.8 | 26.8 | 27.0 |
+| Final on Dusk | 31.3 | 36.0 | 36.8 | 33.8 | 36.6 | 37.0 |
 
-- A validator signs 4.6 s (median) and up to 8.4 s after the block is
-  final; it looks every 5 s. The relayer polls for signatures every 0.5 s
-  and has its metadata within 0.2 s of the quorum.
-- A transaction sent to Rusk waits 10 to 20 s for its block. The node
-  builds each candidate block when its round starts, right after the
-  previous block is accepted, so a transaction waits for the next round.
-  The Dusk to EVM transfers above, each sent just after the last one's
-  block, waited 18.3 s (median) before the dispatch's block.
-- **The relayer delivered to Dusk one message per two blocks.** It
-  submitted one message at a time, and `dusk-tx` returns once the
-  transaction is in a block, so the next one missed the round that had just
-  started. The 39 burst messages had their signatures and metadata within
-  8.5 s, then went in one every 20.3 s, the last 778 s after its dispatch.
-  That is 3 messages a minute per relayer key, against the 1,000 a block
-  can hold ([Throughput](#throughput)). The configs `agent-configs` writes
-  now set `maxBatchSize` to 16, so the relayer sends the deliveries it has
-  ready as consecutive transactions that share a block
-  ([operations.md](operations.md#uncertain-transactions)); the bench above
-  ran without it.
-- The relayer checks a delivery 10 minutes after submitting it
-  (Hyperlane's `CONFIRM_DELAY`), so it only logs Dusk deliveries as
-  confirmed then.
+EVM to Dusk, the burst of 40 (39 in the previous run):
+
+| Stage | Previous: max | This run: median | p90 | max |
+|---|---:|---:|---:|---:|
+| Relayer metadata ready | 8.5 | 8.3 | 8.4 | 8.5 |
+| Included on Dusk | 778 | 56.0 | 85.5 | 85.7 |
+| Final on Dusk | | 65.7 | 95.6 | 95.8 |
+
+- A Dusk validator signs 6.8 s (median) after the block is final, against
+  4.6 s before: finality is read once per 5 s tick and shared by the
+  agent's indexers, so a validator sees a new final block up to a tick
+  later. That is 2.7 s on the median Dusk to EVM delivery; the p90 is
+  unchanged. The relayer has its metadata 0.3 s (median) and at most 2.3 s
+  after the quorum.
+- The EVM validator signs on its own 5 s tick, and the transfers went every
+  25 s, so the offset between the two is the same for every message of a
+  run: its median moves between runs, its p90 and maximum don't.
+- A transaction sent to Rusk still waits 10 to 20 s for its block: the
+  node builds each candidate block when its round starts, right after the
+  previous block is accepted.
+
+### Throughput into Dusk
+
+**The relayer now delivers a burst in batches that share a block.** The
+40 transfers of the burst went in four blocks, 6, 14, 15 and 5
+deliveries, every other block, the last 85.7 s after its dispatch, with a
+relayer restart in between. The previous run's 39 went in one every 20.3
+s, the last 778 s after its dispatch: 3 messages a minute per relayer
+key, against 1,000 a block can hold ([Throughput](#throughput)). Paced at
+one every 25 s, every delivery went in a block of its own, as before.
+
+A batch goes out about 2 s after the block that holds the batch before it,
+when the next block's round has started, so batches land every other
+block: at most 16 deliveries per 20 s, 48 a minute, with `maxBatchSize`
+16. All 106 deliveries to Dusk were pipelined (`dusk-tx call --nonce N
+--no-wait`), on consecutive nonces of the relayer's account.
 
 ### Agent resources
 
-| Agent | CPU, idle | CPU, Dusk to EVM / EVM to Dusk | RSS |
-|---|---:|---:|---:|
-| Relayer | 1.9% | 3.3% / 3.0% | 99 MiB idle, 114 MiB at most |
-| Each Dusk validator | 0.1% | 0.3% / 0.2% | 72 to 76 MiB |
-| EVM validator | 0.1% | 0.1% / 0.2% | 78 MiB |
+| Agent | CPU, idle: previous | this run | Dusk to EVM / EVM to Dusk: previous | this run | RSS, previous | this run |
+|---|---:|---:|---:|---:|---:|---:|
+| Relayer | 1.9% | 2.0% | 3.3% / 3.0% | 3.0% / 2.8% | 99 to 114 MiB | 104 to 124 MiB |
+| Each Dusk validator | 0.1% | 0.1% | 0.3% / 0.2% | 0.2% / 0.1% | 72 to 76 MiB | 61 to 81 MiB |
+| EVM validator | 0.1% | 0.1% | 0.1% / 0.2% | 0.1% / 0.2% | 78 MiB | 67 to 82 MiB |
 
 CPU is a share of one core, the `dusk-tx` helpers included, for the debug
-build. The relayer peaked at 29% while catching up after its restart. Its
-memory grew 10 MiB over the run. The host reclaimed memory halfway through,
-so later RSS readings (the validators fell to 58 to 63 MiB) are not
-comparable.
+builds. The relayer peaked at 24% (5 s samples) after each restart and 34%
+over the run, against 29% while catching up before. As in the previous
+run, the agents' RSS fell part way through (the validators' from about 80
+to 61 MiB), so the lower readings are not comparable.
 
 Disk written per message:
 
-| | Relayer | Each Dusk validator | EVM validator |
-|---|---:|---:|---:|
-| Database | 61 KiB (Dusk origin), 44 KiB (EVM origin) | 0.3 KiB | 0.3 KiB |
-| `eventCursorDir` | 2.6 KiB, 0.6 KiB | 0.8 KiB | |
-| Checkpoints | | 0.8 KiB, in a 4 KiB file | 0.8 KiB, in a 4 KiB file |
-| Log | 95 KiB, 87 KiB | 3.6 KiB | 3.7 KiB |
+| | Relayer, previous | this run | Each Dusk validator | EVM validator |
+|---|---:|---:|---:|---:|
+| Database | 61 KiB (Dusk origin), 44 KiB (EVM origin) | 62 KiB, 8.7 KiB | 0.3 KiB | 0.3 KiB |
+| `eventCursorDir` | 2.6 KiB, 0.6 KiB | 2.6 KiB, 1.2 KiB | 0.8 KiB | |
+| Checkpoints | | | 0.8 KiB, in a 4 KiB file | 0.8 KiB, in a 4 KiB file |
+| Log | 95 KiB, 87 KiB | 97 KiB, 52 KiB | 3.6 KiB | 3.8 KiB |
 
-The relayer's database growth is RocksDB's write-ahead log. No memtable was
-flushed during the run, so it measures what the relayer writes, not what
-it keeps. A validator only writes for its own origin's messages.
+The relayer's database growth is RocksDB's write-ahead log, what it
+writes rather than what it keeps. Its `eventCursorDir` now also holds each
+Dusk delivery's nonce and transaction until it settles, and its log of
+deliveries. The relayer logs 42.5 KiB a minute at idle, 61 MB a day, as
+before, almost all of it Hyperlane's EVM submitter (`lander`) reporting
+"Processing transactions in finality pool" every second; 125 to 285 KiB a
+minute under load, and 871 KiB a minute during the burst. Validators log
+at most 2.5 KiB a minute at idle.
 
-At idle the relayer logs 42.5 KiB a minute, 61 MB a day, almost all of it
-Hyperlane's EVM submitter (`lander`) reporting "Processing transactions in
-finality pool" every second. Under load it logged 210 to 280 KiB a minute;
-per message most of it is the signature wait ("List of validators and
-threshold for message" and "Could not fetch metadata: Unable to reach
-quorum" every 0.5 s) and the submitter's status lines. Validators log at
-most 2.5 KiB a minute at idle.
+### Transactions and gas
+
+| | Previous | This run |
+|---|---:|---:|
+| Relayer `process` transactions on Dusk | 106, one at a time | 106, all pipelined |
+| Executed, at the first transaction | 106 | 106 |
+| Failed in a block, or second copies | 0 | 0 |
+| Gas, all deliveries to Dusk | 227.1M | 227,100,565 (0.227 DUSK at 1 LUX) |
+| Gas, median delivery | 2,142,322 | 2,142,322 |
+| Validator announcements | about 2,087,000 each | 2,070,201 to 2,070,791 each |
+| Relayer deliveries on Anvil, gas median / max | 106,193 / 140,369 | 111,468 / 145,632 |
+
+The run read every transaction the agents sent back from the chain: each
+of the 106 messages to Dusk has exactly one `process` transaction in the
+Mailbox's history, executed, and the relayer's 106 deliveries used nonces
+117 to 222 of its account, each once.
 
 ### Recovery
 
 **Relayer restart with a backlog.** The relayer was stopped while 40 Dusk
-to EVM transfers were sent, then restarted with all 40 signed and waiting.
-The newest was delivered 16.7 s after the restart. The other 39 waited 21.8
-minutes, and without the intervention below would have kept waiting:
+to EVM transfers were sent, then restarted with all 40 signed and
+waiting, and 60 messages already in its database:
 
-- On start, each of the relayer's three Dusk indexers starts a backward
-  cursor at the tip, which re-read sequences 0 to 98 in one range
-  (`index.chunk` defaults to 1999), although the database already held the
-  first 60. On Dusk a range costs a few contract queries per record, plus
-  the searches for each record's transaction, against one `eth_getLogs` on
-  an EVM chain.
-- The indexers sent 887 requests in the first 10 s and 439 in the next.
-  Rusk 1.7.3's default HTTP policy allows 360 contract queries in any 2 s,
-  for all clients together (`contract_query`: 180 a second, burst 360, at
-  most 12 at once), and answers the rest `429 too_many_requests`.
-- An indexer gives up its range at the first 429 and backs off 5, 10, 20,
-  40, 80, 160 and then 300 s. All three back off alike, so they retry
-  together and hit the limit together. The relayer was refused 1, 7, 17,
-  38, 78, 158, 319 and 619 s after the restart.
-- The limit is global, so the same bursts made Rusk refuse each validator's
-  polls as well, 3 each. The node logged 48 refusals.
+| | Previous | This run | Without the multicall |
+|---|---:|---:|---:|
+| First of the 40 delivered, after the restart | 16.7 s | 1.4 s | 2.5 s |
+| Last of the 40 delivered | 21.8 min, after the relayer was throttled by hand | 22.3 s | 23.8 s |
+| Relayer requests to Rusk, first 10 s | 887 | 705 | 1,484 |
+| Relayer requests to Rusk until the last delivery | about 4,600 in the minute that read the range, after 20 minutes of refused retries | 731 | 1,579 |
+| Of them contract queries | | 180 (133 aggregates carrying 8,348 reads) | 1,015 |
+| Data both ways | 6.8 MB of archive pages in that minute | 4.5 MiB | 3.9 MiB |
+| Rusk's time answering the relayer, first minute | | 1.8 s | 3.0 s |
+| Relayer CPU, peak (5 s samples) | 29% | 24% | 42% |
+| Requests Rusk refused (429), all agents | 48 | 0 | 0 |
 
-10.5 minutes in, the relayer's Rusk port was moved to a second proxy
-instance that holds its contract queries to 150 a second, which still drew
-5 refusals (a full bucket plus 150 a second exceeds 360 in a window), then
-to 100 a second. The next retry, 1,221 s after the restart, read the range
-without a refusal. It took about 4,600 requests and 6.8 MB of archive pages
-in a minute, 46 requests and 69 KB per message of history (each record's
-lookup reads its archive page from the nearest saved position, up to 200
-rows). The 39 were delivered within 90 s. The relayer stayed behind that
-proxy until the outage. `demo/bench` paces it the same way by default.
+- The relayer's indexers no longer read the history again: each starts
+  above the records its database holds.
+- The first 10 s were mostly the archive (`checkBlock` 281,
+  `finalizedEvents` 179 in the first minute), which Rusk's GraphQL class
+  allows 1,500 a second. Contract queries peaked at 169 in a 2 s window,
+  under the 360 Rusk allows all clients together: the agent paces itself
+  at 100 a second, and no request was refused in the whole run, without
+  the proxy pacing anything.
+- The aggregates were the IGP's: 7,922 `gas_payment_at` reads in 80
+  aggregates of 99, every payment's height twice for each waiting message
+  (see What to change).
 
-**Relayer restart with nothing waiting.** The second restart read no
-history, because its backward cursors had covered it since. It sent 97
-requests in the first 10 s and then its usual 50. It re-checked the 23
-deliveries it had submitted in the 10 minutes before on their original
-schedule.
+**Relayer restart while sending a burst to Dusk.** About 2 s after the
+relayer sent the first deliveries of the burst (nonces 177 to 180), it
+was stopped. The new process started 11.4 s after the burst and sent two more
+0.8 s later (181, 182), and the six went in the same block. It sent the
+rest in batches of 14, 15 and 5, two blocks apart; nonces 177 to 216 were
+each used once, no delivery was sent twice and none failed. The new
+process prepared the four deliveries the old one had in flight again, and
+simulated them before their block was final: Rusk refused the 8
+simulations with `Mailbox: already delivered`, so nothing was sent for
+them. In its first 10 s the new process sent 159 requests to Rusk. The
+previous run's restart came while nothing was waiting.
 
 **Endpoint outage.** For 90 s the agents' Rusk ports refused connections,
 as from a stopped node, while 6 EVM to Dusk transfers were sent. The agents
-logged connection warnings (92 from the relayer, 27 or 28 from each
-validator), kept running and needed no restart. In the first 10 s after the
-ports reopened the relayer sent 73 requests and each validator 27, against
-51 and 18 at idle with that history. The 6 messages were on Dusk 123 s
-after the ports reopened, one every 20 s.
+logged connection warnings (87 from the relayer, 36 or 37 from each
+validator, against 92 and 27 or 28), kept running and needed no restart. In
+the first 10 s after the ports reopened the relayer sent 49 requests and
+each validator 3 to 5, their idle rate, against 73 and 27 before. The 6
+messages were on Dusk 82 s after the ports reopened (123 s before), in four
+blocks.
 
-**Node restart.** Not run. `demo/start-env.sh` starts Rusk with `-s` and
-the genesis archive, which unpacks into a new temporary directory each
-time, so a restarted node is a new chain without the contracts, and no
-demo script restarts a node on its existing state. The outage shows the
-agents' side.
+**Node restart.** Not run, as before: `demo/start-env.sh` starts Rusk from
+the genesis archive each time, so a restarted node is a new chain. The
+outage shows the agents' side.
+
+### Without the multicall
+
+The same agents with `batchContractAddress` left out of every config
+(`BATCH_READS=0`), over a new deployment, the 60 Dusk to EVM transfers,
+the restart with 40 waiting, and 10 minutes idle after:
+
+| | With the multicall | Without |
+|---|---:|---:|
+| Relayer at idle, requests a minute: new, after the load | 21, 33 (with confirmations due) | 33, 33 |
+| Each Dusk validator at idle | 20 | 20 |
+| Rusk's time answering the idle relayer, a minute | 64 ms | 99 ms |
+| Dusk to EVM, requests a message: relayer, each validator | 24.1, 6.0 | 30.8, 9.1 |
+| Dusk to EVM, Rusk's time a message: relayer, each validator | 64 ms, 14 ms | 64 ms, 19 ms |
+| Dusk to EVM, included on Anvil: median, p90, max | 18.3, 18.9, 20.3 s | 18.0, 18.8, 19.1 s |
+| Restart with 40 waiting: last delivered | 22.3 s | 23.8 s |
+| Restart: relayer requests to Rusk until then (contract queries) | 731 (180) | 1,579 (1,015) |
+| Restart: most contract queries in any 2 s | 169 | 219 |
+
+- The relayer's aggregate takes its three counts per final block into one
+  query: a third fewer requests at idle. A validator reads one count a
+  block, which nothing can batch. Neither rate grew with history: after
+  100 messages the relayer without the multicall still sent 33 a minute.
+- Without the multicall the agents' own pacing kept the node from refusing
+  anything: the restart's contract queries peaked at 219 in 2 s, the most
+  the relayer's pace allows (100 a second, bursts of 20), under the 360
+  Rusk allows all clients together.
+- Through the multicall the restart read eight times more record heights
+  than the binary searches did (8,348 reads against 1,015 queries), yet
+  took the node about half the time. Per Dusk to EVM message the node
+  spent the same 64 ms on the relayer either way: fewer requests, but each
+  aggregate reads all of a range's heights (see What to change).
 
 ### What to change
 
-In order of what they save:
+Of the previous run's list, these are done: the agents pace their
+contract queries and back off from 429s with jitter (no request was
+refused here, without pacing at the proxy); they remember what is final
+(the validators' idle rate stays at 20 a minute with history); a restart
+doesn't read the history again (22 s and 731 requests for the backlog);
+deliveries to Dusk are pipelined (`maxBatchSize` 16, measured here: no
+second copies, no failed deliveries, a restart in the middle of a batch
+reconciled); `lastBlockPair` is read once per tick for all indexers; and a
+delivery is simulated once. What remains, in order of what it would save:
 
-1. **Pace the agents' Rusk requests and back off on 429 with jitter.** A
-   relayer starting against a deployment with history goes far past the
-   node's global limit, and three indexers that back off in step keep
-   failing together. A client-side limit in `RuesClient` (100 contract
-   queries a second held here), honouring `Retry-After` with random
-   jitter, fixes that. An agent's own node can also raise
-   `[http.policy.global_limits.classes.contract_query]`, but a public node
-   keeps its default.
-2. **Remember what is final.** Each indexer tick, and each validator
-   checkpoint read, binary-searches every record's block height. Keeping the
-   last finalized count and only checking the records after it would cost
-   one or two lookups a tick whatever the history. At 100 messages, idle
-   would fall from 632 to about 300 requests a minute, and a Dusk to EVM
-   message would cost near the low end of its range above.
-3. **Don't re-read history on start.** Start the backward cursors at the
-   lowest sequence the database is missing, or give the Dusk indexers a
-   range read that pages (`message_ids`, `gas_payments`) instead of
-   looking up each record. At 32 contract queries per message of history,
-   a restart after 100,000 messages would take about 5 hours at the 180 a
-   second the node allows, and read gigabytes of archive pages.
-4. **Keep the IGP index cheap.** The relayer needs it now that it
-   enforces payments. It was a third of the relayer's idle lookups and 40
-   of its 128 requests per Dusk to EVM message, nearly all binary searches
-   that item 2 removes. The searches by dispatch transaction come from
-   `txIdIndexingEnabled` (default true; the demo's relayer config turns it
-   off), which a later run could measure without.
-5. **Pipeline Dusk deliveries.** Done: with `maxBatchSize` above 1 the
-   relayer submits the next delivery before the last is in a block, with the
-   account's next nonce (Rusk queues up to 64 per account), and the
-   generated configs set 16, with agents from the `testnet/dusk-agents`
-   branch dated 2026-11-16 or later. One at a time, a relayer key delivered
-   at most about 4,300 messages a day to Dusk.
-6. **Cache `lastBlockPair` for a block.** Every indexer looks every 5 s,
-   twice per 10 s block, and `lastBlockPair` is the most frequent request
-   on a new deployment. Keeping it until the next block is due would cut
-   the relayer's 36 a minute to about 6 and each validator's 12 to 6, a
-   third of the idle requests on a new deployment.
-7. **Smaller items.** The relayer simulates each Dusk delivery three times
-   in a row (prepare, dry run, and the Mailbox's own `process`), and `dusk-tx`
-   polls a transaction every 3 s where a block takes 10. Plan the relayer's
-   log retention for about 60 MB a day at idle and 90 KiB per message at
-   info level.
+1. **Remember the heights of final records.** With `txIdIndexingEnabled`
+   on (the default, and the testnet config's), the relayer looks up each
+   dispatch's IGP payment by its transaction, and the lookup searches the
+   payments' heights from the first one again. Through the multicall it
+   reads them 256 at a time: 29 `gas_payment_at` reads a Dusk to EVM
+   message here, rising with the IGP's history (99 for each lookup at 99
+   payments), and 7,922 in the first minute after the restart. Without the
+   multicall the lookups are binary searches, 5 `gas_payment_at` queries a
+   message. Heights never change once final, so keeping them, or a range
+   read that returns them, makes a lookup a few reads whatever the history;
+   turning `txIdIndexingEnabled` off, as the demo's relayer config does,
+   avoids these lookups.
+2. **Send the next batch before the last is in a block.** The relayer waits
+   for a batch's block before it sends the next, which then misses the
+   block whose round has just started: batches land every other block, 48
+   deliveries a minute at most with `maxBatchSize` 16. Rusk queues 64 of an
+   account's transactions ahead of its next nonce, so two batches in
+   flight would fill every block, at the cost of more to reconcile when a
+   batch fails.
+3. **Poll a delivery's transaction less often.** The relayer reads `tx`
+   9.3 times per delivery, about every 1.7 s, where a block takes 10 s and
+   a transaction waits 10 to 20 s for its block.
+4. **Smaller items.** Validators sign 2.2 s later at the median, since they
+   see finality once per 5 s tick. After a restart, the relayer simulates
+   the deliveries the old process had in flight until their block is final
+   (8 refused queries here, nothing sent). The relayer sometimes sees a
+   dispatch before its IGP payment and logs `GasPaymentNotFound` (23 times
+   here), with no delay to the delivery: the payment was indexed before the
+   signatures came. Plan the relayer's log retention for about 60 MB a day
+   at idle and 50 to 100 KiB per message at info level. In the tooling,
+   `dusk-tx transfer-remote --native` asks the route for `wrapped_token`
+   and `name`, which a native route lacks: two failed queries (500) a
+   transfer.
