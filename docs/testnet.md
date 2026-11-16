@@ -212,10 +212,11 @@ transfer pays for. `fees` prints what they come to.
 - the Sepolia IGP and token were initialized in the transaction that
   created them: `deploy` records that transaction, and its receipt must
   show the EVM deployer creating the contract as a proxy of the recorded
-  implementation, and the contract's `Initialized` event. The IGP must have
-  no quote signers, and quote a transfer what its oracle's pricing comes
-  to, asked as the token and as any other sender: a signed offchain quote
-  would come before the oracle;
+  implementation, and the contract's `Initialized` event. Each proxy must
+  still run that implementation and have no proxy admin (EIP-1967's admin
+  slot is zero). The IGP must have no quote signers, and quote a transfer
+  what its oracle's pricing comes to, asked as the token and as any other
+  sender: a signed offchain quote would come before the oracle;
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;

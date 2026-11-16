@@ -83,10 +83,11 @@ MAX_HOOK_DEPTH=8
 DUSK_IGP_DEFAULT_GAS=50000
 # What the EVM IGP's and the token's creation receipts must show: their
 # ERC1967Proxy's Upgraded(address) and the implementation's
-# Initialized(uint8). IMPLEMENTATION_SLOT is EIP-1967's.
+# Initialized(uint8). IMPLEMENTATION_SLOT and ADMIN_SLOT are EIP-1967's.
 UPGRADED_TOPIC=0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b
 INITIALIZED_TOPIC=0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb3847402498
 IMPLEMENTATION_SLOT=0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
+ADMIN_SLOT=0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
@@ -223,7 +224,10 @@ deploy_evm_proxied() {
 # contract that the deployer sent it, that it created the contract as a proxy
 # of the recorded implementation, and that the contract was initialized in
 # it, so nobody could have initialized it before. A contract recorded without
-# that transaction was deployed by an older version of this script.
+# that transaction was deployed by an older version of this script. The
+# proxy must still run that implementation and have no admin: an
+# ERC1967Proxy has none, and a proxy whose admin can upgrade it isn't one
+# this deployment created.
 check_evm_creation() {
     local key="$1" label="$2" address tx impl creator receipt slot
     address="$(state_get ".evm.$key")"
@@ -248,6 +252,10 @@ check_evm_creation() {
         || fail "Can't read the implementation of the EVM $label $address"
     [ "$(lower "0x${slot: -40}")" = "$(lower "$impl")" ] \
         || fail "The EVM $label $address runs the implementation 0x${slot: -40}, not $impl, which it was created with"
+    slot="$(cast storage "$address" "$ADMIN_SLOT" --rpc-url "$EVM_RPC")" \
+        || fail "Can't read the proxy admin of the EVM $label $address"
+    [[ "$slot" =~ ^0x0{64}$ ]] \
+        || fail "The EVM $label $address has the proxy admin 0x${slot: -40}, which can change its code: this deployment's ERC1967Proxy has no admin. Move $OUT_DIR aside and deploy again."
 }
 
 # The EVM contracts deploy initializes: our IGP, once the state records its

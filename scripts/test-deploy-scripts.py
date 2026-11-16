@@ -213,6 +213,7 @@ UPGRADED = "0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b"
 OWNERSHIP_TRANSFERRED = "0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0"
 BENEFICIARY_SET = "0x04d55a8be181fb8d75b76f2d48aa0b2ee40f47e53d6e61763eeeec46feea8a24"
 IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
 # What `forge inspect` gives as ERC1967Proxy's creation code.
 PROXY_CODE = "0x" + b"ERC1967Proxy".hex()
 
@@ -508,6 +509,8 @@ def main_cast(argv):
         c = contract(state, positional[1])
         if positional[2].lower() == IMPLEMENTATION_SLOT and "implementation" in c:
             print(word(c["implementation"]))
+        elif positional[2].lower() == ADMIN_SLOT and "admin" in c:
+            print(word(c["admin"]))
         else:
             print("0x" + "00" * 32)
     elif command == "receipt":
@@ -1050,6 +1053,17 @@ class TestnetEvmCreationChecks(DeployedTestnet):
     def test_a_proxy_of_another_implementation_is_refused(self):
         self.evm["contracts"][self.evm_igp]["implementation"] = "0x" + "4b" * 20
         self.assert_refused(f"runs the implementation 0x{'4b' * 20}, not {self.igp_impl}")
+
+    def test_a_proxy_with_an_admin_is_refused(self):
+        # This deployment's ERC1967Proxy has no admin. One whose admin can
+        # upgrade it, created and initialized by the deployer all the same,
+        # passed the creation and implementation checks.
+        for key, label in (("evm_igp", "IGP"), ("token", "DUSK token")):
+            with self.subTest(contract=key):
+                address = getattr(self, key)
+                self.evm["contracts"][address]["admin"] = ATTACKER
+                self.assert_refused(f"The EVM {label} {address} has the proxy admin {ATTACKER}")
+                del self.evm["contracts"][address]["admin"]
 
     def test_a_standing_quote_that_undercuts_the_oracle_is_refused(self):
         wildcard_sender, wildcard_dest = "0x" + "ff" * 20, str(2**32 - 1)
