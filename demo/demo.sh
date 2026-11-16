@@ -28,6 +28,10 @@ set -euo pipefail
 # ── Configuration ────────────────────────────────────────────────────────────
 
 DUSK_RUES_URL="${RUES_URL:-http://localhost:18090/}"
+# The Dusk chain every transaction is signed for (dusk-tx
+# --expected-chain-id): a local devnet's, 0, unless set. The node must
+# report it before anything is deployed.
+DUSK_EXPECTED_CHAIN_ID="${DUSK_EXPECTED_CHAIN_ID:-0}"
 DUSK_DOMAIN=4242
 ANVIL_PORT=8545
 ANVIL_CHAIN_ID=31338
@@ -153,6 +157,25 @@ if [ ! -d "$SOLIDITY_DIR/dependencies" ]; then
 fi
 ok "Solidity dependencies installed"
 
+# The Dusk node must be on DUSK_EXPECTED_CHAIN_ID before anything is
+# deployed on either chain. Its answer never takes the setting's place.
+[[ "$DUSK_EXPECTED_CHAIN_ID" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$DUSK_EXPECTED_CHAIN_ID))" -le 255 ] \
+    || fail "DUSK_EXPECTED_CHAIN_ID must be a Dusk chain ID from 0 to 255, not '$DUSK_EXPECTED_CHAIN_ID'"
+DUSK_EXPECTED_CHAIN_ID=$((10#$DUSK_EXPECTED_CHAIN_ID))
+step "Checking Dusk node..."
+DUSK_CHAIN_ID=$(curl -s -X POST \
+    -H "Content-Type: application/octet-stream" \
+    "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
+    --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
+
+if [ -z "$DUSK_CHAIN_ID" ]; then
+    fail "Dusk node not reachable at $DUSK_RUES_URL. Start the rusk-duskevm Docker container first."
+fi
+[[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] || fail "Dusk node at $DUSK_RUES_URL returned no chain ID"
+[ "$((16#$DUSK_CHAIN_ID))" -eq "$DUSK_EXPECTED_CHAIN_ID" ] \
+    || fail "Dusk node at $DUSK_RUES_URL is on chain ID $((16#$DUSK_CHAIN_ID)), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID (a local devnet's is 0). Nothing was signed. Point RUES_URL at the devnet, or set DUSK_EXPECTED_CHAIN_ID to the chain you mean."
+ok "Dusk node connected, on chain ID $DUSK_EXPECTED_CHAIN_ID"
+
 # ── Step 1: Start Anvil ──────────────────────────────────────────────────────
 
 header "Step 1: Starting Anvil (EVM Local Node)"
@@ -277,22 +300,8 @@ info "  HypERC20:     $EVM_TOKEN"
 
 header "Step 3: Deploying Hyperlane on Dusk (domain=$DUSK_DOMAIN)"
 
-# Check Dusk node connectivity
-step "Checking Dusk node..."
-DUSK_CHAIN_ID=$(curl -s -X POST \
-    -H "Content-Type: application/octet-stream" \
-    "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
-    --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
-
-if [ -z "$DUSK_CHAIN_ID" ]; then
-    fail "Dusk node not reachable at $DUSK_RUES_URL. Start the rusk-duskevm Docker container first."
-fi
-[[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] || fail "Dusk node at $DUSK_RUES_URL returned no chain ID"
-# Every Dusk transaction below is signed for this chain only
-# (dusk-tx --expected-chain-id).
-DUSK_EXPECTED_CHAIN_ID=$((16#$DUSK_CHAIN_ID))
-ok "Dusk node connected"
-
+# Every Dusk transaction below is signed for DUSK_EXPECTED_CHAIN_ID only
+# (dusk-tx --expected-chain-id), which Step 0 found the node on.
 if [ "${1:-}" = "--skip-deploy" ]; then
     info "Skipping Dusk deployment after canonical validation"
 else

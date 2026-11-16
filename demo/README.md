@@ -275,6 +275,7 @@ Key overrides:
 | `ANVIL_PORT` | `8545` | Anvil RPC port |
 | `DUSK_EXPLORER_PORT` | `5173` | Dusk Explorer port |
 | `EVM_EXPLORER_PORT` | `5100` | Otterscan port |
+| `DUSK_EXPECTED_CHAIN_ID` | `0` | The Dusk chain the scripts sign for. The node `start-env.sh` starts reports 0. `start-env.sh`, `deploy.sh` and `demo.sh` stop before signing anything when the node at the RUES URL reports another chain; the node's answer never replaces this |
 | `DUSK_MULTICALL_WASM` | empty | Multicall for Dusk's v0.1.0 Wasm. `deploy.sh` then deploys it at the ID it has on testnet and mainnet, and the agent configs name it, so the agents batch their contract reads |
 
 ### Secret Handling
@@ -333,7 +334,9 @@ deployer key so the deterministic contract IDs change.
 ## Standalone Demo (demo.sh)
 
 Self-contained demo that deploys and bridges in one script. Expects a running
-`rusk-duskevm` Docker container (RUES on port 18090).
+`rusk-duskevm` Docker container (RUES on port 18090). It signs for
+`DUSK_EXPECTED_CHAIN_ID`, 0 unless set, and stops before deploying anything
+when the node reports another chain.
 
 ```bash
 # Build everything

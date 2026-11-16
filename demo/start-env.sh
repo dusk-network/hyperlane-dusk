@@ -62,9 +62,29 @@ wait_for_url() {
     return 1
 }
 
+# The node at DUSK_RUES_URL must be on DUSK_EXPECTED_CHAIN_ID, the chain the
+# demo scripts sign for, whether this script starts it or finds it running:
+# a healthy RUES of another chain on the port isn't the demo's node.
+check_rues_chain() {
+    local hex
+    hex="$(curl -sf --max-time 5 -X POST -H "Content-Type: application/octet-stream" \
+        "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
+        | od -An -tx1 | tr -d ' \n')" && [[ "$hex" =~ ^[0-9a-f]{2}$ ]] \
+        || fail "Rusk RUES at $DUSK_RUES_URL did not return the transfer contract's chain ID"
+    [ "$((16#$hex))" -eq "$DUSK_EXPECTED_CHAIN_ID" ] \
+        || fail "Rusk RUES at $DUSK_RUES_URL is on chain ID $((16#$hex)), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID (the node this script starts reports 0). The demo scripts would sign nothing for it. Stop that node (demo/stop-env.sh stops one this script started), or set DUSK_EXPECTED_CHAIN_ID to the chain you mean."
+}
+
 # ── Pre-flight Checks ───────────────────────────────────────────────────────
 
 header "Pre-flight Checks"
+
+# The Dusk chain the demo scripts sign for: the local devnet's, 0, unless
+# set in .env.bridge or the environment.
+DUSK_EXPECTED_CHAIN_ID="${DUSK_EXPECTED_CHAIN_ID:-0}"
+[[ "$DUSK_EXPECTED_CHAIN_ID" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$DUSK_EXPECTED_CHAIN_ID))" -le 255 ] \
+    || fail "DUSK_EXPECTED_CHAIN_ID must be a Dusk chain ID from 0 to 255, not '$DUSK_EXPECTED_CHAIN_ID'"
+DUSK_EXPECTED_CHAIN_ID=$((10#$DUSK_EXPECTED_CHAIN_ID))
 
 # Check if already running
 if [ -f "$PID_FILE" ]; then
@@ -190,11 +210,12 @@ if port_in_use "$RUSK_HTTP_PORT"; then
     RUES_TEST_URL="${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id"
     wait_for_url "$RUES_TEST_URL" 5 \
         || fail "Port $RUSK_HTTP_PORT is occupied, but the configured Rusk RUES endpoint is unhealthy"
+    check_rues_chain
     record_pid "rusk" "external"
-    ok "Using healthy external Rusk service (not owned by this demo)"
+    ok "Using healthy external Rusk service on chain ID $DUSK_EXPECTED_CHAIN_ID (not owned by this demo)"
 else
     info "Starting Rusk from $RUSK_DIR..."
-    RUSK_LOG="/tmp/rusk-dev.log"
+    RUSK_LOG="${RUSK_LOG:-/tmp/rusk-dev.log}"
     (
         cd "$RUSK_DIR"
         DUSK_CONSENSUS_KEYS_PASS="$CONSENSUS_PASSWORD" \
@@ -223,6 +244,7 @@ else
     else
         fail "Rusk did not become ready within 60s — check $RUSK_LOG and run demo/stop-env.sh"
     fi
+    check_rues_chain
 fi
 
 # ── Start Anvil ──────────────────────────────────────────────────────────────

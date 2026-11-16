@@ -69,6 +69,12 @@ DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
 DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-200000}"
 DUSK_IGP_TOKEN_EXCHANGE_RATE="${DUSK_IGP_TOKEN_EXCHANGE_RATE:-10000000000}"
 DUSK_IGP_GAS_PRICE="${DUSK_IGP_GAS_PRICE:-1}"
+# The Dusk chain to sign for: the local devnet's, 0, unless the operator
+# sets another (.env.bridge or the environment).
+DUSK_EXPECTED_CHAIN_ID="${DUSK_EXPECTED_CHAIN_ID:-0}"
+[[ "$DUSK_EXPECTED_CHAIN_ID" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$DUSK_EXPECTED_CHAIN_ID))" -le 255 ] \
+    || fail "DUSK_EXPECTED_CHAIN_ID must be a Dusk chain ID from 0 to 255, not '$DUSK_EXPECTED_CHAIN_ID'"
+DUSK_EXPECTED_CHAIN_ID=$((10#$DUSK_EXPECTED_CHAIN_ID))
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -149,10 +155,12 @@ DUSK_CHAIN_ID=$(curl -s -X POST \
     --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
 [ -n "$DUSK_CHAIN_ID" ] || fail "Cannot connect to Dusk RUES at $DUSK_RUES_URL"
 [[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] || fail "Dusk RUES at $DUSK_RUES_URL returned no chain ID"
-# Every Dusk transaction below is signed for this chain only
-# (dusk-tx --expected-chain-id).
-DUSK_EXPECTED_CHAIN_ID=$((16#$DUSK_CHAIN_ID))
-ok "Dusk RUES reachable"
+# Every Dusk transaction below is signed for DUSK_EXPECTED_CHAIN_ID only
+# (dusk-tx --expected-chain-id), which the node must report. Its answer
+# never takes the setting's place.
+[ "$((16#$DUSK_CHAIN_ID))" -eq "$DUSK_EXPECTED_CHAIN_ID" ] \
+    || fail "Dusk RUES at $DUSK_RUES_URL is on chain ID $((16#$DUSK_CHAIN_ID)), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID (the local devnet's is 0). Nothing was signed. Point DUSK_RUES_URL at the devnet, or set DUSK_EXPECTED_CHAIN_ID to the chain you mean."
+ok "Dusk RUES reachable, on chain ID $DUSK_EXPECTED_CHAIN_ID"
 
 validate_evm_contract() {
     local address="$1"

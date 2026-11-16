@@ -622,7 +622,7 @@ data=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --data) data="$2"; shift 2 ;;
-        -m|-X|-H) shift 2 ;;
+        -m|-X|-H|--max-time|--connect-timeout) shift 2 ;;
         -*) shift ;;
         *) url="$1"; shift ;;
     esac
@@ -2739,6 +2739,150 @@ os.write(fd, b"0x" + b"11" * 32 + b"\n")
 os.close(fd)
 print(json.dumps({"success": True, "out": out}))
 '''
+
+
+# The tools DemoSigningChain's scripts run up to their first deployment,
+# each logging its call to FIXTURE_TRACE. lsof reports every port in use, so
+# no script starts a node; cargo and make build nothing; cast answers the
+# block number and the chain ID. forge, dusk-tx and anvil fail, so a script
+# that gets past its chain check stops at its first deployment, before it
+# writes anything.
+DEMO_TOOL_STUB = """#!/bin/sh
+printf '%s\\n' "$(basename "$0") $*" >> "$FIXTURE_TRACE"
+case "$(basename "$0") $1" in
+    "lsof "*|"cargo "*|"make "*) exit 0 ;;
+    "cast block-number") echo 100 ;;
+    "cast chain-id") echo 31338 ;;
+    *) exit 1 ;;
+esac
+"""
+
+
+class DemoSigningChain(unittest.TestCase):
+    """The demo scripts sign Dusk transactions for DUSK_EXPECTED_CHAIN_ID,
+    the local devnet's chain ID 0 unless set, and stop before deploying
+    anything when the node at the RUES URL reports another chain. Before,
+    each took the node's answer as the chain to sign for, even over an
+    operator's explicit setting, so a testnet node, or a local forwarder to
+    one, got the deployment; and start-env.sh took any healthy node already
+    on its port."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="hyperlane-demo-chain-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        # The checkouts' layout: rusk-private next to hyperlane/, which holds
+        # this repository and the monorepo's Solidity sources.
+        self.dusk = self.root / "hyperlane" / "dusk"
+        for script in ("demo/deploy.sh", "demo/demo.sh", "demo/start-env.sh"):
+            (self.dusk / script).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / script, self.dusk / script)
+        shutil.copy2(ROOT / "demo" / "bridge.env.example", self.dusk / "demo" / ".env.bridge")
+        (self.root / "hyperlane" / "hyperlane-monorepo" / "solidity" / "dependencies").mkdir(parents=True)
+        rusk = self.root / "rusk-private"
+        for directory in (rusk / "core", rusk / "examples", rusk / "target" / "release", self.dusk / "e2e"):
+            directory.mkdir(parents=True)
+        (self.dusk / "rusk").symlink_to("../../rusk-private")
+        for path in (rusk / "target" / "release" / "rusk", rusk / "examples" / "consensus.keys",
+                     self.dusk / "e2e" / "consensus.keys", self.root / "example.state"):
+            path.write_text("fixture\n")
+        (self.root / "wasm").mkdir()
+        (self.root / "wasm" / "hyperlane_dusk_mailbox.wasm").write_bytes(b"\0asm")
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        for tool in ("lsof", "cargo", "make", "cast", "forge", "anvil", "dusk-tx"):
+            write_executable(self.bin / tool, DEMO_TOOL_STUB)
+        write_executable(self.bin / "curl", CURL_STUB)
+        self.trace = self.root / "tools.trace"
+        self.state = self.root / "bridge-state.json"
+        self.pids = self.root / "env.pids"
+
+    def run_demo(self, script, *args, endpoint=2, **settings):
+        """Run `script` with a node on chain `endpoint` at the RUES URL.
+        Returns the result and the tools it ran."""
+        self.trace.write_text("")
+        env = {
+            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root),
+            "FIXTURE_TRACE": str(self.trace), "FIXTURE_DUSK_CHAIN_ID": str(endpoint),
+            "DUSK_TX": str(self.bin / "dusk-tx"), "WASM_DIR": str(self.root / "wasm"),
+            "BRIDGE_STATE_FILE": str(self.state), "PID_FILE": str(self.pids),
+            "RUSK_HTTP_PORT": "65531", "ANVIL_PORT": "65532", "RUES_URL": "http://localhost:65531/",
+            "SKIP_OTTERSCAN": "true", "SKIP_DUSK_EXPLORER": "true",
+            **{key: str(value) for key, value in settings.items()},
+        }
+        result = subprocess.run(["bash", str(self.dusk / script), *args], env=env, capture_output=True,
+                                text=True, timeout=60)
+        return result, self.trace.read_text().splitlines()
+
+    def assert_refused(self, result, tools, expected):
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn(expected, output)
+        self.assertEqual([line for line in tools if line.split()[0] in ("forge", "dusk-tx", "anvil")
+                          or line.startswith("cast send")], [])
+
+    def test_deploy_signs_only_for_the_chain_it_is_set_for(self):
+        # A node on testnet (2) at the RUES URL. An operator's explicit 0
+        # was replaced with the node's 2 too.
+        for settings in ({}, {"DUSK_EXPECTED_CHAIN_ID": 0}):
+            with self.subTest(settings=settings):
+                result, tools = self.run_demo("demo/deploy.sh", "--dusk-ism", "testMock", **settings)
+                self.assert_refused(result, tools, "is on chain ID 2, not DUSK_EXPECTED_CHAIN_ID 0")
+                self.assertFalse(self.state.exists())
+        for value in ("two", "256", "-1", ""):
+            with self.subTest(value=value):
+                result, tools = self.run_demo("demo/deploy.sh", "--dusk-ism", "testMock", endpoint=0,
+                                              DUSK_EXPECTED_CHAIN_ID=value)
+                if value == "":
+                    # Empty is unset: the devnet's 0.
+                    self.assertIn("on chain ID 0", result.stdout)
+                    continue
+                self.assert_refused(result, tools, f"must be a Dusk chain ID from 0 to 255, not '{value}'")
+        # On the chain it is set for, it goes on to its deployment, where the
+        # stubbed forge stops it.
+        for endpoint, settings in ((0, {}), (2, {"DUSK_EXPECTED_CHAIN_ID": 2})):
+            with self.subTest(endpoint=endpoint):
+                result, tools = self.run_demo("demo/deploy.sh", "--dusk-ism", "testMock", endpoint=endpoint,
+                                              **settings)
+                self.assertIn(f"Dusk RUES reachable, on chain ID {endpoint}", result.stdout)
+                self.assertIn("Solidity compilation failed", result.stdout)
+                self.assertIn("forge build --quiet", tools)
+
+    def test_demo_checks_the_chain_before_deploying_on_either(self):
+        result, tools = self.run_demo("demo/demo.sh")
+        self.assert_refused(result, tools, "is on chain ID 2, not DUSK_EXPECTED_CHAIN_ID 0")
+        self.assertNotIn("Starting Anvil", result.stdout)
+        result, tools = self.run_demo("demo/demo.sh", endpoint=0)
+        self.assertIn("Dusk node connected, on chain ID 0", result.stdout)
+        self.assertIn("Failed to deploy TestIsm", result.stdout)
+
+    def test_start_env_takes_a_running_node_only_on_its_chain(self):
+        result, tools = self.run_demo("demo/start-env.sh")
+        self.assert_refused(result, tools, "is on chain ID 2, not DUSK_EXPECTED_CHAIN_ID 0")
+        self.assertNotIn("rusk:external", self.pids.read_text())
+        self.pids.unlink()
+        result, tools = self.run_demo("demo/start-env.sh", endpoint=0)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Using healthy external Rusk service on chain ID 0", result.stdout)
+        self.assertEqual(self.pids.read_text(), "rusk:external\nanvil:external\n")
+
+    def test_start_env_checks_the_node_it_starts(self):
+        # Nothing on Rusk's port: start-env.sh starts the node (a stub that
+        # exits) and waits for its RUES, here one on chain 2. Anvil's port is
+        # taken, so even a start-env.sh that went on wouldn't start an Anvil,
+        # whose log is a fixed path in /tmp.
+        write_executable(self.bin / "lsof", '#!/bin/sh\ncase "$*" in *":65531"*) exit 1 ;; esac\nexit 0\n')
+        write_executable(self.root / "rusk-private" / "target" / "release" / "rusk", "#!/bin/sh\nexit 0\n")
+        # The node's log goes to RUSK_LOG here, not to the fixed
+        # /tmp/rusk-dev.log a running demo's node writes to: don't run a
+        # start-env.sh that would truncate it.
+        self.assertIn('RUSK_LOG="${RUSK_LOG:-/tmp/rusk-dev.log}"', (self.dusk / "demo" / "start-env.sh").read_text())
+        log = self.root / "rusk.log"
+        result, tools = self.run_demo("demo/start-env.sh", RUSK_LOG=log)
+        self.assert_refused(result, tools, "is on chain ID 2, not DUSK_EXPECTED_CHAIN_ID 0")
+        self.assertIn("Rusk is ready", result.stdout)
+        self.assertNotIn("Starting Anvil", result.stdout)
+        self.assertTrue(log.exists())
 
 
 class GenAgentConfigsPassword(unittest.TestCase):
