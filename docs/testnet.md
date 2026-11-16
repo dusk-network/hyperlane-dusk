@@ -463,6 +463,17 @@ check a deployed contract by rebuilding its WASM:
    nonces 0 to 9 in this order: TestMock, TestRecipient, MerkleTreeHook,
    the MessageIdMultisig ISM, ProtocolFee, AggregationHook, Mailbox,
    ValidatorAnnounce, IGP and WarpNative.
+4. Check that the owner the node records for each contract is the
+   deployer's key, the same 96 bytes you hashed:
+
+   ```bash
+   curl -s -X POST -H 'Content-Type: application/octet-stream' \
+       https://<rusk-node>/on/contract_owner:<contract id>/owner | xxd -p | tr -d '\n'
+   ```
+
+   `dusk-tx deploy-wasm` makes the same check, and more for the Multicall
+   with `--check-multicall`, before it accepts a contract already at the ID
+   it expects.
 
 Where the checkouts are, where rustup and Cargo keep their files, and the
 user's name don't change the bytes. Panic locations are remapped to relative
