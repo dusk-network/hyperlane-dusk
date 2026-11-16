@@ -290,7 +290,8 @@ dusk-tx claim-fees --rues-url <node> --keys beneficiary.keys --contract <igp or 
 to claim before it signs, since a failed claim pays its whole gas limit; a
 claim takes about 1.87M gas. The deployer is the beneficiary unless
 `DUSK_FEE_BENEFICIARY` names another account, which `deploy` sets on both
-contracts. The owner can change it at any time:
+contracts once it has checked that the recorded Mailbox calls them. The
+owner can change it at any time:
 
 ```bash
 dusk-tx set-beneficiary --rues-url <node> --keys owner.keys --contract <id> \

@@ -1742,22 +1742,33 @@ class TestnetFeeCommands(DeployedTestnet):
         # Bound to the Mailbox, but neither its required nor its default
         # hook: the Mailbox never calls it, called by the aggregation hook or
         # not, so it isn't this deployment's. Before, binding to the Mailbox
-        # was enough, and claim signed for it.
+        # was enough, and claim signed for it; and deploy, with a beneficiary
+        # set, made that the detached contract's beneficiary without checking
+        # its binding at all.
         self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 5}
         self.queries[f"{PROTOCOL_FEE}/mailbox"] = {"value": MAILBOX}
         for hooks in ([MERKLE_TREE_HOOK], [MERKLE_TREE_HOOK, PROTOCOL_FEE]):
             with self.subTest(aggregated=hooks):
                 self.queries[f"{AGGREGATION_HOOK}/hooks"] = {"value": hooks}
-                for command in (["claim"], ["revenue"], ["agent-configs"]):
-                    result = self.run_script(*command)
+                for command, settings in ((["claim"], {}), (["revenue"], {}), (["agent-configs"], {}),
+                                          (["deploy"], {"DUSK_FEE_BENEFICIARY": "fixture-treasury"})):
+                    result = self.run_script(*command, **settings)
                     if command == ["revenue"]:
                         # revenue only reads, and checks the chains alone.
                         self.assert_ok(result)
                         continue
                     self.assert_fails(result, f"The Dusk protocol_fee {PROTOCOL_FEE} takes its calls from the "
                                               f"Mailbox {MAILBOX}, which doesn't call it")
-                    self.assertEqual(self.traced("dusk-tx claim-fees") + self.traced("cast send"), [])
+                    self.assertEqual(self.traced("dusk-tx claim-fees") + self.traced("dusk-tx set-beneficiary")
+                                     + self.traced("dusk-tx enroll-router") + self.traced("cast send"), [])
                     self.assertFalse(self.relayer_config.exists())
+
+    def test_deploy_sets_the_beneficiary_of_a_recorded_deployment(self):
+        # The recorded deployment's fee contracts are its own, so deploy
+        # changes their beneficiary.
+        self.assert_ok(self.run_script("deploy", DUSK_FEE_BENEFICIARY="fixture-treasury"))
+        sent = self.traced("dusk-tx set-beneficiary")
+        self.assertEqual([line.split("--contract ")[1].split()[0] for line in sent], [IGP, PROTOCOL_FEE])
 
     def test_claim_collects_both_chains(self):
         self.queries[f"{IGP}/claimable_fees"] = {"value": 6000000000}

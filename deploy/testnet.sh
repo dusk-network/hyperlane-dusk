@@ -1541,6 +1541,10 @@ cmd_deploy() {
         '.evm_chain = $n | .evm_domain = $d | .evm.mailbox = $m | .evm.merkle_tree_hook = $h
          | .evm.validator_announce = $va'
     deploy_dusk
+    # The fee contracts are this deployment's, called by its Mailbox, before
+    # configure_dusk_beneficiary changes who can claim their fees: restored
+    # state can name a detached one the same key owns.
+    check_dusk_deployment
     configure_dusk_beneficiary
     check_dusk_igp_pricing
     deploy_evm_ism
