@@ -64,6 +64,9 @@ ATTACKER = "0x" + "ee" * 20
 # Upgraded(address).
 INITIALIZED = "0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb3847402498"
 UPGRADED = "0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b"
+# QuoteSignerAdded(address) and QuoteSignerRemoved(address), from the IGP.
+QUOTE_SIGNER_ADDED = "0x1999e59a6c4f2d603b5236b4b6a9ab4caecb598d4a59fe663b6eae45ef79a3d6"
+QUOTE_SIGNER_REMOVED = "0xf1e7459dfbea75ed7b558903ed9cf48b6c71a30d598a87ca5335d87663a2f70a"
 
 # What deploy/testnet.env.example's defaults charge (docs/costs.md).
 DEFAULT_DUSK_IGP = {"gas_overhead": "110000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
@@ -89,6 +92,17 @@ def proxy_creation(evm, address, implementation, contract, creator=DEPLOYER, ini
         "transactionHash": tx, "status": "0x1", "from": creator, "to": None,
         "contractAddress": address, "blockNumber": "0x1", "logs": logs}
     return tx
+
+
+def quote_signer_history(evm, igp, signer, block):
+    """A quote signer the IGP's owner added and removed again, in two
+    transactions in `block`, as the IGP's events show it."""
+    for topic in (QUOTE_SIGNER_ADDED, QUOTE_SIGNER_REMOVED):
+        tx = "0x" + hashlib.sha256(f"{topic}:{igp}:{signer}:{block}".encode()).hexdigest()
+        evm.setdefault("receipts", {})[tx] = {
+            "transactionHash": tx, "status": "0x1", "from": DEPLOYER, "to": igp, "contractAddress": None,
+            "blockNumber": hex(block),
+            "logs": [{"address": igp, "topics": [topic, "0x" + "00" * 12 + signer[2:]], "data": "0x"}]}
 
 
 # Answers the dusk-tx subcommands the scripts use from FIXTURE_CHAIN, and
@@ -212,6 +226,9 @@ INITIALIZED = "0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb384740249
 UPGRADED = "0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b"
 OWNERSHIP_TRANSFERRED = "0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0"
 BENEFICIARY_SET = "0x04d55a8be181fb8d75b76f2d48aa0b2ee40f47e53d6e61763eeeec46feea8a24"
+# QuoteSignerAdded(address), QuoteSignerRemoved(address).
+QUOTE_SIGNER_ADDED = "0x1999e59a6c4f2d603b5236b4b6a9ab4caecb598d4a59fe663b6eae45ef79a3d6"
+QUOTE_SIGNER_REMOVED = "0xf1e7459dfbea75ed7b558903ed9cf48b6c71a30d598a87ca5335d87663a2f70a"
 IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
 # What `forge inspect` gives as ERC1967Proxy's creation code.
@@ -254,7 +271,8 @@ def split(args):
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg in ("--rpc-url", "--private-key", "--value", "--from", "--create", "--gas-limit"):
+        if arg in ("--rpc-url", "--private-key", "--value", "--from", "--create", "--gas-limit",
+                   "--from-block", "--to-block", "--address"):
             options[arg] = args[i + 1]
             i += 2
         elif arg == "--constructor-args":
@@ -416,6 +434,14 @@ def send(state, address, signature, args, sender):
             "type": "aggregation", "hook_type": 2, "hooks": hooks}
     elif name == "deploy" and c["type"] == "ism_factory":
         state["contracts"][derive("ism", address.lower(), args[0].lower(), args[1])] = multisig(args)
+    elif name == "addQuoteSigner":
+        only_owner(c, sender)
+        c["quote_signers"].append(args[0].lower())
+        logs.append(log(address, QUOTE_SIGNER_ADDED, word(args[0])))
+    elif name == "removeQuoteSigner":
+        only_owner(c, sender)
+        c["quote_signers"].remove(args[0].lower())
+        logs.append(log(address, QUOTE_SIGNER_REMOVED, word(args[0])))
     elif name == "setHook":
         only_owner(c, sender)
         c["hook"] = args[0].lower()
@@ -529,6 +555,18 @@ def main_cast(argv):
         print(json.dumps(found) if "--json" in flags else found[positional[2]])
     elif command == "call":
         print(call(state, positional[1], positional[2], positional[3:], options.get("--from", ZERO)))
+    elif command == "logs":
+        start, end = int(options["--from-block"]), int(options["--to-block"])
+        state.setdefault("log_queries", []).append([start, end])
+        save(state)
+        found = []
+        for tx, r in state.get("receipts", {}).items():
+            block = int(r["blockNumber"], 16)
+            for entry in r["logs"]:
+                if (start <= block <= end and entry["address"] == options["--address"].lower()
+                        and entry["topics"][0] == positional[1].lower()):
+                    found.append({**entry, "blockNumber": r["blockNumber"], "transactionHash": tx})
+        print(json.dumps(found))
     elif command == "send" and "--create" in options:
         tx = create_proxy(state, sender, options["--create"])
         save(state)
@@ -1139,6 +1177,78 @@ class TestnetTokenBinding(DeployedTestnet):
         # Order and case don't matter.
         self.evm["contracts"][self.ism] = {**saved, "validators": [VALIDATOR.upper().replace("0X", "0x")]}
         self.assert_ok(self.run_script("agent-configs"))
+
+
+class TestnetQuoteSignerHistory(DeployedTestnet):
+    """This deployment uses no signed quotes: an EVM IGP that ever had a quote
+    signer is refused, from its QuoteSignerAdded events since the block that
+    created it, whatever it quotes the senders the checks ask as."""
+
+    COMMANDS = ["preflight", "agent-configs", "evm-igp", "deploy"]
+
+    def assert_refused(self, expected):
+        for command in self.COMMANDS:
+            with self.subTest(command=command):
+                result = self.run_script(command)
+                self.assert_fails(result, expected)
+                self.assertEqual(self.traced("cast send") + self.traced("forge"), [])
+                self.assertFalse(self.relayer_config.exists())
+
+    def test_a_former_signers_quote_for_another_sender_is_refused(self):
+        # A signer, since removed, left a free standing quote for one sender,
+        # neither the token nor the zero address the IGP is asked as. Its
+        # signers are gone and both quote the oracle's price, so the checks
+        # passed, and that sender bought delivery to Dusk for nothing.
+        sender = "0x" + "a5" * 20
+        self.evm["contracts"][self.evm_igp]["quotes"] = {
+            f"{DUSK_DOMAIN}/{sender}": {"rate": 0, "price": 0, "expiry": 2**47}}
+        quote_signer_history(self.evm, self.evm_igp, ATTACKER, 50)
+        self.assert_refused(f"The EVM IGP {self.evm_igp} has had a quote signer: QuoteSignerAdded in")
+
+    def test_a_new_igp_passes_and_later_reads_start_where_the_last_ended(self):
+        self.assert_ok(self.run_script("agent-configs"))
+        # Read from the block that created the IGP to the head, and recorded
+        # up to EVM_REORG_PERIOD (2) below it.
+        self.assertEqual(self.evm["log_queries"], [[1, 100]])
+        self.assertEqual(self.state()["evm"]["igp_quote_signers_scanned"], {"igp": self.evm_igp, "to": 98})
+        self.evm["block"] = 130
+        self.assert_ok(self.run_script("preflight"))
+        self.assertEqual(self.evm["log_queries"][-1], [99, 130])
+        # A signer added since is found.
+        quote_signer_history(self.evm, self.evm_igp, ATTACKER, 129)
+        self.evm["block"] = 140
+        self.assert_refused("has had a quote signer: QuoteSignerAdded in")
+
+    def test_reads_span_at_most_evm_log_block_range_blocks(self):
+        self.assert_ok(self.run_script("agent-configs", EVM_LOG_BLOCK_RANGE=40))
+        self.assertEqual(self.evm["log_queries"], [[1, 40], [41, 80], [81, 100]])
+        self.assert_fails(self.run_script("agent-configs", EVM_LOG_BLOCK_RANGE=0),
+                          "EVM_LOG_BLOCK_RANGE must be a whole number of blocks")
+
+    def test_a_new_igp_replaces_one_that_had_a_signer(self):
+        # As docs/operations.md has it: take the IGP and the route's hook
+        # out of the state, and deploy.
+        quote_signer_history(self.evm, self.evm_igp, ATTACKER, 50)
+        self.assert_fails(self.run_script("agent-configs"), "has had a quote signer")
+        state = self.state()
+        for key in ("igp", "igp_creation_tx", "route_hook"):
+            del state["evm"][key]
+        self.write_state(state)
+        self.assert_ok(self.run_script("deploy"))
+        evm = self.state()["evm"]
+        self.assertNotEqual(evm["igp"], self.evm_igp)
+        self.assertEqual(self.evm["contracts"][evm["route_hook"]]["hooks"], [EVM_MERKLE, evm["igp"]])
+        self.assertEqual(self.evm["contracts"][self.token]["hook"], evm["route_hook"])
+        self.assert_ok(self.run_script("agent-configs"))
+        relayer = json.loads(self.relayer_config.read_text())
+        self.assertEqual(relayer["chains"]["sepolia"]["interchainGasPaymaster"], evm["igp"])
+
+    def test_a_scan_of_another_igp_is_not_used(self):
+        state = self.state()
+        state["evm"]["igp_quote_signers_scanned"] = {"igp": "0x" + "99" * 20, "to": 99}
+        self.write_state(state)
+        quote_signer_history(self.evm, self.evm_igp, ATTACKER, 60)
+        self.assert_refused("has had a quote signer")
 
 
 def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=110000,
@@ -2111,17 +2221,61 @@ class AnvilEvmDeploy(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("isn't Multicall for Dusk v0.1.0", result.stderr)
 
-    def test_a_quote_signer_is_refused(self):
-        igp = self.state["evm"]["igp"]
-        self.cast_ok("send", igp, "addQuoteSigner(address)", ANVIL_ATTACKER, "--private-key", ANVIL_KEY)
+    def test_a_former_quote_signer_is_refused(self):
+        # The IGP's owner adds a quote signer, which signs a free standing
+        # quote for one sender's messages to Dusk, and removes it again. The
+        # quote outlives the signer and comes before the oracle, for that
+        # sender only: quoteSigners() is empty, and asked as the token or the
+        # zero address the IGP quotes the oracle's price, which is all the
+        # checks looked at before. Its events still show the signer. Anvil
+        # puts the chain back afterwards.
+        igp, token = self.state["evm"]["igp"], self.state["evm"]["token"]
+        domain, gas = 1146442572, "2170000"
+        testnet = str(self.root / "deploy" / "testnet.sh")
+        snapshot = json.loads(self.cast_ok("rpc", "evm_snapshot"))
         try:
-            result = self.run_tool(str(self.root / "deploy" / "testnet.sh"), "preflight")
+            self.cast_ok("send", igp, "addQuoteSigner(address)", ANVIL_ATTACKER, "--private-key", ANVIL_KEY)
+            result = self.run_tool(testnet, "preflight")
             self.assertNotEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"has quote signers [{self.cast_ok('call', igp, 'quoteSigners()(address[])')[1:-1]}]",
                           result.stderr)
-        finally:
+            now = int(self.cast_ok("block", "latest", "--field", "timestamp"))
+            quote = {"context": "0x" + "00" * 20 + f"{domain:08x}" + ANVIL_ATTACKER[2:],
+                     "data": "0x" + "00" * 32, "issuedAt": now, "expiry": now + 10**6,
+                     "salt": "0x" + "00" * 32, "submitter": "0x" + "00" * 20}
+            typed = {"types": {"EIP712Domain": [{"name": "name", "type": "string"},
+                                                {"name": "version", "type": "string"},
+                                                {"name": "chainId", "type": "uint256"},
+                                                {"name": "verifyingContract", "type": "address"}],
+                               "SignedQuote": [{"name": "context", "type": "bytes"},
+                                               {"name": "data", "type": "bytes"},
+                                               {"name": "issuedAt", "type": "uint48"},
+                                               {"name": "expiry", "type": "uint48"},
+                                               {"name": "salt", "type": "bytes32"},
+                                               {"name": "submitter", "type": "address"}]},
+                     "primaryType": "SignedQuote",
+                     "domain": {"name": "OffchainQuoter", "version": "1", "chainId": 31338, "verifyingContract": igp},
+                     "message": quote}
+            signature = subprocess.run(["cast", "wallet", "sign", "--private-key", ANVIL_ATTACKER_KEY, "--data",
+                                        json.dumps(typed)], capture_output=True, text=True, check=True).stdout.strip()
+            self.cast_ok("send", igp, "submitQuote((bytes,bytes,uint48,uint48,bytes32,address),bytes)",
+                         "({context},{data},{issuedAt},{expiry},{salt},{submitter})".format(**quote), signature,
+                         "--private-key", ANVIL_KEY)
             self.cast_ok("send", igp, "removeQuoteSigner(address)", ANVIL_ATTACKER, "--private-key", ANVIL_KEY)
-        self.run_tool(str(self.root / "deploy" / "testnet.sh"), "preflight", check=True)
+
+            def quoted(sender):
+                return self.cast_ok("call", igp, "quoteGasPayment(uint32,uint256)(uint256)", str(domain), gas,
+                                    "--from", sender).split()[0]
+            self.assertEqual(self.cast_ok("call", igp, "quoteSigners()(address[])"), "[]")
+            self.assertEqual(quoted(ANVIL_ATTACKER), "0")
+            for sender in (token, "0x" + "00" * 20):
+                self.assertNotEqual(quoted(sender), "0")
+            result = self.run_tool(testnet, "preflight")
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"The EVM IGP {igp.lower()} has had a quote signer: QuoteSignerAdded in", result.stderr)
+        finally:
+            self.assertIs(json.loads(self.cast_ok("rpc", "evm_revert", snapshot)), True)
+        self.run_tool(testnet, "preflight", check=True)
 
 
 # Stands in for the relayer and validator binaries: writes the environment

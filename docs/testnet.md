@@ -214,9 +214,12 @@ transfer pays for. `fees` prints what they come to.
   show the EVM deployer creating the contract as a proxy of the recorded
   implementation, and the contract's `Initialized` event. Each proxy must
   still run that implementation and have no proxy admin (EIP-1967's admin
-  slot is zero). The IGP must have no quote signers, and quote a transfer
-  what its oracle's pricing comes to, asked as the token and as any other
-  sender: a signed offchain quote would come before the oracle;
+  slot is zero). The IGP must never have had a quote signer: none now, and
+  no `QuoteSignerAdded` among its events since the block that created it
+  (a new IGP has none). A signer's standing quotes outlive its removal and
+  come before the oracle for the senders they name, and this deployment
+  uses no signed quotes. It must also quote a transfer what its oracle's
+  pricing comes to, asked as the token and as any other sender;
 - the recorded Sepolia token is this deployment's: its `mailbox()` is
   `EVM_MAILBOX`, and it verifies messages from Dusk with the recorded ISM,
   a MessageIdMultisig ISM of exactly `DUSK_ORIGIN_VALIDATORS` and

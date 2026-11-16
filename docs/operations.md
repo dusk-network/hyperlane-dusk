@@ -164,6 +164,25 @@ or the ETH/DUSK price can rise by half before a warp transfer from Dusk
 costs more to deliver than it paid. Watch both, and the relayer's spending
 against what the IGPs collect.
 
+### An IGP that had a quote signer
+
+This deployment prices delivery to Dusk with its StorageGasOracle only. A
+quote signer the owner adds to the Sepolia IGP can store standing quotes
+for any sender, which come before the oracle and outlive the signer's
+removal until they expire, so `preflight`, `deploy`, `evm-igp` and
+`agent-configs` refuse an IGP that has ever had one. They read its
+`QuoteSignerAdded` events from the block that created it,
+`EVM_LOG_BLOCK_RANGE` blocks a request (1,999 by default; lower it if the
+RPC refuses the range), and record in the state how far they read, up to
+`EVM_REORG_PERIOD` blocks below the head, so the next read starts there.
+
+Such an IGP can't be cleaned up. Deploy a new one: remove `.evm.igp`,
+`.evm.igp_creation_tx` and `.evm.route_hook` from
+`deploy/out/<DEPLOY_NAME>/deployment.json` and run `deploy`, which creates
+the IGP, prices it through the recorded oracle and points the route's hook
+at it; then run `agent-configs` and restart the relayer. Anyone can still
+`claim()` what the old IGP holds for its beneficiary.
+
 ### Topping up a message
 
 The relayer only delivers a message once the gas it paid for covers what

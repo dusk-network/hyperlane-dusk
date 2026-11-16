@@ -88,6 +88,12 @@ UPGRADED_TOPIC=0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3
 INITIALIZED_TOPIC=0x7f26b83ff96e1f2b6a682f133852f6798a09c465da95921460cefb3847402498
 IMPLEMENTATION_SLOT=0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
 ADMIN_SLOT=0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103
+# QuoteSignerAdded(address), which the EVM IGP emits when its owner adds a
+# quote signer.
+QUOTE_SIGNER_ADDED_TOPIC=0x1999e59a6c4f2d603b5236b4b6a9ab4caecb598d4a59fe663b6eae45ef79a3d6
+# The most blocks one log query to EVM_RPC spans: the relayer's config
+# indexes in chunks of 1,999.
+EVM_LOG_BLOCK_RANGE="${EVM_LOG_BLOCK_RANGE:-1999}"
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
@@ -1080,15 +1086,19 @@ check_evm_igp_pricing() {
 # Signed offchain quotes come before the oracle: a quote signer the owner
 # adds can price delivery to Dusk at anything, for one sender or for all,
 # and a standing quote outlives the signer's removal until it expires. This
-# deployment uses none. The IGP resolves quotes by the caller, so ask it what
-# a transfer pays as the route, whose messages it prices, and as any other
-# sender, against what the pricing `current` (evm_igp_pricing) comes to.
+# deployment uses none, so the IGP must have no signer now, and never have
+# had one (check_evm_igp_quote_history): a quote for a sender nobody asks
+# about prices that sender's messages alone. The IGP resolves quotes by the
+# caller, so also ask it what a transfer pays as the route, whose messages
+# it prices, and as any other sender, against what the pricing `current`
+# (evm_igp_pricing) comes to.
 check_evm_igp_quotes() {
     local current="$1" igp signers gas expected sender quote
     igp="$(state_get '.evm.igp')"
     signers="$(evm_call "$igp" "quoteSigners()(address[])")" || fail "Can't read the EVM IGP $igp's quote signers"
     [ -z "$(tr -d '[] ' <<<"$signers")" ] \
-        || fail "The EVM IGP $igp has quote signers $signers: offchain quotes they sign override its StorageGasOracle's pricing, which the relayer's requirements follow. Remove them (removeQuoteSigner), and wait for their standing quotes to expire."
+        || fail "The EVM IGP $igp has quote signers $signers: offchain quotes they sign override its StorageGasOracle's pricing, which the relayer's requirements follow, and their standing quotes outlive them. This deployment uses no signed quotes: deploy a new IGP (docs/operations.md, An IGP that had a quote signer)."
+    check_evm_igp_quote_history
     gas="$(fee .evm_igp.gas_overhead)"
     expected="$(igp_cost "$gas" "$(jq -r .gas_price <<<"$current")" "$(jq -r .token_exchange_rate <<<"$current")")"
     for sender in "$(state_get '.evm.token')" "$ZERO_ADDRESS"; do
@@ -1098,6 +1108,47 @@ check_evm_igp_quotes() {
         [ "$quote" = "$expected" ] \
             || fail "The EVM IGP $igp quotes $quote wei for $gas Dusk gas to a message from $sender, not the $expected its oracle's pricing comes to: a signed offchain quote overrides the oracle (docs/security.md, HIGH-8)."
     done
+}
+# Refuse an IGP that ever had a quote signer: read its QuoteSignerAdded
+# events from the block that created it (a new IGP has none) to the head,
+# EVM_LOG_BLOCK_RANGE blocks a request. The blocks read without one, up to
+# EVM_REORG_PERIOD below the head, are recorded in $STATE
+# (.evm.igp_quote_signers_scanned), and the next read starts after them.
+check_evm_igp_quote_history() {
+    local igp tx created scanned from head to logs found settled
+    igp="$(lower "$(state_get '.evm.igp')")" tx="$(state_get '.evm.igp_creation_tx')"
+    [[ "$EVM_LOG_BLOCK_RANGE" =~ ^[1-9][0-9]*$ ]] \
+        || fail "EVM_LOG_BLOCK_RANGE must be a whole number of blocks, not '$EVM_LOG_BLOCK_RANGE'"
+    [[ "$EVM_REORG_PERIOD" =~ ^[0-9]+$ ]] || fail "EVM_REORG_PERIOD must be a whole number of blocks, not '$EVM_REORG_PERIOD'"
+    created="$(evm_block_number "$(cast receipt "$tx" blockNumber --rpc-url "$EVM_RPC")")" \
+        || fail "Can't read the block of $tx, which created the EVM IGP $igp"
+    scanned="$(jq -r --arg igp "$igp" '.evm.igp_quote_signers_scanned // {} | select(.igp == $igp) | .to // empty' "$STATE")"
+    from="$created"
+    if [[ "$scanned" =~ ^[0-9]+$ ]] && [ "$scanned" -ge "$created" ]; then from=$((scanned + 1)); else scanned=""; fi
+    head="$(cast block-number --rpc-url "$EVM_RPC")" && [[ "$head" =~ ^[0-9]+$ ]] \
+        || fail "Can't read the head of $EVM_CHAIN_NAME"
+    while [ "$from" -le "$head" ]; do
+        to=$((from + EVM_LOG_BLOCK_RANGE - 1))
+        [ "$to" -le "$head" ] || to="$head"
+        logs="$(cast logs --from-block "$from" --to-block "$to" --address "$igp" "$QUOTE_SIGNER_ADDED_TOPIC" \
+            --json --rpc-url "$EVM_RPC")" \
+            || fail "Can't read the EVM IGP $igp's events in blocks $from to $to; if the RPC limits the blocks a query spans, lower EVM_LOG_BLOCK_RANGE ($EVM_LOG_BLOCK_RANGE)"
+        found="$(jq -r '[.[] | "\(.transactionHash) (block \(.blockNumber))"] | join(", ")' <<<"$logs")" \
+            || fail "$EVM_RPC returned malformed logs for the EVM IGP $igp"
+        [ -z "$found" ] \
+            || fail "The EVM IGP $igp has had a quote signer: QuoteSignerAdded in $found. Standing quotes a signer stored outlive its removal and come before the oracle, for the senders they name, and this deployment uses no signed quotes. Nothing was sent: deploy a new IGP (docs/operations.md, An IGP that had a quote signer)."
+        from=$((to + 1))
+    done
+    settled=$((head - EVM_REORG_PERIOD))
+    if [ "$settled" -ge "$created" ] && { [ -z "$scanned" ] || [ "$settled" -gt "$scanned" ]; }; then
+        state_set --arg igp "$igp" --argjson to "$settled" '.evm.igp_quote_signers_scanned = {igp: $igp, to: $to}'
+    fi
+}
+# A block number as cast prints it, in decimal or hex, in decimal.
+evm_block_number() {
+    local n="$1"
+    [[ "$n" =~ ^0x[0-9a-fA-F]+$ ]] && n=$((16#${n#0x}))
+    [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n"
 }
 # What gas costs at a gas price and token exchange rate, as the IGPs compute
 # it. Bash's integers are too small.
