@@ -601,12 +601,10 @@ check_evm_chain() {
 # (its `mailbox`). dusk-tx deploy-hyperlane binds the IGP, the Mailbox's
 # default hook, to the Mailbox, and the ProtocolFee to the aggregation hook
 # that is the Mailbox's required hook and calls it. So a fee contract of
-# this deployment is reached from the Mailbox's hooks and takes its calls
-# from whatever calls it there: it is the Mailbox's required or default
-# hook and takes its calls from the Mailbox, or one of those hooks calls it,
-# takes its own from the Mailbox and is the one it takes its calls from. A
-# fee contract that only names the Mailbox, which never calls it, is
-# another deployment's, or none.
+# this deployment takes its calls from the Mailbox and is its required or
+# default hook, or takes them from one of those hooks, which takes its own
+# from the Mailbox and calls it. One that names the Mailbox, which never
+# calls it, is detached: another deployment's, or none.
 check_dusk_hook_binding() {
     local name="$1" contract="$2" mailbox="$3" bound method hook hook_bound hooks
     bound="$(dusk_value "the caller of the Dusk $name $contract" \
