@@ -12,14 +12,17 @@ It runs the local rehearsal of the testnet deployment
 three Dusk-origin validators (2 of 3) and one EVM-origin validator (1 of 1),
 with the configs `deploy/testnet.sh agent-configs` writes, and the native
 DUSK route. Each agent reaches Rusk and Anvil through its own port of a
-logging proxy.
+logging proxy. As on testnet, the agents batch their contract reads through
+Multicall for Dusk (`batchContractAddress`), which the setup deploys on the
+local chain at the ID it has on testnet, and the relayer sends up to 16
+deliveries to Dusk together (`maxBatchSize`).
 
 | File | What it does |
 |---|---|
 | `scenario.sh` | The whole run: fresh environment, deployment, agents, then the phases below. |
 | `agents.sh` | Deploys the rehearsal into `BENCH_DIR`, writes one config per agent, starts and stops the agents, the proxy and the sampler, and records phase markers. |
-| `proxy.py` | Reverse proxy, one port per agent and chain. Logs one JSON line per request: agent, call kind (contract query, GraphQL root field, JSON-RPC method), status, bytes, time. |
-| `dusk-tx-shim.sh` | The agents' `DUSK_TX_BIN`. Logs each `dusk-tx` run and its result, and tags the helper's requests so the proxy tells them from the agent's own. |
+| `proxy.py` | Reverse proxy, one port per agent and chain. Logs one JSON line per request: agent, call kind (contract query, GraphQL root field, JSON-RPC method, and the calls inside a multicall `aggregate`), status, bytes, time. |
+| `dusk-tx-shim.sh` | The agents' `DUSK_TX_BIN`. Logs each `dusk-tx` run and its result (a pipelined delivery returns once submitted, with its nonce), and tags the helper's requests so the proxy tells them from the agent's own. |
 | `sample.py` | CPU, RSS and I/O of each agent, the node and Anvil every 5 s; database, event cursor, checkpoint and log sizes every 30 s. |
 | `load.sh` | Warp transfers on the native route, as in docs/testnet.md: Dusk to EVM one after another, EVM to Dusk paced or as a burst. |
 | `report.py` | Turns a run directory into the tables in docs/costs.md. |
@@ -28,12 +31,14 @@ logging proxy.
 
 Needs what the demo needs (Rusk built with `archive`, the genesis state,
 Foundry, `jq`, Python 3), `demo/.env.bridge`, built contracts and `dusk-tx`
-(`make all dusk-tx`), and the agent binaries. Ports 8080, 8545, 9000,
-9090-9094, 18099-18109 and 18200-18209 must be free. The run takes about two
-hours with the defaults.
+(`make all dusk-tx`), the agent binaries, and Multicall for Dusk's v0.1.0
+Wasm (a dusk-multicall release asset, or its `make wasm`; SHA-256
+`65f77a27…`). Ports 8080, 8545, 9000, 9090-9094, 18099-18109 and
+18200-18209 must be free. The run takes about two hours with the defaults.
 
 ```bash
 export BENCH_DIR=/some/empty/scratch/dir
+export DUSK_MULTICALL_WASM=/path/to/dusk_multicall.wasm
 # Optional: agents from a fixed copy instead of hyperlane-monorepo/rust/main
 export AGENT_BIN_DIR=/path/with/relayer-and-validator AGENT_RUN_DIR=/dir/holding/config
 bash demo/bench/scenario.sh
@@ -42,7 +47,15 @@ python3 demo/bench/report.py "$BENCH_DIR" > report.md
 
 `AGENT_RUN_DIR` must contain Hyperlane's `config/` directory (copy
 `hyperlane-monorepo/rust/main/config`). Phase lengths and counts are
-environment variables at the top of `scenario.sh`.
+environment variables at the top of `scenario.sh`. `PHASES` picks the load
+phases to run, `BATCH_READS=0` leaves `batchContractAddress` out of the
+configs (every read is one query) and `DUSK_RELAYER_MAX_BATCH_SIZE` sets the
+relayer's `maxBatchSize`. The comparison in docs/costs.md without the
+multicall ran:
+
+```bash
+BATCH_READS=0 PHASES="d2e d2e-backlog" IDLE2_SECS=600 bash demo/bench/scenario.sh
+```
 
 Each agent starts with only `PATH`, `HOME`, its config, its keys and the
 shim's variables. Hyperlane applies every `HYP_*` variable over the config
@@ -58,19 +71,25 @@ The phases, in order:
 5. `d2e-backlog`: the relayer is stopped while more are sent, then restarted.
 6. `e2d`: EVM to Dusk transfers, paced slower than the relayer delivers them.
 7. `e2d-burst`: a burst of EVM to Dusk transfers, with a relayer restart
-   while it delivers them.
+   `RESTART_AFTER` seconds (2) after it has sent the first of their
+   deliveries, while it sends the rest.
 8. `outage`: the agents' Rusk ports refuse connections while EVM to Dusk
    transfers are sent, then reopen.
 9. `idle2`: no traffic, after the load.
 
-The proxy holds the relayer's contract queries to `PACE_RELAYER` a second
-(default 100; `0` turns it off). Without it the relayer restart in
-`d2e-backlog` runs into Rusk's default HTTP rate limit and keeps retrying,
-and the phase waits until `DELIVERY_TIMEOUT` (docs/costs.md, "Recovery").
+The agents pace their own contract queries (`contractQueriesPerSecond`,
+100 a second by default), so the proxy passes them on as they come. Agents
+from before that need `PACE_RELAYER=100`, which holds the relayer's
+contract queries to 100 a second at the proxy: without it their restart in
+`d2e-backlog` runs into Rusk's default HTTP rate limit and keeps retrying
+(docs/costs.md, "Recovery").
 
 The load and the relayer share the local development account on Dusk, so
 Dusk to EVM transfers only run while the relayer has nothing to deliver to
-Dusk. A Rusk restart is not part of the run: `demo/start-env.sh` starts the
+Dusk. Transfers pay what the routes quote, as the relayer requires
+(docs/costs.md, "Fee coverage"). After the phases, `scenario.sh` reads back
+each transaction the agents sent to Dusk, and the Mailbox's transactions by
+block, since a pipelined delivery's `dusk-tx` returns before its block. A Rusk restart is not part of the run: `demo/start-env.sh` starts the
 node from the genesis archive each time, so a restarted node is a new chain.
 The outage phase shows the agents' side of a node that goes away and comes
 back.

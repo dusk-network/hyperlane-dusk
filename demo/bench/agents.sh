@@ -24,6 +24,14 @@
 # AGENT_BIN_DIR and AGENT_RUN_DIR choose the agent binaries and the directory
 # they run in (it must hold Hyperlane's config/ directory); they default to
 # hyperlane-monorepo/rust/main. DUSK_TX is the dusk-tx binary.
+#
+# As on testnet, the agents batch their contract reads through Multicall for
+# Dusk and the relayer sends up to 16 deliveries to Dusk together. setup
+# deploys the multicall from DUSK_MULTICALL_WASM, its v0.1.0 Wasm (a
+# dusk-multicall release asset, or its `make wasm`), at the ID it has on
+# testnet, as deploy/local-evm-core.sh does. BATCH_READS=0 leaves
+# batchContractAddress out of the configs, and DUSK_RELAYER_MAX_BATCH_SIZE
+# sets the relayer's maxBatchSize (16).
 
 set -euo pipefail
 umask 077
@@ -67,9 +75,23 @@ DUSK_ORIGIN_VALIDATOR_KEYS=(
 )
 AGENTS=(validator-evm validator-dusk-1 validator-dusk-2 validator-dusk-3 relayer)
 
+# Multicall for Dusk v0.1.0, as deploy/local-evm-core.sh deploys it: its
+# Wasm's SHA-256, its published owner and the ID they give with deploy
+# nonce 0 on any chain.
+MULTICALL_SHA256=65f77a27c5bf6c7bf78797071dadca102ca3a67e5112c42af0242660e03693d9
+MULTICALL_OWNER=r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW
+MULTICALL_ID=93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4
+MULTICALL_RECORD="$BENCH_DIR/deploy/multicall.json"
+BATCH_READS="${BATCH_READS:-1}"
+DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-16}"
+
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
 fail() { echo "[FAIL] $*" >&2; exit 1; }
+
+[[ "$BATCH_READS" =~ ^[01]$ ]] || fail "BATCH_READS must be 1 (batch through Multicall for Dusk) or 0, not '$BATCH_READS'"
+[[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
+    || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
 
 state() { jq -r "$1" "$BENCH_DIR/deploy/deployment.json"; }
 dusk_query() { "$DUSK_TX" query --rues-url "http://127.0.0.1:${DUSK_PORT[harness]}/" "$@"; }
@@ -95,6 +117,25 @@ cmd_setup() {
         | od -An -tu1 | tr -d ' \n')"
     [[ "$chain_id" =~ ^[0-9]+$ ]] || fail "Rusk is not running at $RUSK_URL"
     evm_chain_id="$(cast chain-id --rpc-url "$ANVIL_URL")"
+
+    # Multicall for Dusk, which the local genesis lacks, at the ID it has on
+    # testnet, as deploy/local-evm-core.sh deploys it. dusk-tx checks that the
+    # Wasm, nonce and owner give that ID before it sends anything.
+    local dusk_multicall=""
+    mkdir -p "$BENCH_DIR/deploy"
+    if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
+        [ "$(sha256sum "$DUSK_MULTICALL_WASM" 2>/dev/null | awk '{print $1}')" = "$MULTICALL_SHA256" ] \
+            || fail "DUSK_MULTICALL_WASM ($DUSK_MULTICALL_WASM) isn't Multicall for Dusk v0.1.0, whose Wasm has SHA-256 $MULTICALL_SHA256"
+        info "Deploying Multicall for Dusk..."
+        DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-wasm --rues-url "$RUSK_URL/" \
+            --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" --owner "$MULTICALL_OWNER" --deploy-nonce 0 \
+            --expected-id "$MULTICALL_ID" --expected-chain-id "$chain_id" > "$MULTICALL_RECORD" \
+            || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' "$MULTICALL_RECORD" 2>/dev/null)"
+        dusk_multicall="$MULTICALL_ID"
+        ok "Multicall for Dusk at $MULTICALL_ID"
+    elif [ "$BATCH_READS" = 1 ]; then
+        fail "Set DUSK_MULTICALL_WASM to Multicall for Dusk's v0.1.0 Wasm, which the agents batch their reads through, or BATCH_READS=0"
+    fi
 
     # Hyperlane core on Anvil, as deploy/local-evm-core.sh deploys it, without
     # touching deploy/local.env or deploy/out/.
@@ -149,6 +190,8 @@ DUSK_ORIGIN_THRESHOLD=2
 SOLIDITY_DIR=$SOLIDITY_DIR
 AGENT_STATE_DIR=$BENCH_DIR/state
 DUSK_SIGNER_KEY_FILE=$BENCH_DIR/secrets/dusk-signer.key
+DUSK_MULTICALL=$dusk_multicall
+DUSK_RELAYER_MAX_BATCH_SIZE=$DUSK_RELAYER_MAX_BATCH_SIZE
 EOF
     info "Deploying with deploy/testnet.sh (a few minutes)..."
     TESTNET_ENV="$ENV_FILE" bash "$DUSK_DIR/deploy/testnet.sh" deploy
@@ -164,8 +207,9 @@ EOF
         --keys "$CONSENSUS_KEYS" --out "$BENCH_DIR/secrets/dusk-signer.key" >/dev/null
 
     # Names for the proxy log.
-    jq '{
-        "0100000000000000000000000000000000000000000000000000000000000000": "transfer"
+    jq --arg multicall "$MULTICALL_ID" '{
+        "0100000000000000000000000000000000000000000000000000000000000000": "transfer",
+        ($multicall): "multicall"
       } + (.dusk | with_entries(select(.value | type == "string" and length == 64)
             | {key: .value, value: (if .key == "ism_multisig" then "ism" else .key end)}))
       + (.evm | with_entries(select(.value | type == "string" and startswith("0x"))
@@ -179,21 +223,36 @@ EOF
 
 # Derive one config per agent from the testnet.sh templates, as
 # deploy/local-agents.sh does, with each agent's RPC URLs on its proxy ports.
+# Every Dusk chain batches its reads through the multicall setup deployed
+# (batchContractAddress), unless BATCH_READS=0, and the relayer sends up to
+# DUSK_RELAYER_MAX_BATCH_SIZE deliveries together (maxBatchSize), as the
+# configs agent-configs writes for testnet do. `configs` alone rewrites them
+# for the agents' next start.
 cmd_configs() {
-    local out="$BENCH_DIR/deploy" i name
+    local out="$BENCH_DIR/deploy" i name multicall=""
+    if [ "$BATCH_READS" = 1 ]; then
+        [ "$(jq -r '.contract_id // empty' "$MULTICALL_RECORD" 2>/dev/null)" = "$MULTICALL_ID" ] \
+            || fail "No Multicall for Dusk deployed in $BENCH_DIR (set DUSK_MULTICALL_WASM for setup), or BATCH_READS=0"
+        multicall="0x$MULTICALL_ID"
+    fi
+    # shellcheck disable=SC2016
+    local batch_reads='if $multicall == "" then del(.chains.dusk.batchContractAddress)
+        else .chains.dusk.batchContractAddress = $multicall end'
     mkdir -p "$AGENTS_DIR" "$LOG_DIR" "$BENCH_DIR/checkpoints" "$BENCH_DIR/state"
     jq --arg dusk "http://127.0.0.1:${DUSK_PORT[relayer]}/" --arg evm "http://127.0.0.1:${EVM_PORT[relayer]}" \
+        --arg multicall "$multicall" --argjson batch "$DUSK_RELAYER_MAX_BATCH_SIZE" \
         '.allowLocalCheckpointSyncers = true
-         | .chains.dusk.rpcUrls = [{http: $dusk}] | .chains.anvil.rpcUrls = [{http: $evm}]' \
+         | .chains.dusk.rpcUrls = [{http: $dusk}] | .chains.anvil.rpcUrls = [{http: $evm}]
+         | .chains.dusk.maxBatchSize = $batch | '"$batch_reads" \
         "$out/relayer.json" > "$AGENTS_DIR/relayer.json"
     for i in 1 2 3; do
         name="validator-dusk-$i"
         jq --arg db "$BENCH_DIR/state/$name-db" --arg cursors "$BENCH_DIR/state/$name-events" \
             --arg cp "$BENCH_DIR/checkpoints/$name" --argjson port "${METRICS_PORT[$name]}" \
-            --arg dusk "http://127.0.0.1:${DUSK_PORT[$name]}/" \
+            --arg dusk "http://127.0.0.1:${DUSK_PORT[$name]}/" --arg multicall "$multicall" \
             '.db = $db | .chains.dusk.eventCursorDir = $cursors | .metricsPort = $port
              | .checkpointSyncer = {type: "localStorage", path: $cp}
-             | .chains.dusk.rpcUrls = [{http: $dusk}]' \
+             | .chains.dusk.rpcUrls = [{http: $dusk}] | '"$batch_reads" \
             "$out/validator-dusk.json" > "$AGENTS_DIR/$name.json"
     done
     jq --arg db "$BENCH_DIR/state/validator-evm-db" --arg cp "$BENCH_DIR/checkpoints/validator-evm" \
@@ -202,16 +261,18 @@ cmd_configs() {
           checkpointSyncer: {type: "localStorage", path: $cp},
           chains: {anvil: (.chains.anvil | .rpcUrls = [{http: $evm}])}}' \
         "$out/relayer.json" > "$AGENTS_DIR/validator-evm.json"
-    ok "Agent configs in $AGENTS_DIR"
+    ok "Agent configs in $AGENTS_DIR: reads batched through ${multicall:-nothing (single queries)}, relayer maxBatchSize $DUSK_RELAYER_MAX_BATCH_SIZE"
 }
 
 # ── proxy and sampler ────────────────────────────────────────────────────────
 
-# PACE_RELAYER holds the relayer's contract queries to that many a second
-# (0: no limit). Rusk's default HTTP policy allows 180 a second, burst 360,
-# for all clients together, and a relayer catching up after a restart sends
-# far more and keeps retrying (docs/costs.md, "Recovery").
-PACE_RELAYER="${PACE_RELAYER:-100}"
+# PACE_RELAYER holds the relayer's contract queries to that many a second at
+# the proxy (0, the default: no limit). Rusk's default HTTP policy allows 180
+# a second, burst 360, for all clients together. The agents pace their own
+# (contractQueriesPerSecond, 100 by default); older ones, without that, sent
+# far more while catching up after a restart and kept retrying, and needed
+# 100 here (docs/costs.md, "Recovery").
+PACE_RELAYER="${PACE_RELAYER:-0}"
 
 cmd_proxy_start() {
     local args=() name

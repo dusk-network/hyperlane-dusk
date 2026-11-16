@@ -3,11 +3,15 @@
 
 Reads the run directory and prints Markdown tables:
 
-- requests and bytes per minute per agent, chain and phase, and per call kind;
+- requests and bytes per minute per agent, chain and phase, and per call kind,
+  with the reads inside Multicall for Dusk aggregates, and the requests Rusk
+  refused;
 - per message: what each Dusk -> EVM and EVM -> Dusk message added over the
   idle rate, per agent and kind, and the dusk-tx helpers the agents ran;
 - latency per stage, from the Rusk log's block times, checkpoint files,
-  the proxy log and the dusk-tx shim log;
+  the proxy log, the dusk-tx shim log and the Mailbox's transactions, and
+  how the relayer's deliveries to Dusk shared blocks;
+- the agents' transactions and the gas they spent;
 - CPU, memory, database and log growth per agent;
 - what happened around the relayer restarts and the endpoint outage.
 
@@ -374,7 +378,28 @@ def dusk_to_evm(run, requests, load, blocks, dusk_domain, evm_domain, heights):
     return msgs
 
 
-def evm_to_dusk(run, requests, load, helper_calls, blocks, dusk_domain, evm_domain):
+def chain_outcome(call, dusk_txs):
+    """(height, gas, error) of the transaction a dusk-tx run sent: from the
+    chain (scenario.sh reads every one back), or from what dusk-tx printed. A
+    pipelined delivery (--no-wait) prints only that it was submitted. None
+    for a run that sent nothing."""
+    res = call.get("result") or {}
+    if call.get("rc") != 0 or not res.get("tx"):
+        return None
+    tx = dusk_txs.get(res["tx"])
+    if tx is not None and not tx.get("missing"):
+        return tx.get("blockHeight"), tx.get("gasSpent"), tx.get("err")
+    if res.get("height") is not None:
+        return res["height"], res.get("gas"), None
+    return None, None, "in no block" if tx is not None else None
+
+
+def evm_to_dusk(run, requests, load, helper_calls, blocks, dusk_domain, evm_domain, dusk_txs, mailbox_txs):
+    """Per-message stage times for EVM -> Dusk messages, keyed by nonce. A
+    delivery is the Mailbox `process` transaction that executed it, from the
+    chain; the relayer's dusk-tx run that sent it gives when it was
+    submitted. Other transactions for the same message failed in their block
+    (a second copy, say) or never reached one."""
     msgs = {}
     for r in load:
         if not r.get("dir", "").startswith("evm-to-dusk") or r.get("rc") != 0 or not r.get("dispatch"):
@@ -392,7 +417,8 @@ def evm_to_dusk(run, requests, load, helper_calls, blocks, dusk_domain, evm_doma
     for r in requests:
         if r.get("agent") != "relayer" or r.get("up") != "rusk" or "dur" not in r:
             continue
-        if r.get("kind") == "q:mailbox.process" and r.get("src") == "agent":
+        simulated = r.get("kind") == "q:mailbox.process" or "mailbox.process" in r.get("det", "")
+        if simulated and r.get("src") == "agent":
             for tag in r.get("msg", []):
                 origin, nonce = map(int, tag.split(":"))
                 if origin == evm_domain and nonce in msgs:
@@ -402,10 +428,27 @@ def evm_to_dusk(run, requests, load, helper_calls, blocks, dusk_domain, evm_doma
             nonce = by_id.get(r["rqhex"][-64:])
             if nonce is not None and r.get("rshex") == "01":
                 msgs[nonce].setdefault("delivered_query_true", r["ts"] + r["dur"] / 1000)
+
+    def included(m, height, gas, tx):
+        b = blocks.get(height, {})
+        m.update(height=height, gas=gas, tx=tx, included=b.get("accepted"), dest_final=b.get("finalized"))
+
+    for t in mailbox_txs:
+        if t.get("fn") != "process" or not t.get("data"):
+            continue
+        nonce, _ = find_message(bytes.fromhex(t["data"]), evm_domain, dusk_domain)
+        if nonce is None or nonce not in msgs:
+            continue
+        m = msgs[nonce]
+        if t.get("err") is None and "height" not in m:
+            included(m, t["height"], t.get("gas"), t["id"])
+        else:
+            m["reverted_txs"] = m.get("reverted_txs", 0) + 1
+            m["reverted_gas"] = m.get("reverted_gas", 0) + (t.get("gas") or 0)
     propagates = sorted(r["ts"] for r in requests
                         if r.get("agent") == "relayer" and r.get("src") == "dusk-tx"
                         and r.get("kind") == "tx:propagate")
-    for c in helper_calls:
+    for c in sorted(helper_calls, key=lambda c: c["ts"]):
         if c.get("agent") != "relayer" or c.get("fn") != "process" or not c.get("args"):
             continue
         nonce, _ = find_message(bytes.fromhex(c["args"]), evm_domain, dusk_domain)
@@ -413,20 +456,23 @@ def evm_to_dusk(run, requests, load, helper_calls, blocks, dusk_domain, evm_doma
             continue
         m = msgs[nonce]
         m["helper_runs"] = m.get("helper_runs", 0) + 1
-        res = c.get("result") or {}
-        if c.get("rc") == 0 and res.get("height") is not None:
+        m.setdefault("first_submit_attempt", c["ts"])
+        tx = (c.get("result") or {}).get("tx")
+        if not mailbox_txs and "height" not in m:
+            # A run from before scenario.sh read the Mailbox's transactions.
+            outcome = chain_outcome(c, dusk_txs)
+            if outcome is not None and outcome[0] is not None and outcome[2] is None:
+                included(m, outcome[0], outcome[1], tx)
+        if tx is not None and tx == m.get("tx"):
             m["submitted"] = c["ts"]
             m["helper_done"] = c["end"]
+            m["pipelined"] = bool(c.get("nowait"))
             prop = [t for t in propagates if c["ts"] <= t <= c["end"]]
             m["propagated"] = prop[0] if prop else None
-            b = blocks.get(res["height"], {})
-            m["included"] = b.get("accepted")
-            m["dest_final"] = b.get("finalized")
-            m["gas"] = res.get("gas")
-            m["height"] = res["height"]
-        else:
+        elif c.get("rc") != 0 or tx is None:
             m["failed_helper_runs"] = m.get("failed_helper_runs", 0) + 1
-            m.setdefault("first_submit_attempt", c["ts"])
+        else:
+            m["other_txs"] = m.get("other_txs", 0) + 1
     return msgs
 
 
@@ -551,38 +597,62 @@ def report_node_load(out, requests, window, title, top=15):
                       "share of node time", "mean ms", "agents"], rows) + "\n")
 
 
-def report_transactions(out, helper_calls, receipts):
+def report_transactions(out, helper_calls, receipts, dusk_txs, mailbox_txs):
     out.append("## Transactions the agents sent\n")
-    rows = []
-    by = collections.defaultdict(lambda: {"runs": 0, "ok": 0, "fail": 0, "gas": []})
+    by = collections.defaultdict(lambda: {"runs": 0, "sent": 0, "ok": 0, "reverted": 0, "lost": 0,
+                                          "fail": 0, "pipelined": 0, "gas": [], "lost_gas": 0})
     for c in helper_calls:
-        key = (c.get("agent"), c.get("fn"))
-        b = by[key]
+        b = by[(c.get("agent"), c.get("fn"))]
         b["runs"] += 1
-        res = c.get("result") or {}
-        if c.get("rc") == 0 and res.get("gas") is not None:
-            b["ok"] += 1
-            b["gas"].append(res["gas"])
-        else:
+        outcome = chain_outcome(c, dusk_txs)
+        if outcome is None:
             b["fail"] += 1
-    for (agent, fn), b in sorted(by.items()):
-        rows.append([agent, fn, b["runs"], b["ok"], b["fail"], fmt(sum(b["gas"]), 0),
-                     fmt(statistics.median(b["gas"]), 0) if b["gas"] else "-"])
-    out.append("Dusk transactions, through the dusk-tx helper:\n")
-    out.append(table(["Agent", "Function", "Helper runs", "Included", "Failed runs", "Total gas",
-                      "Median gas"], rows) + "\n")
-    fails = [c for c in helper_calls if c.get("rc") != 0]
+            continue
+        b["sent"] += 1
+        b["pipelined"] += bool(c.get("nowait"))
+        height, gas, err = outcome
+        if height is None:
+            b["lost"] += 1
+        elif err is None:
+            b["ok"] += 1
+            b["gas"].append(gas or 0)
+        else:
+            b["reverted"] += 1
+            b["lost_gas"] += gas or 0
+    rows = []
+    for (agent, fn), b in sorted(by.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        if not fn:
+            continue
+        rows.append([agent, fn, b["runs"], b["sent"], b["pipelined"], b["ok"], b["reverted"], b["lost"], b["fail"],
+                     fmt(sum(b["gas"]), 0), fmt(statistics.median(b["gas"]), 0) if b["gas"] else "-",
+                     fmt(b["lost_gas"], 0)])
+    out.append("Dusk transactions, through the dusk-tx helper. Sent: the helper submitted it; "
+               "pipelined: with --no-wait; executed, failed in their block, and in no block: from the chain; "
+               "gas spent by the executed ones and by the failed ones.\n")
+    out.append(table(["Agent", "Function", "Helper runs", "Sent", "Pipelined", "Executed", "Failed in block",
+                      "In no block", "Helper failed", "Gas (executed)", "Median gas", "Gas (failed)"], rows) + "\n")
+    fails = [c for c in helper_calls if c.get("rc") != 0 and c.get("fn")]
     for c in fails[:12]:
         res = c.get("result") or {}
-        out.append(f"- failed run: {c.get('agent')} {c.get('fn')} at {c['ts']:.1f}: "
+        out.append(f"- helper failed: {c.get('agent')} {c.get('fn')} at {c['ts']:.1f}: "
                    f"{(res.get('error') or '')[:160]}")
     if fails:
         out.append("")
+    process = [t for t in mailbox_txs if t.get("fn") == "process"]
+    if process:
+        failed = [t for t in process if t.get("err")]
+        out.append(f"Dusk Mailbox `process` transactions in blocks: {len(process)}, {len(failed)} failed there "
+                   f"({fmt(sum(t.get('gas') or 0 for t in failed), 0)} gas); executed ones spent "
+                   f"{fmt(sum(t.get('gas') or 0 for t in process if not t.get('err')), 0)} gas.\n")
+        for t in failed[:8]:
+            out.append(f"- failed in block {t.get('height')}: {str(t.get('err'))[:160]}")
+        if failed:
+            out.append("")
     gas = [int(r["gas"], 16) for r in receipts if r.get("gas")]
     ok = sum(1 for r in receipts if r.get("status") in ("0x1", 1, "1"))
     if gas:
-        out.append(f"Relayer deliveries on Anvil: {len(gas)} transactions, {ok} succeeded, gas median "
-                   f"{fmt(statistics.median(gas), 0)}, max {fmt(max(gas), 0)}\n")
+        out.append(f"Relayer deliveries on Anvil: {len(gas)} transactions, {ok} succeeded, gas total "
+                   f"{fmt(sum(gas), 0)}, median {fmt(statistics.median(gas), 0)}, max {fmt(max(gas), 0)}\n")
 
 
 def report_logs(out, resources, phases, order):
@@ -617,7 +687,7 @@ def burst_profile(requests, agent, up, start, seconds, step=10):
     return counts
 
 
-def report_recovery(out, requests, phases, events, helper_calls, d2e, e2d, idle):
+def report_recovery(out, requests, phases, events, helper_calls, d2e, e2d, idle, dusk_txs):
     out.append("## Recovery\n")
     idle_rate = {}
     for agent in AGENTS:
@@ -626,7 +696,7 @@ def report_recovery(out, requests, phases, events, helper_calls, d2e, e2d, idle)
                     and "dur" in r and in_window(r["ts"], idle))
             idle_rate[(agent, up)] = n / (minutes(idle) * 6)  # per 10 s
     starts = [e for e in events if e.get("event") == "start" and e.get("agent") == "relayer"]
-    for phase, label in [("relayer-restart-1", "Relayer restart with 40 Dusk -> EVM messages waiting"),
+    for phase, label in [("relayer-restart-1", "Relayer restart with Dusk -> EVM messages waiting"),
                          ("relayer-restart-2", "Relayer restart while delivering a burst to Dusk")]:
         w = phases.get(phase)
         if not w or not w[1]:
@@ -644,18 +714,33 @@ def report_recovery(out, requests, phases, events, helper_calls, d2e, e2d, idle)
         backlog = [m for m in d2e.values() if in_window(m["sent"], phases.get("d2e-backlog", (None, None)))]
         done = [m["included"] for m in backlog if m.get("included")]
         if done:
+            last = max(done)
+            catch_up = [r for r in requests if r.get("agent") == "relayer" and "dur" in r and start <= r["ts"] <= last]
+            rusk = [r for r in catch_up if r.get("up") == "rusk"]
+            refused = [r for r in requests if r.get("st") == 429 and "dur" in r and start <= r["ts"] <= last]
             out.append(f"Backlog of {len(backlog)} Dusk -> EVM messages: first delivered "
-                       f"{min(done) - start:.1f} s and the last {max(done) - start:.1f} s after the relayer "
-                       f"process started.\n")
+                       f"{min(done) - start:.1f} s and the last {last - start:.1f} s after the relayer "
+                       f"process started. Until the last, the relayer sent {len(rusk)} requests to Rusk "
+                       f"({sum(1 for r in rusk if r['kind'].startswith('q:'))} contract queries, of them "
+                       f"{sum(1 for r in rusk if r['kind'] == 'q:multicall.aggregate')} aggregates carrying "
+                       f"{sum(len(r['det'].split(',')) for r in rusk if r['kind'] == 'q:multicall.aggregate' and r.get('det') not in (None, '', '?'))} "
+                       f"reads; {sum(r.get('rq', 0) + r.get('rs', 0) for r in rusk) / 1024:.0f} KiB) and "
+                       f"{len(catch_up) - len(rusk)} to Anvil; Rusk refused {len(refused)} requests (429), "
+                       f"{sum(1 for r in refused if r['agent'] == 'relayer')} of them the relayer's.\n")
     if phases.get("relayer-restart-2", (None, None))[1]:
         w = phases["relayer-restart-2"]
         start = next((e["ts"] for e in starts if e["ts"] >= w[0]), w[0])
-        around = [c for c in helper_calls if c.get("agent") == "relayer" and w[0] - 60 <= c["ts"] <= w[1] + 300]
-        out.append("Relayer dusk-tx runs around the restart (start, end, exit, block):\n")
-        for c in around[:12]:
+        around = sorted((c for c in helper_calls if c.get("agent") == "relayer" and c.get("fn") == "process"
+                         and w[0] - 60 <= c["ts"] <= w[1] + 300), key=lambda c: c["ts"])
+        out.append("Relayer deliveries sent around the restart (start, end, exit, nonce, block it executed "
+                   "in or how it failed):\n")
+        for c in around[:40]:
             res = c.get("result") or {}
+            outcome = chain_outcome(c, dusk_txs)
+            where = (f"block {outcome[0]}" + (f", failed: {str(outcome[2])[:80]}" if outcome[2] else "")
+                     if outcome and outcome[0] is not None else (outcome[2] if outcome else "not sent"))
             out.append(f"- {c['ts'] - start:+.1f} s .. {c['end'] - start:+.1f} s, exit {c['rc']}, "
-                       f"block {res.get('height')}, {(res.get('error') or '')[:120]}")
+                       f"nonce {res.get('nonce')}, {where} {(res.get('error') or '')[:100]}")
         out.append("")
     w = phases.get("outage")
     r = phases.get("outage-restored")
@@ -776,6 +861,119 @@ def report_per_message_compact(out, requests, sets):
         out.append(table(["Agent", "Kind", "req/msg", "KiB/msg", "mean ms"], rows) + "\n")
 
 
+def report_config(out, run):
+    """What the agents ran with: batched reads and the relayer's batch size."""
+    rows = []
+    for name in ["relayer"] + DUSK_VALIDATORS:
+        try:
+            with open(os.path.join(run, "agents", f"{name}.json")) as f:
+                dusk = json.load(f).get("chains", {}).get("dusk", {})
+        except (OSError, ValueError):
+            continue
+        rows.append([name, dusk.get("batchContractAddress") or "none (single queries)",
+                     dusk.get("maxBatchSize", 1), dusk.get("contractQueriesPerSecond", "default")])
+    if rows:
+        out.append(table(["Agent", "batchContractAddress", "maxBatchSize", "contractQueriesPerSecond"],
+                         rows) + "\n")
+
+
+def report_refusals(out, requests, phases, order):
+    """Requests Rusk refused for its rate limit (429), and other failures,
+    per agent and phase."""
+    out.append("## Rusk refusals\n")
+    rows = []
+    for agent in AGENTS + ["loadgen", "harness"]:
+        row, seen = [agent], False
+        for phase in order:
+            w = phases.get(phase)
+            rs = [r for r in requests if r.get("agent") == agent and r.get("up") == "rusk" and "dur" in r
+                  and w and w[1] and in_window(r["ts"], w)]
+            n429 = sum(1 for r in rs if r.get("st") == 429)
+            other = sum(1 for r in rs if r.get("st", 200) >= 400 and r.get("st") != 429)
+            seen = seen or n429 or other
+            row.append(f"{n429} / {other}" if n429 or other else "0")
+        if seen:
+            rows.append(row)
+    total = sum(1 for r in requests if r.get("up") == "rusk" and r.get("st") == 429)
+    out.append(f"429s / other failed requests (5xx, and 502 from the proxy while a port is down). "
+               f"429s over the whole run: {total}.\n")
+    out.append((table(["Agent"] + order, rows) if rows else "None.") + "\n")
+
+
+def report_aggregates(out, requests, window, title):
+    """What the agents' Multicall for Dusk aggregates carried: aggregates and
+    reads a minute, and the reads by kind (per Dusk validator: the mean of
+    three)."""
+    mins = minutes(window)
+    groups = collections.defaultdict(lambda: {"n": 0, "calls": 0, "kinds": collections.Counter()})
+    for r in requests:
+        if r.get("kind") != "q:multicall.aggregate" or "dur" not in r or r["agent"] not in AGENTS:
+            continue
+        if not in_window(r["ts"], window):
+            continue
+        g = groups["validator-dusk" if r["agent"] in DUSK_VALIDATORS else r["agent"]]
+        g["n"] += 1
+        calls = [c for c in (r.get("det") or "").split(",") if c]
+        g["calls"] += len(calls)
+        g["kinds"].update(calls)
+    if not groups:
+        return
+    out.append(f"### {title}: what the aggregates carried\n")
+    for name, g in sorted(groups.items()):
+        div = 3 if name == "validator-dusk" else 1
+        label = "each Dusk validator" if name == "validator-dusk" else name
+        out.append(f"**{label}**: {g['n'] / div / mins:.2f} aggregates a minute, {g['calls'] / div / mins:.2f} "
+                   f"reads a minute, {g['calls'] / g['n']:.1f} reads per aggregate\n")
+        rows = [[f"`{k}`", f"{n / div / mins:.2f}"] for k, n in g["kinds"].most_common(12)]
+        out.append(table(["Read", "per minute"], rows) + "\n")
+
+
+def report_deliveries_per_block(out, e2d, phases):
+    """How the relayer's deliveries to Dusk shared blocks."""
+    out.append("## Deliveries to Dusk per block\n")
+    for phase, label in [("e2d", "paced"), ("e2d-burst", "burst"), ("outage", "outage")]:
+        w = phases.get(phase)
+        if not w or not w[1]:
+            continue
+        msgs = [m for m in e2d.values() if in_window(m["sent"], w)]
+        per_block = collections.Counter(m["height"] for m in msgs if m.get("height") is not None)
+        if not per_block:
+            continue
+        sizes = collections.Counter(per_block.values())
+        times = sorted(m["included"] for m in msgs if m.get("included"))
+        pipelined = sum(1 for m in msgs if m.get("pipelined"))
+        out.append(f"- {label}: {len(msgs)} messages in {len(per_block)} blocks, at most {max(per_block.values())} "
+                   f"in one; blocks by deliveries: "
+                   + ", ".join(f"{n} deliver{'ies' if n > 1 else 'y'}: {c}" for n, c in sorted(sizes.items()))
+                   + f"; {pipelined} sent pipelined"
+                   + (f"; first to last inclusion {times[-1] - times[0]:.0f} s" if len(times) > 1 else ""))
+        if phase == "e2d-burst":
+            out.append(f"  - blocks: " + ", ".join(f"{h}: {n}" for h, n in sorted(per_block.items())))
+    out.append("")
+
+
+def report_gas(out, helper_calls, receipts, dusk_txs, mailbox_txs):
+    """What the agents' transactions cost, in gas and in DUSK at the agents'
+    gas price of 1 LUX."""
+    out.append("## Gas the agents spent\n")
+    rows = []
+    for agent in AGENTS:
+        for fn in sorted({c.get("fn") for c in helper_calls if c.get("agent") == agent and c.get("fn")}):
+            spent = []
+            for c in helper_calls:
+                if c.get("agent") != agent or c.get("fn") != fn:
+                    continue
+                outcome = chain_outcome(c, dusk_txs)
+                if outcome and outcome[0] is not None:
+                    spent.append(outcome[1] or 0)
+            if spent:
+                rows.append([agent, f"Dusk `{fn}`", len(spent), fmt(sum(spent), 0), f"{sum(spent) / 1e9:.4f} DUSK"])
+    gas = [int(r["gas"], 16) for r in receipts if r.get("gas")]
+    if gas:
+        rows.append(["relayer", "Anvil `process`", len(gas), fmt(sum(gas), 0), ""])
+    out.append(table(["Agent", "Transactions", "In blocks", "Gas", "At 1 LUX a gas"], rows) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -793,19 +991,24 @@ def main():
     load = jsonl(os.path.join(run, "logs", "load.jsonl"))
     resources = jsonl(os.path.join(run, "logs", "resources.jsonl"))
     heights = {r["nonce"]: r["height"] for r in jsonl(os.path.join(run, "logs", "dusk-dispatches.jsonl"))}
+    dusk_txs = {t["id"]: t for t in jsonl(os.path.join(run, "logs", "dusk-txs.jsonl")) if t.get("id")}
+    mailbox_txs = jsonl(os.path.join(run, "logs", "dusk-mailbox-txs.jsonl"))
     blocks = load_blocks(run)
     order = [p for p in ["baseline", "startup", "idle", "d2e", "d2e-backlog", "e2d", "e2d-burst",
                          "outage", "idle2"] if p in phases]
     out = ["# Agents benchmark report\n"]
     rows = [[p, fmt(minutes(phases[p]), 1)] for p in order if phases[p][1]]
     out.append(table(["Phase", "Minutes"], rows) + "\n")
+    report_config(out, run)
 
     report_usage(out, requests, phases, order)
+    report_refusals(out, requests, phases, order)
     report_idle_summary(out, requests, phases, [p for p in ("idle", "idle2") if p in phases])
     for phase in ("idle", "idle2"):
         if phases.get(phase, (None, None))[1]:
             report_kind_matrix(out, requests, phases[phase], f"{phase}: Rusk requests by kind")
             report_kind_matrix(out, requests, phases[phase], f"{phase}: Anvil requests by kind", up="evm")
+            report_aggregates(out, requests, phases[phase], phase)
     if "idle" in phases:
         out.append("## Idle, by call kind\n")
         report_kinds(out, requests, phases["idle"], "Idle", AGENTS)
@@ -813,7 +1016,7 @@ def main():
         report_kinds(out, requests, phases["idle2"], "Idle after the load", AGENTS)
 
     d2e = dusk_to_evm(run, requests, load, blocks, dusk_domain, evm_domain, heights)
-    e2d = evm_to_dusk(run, requests, load, helper_calls, blocks, dusk_domain, evm_domain)
+    e2d = evm_to_dusk(run, requests, load, helper_calls, blocks, dusk_domain, evm_domain, dusk_txs, mailbox_txs)
     n_d2e = sum(1 for m in d2e.values() if in_window(m["sent"], phases.get("d2e", (None, None))))
     n_e2d = sum(1 for m in e2d.values() if in_window(m["sent"], phases.get("e2d", (None, None))))
     # Dusk -> EVM grows the Dusk history from nothing, so it is measured over
@@ -830,9 +1033,11 @@ def main():
     if n_d2e:
         report_per_message(out, requests, helper_calls, phases["idle"], phases["d2e"], n_d2e,
                            "Dusk -> EVM")
+        report_aggregates(out, requests, phases["d2e"], "Dusk -> EVM")
     if n_e2d:
         report_per_message(out, requests, helper_calls, phases[e2d_base], phases["e2d"], n_e2d,
                            f"EVM -> Dusk (over {e2d_base})")
+        report_aggregates(out, requests, phases["e2d"], "EVM -> Dusk")
 
     out.append("## Latency per stage\n")
     d2e_stages = [("dispatched", "dispatch included"), ("origin_final", "finalized on Dusk"),
@@ -857,13 +1062,23 @@ def main():
     if retries:
         out.append(f"EVM -> Dusk messages whose delivery needed more than one dusk-tx run: {len(retries)} "
                    f"(failed runs: {sum(m['failed_helper_runs'] for m in retries)})\n")
+    extra = [m for m in e2d.values() if m.get("reverted_txs") or m.get("other_txs")]
+    if extra:
+        out.append(f"EVM -> Dusk messages with more than one transaction: {len(extra)} "
+                   f"({sum(m.get('reverted_txs', 0) for m in extra)} failed in a block, spending "
+                   f"{fmt(sum(m.get('reverted_gas', 0) for m in extra), 0)} gas)\n")
+    undelivered = [n for n, m in e2d.items() if m.get("height") is None]
+    if undelivered:
+        out.append(f"EVM -> Dusk messages with no delivery found on Dusk: {sorted(undelivered)[:20]}\n")
     gas = [m["gas"] for m in e2d.values() if m.get("gas")]
     if gas:
         out.append(f"Relayer `process` gas on Dusk: n={len(gas)}, median {fmt(pct(gas, 0.5), 0)}, "
                    f"max {fmt(max(gas), 0)}\n")
 
+    report_deliveries_per_block(out, e2d, phases)
     receipts = jsonl(os.path.join(run, "logs", "evm-receipts.jsonl"))
-    report_transactions(out, helper_calls, receipts)
+    report_transactions(out, helper_calls, receipts, dusk_txs, mailbox_txs)
+    report_gas(out, helper_calls, receipts, dusk_txs, mailbox_txs)
 
     out.append("## Node load by call kind\n")
     for phase, title in [("idle", "Idle"), ("d2e", "Dusk -> EVM"), ("e2d", "EVM -> Dusk"),
@@ -877,7 +1092,7 @@ def main():
     report_growth(out, resources, phases, windows)
     report_logs(out, resources, phases, order)
     if "idle" in phases:
-        report_recovery(out, requests, phases, events, helper_calls, d2e, e2d, phases["idle"])
+        report_recovery(out, requests, phases, events, helper_calls, d2e, e2d, phases["idle"], dusk_txs)
 
     print("\n".join(out))
     if args.json:

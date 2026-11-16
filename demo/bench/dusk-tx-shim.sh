@@ -11,9 +11,10 @@
 # key that follows the URL on stdin is passed through unread.
 #
 # One JSON line per call: start and end time, agent (BENCH_AGENT), function,
-# contract, exit code, the result dusk-tx printed (transaction hash, block,
-# gas spent, or the error), and for `process` the arguments in hex (the
-# message and its metadata, so the call can be matched to a message). The
+# contract, exit code, the result dusk-tx printed (transaction hash, nonce,
+# block and gas spent, or with --no-wait only that it was submitted, or the
+# error), and for `process` the arguments in hex (the message and its
+# metadata, so the call can be matched to a message). The
 # helper's stdout is held until it exits, which is when the agent reads it;
 # stderr, where it reports the prepared transaction hash, is passed through
 # as it comes.
@@ -24,7 +25,7 @@ log="${BENCH_DUSK_TX_LOG:?BENCH_DUSK_TX_LOG must name the log file}"
 agent="${BENCH_AGENT:-unknown}"
 
 start="$(date +%s.%N)"
-fn="" contract="" args="" url_stdin=0 prev=""
+fn="" contract="" args="" url_stdin=0 no_wait=false prev=""
 for arg in "$@"; do
     case "$prev" in
         --fn-name) fn="$arg" ;;
@@ -32,6 +33,7 @@ for arg in "$@"; do
         --args) args="$arg" ;;
     esac
     [ "$arg" = "--rues-url-stdin" ] && url_stdin=1
+    [ "$arg" = "--no-wait" ] && no_wait=true
     prev="$arg"
 done
 
@@ -47,9 +49,9 @@ fi
 cat "$out"
 
 [ "$fn" = "process" ] || args=""
-result="$(jq -c '{tx: .tx_id, height: .block_height, gas: .gas_spent, final: .finalized,
-    error: (.error // null | if . then .[0:300] else . end)}' "$out" 2>/dev/null)"
+result="$(jq -c '{tx: .tx_id, nonce: .nonce, height: .block_height, gas: .gas_spent, final: .finalized,
+    submitted: .submitted, error: (.error // null | if . then .[0:300] else . end)}' "$out" 2>/dev/null)"
 rm -f "$out"
-printf '{"ts":%s,"end":%s,"agent":"%s","fn":"%s","contract":"%s","rc":%d,"pid":%d,"result":%s,"args":"%s"}\n' \
-    "$start" "$(date +%s.%N)" "$agent" "$fn" "$contract" "$rc" "$$" "${result:-null}" "$args" >> "$log"
+printf '{"ts":%s,"end":%s,"agent":"%s","fn":"%s","contract":"%s","rc":%d,"pid":%d,"nowait":%s,"result":%s,"args":"%s"}\n' \
+    "$start" "$(date +%s.%N)" "$agent" "$fn" "$contract" "$rc" "$$" "$no_wait" "${result:-null}" "$args" >> "$log"
 exit "$rc"

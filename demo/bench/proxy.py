@@ -8,7 +8,8 @@ was, its status, and the bytes each way. What it was:
 
 - Rusk: `q:<contract>.<method>` for a contract query, `gql:<root field>` for
   GraphQL (`/on/graphql/query` or `/graphql`), `tx:preverify`/`tx:propagate`,
-  `account:status`, otherwise the path with IDs masked.
+  `account:status`, otherwise the path with IDs masked. A Multicall for Dusk
+  `aggregate` also lists the calls it carries, `<contract>.<method>` each.
 - Anvil: `eth:<JSON-RPC method>`, with the contract and function for
   eth_call, eth_estimateGas and eth_sendRawTransaction, and the event for
   eth_getLogs.
@@ -90,6 +91,37 @@ def find_messages(data, domains):
     return found
 
 
+def aggregate_calls(body):
+    """[(contract ID hex, function)] of the calls in a Multicall for Dusk
+    `aggregate` argument: the rkyv 0.7 archive (size_32) of a Vec<Call>,
+    root last, 56 bytes a call (ID, name, argument, gas limit). None if the
+    body isn't one."""
+    if len(body) < 8:
+        return None
+    root = len(body) - 8
+    count = int.from_bytes(body[root + 4:root + 8], "little")
+    start = root + int.from_bytes(body[root:root + 4], "little", signed=True)
+    if count > 256 or start < 0 or start + 56 * count > root:
+        return None
+    calls = []
+    for i in range(count):
+        base = start + 56 * i
+        name = body[base + 32:base + 40]
+        if name[7] & 0x80 == 0:  # inline: the bytes, then the length
+            raw = name[:name[7]]
+        else:  # out of line: length, then a 31-bit offset from here
+            length = int.from_bytes(name[0:4], "little")
+            offset = int.from_bytes(name[4:8], "little") & 0x7FFFFFFF
+            if offset & 0x40000000:
+                offset -= 0x80000000
+            pos = base + 32 + offset
+            if pos < 0 or pos + length > len(body):
+                return None
+            raw = body[pos:pos + length]
+        calls.append((body[base:base + 32].hex(), raw.decode("utf-8", "replace")))
+    return calls
+
+
 def rlp_item(data, pos):
     """Decode one RLP item at `pos`: (value, next position). Lists are lists."""
     b = data[pos]
@@ -151,8 +183,13 @@ class Classifier:
         m = re.match(r"^/on/contracts:([0-9a-fA-F]{64})/([^/]+)$", path)
         if m:
             kind = f"q:{self.name(m.group(1))}.{m.group(2)}"
-            msgs = find_messages(body, self.domains) if m.group(2) == "process" else []
-            return kind, "", msgs, kind in KEEP_REPLY
+            detail = ""
+            if m.group(2) == "aggregate":
+                calls = aggregate_calls(body)
+                detail = "?" if calls is None else ",".join(f"{self.name(c)}.{fn}" for c, fn in calls)
+            process = m.group(2) == "process" or ".process" in detail
+            msgs = find_messages(body, self.domains) if process else []
+            return kind, detail, msgs, kind in KEEP_REPLY
         if path in ("/on/graphql/query", "/graphql"):
             text = body.decode("utf-8", "replace")
             if text.lstrip().startswith("{"):
