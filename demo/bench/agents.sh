@@ -131,7 +131,9 @@ cmd_setup() {
             --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" --owner "$MULTICALL_OWNER" --deploy-nonce 0 \
             --expected-id "$MULTICALL_ID" --expected-chain-id "$chain_id" > "$MULTICALL_RECORD" \
             || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' "$MULTICALL_RECORD" 2>/dev/null)"
-        dusk_multicall="$MULTICALL_ID"
+        # testnet.sh checks the multicall and names it in its configs only
+        # when the agents are to batch through it.
+        [ "$BATCH_READS" = 0 ] || dusk_multicall="$MULTICALL_ID"
         ok "Multicall for Dusk at $MULTICALL_ID"
     elif [ "$BATCH_READS" = 1 ]; then
         fail "Set DUSK_MULTICALL_WASM to Multicall for Dusk's v0.1.0 Wasm, which the agents batch their reads through, or BATCH_READS=0"
