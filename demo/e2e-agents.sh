@@ -31,6 +31,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
 
+# The agents run in AGENT_RUN_DIR, which holds Hyperlane's config/ directory,
+# from the binaries in AGENT_BIN_DIR: by default hyperlane-monorepo/rust/main
+# and its debug build, which this script builds first; with AGENT_BIN_DIR
+# set, the binaries there as they are. Each agent starts with only PATH,
+# HOME, DUSK_TX_BIN and its config, as deploy/local-agents.sh starts them:
+# Hyperlane applies every HYP_* variable over the config files, so one left
+# in the shell, such as HYP_CHAINS_DUSK_CUSTOMRPCURLS, would point the agent
+# at another node, and others (CONFIG_FILES, RUST_LOG, AWS_*) change what it
+# does.
+AGENT_RUN_DIR="${AGENT_RUN_DIR:-$SCRIPT_DIR/../../hyperlane-monorepo/rust/main}"
+BUILD_AGENTS=true
+[ -z "${AGENT_BIN_DIR:-}" ] || BUILD_AGENTS=false
+AGENT_BIN_DIR="${AGENT_BIN_DIR:-$AGENT_RUN_DIR/target/debug}"
+
 # Anvil's deterministic, pre-funded development accounts. Keep the operator
 # on account #0, the relayer on #1, and the validator on #2 so independent
 # processes never compete for one EVM nonce stream during the live test.
@@ -215,8 +229,8 @@ start_validator() {
     else
         cfg="${DUSK_VALIDATOR_CFGS[$i]}"; log="${DUSK_VALIDATOR_LOGS[$i]}"
     fi
-    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" ./target/debug/validator \
+    (cd "$AGENT_RUN_DIR" && \
+      exec env -i PATH="$PATH" HOME="$HOME" DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" "$AGENT_BIN_DIR/validator" \
       >>"$log" 2>&1) &
     pid="$!"
     if [ "$kind" = "anvil" ]; then VALIDATOR_PIDS[i]="$pid"; else DUSK_VALIDATOR_PIDS[i]="$pid"; fi
@@ -465,7 +479,7 @@ run_case() {
     info "Live dispatch-credit withdrawal confirmed"
 
     # Build agent binaries (incremental).
-    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer -p validator >/dev/null)
+    [ "$BUILD_AGENTS" = false ] || (cd "$AGENT_RUN_DIR" && cargo build -p relayer -p validator >/dev/null)
 
     local relayer_log="/tmp/hyperlane-relayer-${ism}-${run_id}.log"
     local validator_log="/tmp/hyperlane-validator-${ism}-${run_id}.log"
@@ -498,8 +512,8 @@ run_case() {
     fi
 
     info "Starting relayer..."
-    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$relayer_cfg" ./target/debug/relayer \
+    (cd "$AGENT_RUN_DIR" && \
+      exec env -i PATH="$PATH" HOME="$HOME" DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$relayer_cfg" "$AGENT_BIN_DIR/relayer" \
       >"$relayer_log" 2>&1) &
     relayer_pid="$!"
     CURRENT_RELAYER_PID="$relayer_pid"
