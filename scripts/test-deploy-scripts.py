@@ -210,7 +210,8 @@ out({"success": False, "error": f"stub dusk-tx: unexpected {args[0]}"}, 1)
 # helper owner, a quote signer that sets a free standing quote for any
 # sender to Dusk, the signer removed and the IGP handed to the deployer),
 # and token mode "owner" (initialize with the attacker as owner and a supply
-# minted to it).
+# minted to it). Its "interleave" changes the token between two reads of its
+# routers, as another process could (interleave() below).
 FAKE_EVM = r"""
 import hashlib, json, os, re, sys
 
@@ -337,6 +338,19 @@ def hook_quote(state, hook, domain, gas_limit, sender):
         return (gas_limit + overhead) * price * rate // SCALE
     return c.get("fee", 0)
 
+def interleave(state, address):
+    # FIXTURE_EVM's "interleave", {"token": address, "after_reads": n,
+    # "change": {...}}, makes another process's change to the token once its
+    # routers have been read n times, before the next read; "reads" counts
+    # them.
+    plan = state.get("interleave")
+    if not plan or plan["token"] != address.lower():
+        return
+    plan["reads"] = plan.get("reads", 0) + 1
+    if plan["reads"] == plan["after_reads"] + 1:
+        state["contracts"][address.lower()].update(plan["change"])
+    state["changed"] = True
+
 def call(state, address, signature, args, sender):
     c = contract(state, address)
     name = signature.split("(")[0]
@@ -376,6 +390,7 @@ def call(state, address, signature, args, sender):
     if name == "getAddress" and c["type"] == "ism_factory":
         return derive("ism", address.lower(), args[0].lower(), args[1])
     if name == "routers":
+        interleave(state, address)
         return c["routers"].get(args[0], "0x" + "00" * 32)
     if name == "moduleType" and c["type"] == "ism":
         return str(c["module_type"])
@@ -555,6 +570,8 @@ def main_cast(argv):
         print(json.dumps(found) if "--json" in flags else found[positional[2]])
     elif command == "call":
         print(call(state, positional[1], positional[2], positional[3:], options.get("--from", ZERO)))
+        if state.pop("changed", False):
+            save(state)
     elif command == "logs":
         start, end = int(options["--from-block"]), int(options["--to-block"])
         state.setdefault("log_queries", []).append([start, end])
@@ -1192,6 +1209,49 @@ class TestnetTokenBinding(DeployedTestnet):
         self.assertEqual(self.evm["contracts"][self.token]["routers"], {str(DUSK_DOMAIN): "0x" + ROUTE})
         self.assertEqual(self.queries[f"{ROUTE}/enrolled_router/{EVM_DOMAIN}"], {"value": "00" * 12 + "11" * 20})
         self.assert_ok(self.run_script("agent-configs"))
+
+    def deploy_changed_after_preflight(self, change):
+        """Run deploy on the token as a deploy that stopped after creating
+        it leaves it, no route and no tokens, with `change` made to it once
+        preflight has read its router: as another deploy with the same key
+        could, enrolling its own route or minting its tokens."""
+        self.evm["contracts"][self.token].update(routers={}, supply=0)
+        self.evm["interleave"] = {"token": self.token, "after_reads": 1, "change": change}
+        self.queries.pop(f"{ROUTE}/enrolled_router/{EVM_DOMAIN}", None)
+        result = self.run_script("deploy")
+        self.assertGreaterEqual(self.evm.pop("interleave")["reads"], 2, "the change came after preflight's read")
+        return result
+
+    def token_writes(self):
+        return [line for line in self.traced("cast send") if line.split()[2].lower() == self.token]
+
+    def test_a_route_or_tokens_that_appear_after_preflight_are_refused(self):
+        # Preflight passed the token, and enroll_routers read its router
+        # again and replaced any but this deployment's: another deployment's
+        # route, which the same owner enrolled in between, backing tokens
+        # minted since, gave those tokens this route's DUSK. The token is
+        # checked again right before the write now, and nothing is replaced.
+        other = "e2" * 32
+        # The token already has the hook deploy sets, so deploy's first write
+        # to it is the enrollment.
+        self.assert_ok(self.run_script("deploy"))
+        for change, expected in (
+                ({"routers": {str(DUSK_DOMAIN): "0x" + other}},
+                 f"is enrolled with the Dusk route {other}, not the route recorded in"),
+                ({"supply": 10**18}, f"has a supply of {10**18} but no Dusk route")):
+            with self.subTest(change=change):
+                self.assert_fails(self.deploy_changed_after_preflight(change), expected)
+                self.assertEqual(self.token_writes() + self.traced("dusk-tx enroll-router"), [])
+                self.assertEqual(self.evm["contracts"][self.token]["routers"], change.get("routers", {}))
+
+    def test_a_route_that_appears_before_the_hook_is_set_is_refused(self):
+        # The token dispatches through another hook, so deploy's first write
+        # to it sets the route's hook, and the check comes right before that.
+        other = "e2" * 32
+        result = self.deploy_changed_after_preflight({"routers": {str(DUSK_DOMAIN): "0x" + other}})
+        self.assert_fails(result, f"is enrolled with the Dusk route {other}, not the route recorded in")
+        self.assertEqual(self.token_writes() + self.traced("dusk-tx enroll-router"), [])
+        self.assertEqual(self.evm["contracts"][self.token]["hook"], self.hook)
 
     def test_a_token_of_another_mailbox_is_refused(self):
         # Mixed or restored state: deployment B's token, created by the same

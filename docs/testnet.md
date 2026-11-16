@@ -226,9 +226,10 @@ transfer pays for. `fees` prints what they come to.
   `DUSK_ORIGIN_THRESHOLD`, which lists each validator once (a validator
   listed twice counts its signature twice). Its router for Dusk is the
   recorded route, or none yet and then it holds no tokens: `deploy`
-  creates it with none, and enrolls the route on it after. A token another
-  deployment created the same way is refused before anything uses or
-  rewires it;
+  creates it with none, and enrolls the route on it after. `deploy` checks
+  this again right before each write to the token, and refuses another
+  route's router rather than replace it. A token another deployment
+  created the same way is refused before anything uses or rewires it;
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;

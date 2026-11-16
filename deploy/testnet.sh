@@ -319,14 +319,19 @@ check_evm_token_binding() {
 # on it would let those tokens be redeemed for this route's DUSK, and so
 # would supply minted before any route was enrolled, which nothing backs.
 # deploy creates the token with no supply and enrolls the route after it,
-# so a new or resumed deployment passes. Runs before deploy writes to it.
+# so a new or resumed deployment passes. Runs at preflight, and again right
+# before deploy writes to the token. Sets EVM_TOKEN_ROUTER to the router it
+# read.
+EVM_TOKEN_ROUTER=""
 check_evm_token_router() {
     local token="$1" route router supply
+    EVM_TOKEN_ROUTER=""
     route="$(lower "$(state_get '.dusk.warp_native')")"
     router="$(evm_call "$token" "routers(uint32)(bytes32)" "$DUSK_DOMAIN")" \
         || fail "Can't read the Dusk router of the EVM DUSK token $token"
     router="$(lower "$router")"
     if [ -n "$route" ] && [ "$router" = "0x$route" ]; then
+        EVM_TOKEN_ROUTER="$router"
         return 0
     fi
     [[ "$router" =~ ^0x0{64}$ ]] \
@@ -335,6 +340,7 @@ check_evm_token_router() {
         || fail "Can't read the supply of the EVM DUSK token $token"
     [ "$supply" = 0 ] \
         || fail "The EVM DUSK token $token has a supply of $supply but no Dusk route: nothing on Dusk backs those tokens, and enrolling this deployment's route would let them be redeemed for its DUSK. deploy creates the token with none. Move $OUT_DIR aside and deploy again."
+    EVM_TOKEN_ROUTER="$router"
 }
 
 sorted_addresses() {
@@ -1439,23 +1445,33 @@ deploy_evm_token() {
 }
 
 # A token deployed before the route had its own hook dispatches through the
-# Mailbox's default hook, which pays nothing to our IGP.
+# Mailbox's default hook, which pays nothing to our IGP. The token is
+# checked again right before the write, as enroll_routers checks it.
 set_evm_route_hook() {
     local token hook
     token="$(state_get '.evm.token')" hook="$(state_get '.evm.route_hook')"
     if [ "$(lower "$(evm_call "$token" "hook()(address)")")" != "$(lower "$hook")" ]; then
+        check_evm_token_binding
         info "Setting the EVM route's hook to $hook..."
         evm_send "$token" "setHook(address)" "$hook"
     fi
     check_evm_route_hook
 }
 
+# Enroll this deployment's route on the token, and the token on the route.
+# Preflight checked the token's router, but its owner can enroll another in
+# between, as another deploy with the same key could. So the token is
+# checked again right before the write, and the route is enrolled only on
+# the router that check read being none: another route's is refused, never
+# replaced (check_evm_token_router).
 enroll_routers() {
     local token route enrolled
     token="$(state_get '.evm.token')"
-    route="$(state_get '.dusk.warp_native')"
-    enrolled="$(evm_call "$token" "routers(uint32)(bytes32)" "$DUSK_DOMAIN")"
-    if [ "$(lower "$enrolled")" != "0x$route" ]; then
+    route="$(lower "$(state_get '.dusk.warp_native')")"
+    check_evm_token_binding
+    if [ "$EVM_TOKEN_ROUTER" != "0x$route" ]; then
+        [[ "$EVM_TOKEN_ROUTER" =~ ^0x0{64}$ ]] \
+            || fail "The EVM DUSK token $token is enrolled with the Dusk route ${EVM_TOKEN_ROUTER#0x}: not replacing it"
         info "Enrolling the Dusk route on $EVM_CHAIN_NAME..."
         evm_send "$token" "enrollRemoteRouter(uint32,bytes32)" "$DUSK_DOMAIN" "0x$route"
     fi
