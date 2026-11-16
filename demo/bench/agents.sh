@@ -121,11 +121,20 @@ wait_until() {
 cmd_setup() {
     [ ! -e "$ENV_FILE" ] || fail "$ENV_FILE exists; use a fresh BENCH_DIR"
     cast block-number --rpc-url "$ANVIL_URL" >/dev/null 2>&1 || fail "Anvil is not running at $ANVIL_URL"
-    local chain_id evm_chain_id
-    chain_id="$(curl -sf -m 10 -X POST -H 'Content-Type: application/octet-stream' \
+    # The chain the bench signs for, here and in its env file:
+    # DUSK_EXPECTED_CHAIN_ID, the local devnet's 0 unless .env.bridge or the
+    # environment sets another. The node must report it; its answer never
+    # takes the setting's place.
+    local chain_id="${DUSK_EXPECTED_CHAIN_ID:-0}" reported evm_chain_id
+    [[ "$chain_id" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$chain_id))" -le 255 ] \
+        || fail "DUSK_EXPECTED_CHAIN_ID must be a Dusk chain ID from 0 to 255, not '$chain_id'"
+    chain_id=$((10#$chain_id))
+    reported="$(curl -sf -m 10 -X POST -H 'Content-Type: application/octet-stream' \
         "$RUSK_URL/on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
-        | od -An -tu1 | tr -d ' \n')"
-    [[ "$chain_id" =~ ^[0-9]+$ ]] || fail "Rusk is not running at $RUSK_URL"
+        | od -An -tx1 | tr -d ' \n')" && [[ "$reported" =~ ^[0-9a-f]{2}$ ]] \
+        || fail "Rusk is not running at $RUSK_URL"
+    [ "$((16#$reported))" -eq "$chain_id" ] \
+        || fail "Rusk at $RUSK_URL is on chain ID $((16#$reported)), not DUSK_EXPECTED_CHAIN_ID $chain_id (the local devnet's is 0). Nothing was signed or written."
     evm_chain_id="$(cast chain-id --rpc-url "$ANVIL_URL")"
 
     # Multicall for Dusk, which the local genesis lacks, at the ID it has on

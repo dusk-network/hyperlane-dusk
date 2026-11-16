@@ -52,12 +52,21 @@ MULTICALL_OWNER=r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVS
 MULTICALL_ID=93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4
 
 cast block-number --rpc-url "$ANVIL_RPC" >/dev/null 2>&1 || fail "Anvil is not running at $ANVIL_RPC (run demo/start-env.sh)"
-# The chain ID transactions are signed for. /on/node/info reports null on a
-# local node, which runs without a network ID.
+# The chain the rehearsal signs for, here and in deploy/local.env:
+# DUSK_EXPECTED_CHAIN_ID, the local devnet's 0 unless .env.bridge or the
+# environment sets another. The node must report it; its answer never takes
+# the setting's place. /on/node/info reports null on a local node, which
+# runs without a network ID, so the transfer contract is asked.
+DUSK_EXPECTED_CHAIN_ID="${DUSK_EXPECTED_CHAIN_ID:-0}"
+[[ "$DUSK_EXPECTED_CHAIN_ID" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$DUSK_EXPECTED_CHAIN_ID))" -le 255 ] \
+    || fail "DUSK_EXPECTED_CHAIN_ID must be a Dusk chain ID from 0 to 255, not '$DUSK_EXPECTED_CHAIN_ID'"
+DUSK_EXPECTED_CHAIN_ID=$((10#$DUSK_EXPECTED_CHAIN_ID))
 DUSK_CHAIN_ID="$(curl -sf -m 10 -X POST -H 'Content-Type: application/octet-stream' \
     "${DUSK_RUES_URL%/}/on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
-    | od -An -tu1 | tr -d ' \n')"
-[[ "$DUSK_CHAIN_ID" =~ ^[0-9]+$ ]] || fail "Rusk is not running at $DUSK_RUES_URL"
+    | od -An -tx1 | tr -d ' \n')" && [[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] \
+    || fail "Rusk is not running at $DUSK_RUES_URL"
+[ "$((16#$DUSK_CHAIN_ID))" -eq "$DUSK_EXPECTED_CHAIN_ID" ] \
+    || fail "Rusk at $DUSK_RUES_URL is on chain ID $((16#$DUSK_CHAIN_ID)), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID (the local devnet's is 0). Nothing was signed or written. Point DUSK_RUES_URL at the devnet, or set DUSK_EXPECTED_CHAIN_ID to the chain you mean."
 EVM_CHAIN_ID="$(cast chain-id --rpc-url "$ANVIL_RPC")"
 
 DUSK_MULTICALL=""
@@ -71,7 +80,7 @@ if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
     # way.
     multicall="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-wasm --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" --owner "$MULTICALL_OWNER" --deploy-nonce 0 \
-        --expected-id "$MULTICALL_ID" --expected-chain-id "$DUSK_CHAIN_ID" --check-multicall)" \
+        --expected-id "$MULTICALL_ID" --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" --check-multicall)" \
         || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' <<<"$multicall" 2>/dev/null)"
     DUSK_MULTICALL="$MULTICALL_ID"
     ok "Multicall for Dusk at $MULTICALL_ID: $(jq -r 'if .deployed then "deployed, \(.gas_spent) gas" else "already there, checked (\(.verified | join(", ")))" end' <<<"$multicall")"
@@ -115,7 +124,7 @@ cat > "$DUSK_DIR/deploy/local.env" <<EOF
 source "\$DUSK_DIR/deploy/testnet.env.example"
 DEPLOY_NAME=local-rehearsal
 DUSK_RUES_URL=$DUSK_RUES_URL
-DUSK_EXPECTED_CHAIN_ID=$DUSK_CHAIN_ID
+DUSK_EXPECTED_CHAIN_ID=$DUSK_EXPECTED_CHAIN_ID
 DUSK_KEYS=$CONSENSUS_KEYS
 export DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD"
 EVM_CHAIN_NAME=anvil

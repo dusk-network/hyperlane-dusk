@@ -2111,6 +2111,8 @@ class AnvilEvmDeploy(unittest.TestCase):
             "ANVIL_RPC": cls.rpc, "DUSK_RUES_URL": "http://localhost:8080/", "SOLIDITY_DIR": SOLIDITY_DIR,
             "ANVIL_PRIVATE_KEY": ANVIL_KEY, "ANVIL_DEPLOYER": ANVIL_DEPLOYER,
             "CONSENSUS_KEYS": keys, "CONSENSUS_PASSWORD": "fixture", "DUSK_TX": cls.bin / "dusk-tx",
+            # The stubbed Dusk chain's, not the local devnet's 0.
+            "DUSK_EXPECTED_CHAIN_ID": 2,
             "DUSK_MULTICALL_WASM": MULTICALL_WASM}.items()))
         cls.chain = cls.root / "chain.json"
         cls.trace = cls.root / "tools.trace"
@@ -2759,13 +2761,13 @@ esac
 
 
 class DemoSigningChain(unittest.TestCase):
-    """The demo scripts sign Dusk transactions for DUSK_EXPECTED_CHAIN_ID,
-    the local devnet's chain ID 0 unless set, and stop before deploying
-    anything when the node at the RUES URL reports another chain. Before,
-    each took the node's answer as the chain to sign for, even over an
-    operator's explicit setting, so a testnet node, or a local forwarder to
-    one, got the deployment; and start-env.sh took any healthy node already
-    on its port."""
+    """The demo and local rehearsal scripts sign Dusk transactions for
+    DUSK_EXPECTED_CHAIN_ID, the local devnet's chain ID 0 unless set, and
+    stop before deploying anything when the node at the RUES URL reports
+    another chain. Before, each took the node's answer as the chain to sign
+    for, even over an operator's explicit setting, so a testnet node, or a
+    local forwarder to one, got the deployment; and start-env.sh took any
+    healthy node already on its port."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="hyperlane-demo-chain-")
@@ -2774,7 +2776,8 @@ class DemoSigningChain(unittest.TestCase):
         # The checkouts' layout: rusk-private next to hyperlane/, which holds
         # this repository and the monorepo's Solidity sources.
         self.dusk = self.root / "hyperlane" / "dusk"
-        for script in ("demo/deploy.sh", "demo/demo.sh", "demo/start-env.sh"):
+        for script in ("demo/deploy.sh", "demo/demo.sh", "demo/start-env.sh", "demo/bench/agents.sh",
+                       "deploy/local-evm-core.sh"):
             (self.dusk / script).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / script, self.dusk / script)
         shutil.copy2(ROOT / "demo" / "bridge.env.example", self.dusk / "demo" / ".env.bridge")
@@ -2796,6 +2799,7 @@ class DemoSigningChain(unittest.TestCase):
         self.trace = self.root / "tools.trace"
         self.state = self.root / "bridge-state.json"
         self.pids = self.root / "env.pids"
+        self.bench = self.root / "bench"
 
     def run_demo(self, script, *args, endpoint=2, **settings):
         """Run `script` with a node on chain `endpoint` at the RUES URL.
@@ -2805,7 +2809,7 @@ class DemoSigningChain(unittest.TestCase):
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root),
             "FIXTURE_TRACE": str(self.trace), "FIXTURE_DUSK_CHAIN_ID": str(endpoint),
             "DUSK_TX": str(self.bin / "dusk-tx"), "WASM_DIR": str(self.root / "wasm"),
-            "BRIDGE_STATE_FILE": str(self.state), "PID_FILE": str(self.pids),
+            "BRIDGE_STATE_FILE": str(self.state), "PID_FILE": str(self.pids), "BENCH_DIR": str(self.bench),
             "RUSK_HTTP_PORT": "65531", "ANVIL_PORT": "65532", "RUES_URL": "http://localhost:65531/",
             "SKIP_OTTERSCAN": "true", "SKIP_DUSK_EXPLORER": "true",
             **{key: str(value) for key, value in settings.items()},
@@ -2883,6 +2887,21 @@ class DemoSigningChain(unittest.TestCase):
         self.assertIn("Rusk is ready", result.stdout)
         self.assertNotIn("Starting Anvil", result.stdout)
         self.assertTrue(log.exists())
+
+    def test_the_local_rehearsal_signs_only_for_the_chain_it_is_set_for(self):
+        for script, args, written in (("deploy/local-evm-core.sh", (), self.dusk / "deploy" / "local.env"),
+                                      ("demo/bench/agents.sh", ("setup",), self.bench / "rehearsal.env")):
+            with self.subTest(script=script):
+                result, tools = self.run_demo(script, *args)
+                self.assert_refused(result, tools, "is on chain ID 2, not DUSK_EXPECTED_CHAIN_ID 0")
+                self.assertFalse(written.exists())
+                self.assertNotIn("cast chain-id", " ".join(tools))
+                # Set for that chain, it goes on, to its first stubbed
+                # deployment.
+                result, tools = self.run_demo(script, *args, DUSK_EXPECTED_CHAIN_ID=2)
+                self.assertNotIn("not DUSK_EXPECTED_CHAIN_ID", result.stdout + result.stderr)
+                self.assertIn("cast chain-id", " ".join(tools))
+                self.assertFalse(written.exists())
 
 
 class GenAgentConfigsPassword(unittest.TestCase):

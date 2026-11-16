@@ -542,6 +542,10 @@ In the rehearsal:
   prices.
 - Anvil account #2 stands in for Hyperlane's Sepolia validator, #3–#5 are the
   Dusk-origin validators (2 of 3), and #1 is the relayer's EVM key.
+- The rehearsal signs for `DUSK_EXPECTED_CHAIN_ID` from `demo/.env.bridge`,
+  the local devnet's 0 unless set, and `local-evm-core.sh` writes it into
+  `local.env`. It, and `start-env.sh`, stop before signing anything when
+  the node reports another chain.
 - Checkpoints go to local directories under
   `deploy/out/local-rehearsal/agents/`, with logs and PID files.
 - The local genesis has no Multicall for Dusk. With `DUSK_MULTICALL_WASM`
