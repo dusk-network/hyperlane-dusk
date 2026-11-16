@@ -27,9 +27,9 @@
 #
 # PHASES names the load phases to run, in the order above (all by default);
 # the idle phases always run. Agent binaries (AGENT_BIN_DIR, AGENT_RUN_DIR),
-# Multicall for Dusk (DUSK_MULTICALL_WASM, BATCH_READS), the relayer's
-# maxBatchSize (DUSK_RELAYER_MAX_BATCH_SIZE) and pacing at the proxy
-# (PACE_RELAYER) are set as for agents.sh.
+# Multicall for Dusk (DUSK_MULTICALL_WASM, BATCH_READS), pipelined
+# deliveries (PIPELINE_DELIVERIES, DUSK_RELAYER_MAX_BATCH_SIZE) and pacing at
+# the proxy (PACE_RELAYER) are set as for agents.sh.
 
 set -euo pipefail
 

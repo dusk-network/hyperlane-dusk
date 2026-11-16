@@ -45,7 +45,6 @@ DUSK_TX="${DUSK_TX:-$DUSK_DIR/target/release/dusk-tx}"
 AGENT_STATE_DIR="${AGENT_STATE_DIR:-/var/lib/hyperlane}"
 DUSK_SIGNER_KEY_FILE="${DUSK_SIGNER_KEY_FILE:-/run/secrets/dusk-signer.key}"
 DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
-DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-16}"
 DUSK_MULTICALL="${DUSK_MULTICALL-93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4}"
 WASM_DIR="${WASM_DIR:-$DUSK_DIR/target/contract/wasm32-unknown-unknown/release}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
@@ -856,13 +855,13 @@ check_relayer_gas_limit() {
         || fail "DUSK_RELAYER_GAS_LIMIT is $DUSK_RELAYER_GAS_LIMIT; with $basis of $threshold it must be at least $need"
 }
 
-# How many deliveries to Dusk the relayer sends together, as consecutive
-# transactions of its account (its maxBatchSize for Dusk): 1 to 64, the most
-# of an account's transactions Rusk queues ahead of its next nonce
-# (deploy/testnet.env.example has why 16, and which agents batches need).
-check_relayer_batch_size() {
-    [[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
-        || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, the most of an account's transactions Rusk queues ahead of its next nonce, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
+# The relayer's config carries neither pipelineDeliveries nor
+# maxBatchSize, so every agent build delivers to Dusk one at a time
+# (docs/operations.md, Deliveries to Dusk). An env file from before may
+# still set DUSK_RELAYER_MAX_BATCH_SIZE, which nothing reads now.
+check_agent_settings() {
+    [ -z "${DUSK_RELAYER_MAX_BATCH_SIZE+x}" ] \
+        || warn "DUSK_RELAYER_MAX_BATCH_SIZE is no longer read: the relayer's config delivers to Dusk one at a time, and leaves maxBatchSize and the experimental pipelineDeliveries out (docs/operations.md, Deliveries to Dusk). Remove it from $ENV_FILE."
 }
 
 # Multicall for Dusk, through which the agents batch their contract reads
@@ -1203,7 +1202,7 @@ cmd_preflight() {
         command -v "$tool" >/dev/null || fail "$tool is required"
     done
     load_fees
-    check_relayer_batch_size
+    check_agent_settings
     preflight_dusk
     check_dusk_multicall
     preflight_evm
@@ -1685,17 +1684,16 @@ cmd_claim() {
 
 # ── Agent configs ────────────────────────────────────────────────────────────
 
-# The Dusk chain of an agent config. The relayer's has a maxBatchSize: it
-# sends that many deliveries to Dusk together, as consecutive transactions
-# of its account, with a dusk-tx that takes `call --nonce --no-wait`. Both
-# batch their contract reads through Multicall for Dusk when it answers
-# (check_dusk_multicall).
+# The Dusk chain of an agent config. Both agents batch their contract reads
+# through Multicall for Dusk when it answers (check_dusk_multicall). The
+# relayer delivers to Dusk one at a time: the chain has no
+# pipelineDeliveries or maxBatchSize (check_agent_settings).
 dusk_chain_json() {
-    local cursor_dir="$1" gas_limit="$2" max_batch_size="${3:-null}"
+    local cursor_dir="$1" gas_limit="$2"
     jq -n --arg url "$DUSK_RUES_URL" --argjson domain "$DUSK_DOMAIN" \
         --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --arg cursors "$cursor_dir" \
         --argjson gl "$gas_limit" --argjson gp "$DUSK_AGENT_GAS_PRICE" \
-        --argjson batch "$max_batch_size" --arg multicall "$DUSK_MULTICALL_ID" \
+        --arg multicall "$DUSK_MULTICALL_ID" \
         --arg key_file "$DUSK_SIGNER_KEY_FILE" --slurpfile s "$STATE" '{
           name: "dusk", protocol: "dusk", domainId: $domain, chainId: $chain,
           rpcUrls: [{http: $url}], eventCursorDir: $cursors,
@@ -1706,15 +1704,14 @@ dusk_chain_json() {
           merkleTreeHook: ("0x" + $s[0].dusk.merkle_tree_hook),
           submitter: "Classic",
           signer: {type: "duskKey", keyFile: $key_file}
-        } + (if $batch == null then {} else {maxBatchSize: $batch} end)
-          + (if $multicall == "" then {} else {batchContractAddress: ("0x" + $multicall)} end)'
+        } + (if $multicall == "" then {} else {batchContractAddress: ("0x" + $multicall)} end)'
 }
 
 cmd_agent_configs() {
     [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
     load_fees
-    check_relayer_batch_size
+    check_agent_settings
     check_dusk_deployment
     check_evm_deployment
     check_dusk_multicall
@@ -1747,8 +1744,7 @@ cmd_agent_configs() {
     # (onChainFeeQuoting; docs/costs.md#fee-coverage). A message from another
     # origin matches no policy and is not relayed.
     jq -n --arg evm "$EVM_CHAIN_NAME" --argjson evm_chain "$evm_chain" \
-        --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/relayer-dusk-events" "$DUSK_RELAYER_GAS_LIMIT" \
-            "$DUSK_RELAYER_MAX_BATCH_SIZE")" \
+        --argjson dusk_chain "$(dusk_chain_json "$AGENT_STATE_DIR/relayer-dusk-events" "$DUSK_RELAYER_GAS_LIMIT")" \
         --argjson ed "$EVM_DOMAIN" --argjson dd "$DUSK_DOMAIN" \
         --arg dusk_fraction "$(fee .relayer.dusk_origin_gas_fraction)" \
         --arg evm_fraction "$(fee .relayer.evm_origin_gas_fraction)" \
@@ -1777,7 +1773,7 @@ cmd_agent_configs() {
         }' > "$OUT_DIR/validator-dusk.json"
 
     ok "Wrote $OUT_DIR/relayer.json and $OUT_DIR/validator-dusk.json"
-    ok "The relayer sends up to $DUSK_RELAYER_MAX_BATCH_SIZE deliveries to Dusk together, as consecutive transactions (maxBatchSize)"
+    ok "The relayer delivers to Dusk one at a time; pipelined deliveries are experimental and off (docs/operations.md, Deliveries to Dusk)"
     ok "The relayer relays a Dusk-origin message once its Dusk IGP payment covers $(fee .relayer.dusk_origin_gas_fraction) of the gas it estimates for $EVM_CHAIN_NAME, and an $EVM_CHAIN_NAME-origin one once it paid the EVM IGP $(state_get '.evm.igp') for $(fee .relayer.evm_origin_required_gas) Dusk gas"
     cat >&2 <<EOF
 Secrets are not in these files. Provide them when starting the agents:

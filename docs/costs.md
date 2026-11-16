@@ -741,7 +741,11 @@ sees:
   account (`dusk-tx call --nonce N --no-wait`), each once the node holds
   the one before. Each delivery owns its nonce and transaction, kept in
   `eventCursorDir` until it settles, so a restarted relayer follows the
-  deliveries in flight instead of sending them again.
+  deliveries in flight instead of sending them again. Since `d549a2fc73`
+  the agents pipeline only with `pipelineDeliveries: true` as well, and the
+  configs `agent-configs` writes have neither: pipelining is experimental,
+  and deliveries go one at a time
+  ([operations.md](operations.md#deliveries-to-dusk)).
 - **Finality-only confirmation.** The Mailbox reports a delivery as done
   only once its `ProcessId` event is in a final block.
 
@@ -976,7 +980,9 @@ A batch goes out about 2 s after the block that holds the batch before it,
 when the next block's round has started, so batches land every other
 block: at most 16 deliveries per 20 s, 48 a minute, with `maxBatchSize`
 16. All 106 deliveries to Dusk were pipelined (`dusk-tx call --nonce N
---no-wait`), on consecutive nonces of the relayer's account.
+--no-wait`), on consecutive nonces of the relayer's account. Pipelining is
+experimental, and the testnet configs leave it off: there a relayer key
+delivers one message every two blocks, as in the previous run.
 
 ### Agent resources
 
@@ -1138,7 +1144,8 @@ delivery is simulated once. What remains, in order of what it would save:
    read that returns them, makes a lookup a few reads whatever the history;
    turning `txIdIndexingEnabled` off, as the demo's relayer config does,
    avoids these lookups.
-2. **Send the next batch before the last is in a block.** The relayer waits
+2. **Send the next batch before the last is in a block** (pipelined
+   deliveries only). The relayer waits
    for a batch's block before it sends the next, which then misses the
    block whose round has just started: batches land every other block, 48
    deliveries a minute at most with `maxBatchSize` 16. Rusk queues 64 of an

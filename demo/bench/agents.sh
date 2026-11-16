@@ -26,12 +26,14 @@
 # hyperlane-monorepo/rust/main. DUSK_TX is the dusk-tx binary.
 #
 # As on testnet, the agents batch their contract reads through Multicall for
-# Dusk and the relayer sends up to 16 deliveries to Dusk together. setup
-# deploys the multicall from DUSK_MULTICALL_WASM, its v0.1.0 Wasm (a
-# dusk-multicall release asset, or its `make wasm`), at the ID it has on
-# testnet, as deploy/local-evm-core.sh does. BATCH_READS=0 leaves
-# batchContractAddress out of the configs, and DUSK_RELAYER_MAX_BATCH_SIZE
-# sets the relayer's maxBatchSize (16).
+# Dusk and the relayer delivers to Dusk one at a time. setup deploys the
+# multicall from DUSK_MULTICALL_WASM, its v0.1.0 Wasm (a dusk-multicall
+# release asset, or its `make wasm`), at the ID it has on testnet, as
+# deploy/local-evm-core.sh does. BATCH_READS=0 leaves batchContractAddress
+# out of the configs. PIPELINE_DELIVERIES=1 turns on the agents'
+# experimental pipelined deliveries (pipelineDeliveries, with maxBatchSize
+# DUSK_RELAYER_MAX_BATCH_SIZE, 16 by default, 2 to 64), which docs/costs.md
+# measured.
 
 set -euo pipefail
 umask 077
@@ -83,15 +85,23 @@ MULTICALL_OWNER=r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVS
 MULTICALL_ID=93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4
 MULTICALL_RECORD="$BENCH_DIR/deploy/multicall.json"
 BATCH_READS="${BATCH_READS:-1}"
-DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-16}"
+PIPELINE_DELIVERIES="${PIPELINE_DELIVERIES:-0}"
 
 info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 
 [[ "$BATCH_READS" =~ ^[01]$ ]] || fail "BATCH_READS must be 1 (batch through Multicall for Dusk) or 0, not '$BATCH_READS'"
-[[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
-    || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
+[[ "$PIPELINE_DELIVERIES" =~ ^[01]$ ]] \
+    || fail "PIPELINE_DELIVERIES must be 0 (deliveries to Dusk one at a time) or 1 (pipelined, experimental), not '$PIPELINE_DELIVERIES'"
+if [ "$PIPELINE_DELIVERIES" = 1 ]; then
+    DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-16}"
+    [[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -ge 2 ] \
+        && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
+        || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 2 to 64 for pipelined deliveries, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
+elif [ -n "${DUSK_RELAYER_MAX_BATCH_SIZE+x}" ]; then
+    fail "DUSK_RELAYER_MAX_BATCH_SIZE only counts with PIPELINE_DELIVERIES=1: the relayer delivers to Dusk one at a time otherwise"
+fi
 
 state() { jq -r "$1" "$BENCH_DIR/deploy/deployment.json"; }
 dusk_query() { "$DUSK_TX" query --rues-url "http://127.0.0.1:${DUSK_PORT[harness]}/" "$@"; }
@@ -194,7 +204,6 @@ SOLIDITY_DIR=$SOLIDITY_DIR
 AGENT_STATE_DIR=$BENCH_DIR/state
 DUSK_SIGNER_KEY_FILE=$BENCH_DIR/secrets/dusk-signer.key
 DUSK_MULTICALL=$dusk_multicall
-DUSK_RELAYER_MAX_BATCH_SIZE=$DUSK_RELAYER_MAX_BATCH_SIZE
 EOF
     info "Deploying with deploy/testnet.sh (a few minutes)..."
     TESTNET_ENV="$ENV_FILE" bash "$DUSK_DIR/deploy/testnet.sh" deploy
@@ -228,10 +237,11 @@ EOF
 # Derive one config per agent from the testnet.sh templates, as
 # deploy/local-agents.sh does, with each agent's RPC URLs on its proxy ports.
 # Every Dusk chain batches its reads through the multicall setup deployed
-# (batchContractAddress), unless BATCH_READS=0, and the relayer sends up to
-# DUSK_RELAYER_MAX_BATCH_SIZE deliveries together (maxBatchSize), as the
-# configs agent-configs writes for testnet do. `configs` alone rewrites them
-# for the agents' next start.
+# (batchContractAddress), unless BATCH_READS=0, and the relayer delivers to
+# Dusk one at a time, as the configs agent-configs writes for testnet do,
+# unless PIPELINE_DELIVERIES=1 (pipelineDeliveries, maxBatchSize
+# DUSK_RELAYER_MAX_BATCH_SIZE). `configs` alone rewrites them for the agents'
+# next start.
 cmd_configs() {
     local out="$BENCH_DIR/deploy" i name multicall=""
     if [ "$BATCH_READS" = 1 ]; then
@@ -242,12 +252,16 @@ cmd_configs() {
     # shellcheck disable=SC2016
     local batch_reads='if $multicall == "" then del(.chains.dusk.batchContractAddress)
         else .chains.dusk.batchContractAddress = $multicall end'
+    # shellcheck disable=SC2016
+    local deliveries='if $pipeline then .chains.dusk.pipelineDeliveries = true | .chains.dusk.maxBatchSize = $batch
+        else del(.chains.dusk.pipelineDeliveries, .chains.dusk.maxBatchSize) end'
     mkdir -p "$AGENTS_DIR" "$LOG_DIR" "$BENCH_DIR/checkpoints" "$BENCH_DIR/state"
     jq --arg dusk "http://127.0.0.1:${DUSK_PORT[relayer]}/" --arg evm "http://127.0.0.1:${EVM_PORT[relayer]}" \
-        --arg multicall "$multicall" --argjson batch "$DUSK_RELAYER_MAX_BATCH_SIZE" \
+        --arg multicall "$multicall" --argjson pipeline "$([ "$PIPELINE_DELIVERIES" = 1 ] && echo true || echo false)" \
+        --argjson batch "${DUSK_RELAYER_MAX_BATCH_SIZE:-1}" \
         '.allowLocalCheckpointSyncers = true
          | .chains.dusk.rpcUrls = [{http: $dusk}] | .chains.anvil.rpcUrls = [{http: $evm}]
-         | .chains.dusk.maxBatchSize = $batch | '"$batch_reads" \
+         | '"$deliveries"' | '"$batch_reads" \
         "$out/relayer.json" > "$AGENTS_DIR/relayer.json"
     for i in 1 2 3; do
         name="validator-dusk-$i"
@@ -265,7 +279,9 @@ cmd_configs() {
           checkpointSyncer: {type: "localStorage", path: $cp},
           chains: {anvil: (.chains.anvil | .rpcUrls = [{http: $evm}])}}' \
         "$out/relayer.json" > "$AGENTS_DIR/validator-evm.json"
-    ok "Agent configs in $AGENTS_DIR: reads batched through ${multicall:-nothing (single queries)}, relayer maxBatchSize $DUSK_RELAYER_MAX_BATCH_SIZE"
+    local delivering="one at a time"
+    [ "$PIPELINE_DELIVERIES" = 0 ] || delivering="pipelined, up to $DUSK_RELAYER_MAX_BATCH_SIZE together (experimental)"
+    ok "Agent configs in $AGENTS_DIR: reads batched through ${multicall:-nothing (single queries)}, deliveries to Dusk $delivering"
 }
 
 # ── proxy and sampler ────────────────────────────────────────────────────────

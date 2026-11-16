@@ -275,14 +275,11 @@ absolute path.
   from this deployment's two IGPs, the Sepolia one included
   ([costs.md](costs.md#what-the-relayer-requires)). A message nobody paid
   for, or paid too little for, waits in the relayer's queue; a later
-  payment releases it. The relayer sends the deliveries to Dusk it has
-  ready together, up to `DUSK_RELAYER_MAX_BATCH_SIZE` (16), as consecutive
-  transactions of its account that can share a block (`maxBatchSize`;
-  `deploy/testnet.env.example` explains the number). That needs agents from
-  the `testnet/dusk-agents` branch dated 2026-11-16 or later: older ones
-  send a batch that stays in the mempool for about 12 minutes again with
-  new nonces, and the copies revert and pay their whole gas limit. With
-  older agents, set `DUSK_RELAYER_MAX_BATCH_SIZE=1`. Run one relayer:
+  payment releases it. The relayer delivers to Dusk one message at a time,
+  about one every two blocks: measured locally, a burst of 39 took 778 s.
+  Its pipelined deliveries took a burst of 40 in 85.7 s, but they are
+  experimental and stay off on testnet
+  ([operations.md](operations.md#deliveries-to-dusk)). Run one relayer:
 
   ```bash
   cd hyperlane-monorepo/rust/main

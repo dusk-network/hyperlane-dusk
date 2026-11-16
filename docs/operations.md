@@ -2,7 +2,8 @@
 
 How to handle keys and secrets, fund dispatch fees, keep the relaying fees
 priced and collect them, top up a message that paid for too little gas,
-and recover from uncertain transactions when running Hyperlane on Dusk. The
+recover from uncertain transactions, and how the relayer delivers to Dusk,
+when running Hyperlane on Dusk. The
 local demo uses deterministic development keys and is not a template for
 production.
 
@@ -346,18 +347,56 @@ holds it, retrying every 500 ms, and drops it if they haven't arrived after
 about 5 seconds. Any other refusal still stops it, as `... submission
 failed: Preverify rejected before propagation ...`, and a propagation the
 node doesn't confirm is reported as `... Propagation outcome unknown ...`.
-The relayer pipelines Dusk deliveries with both flags when its Dusk chain's
-`maxBatchSize` is above 1 and `dusk-tx call --help` lists them, and sends
-them one at a time otherwise. `agent-configs` sets `maxBatchSize` to
-`DUSK_RELAYER_MAX_BATCH_SIZE`, 16 by default and at most 64, the most of an
-account's transactions Rusk queues ahead of its next nonce: a batch goes out
-one transaction at a time, each once the node holds the one before, and a
-refused one ends the batch, sending the rest one at a time. Pipelining needs
-agents from the `testnet/dusk-agents` branch dated 2026-11-16 or later.
-Older agents send a batch that stays in the mempool for about 12 minutes
-again, with new nonces, and the copies revert and pay their whole gas
-limit: run them with `DUSK_RELAYER_MAX_BATCH_SIZE=1`. The default stays at
-16 until batches from the fixed agents have been measured.
+The relayer uses both flags only when it pipelines its deliveries
+([below](#deliveries-to-dusk)), which the configs `agent-configs` writes
+leave off.
+
+## Deliveries to Dusk
+
+A relayer delivers to Dusk one message at a time. For each delivery it runs
+`dusk-tx call`, which signs with the account's next nonce, as the node
+reports it, and returns once the transaction is in a block. The next
+delivery reaches the node after the next block's round has started, so one
+relayer key delivers about a message every two blocks, 3 a minute: in the
+local measurement, a burst of 39 transfers to Dusk took 778 s
+([costs.md](costs.md#throughput-into-dusk)). A delivery sent again while its
+first transaction still waits in the mempool takes the same nonce, and the
+node refuses it, so at most one of them lands.
+
+The agents can also pipeline deliveries: send a batch as consecutive
+transactions of the relayer's account, each signed with a nonce the relayer
+chooses and keeps in `eventCursorDir`, so that they share a block. Only a
+Dusk chain that sets both `pipelineDeliveries: true` and a `maxBatchSize`
+above 1 (at most 64) pipelines, and it is experimental. While it pipelines,
+the relayer must be the only process that signs with its key, no validator,
+wallet or second relayer, and the last review of it found six issues that
+aren't fixed yet, which the agent's README
+(`rust/main/chains/hyperlane-dusk/README.md` in the monorepo fork) lists: a
+transaction signed before pipelining is switched off can still land after
+it, proxy settings reach the helper's loopback signer, a filler can lose the
+message it replaced, recovered deliveries escape the relayer's gas
+accounting, fillers bypass the bound of 64 outstanding deliveries, and a
+batch's simulations can run past its deadline. Don't turn it on for testnet
+or mainnet until they are fixed. With `maxBatchSize` 16 and the agents from
+before it was opt-in (`0d8af2dda2`), the measurement delivered a burst of 40
+transfers in four blocks, every other block, the last 85.7 s after its
+dispatch: at most 48 deliveries a minute. All 106 deliveries of that run
+executed once, with no second copies and none failed, a relayer restart in
+the middle of a batch included.
+
+`agent-configs` writes neither setting, so every agent build delivers one
+at a time. `maxBatchSize` alone would deliver one at a time with the current
+agents too, but the relayer would take that many ready messages at a time,
+try them as a batch, which the chain declines, and fall back to one at a
+time with a warning for each batch; and agents from before
+`pipelineDeliveries` existed (`testnet/dusk-agents` before `d549a2fc73`)
+pipelined on `maxBatchSize` alone. An env file from before that still sets
+`DUSK_RELAYER_MAX_BATCH_SIZE` gets a warning that it is no longer read. To
+try pipelining in a local rehearsal, add both settings to the relayer's Dusk
+chain by hand, or run the bench with `PIPELINE_DELIVERIES=1`
+([demo/bench](../demo/bench/README.md)). Turning it off needs no manual
+step: the relayer waits out the nonces a pipelined run left in
+`eventCursorDir`, which must not be deleted by hand.
 
 ## CI
 

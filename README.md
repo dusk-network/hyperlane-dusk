@@ -207,7 +207,6 @@ A Dusk chain entry in an agent config looks like this:
   "eventCursorDir": "/var/lib/hyperlane/dusk-relayer-events",
   "gasLimit": 5000000,
   "gasPrice": 1,
-  "maxBatchSize": 16,
   "batchContractAddress": "0x93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4",
   "mailbox": "0x<mailbox contract id>",
   "interchainGasPaymaster": "0x<igp contract id>",
@@ -217,14 +216,15 @@ A Dusk chain entry in an agent config looks like this:
 }
 ```
 
-With `maxBatchSize` above 1 (at most 64), a relayer sends the deliveries it
-has ready together, as consecutive transactions of its account that can
-share a block; one at a time, a relayer key delivers one message every two
-blocks. It needs a `dusk-tx` that takes `call --nonce --no-wait`, as this
-repository's does, and agents from the `testnet/dusk-agents` branch dated
-2026-11-16 or later: older ones send a batch that stays in the mempool for
-about 12 minutes again with new nonces, and the copies revert and pay their
-whole gas limit. Give older agents `maxBatchSize` 1.
+A relayer delivers to Dusk one message at a time, about one every two
+blocks per relayer key: measured locally, a burst of 39 transfers to Dusk
+took 778 s. Pipelined deliveries, several of the relayer's transactions
+sharing a block, took a burst of 40 in four blocks, the last 85.7 s after
+its dispatch, but they are experimental: only a chain that sets both
+`pipelineDeliveries: true` and a `maxBatchSize` above 1 pipelines, the
+configs `deploy/testnet.sh agent-configs` writes set neither, and they stay
+off on testnet and mainnet for now.
+[docs/operations.md](docs/operations.md#deliveries-to-dusk) has the details.
 
 `batchContractAddress` names Multicall for Dusk, which runs at that ID on
 mainnet and testnet: the agents batch their contract reads through it, and

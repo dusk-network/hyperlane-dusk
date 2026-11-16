@@ -14,8 +14,9 @@ with the configs `deploy/testnet.sh agent-configs` writes, and the native
 DUSK route. Each agent reaches Rusk and Anvil through its own port of a
 logging proxy. As on testnet, the agents batch their contract reads through
 Multicall for Dusk (`batchContractAddress`), which the setup deploys on the
-local chain at the ID it has on testnet, and the relayer sends up to 16
-deliveries to Dusk together (`maxBatchSize`).
+local chain at the ID it has on testnet, and the relayer delivers to Dusk
+one at a time. `PIPELINE_DELIVERIES=1` turns on its experimental pipelined
+deliveries instead ([docs/operations.md](../../docs/operations.md#deliveries-to-dusk)).
 
 | File | What it does |
 |---|---|
@@ -49,9 +50,12 @@ python3 demo/bench/report.py "$BENCH_DIR" > report.md
 `hyperlane-monorepo/rust/main/config`). Phase lengths and counts are
 environment variables at the top of `scenario.sh`. `PHASES` picks the load
 phases to run, `BATCH_READS=0` leaves `batchContractAddress` out of the
-configs (every read is one query) and `DUSK_RELAYER_MAX_BATCH_SIZE` sets the
-relayer's `maxBatchSize`. The comparison in docs/costs.md without the
-multicall ran:
+configs (every read is one query), and `PIPELINE_DELIVERIES=1` gives the
+relayer `pipelineDeliveries` and a `maxBatchSize` of
+`DUSK_RELAYER_MAX_BATCH_SIZE` (16, from 2 to 64). The runs in docs/costs.md
+pipelined with agents from before that setting existed (`0d8af2dda2`), on
+`maxBatchSize` 16 alone; with later agents they need
+`PIPELINE_DELIVERIES=1`. The comparison without the multicall ran:
 
 ```bash
 BATCH_READS=0 PHASES="d2e d2e-backlog" IDLE2_SECS=600 bash demo/bench/scenario.sh

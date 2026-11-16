@@ -35,7 +35,6 @@ source "$ENV_FILE"
 DUSK_TX="${DUSK_TX:-$DUSK_DIR/target/release/dusk-tx}"
 OUT_DIR="$DUSK_DIR/deploy/out/$DEPLOY_NAME"
 AGENTS_DIR="$OUT_DIR/agents"
-DUSK_RELAYER_MAX_BATCH_SIZE="${DUSK_RELAYER_MAX_BATCH_SIZE:-16}"
 AGENT_RUN_DIR="${AGENT_RUN_DIR:-$DUSK_DIR/../hyperlane-monorepo/rust/main}"
 AGENT_BIN_DIR="${AGENT_BIN_DIR:-$AGENT_RUN_DIR/target/debug}"
 
@@ -110,11 +109,9 @@ evm_announced() {
 write_configs() {
     local i port=9091 cfg
     mkdir -p "$AGENTS_DIR/logs" "$AGENTS_DIR/checkpoints" "$AGENT_STATE_DIR"
-    # The relayer sends up to DUSK_RELAYER_MAX_BATCH_SIZE deliveries to Dusk
-    # together, as consecutive transactions, as agent-configs sets it.
-    jq --argjson batch "$DUSK_RELAYER_MAX_BATCH_SIZE" \
-        '.allowLocalCheckpointSyncers = true | .chains.dusk.maxBatchSize = $batch' \
-        "$OUT_DIR/relayer.json" > "$AGENTS_DIR/relayer.json"
+    # The relayer's config is agent-configs', which delivers to Dusk one at a
+    # time, as on testnet.
+    jq '.allowLocalCheckpointSyncers = true' "$OUT_DIR/relayer.json" > "$AGENTS_DIR/relayer.json"
     for i in "${!DUSK_ORIGIN_VALIDATOR_KEYS[@]}"; do
         cfg="validator-dusk-$((i + 1))"
         jq --arg db "$AGENT_STATE_DIR/$cfg-db" --arg cursors "$AGENT_STATE_DIR/$cfg-events" \
@@ -135,8 +132,6 @@ write_configs() {
 cmd_start() {
     [[ "$EVM_RPC" =~ ^http://(localhost|127\.0\.0\.1)[:/] ]] \
         || fail "local-agents.sh uses public development keys and is for local rehearsals only (EVM_RPC is $EVM_RPC)"
-    [[ "$DUSK_RELAYER_MAX_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_RELAYER_MAX_BATCH_SIZE" -le 64 ] \
-        || fail "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64, not '$DUSK_RELAYER_MAX_BATCH_SIZE'"
     [ -f "$OUT_DIR/relayer.json" ] && [ -f "$OUT_DIR/validator-dusk.json" ] \
         || fail "No agent configs in $OUT_DIR; run: TESTNET_ENV=$ENV_FILE bash deploy/testnet.sh agent-configs"
     [ -x "$AGENT_BIN_DIR/relayer" ] && [ -x "$AGENT_BIN_DIR/validator" ] \

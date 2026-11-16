@@ -24,9 +24,10 @@
 #   5. The 2 KiB message from Dusk, which paid for too little gas, is topped
 #      up with `dusk-tx pay-for-gas`: half of what it lacks doesn't deliver
 #      it; the rest, found by its nonce, does.
-#   6. A burst of transfers from Anvil is delivered with deliveries sharing
-#      Dusk blocks: the relayer sends the ones it has ready together, as
-#      consecutive transactions of its account (maxBatchSize).
+#   6. A burst of transfers from Anvil is delivered, every delivery once and
+#      none failing: one at a time, each in a block of its own, as
+#      agent-configs writes the relayer's config, or, with the experimental
+#      pipelined deliveries turned on in it, several sharing a block.
 #   7. `deploy/testnet.sh claim` pays the Dusk IGP's and ProtocolFee's fees
 #      to the deployer, and the Anvil IGP's to its beneficiary.
 #
@@ -46,6 +47,7 @@ source "$ENV_FILE"
 DUSK_TX="${DUSK_TX:-$DUSK_DIR/target/release/dusk-tx}"
 STATE="$DUSK_DIR/deploy/out/$DEPLOY_NAME/deployment.json"
 RELAYER_LOG="$DUSK_DIR/deploy/out/$DEPLOY_NAME/agents/logs/relayer.log"
+RELAYER_CONFIG="$DUSK_DIR/deploy/out/$DEPLOY_NAME/agents/relayer.json"
 # How long a delivery may take, and how long an unpaid message is watched.
 DELIVERY_TIMEOUT="${DELIVERY_TIMEOUT:-600}"
 UNPAID_WATCH="${UNPAID_WATCH:-120}"
@@ -265,9 +267,12 @@ info "delivering it used $(evm_delivery_gas "$heavy_id") gas"
 
 # ── 6. A burst of transfers from Anvil ───────────────────────────────────────
 
-# The relayer sends the deliveries it has ready together, as consecutive
-# transactions of its account (maxBatchSize), and they share Dusk blocks.
-# One at a time, it delivered one every two blocks.
+# The relayer delivers to Dusk as its config says: one at a time, as
+# agent-configs writes it, each delivery in a block of its own; or, with
+# pipelineDeliveries and a maxBatchSize above 1 (experimental), several as
+# consecutive transactions of its account that share a block.
+pipelined="$(jq -r '(.chains.dusk.pipelineDeliveries == true) and ((.chains.dusk.maxBatchSize // 1) > 1)' \
+    "$RELAYER_CONFIG")" || fail "Can't read the relayer's config $RELAYER_CONFIG"
 from_height="$(dusk_height)"
 quote="$(cast call "$EVM_TOKEN" "quoteGasPayment(uint32)(uint256)" "$DUSK_DOMAIN" --rpc-url "$EVM_RPC" | num)"
 nonce="$(cast nonce "$EVM_USER" --rpc-url "$EVM_RPC")"
@@ -287,17 +292,26 @@ done
 info "$BURST transfers from $EVM_CHAIN_NAME sent at once"
 burst_delivered() { local id; for id in "${burst_ids[@]}"; do dusk_delivered "$id" || return 1; done; }
 wait_until "$DELIVERY_TIMEOUT" "the $BURST transfers from $EVM_CHAIN_NAME were delivered" burst_delivered
-# The Mailbox's executed process transactions since the burst, by block.
-per_block="$(gql "query { blockTxs(range: [$from_height, $(dusk_height)], contract: \"$DUSK_MAILBOX\") { blockHeight err tx { callData { fnName } } } }" \
-    | jq -c '[.blockTxs[] | select(.err == null and .tx.callData.fnName == "process") | .blockHeight]
-             | group_by(.) | map({height: .[0], deliveries: length})')" \
+# The Mailbox's process transactions since the burst: those executed, by
+# block, and those that failed, which none may.
+txs="$(gql "query { blockTxs(range: [$from_height, $(dusk_height)], contract: \"$DUSK_MAILBOX\") { blockHeight err tx { callData { fnName } } } }" \
+    | jq -c '[.blockTxs[] | select(.tx.callData.fnName == "process")]')" \
     || fail "Can't read the Dusk Mailbox's transactions since block $from_height"
+per_block="$(jq -c '[.[] | select(.err == null) | .blockHeight] | group_by(.) | map({height: .[0], deliveries: length})' <<<"$txs")"
 info "deliveries to Dusk by block: $per_block"
+[ "$(jq '[.[] | select(.err != null)] | length' <<<"$txs")" = 0 ] \
+    || fail "deliveries to Dusk failed since the burst: $(jq -c '[.[] | select(.err != null) | {blockHeight, err}]' <<<"$txs")"
 [ "$(jq '[.[].deliveries] | add // 0' <<<"$per_block")" -ge "$BURST" ] \
     || fail "the Dusk Mailbox executed fewer than $BURST deliveries since the burst"
-[ "$(jq '[.[].deliveries] | max // 0' <<<"$per_block")" -ge 2 ] \
-    || fail "no two of the $BURST deliveries shared a Dusk block: the relayer sent them one at a time"
-ok "the relayer delivered the $BURST transfers in $(jq length <<<"$per_block") Dusk blocks, up to $(jq '[.[].deliveries] | max' <<<"$per_block") in one"
+most="$(jq '[.[].deliveries] | max // 0' <<<"$per_block")"
+if [ "$pipelined" = true ]; then
+    [ "$most" -ge 2 ] \
+        || fail "no two of the $BURST deliveries shared a Dusk block, though the relayer's config pipelines them"
+else
+    [ "$most" -le 1 ] \
+        || fail "the relayer sent $most deliveries to Dusk in one block, though its config delivers one at a time"
+fi
+ok "the relayer delivered the $BURST transfers in $(jq length <<<"$per_block") Dusk blocks, up to $most in one ($([ "$pipelined" = true ] && echo "pipelined" || echo "one at a time")), and none failed"
 
 # ── 7. Collect the fees ──────────────────────────────────────────────────────
 

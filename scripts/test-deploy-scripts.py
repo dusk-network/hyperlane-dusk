@@ -1376,22 +1376,22 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(relayer["chains"]["sepolia"]["interchainGasPaymaster"], self.evm_igp)
         self.assertEqual(relayer["chains"]["dusk"]["interchainGasPaymaster"], "0x" + IGP)
 
-    def test_the_relayer_sends_deliveries_to_dusk_together(self):
-        # maxBatchSize above 1: the relayer sends that many deliveries to Dusk
-        # as consecutive transactions, which can share a block.
-        self.assert_ok(self.run_script("agent-configs"))
-        relayer = json.loads(self.relayer_config.read_text())
-        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 16)
-        self.assertNotIn("maxBatchSize", relayer["chains"]["sepolia"])
-        validator = json.loads((self.out / "validator-dusk.json").read_text())
-        self.assertNotIn("maxBatchSize", validator["chains"]["dusk"])
-        self.assert_ok(self.run_script("agent-configs", DUSK_RELAYER_MAX_BATCH_SIZE=1))
-        self.assertEqual(json.loads(self.relayer_config.read_text())["chains"]["dusk"]["maxBatchSize"], 1)
-        for value in ("0", "65", "x", "-1"):
-            with self.subTest(value=value):
-                self.assert_fails(self.run_script("agent-configs", DUSK_RELAYER_MAX_BATCH_SIZE=value),
-                                  "DUSK_RELAYER_MAX_BATCH_SIZE must be a whole number from 1 to 64")
-                self.assertFalse(self.relayer_config.exists())
+    def test_the_relayer_delivers_to_dusk_one_at_a_time(self):
+        # Pipelined deliveries are experimental: the configs carry neither
+        # pipelineDeliveries nor maxBatchSize, so every agent build delivers
+        # one at a time. An env file from before, which still sets
+        # DUSK_RELAYER_MAX_BATCH_SIZE, gets a warning and the same configs.
+        for settings in ({}, {"DUSK_RELAYER_MAX_BATCH_SIZE": 16}):
+            with self.subTest(settings=settings):
+                result = self.run_script("agent-configs", **settings)
+                self.assert_ok(result)
+                relayer = json.loads(self.relayer_config.read_text())
+                validator = json.loads((self.out / "validator-dusk.json").read_text())
+                for chain in (relayer["chains"]["dusk"], relayer["chains"]["sepolia"], validator["chains"]["dusk"]):
+                    self.assertNotIn("maxBatchSize", chain)
+                    self.assertNotIn("pipelineDeliveries", chain)
+                self.assertIn("The relayer delivers to Dusk one at a time", result.stderr)
+                self.assertEqual("DUSK_RELAYER_MAX_BATCH_SIZE is no longer read" in result.stderr, bool(settings))
 
     def test_the_agents_batch_contract_reads_through_the_multicall(self):
         self.assert_ok(self.run_script("agent-configs"))
@@ -2440,8 +2440,11 @@ class AgentEnvironment(unittest.TestCase):
             with self.subTest(agent=name):
                 self.assert_clean(environments[name], agents / f"{name}.json", expected[name])
                 self.assertEqual(environments[name]["DUSK_TX_BIN"], str(dusk_tx))
-        # The relayer sends deliveries to Dusk together.
-        self.assertEqual(json.loads((agents / "relayer.json").read_text())["chains"]["dusk"]["maxBatchSize"], 16)
+        # The relayer runs agent-configs' config, which delivers to Dusk one
+        # at a time.
+        dusk = json.loads((agents / "relayer.json").read_text())["chains"]["dusk"]
+        self.assertNotIn("maxBatchSize", dusk)
+        self.assertNotIn("pipelineDeliveries", dusk)
         stop = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "stop"],
                               env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(stop.returncode, 0, stop.stderr)
@@ -2579,7 +2582,7 @@ class GenAgentConfigsPassword(unittest.TestCase):
         ])
         self.assertEqual(relayer["chains"]["anvil"]["interchainGasPaymaster"], "0x" + "03" * 20)
 
-    def test_relayer_sends_deliveries_to_dusk_together(self):
+    def test_relayer_delivers_to_dusk_one_at_a_time(self):
         stub = self.bin / "dusk-tx"
         write_executable(stub, EXPORT_STUB)
         result = self.generate("password", stub)
@@ -2587,8 +2590,9 @@ class GenAgentConfigsPassword(unittest.TestCase):
         generated = json.loads(result.stdout)
         relayer = json.loads(Path(generated["relayer"]).read_text())
         shutil.rmtree(generated["runDir"])
-        self.assertEqual(relayer["chains"]["dusk"]["maxBatchSize"], 16)
-        self.assertNotIn("maxBatchSize", relayer["chains"]["anvil"])
+        for chain in relayer["chains"].values():
+            self.assertNotIn("maxBatchSize", chain)
+            self.assertNotIn("pipelineDeliveries", chain)
 
     def test_agents_batch_contract_reads_through_the_multicall(self):
         stub = self.bin / "dusk-tx"
