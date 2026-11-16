@@ -143,10 +143,12 @@ and `revenue` check that the Dusk node is on `DUSK_EXPECTED_CHAIN_ID` and the
 EVM RPC on `EVM_CHAIN_ID`: the contract IDs and addresses in the state can
 exist on another network, a Dusk ID being derived from the bytecode, the
 deployer key and a nonce. They also check that the recorded contracts are
-the deployment's: the Mailbox at `DUSK_DOMAIN`, the fee contracts bound to
-it, the IGP its default hook, and the Sepolia contracts created as
-`deploy` recorded. Each `dusk-tx` command they run is bound to the chain
-too (below).
+the deployment's: the Mailbox at `DUSK_DOMAIN`, the fee contracts called
+from its hooks and taking their calls from what calls them there (the IGP
+is its default hook, the ProtocolFee in its required aggregation hook), the
+Sepolia contracts created as `deploy` recorded, and the Sepolia token bound
+to `EVM_MAILBOX` and the recorded ISM. Each `dusk-tx` command they run is
+bound to the chain too (below).
 
 `evm-igp` first checks that the Sepolia IGP reads Dusk's pricing from the
 StorageGasOracle `deploy` recorded, and stops before sending anything when it

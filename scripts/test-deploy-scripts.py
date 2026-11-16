@@ -1600,9 +1600,10 @@ class TestnetFeeCommands(DeployedTestnet):
     def test_fee_commands_check_the_recorded_deployment(self):
         other = "a9" * 32
         cases = [
-            # Dispatches pay another IGP than the one dusk-igp would price.
+            # Dispatches pay another IGP than the one dusk-igp would price:
+            # the Mailbox doesn't call the recorded one.
             ({f"{MAILBOX}/default_hook": {"value": other}}, ["dusk-igp", "--apply"],
-             f"The Dusk Mailbox {MAILBOX}'s default hook is {other}, not the IGP {IGP}"),
+             f"The Dusk igp {IGP} takes its calls from the Mailbox {MAILBOX}, which doesn't call it"),
             # The recorded IGP or ProtocolFee is another deployment's.
             ({f"{IGP}/mailbox": {"value": other}}, ["dusk-igp", "--apply"],
              f"The Dusk igp {IGP} takes its calls from {other}, which is neither the Mailbox {MAILBOX}"),
@@ -1647,13 +1648,36 @@ class TestnetFeeCommands(DeployedTestnet):
     def test_fee_contracts_may_take_their_calls_from_a_hook_of_the_mailbox(self):
         # As dusk-tx deploy-hyperlane wires it (dusk_queries), the ProtocolFee
         # takes its calls from the aggregation hook that is the Mailbox's
-        # required hook. A deployment may also bind it to the Mailbox itself.
-        for caller in (AGGREGATION_HOOK, MAILBOX):
+        # required hook. A deployment may also bind it to the Mailbox itself,
+        # as the required hook.
+        for caller, required in ((AGGREGATION_HOOK, AGGREGATION_HOOK), (MAILBOX, PROTOCOL_FEE)):
             with self.subTest(caller=caller):
                 self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 5}
                 self.queries[f"{PROTOCOL_FEE}/mailbox"] = {"value": caller}
+                self.queries[f"{MAILBOX}/required_hook"] = {"value": required}
                 self.assert_ok(self.run_script("claim"))
                 self.assertIn(f"--contract {PROTOCOL_FEE}", " ".join(self.traced("dusk-tx claim-fees")))
+
+    def test_a_fee_contract_the_mailbox_doesnt_call_is_refused(self):
+        # Bound to the Mailbox, but neither its required nor its default
+        # hook: the Mailbox never calls it, called by the aggregation hook or
+        # not, so it isn't this deployment's. Before, binding to the Mailbox
+        # was enough, and claim signed for it.
+        self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 5}
+        self.queries[f"{PROTOCOL_FEE}/mailbox"] = {"value": MAILBOX}
+        for hooks in ([MERKLE_TREE_HOOK], [MERKLE_TREE_HOOK, PROTOCOL_FEE]):
+            with self.subTest(aggregated=hooks):
+                self.queries[f"{AGGREGATION_HOOK}/hooks"] = {"value": hooks}
+                for command in (["claim"], ["revenue"], ["agent-configs"]):
+                    result = self.run_script(*command)
+                    if command == ["revenue"]:
+                        # revenue only reads, and checks the chains alone.
+                        self.assert_ok(result)
+                        continue
+                    self.assert_fails(result, f"The Dusk protocol_fee {PROTOCOL_FEE} takes its calls from the "
+                                              f"Mailbox {MAILBOX}, which doesn't call it")
+                    self.assertEqual(self.traced("dusk-tx claim-fees") + self.traced("cast send"), [])
+                    self.assertFalse(self.relayer_config.exists())
 
     def test_claim_collects_both_chains(self):
         self.queries[f"{IGP}/claimable_fees"] = {"value": 6000000000}

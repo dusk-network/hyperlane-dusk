@@ -602,16 +602,23 @@ check_evm_chain() {
 # (its `mailbox`). dusk-tx deploy-hyperlane binds the IGP, the Mailbox's
 # default hook, to the Mailbox, and the ProtocolFee to the aggregation hook
 # that is the Mailbox's required hook and calls it. So a fee contract of
-# this deployment takes its calls from the Mailbox, or from one of the
-# Mailbox's hooks that takes its own from the Mailbox and calls it.
+# this deployment is reached from the Mailbox's hooks and takes its calls
+# from whatever calls it there: it is the Mailbox's required or default
+# hook and takes its calls from the Mailbox, or one of those hooks calls it,
+# takes its own from the Mailbox and is the one it takes its calls from. A
+# fee contract that only names the Mailbox, which never calls it, is
+# another deployment's, or none.
 check_dusk_hook_binding() {
     local name="$1" contract="$2" mailbox="$3" bound method hook hook_bound hooks
     bound="$(dusk_value "the caller of the Dusk $name $contract" \
         --contract "$contract" --method mailbox --return-type bytes32)" || exit 1
-    [ "$bound" != "$mailbox" ] || return 0
     for method in required_hook default_hook; do
         hook="$(dusk_value "the $method of the Dusk Mailbox $mailbox" \
             --contract "$mailbox" --method "$method" --return-type bytes32)" || exit 1
+        if [ "$bound" = "$mailbox" ]; then
+            [ "$contract" != "$hook" ] || return 0
+            continue
+        fi
         [ "$bound" = "$hook" ] || continue
         hook_bound="$(dusk_value "the caller of the Dusk Mailbox's $method $hook" \
             --contract "$hook" --method mailbox --return-type bytes32)" || exit 1
@@ -623,6 +630,8 @@ check_dusk_hook_binding() {
             || fail "The Dusk $name $contract takes its calls from the Mailbox's $method $hook, which doesn't call it (it calls $hooks)"
         return 0
     done
+    [ "$bound" != "$mailbox" ] \
+        || fail "The Dusk $name $contract takes its calls from the Mailbox $mailbox, which doesn't call it: it is neither the Mailbox's required hook nor its default hook"
     fail "The Dusk $name $contract takes its calls from $bound, which is neither the Mailbox $mailbox recorded in $STATE nor one of its hooks"
 }
 
