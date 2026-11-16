@@ -87,6 +87,8 @@ struct Prepared {
     stdin: ChildStdin,
     /// The hash on the `Prepared TX` line.
     tx_id: String,
+    /// The nonce on that line.
+    nonce: u64,
     /// Stderr's lines after that one.
     stderr: Receiver<String>,
 }
@@ -135,12 +137,21 @@ fn prepared(url: &str, nonce: Option<&str>) -> Prepared {
             }
         }
     });
-    let tx_id = loop {
+    let (tx_id, nonce) = loop {
         let line = stderr
             .recv_timeout(STEP)
             .expect("a Prepared TX line on stderr before the go-ahead");
         if let Some(rest) = line.trim_start().strip_prefix("Prepared TX ") {
-            break rest.split(';').next().unwrap().to_owned();
+            // `<hash>; nonce <N>; reconcile ...`
+            let mut fields = rest.split(';');
+            let tx_id = fields.next().unwrap().to_owned();
+            let nonce = fields
+                .next()
+                .and_then(|field| field.trim_start().strip_prefix("nonce "))
+                .unwrap_or_else(|| panic!("no nonce on the Prepared TX line: {line}"))
+                .parse()
+                .unwrap();
+            break (tx_id, nonce);
         }
     };
     assert_eq!(tx_id.len(), 64, "{tx_id}");
@@ -148,6 +159,7 @@ fn prepared(url: &str, nonce: Option<&str>) -> Prepared {
         child,
         stdin,
         tx_id,
+        nonce,
         stderr,
     }
 }
@@ -188,8 +200,10 @@ fn the_prepared_line_is_out_before_the_go_ahead_and_send_sends_it() {
         child,
         mut stdin,
         tx_id,
+        nonce,
         stderr: _stderr,
     } = prepared(&url, Some("42"));
+    assert_eq!(nonce, 42);
     let first = requests.recv_timeout(STEP).unwrap();
     assert!(first.ends_with("/chain_id"), "{first}");
     assert!(
@@ -222,6 +236,7 @@ fn closing_stdin_before_the_go_ahead_sends_nothing() {
         stdin,
         tx_id,
         stderr,
+        ..
     } = prepared(&url, Some("42"));
     drop(stdin);
     let (status, stdout) = finish(child);
@@ -256,8 +271,10 @@ fn without_a_nonce_only_unsigned_reads_come_before_the_go_ahead() {
             child,
             mut stdin,
             tx_id,
+            nonce,
             stderr: _stderr,
         } = prepared(&url, None);
+        assert_eq!(nonce, 42, "the account's next nonce, on the prepared line");
         let before: Vec<String> = (0..2)
             .map(|_| requests.recv_timeout(STEP).unwrap())
             .collect();

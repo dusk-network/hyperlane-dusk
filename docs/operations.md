@@ -357,17 +357,23 @@ leave off.
 
 `dusk-tx call --ack-before-send` lets its caller keep a transaction's hash
 before the transaction is sent. Once `call` has signed it and printed
-`Prepared TX <hash>; ...` on stderr, it reads one more line from stdin and
-sends the transaction only if that line is `send`. Until then only unsigned
-reads reach the node: its chain ID and, without `--nonce`, the signer's
-account, for its next nonce. Nothing signed does, preverify included. The
-end of stdin, a failed read, any other line, or no line within 30 seconds
-sends nothing more: `call` prints `Not submitted: <reason>` on stderr and
-fails with `Transaction <hash> submission failed: Not submitted:
-<reason>`. With `--secret-key-stdin`, the key is then the next line of
-stdin, not the rest of it, and the caller keeps stdin open after it.
-`call --help` lists the flag, which is how a caller tells a `dusk-tx` that
-has it.
+`Prepared TX <hash>; nonce <N>; ...` on stderr, it reads one more line from
+stdin and sends the transaction only if that line is `send`. Until then only
+unsigned reads reach the node: its chain ID and, without `--nonce`, the
+signer's account, for its next nonce. Nothing signed does, preverify
+included. The end of stdin, a failed read, any other line, or no line within
+30 seconds sends nothing more: `call` prints `Not submitted: <reason>` on
+stderr and fails with
+`Transaction <hash> submission failed: Not submitted: <reason>`. With
+`--secret-key-stdin`, the key is then the next line of stdin, not the rest
+of it, and the caller keeps stdin open after it. `call --help` lists the
+flag, which is how a caller tells a `dusk-tx` that has it.
+
+The nonce on the prepared line is the one the transaction is signed with: a
+caller that keeps it can tell when the transaction can no longer execute,
+which is once a transaction with that nonce is in a final block. It comes
+after the hash's `;`, so the hash is still everything before the first `;`.
+A transaction that isn't Moonlight gets the line without a nonce.
 
 ## Deliveries to Dusk
 

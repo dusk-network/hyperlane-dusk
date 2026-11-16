@@ -183,14 +183,15 @@ enum Command {
         #[arg(long)]
         no_wait: bool,
         /// Send only on the caller's go-ahead. Once the transaction is
-        /// signed and its `Prepared TX <hash>` line is on stderr, read one
-        /// more line from stdin: only the line `send` sends it. Before
-        /// that, only unsigned reads reach the node, its chain ID and,
-        /// without --nonce, the signer's account; nothing signed does. The
-        /// end of stdin, a failed read, any other line, or none within 30
-        /// seconds sends nothing more: the command prints `Not submitted:
-        /// <reason>` on stderr and fails. With --secret-key-stdin the key
-        /// is then the next line of stdin, not the rest of it.
+        /// signed and its `Prepared TX <hash>; nonce <N>;` line is on
+        /// stderr, read one more line from stdin: only the line `send`
+        /// sends it. Before that, only unsigned reads reach the node, its
+        /// chain ID and, without --nonce, the signer's account; nothing
+        /// signed does. The end of stdin, a failed read, any other line, or
+        /// none within 30 seconds sends nothing more: the command prints
+        /// `Not submitted: <reason>` on stderr and fails. With
+        /// --secret-key-stdin the key is then the next line of stdin, not
+        /// the rest of it.
         #[arg(long)]
         ack_before_send: bool,
     },
@@ -2131,6 +2132,39 @@ mod tests {
         assert_eq!(super::format_dusk(0), "0.000000000");
         assert_eq!(super::format_dusk(1), "0.000000001");
         assert_eq!(super::format_dusk(99_701_351_464_000), "99701.351464000");
+    }
+
+    /// The prepared line names a Moonlight transaction's hash and the nonce
+    /// it is signed with. The nonce comes after the hash's `;`, so the hash
+    /// is still everything before the first `;`. A transaction whose bytes
+    /// don't give a Moonlight nonce gets the line without one.
+    #[test]
+    fn the_prepared_line_names_the_hash_and_the_moonlight_nonce() {
+        let (secret_key, _) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let tx = super::moonlight_call(
+            &secret_key,
+            dusk_core::abi::ContractId::from_bytes([2; 32]),
+            "process",
+            vec![1, 2],
+            5_000_000,
+            1,
+            42,
+            7,
+        )
+        .unwrap();
+        let tx_id = hex::encode(tx.hash().to_bytes());
+        let line = super::prepared_line(&tx_id, super::moonlight_nonce(&tx.to_var_bytes()));
+        assert_eq!(
+            line,
+            format!("  Prepared TX {tx_id}; nonce 42; reconcile this exact hash before retrying if submission is interrupted")
+        );
+        let rest = line.trim_start().strip_prefix("Prepared TX ").unwrap();
+        assert_eq!(rest.split(';').next(), Some(tx_id.as_str()));
+        assert_eq!(super::moonlight_nonce(&[1, 2, 3]), None);
+        assert_eq!(
+            super::prepared_line(&tx_id, None),
+            format!("  Prepared TX {tx_id}; reconcile this exact hash before retrying if submission is interrupted")
+        );
     }
 
     #[test]
@@ -5681,9 +5715,7 @@ async fn propagate_with(
     // remote write. This gives an interrupted operator a concrete hash to
     // reconcile before deciding whether a non-idempotent operation may be
     // retried.
-    eprintln!(
-        "  Prepared TX {tx_id}; reconcile this exact hash before retrying if submission is interrupted"
-    );
+    eprintln!("{}", prepared_line(tx_id, moonlight_nonce(tx_bytes)));
     if let Some(ack) = ack {
         // The caller answers once it has that hash, so the line must be out
         // of any buffer before the wait starts.
@@ -5702,6 +5734,30 @@ async fn propagate_with(
         .propagate_tx(tx_bytes, queue_future_nonce)
         .await
         .map_err(|error| submission_error_with_hash(tx_id, &error))
+}
+
+/// The line that names a transaction before anything sends it: its hash
+/// and, for a Moonlight transaction, the nonce it is signed with, so a
+/// caller can tell when it can no longer execute: once a transaction with
+/// that nonce is in a final block. The nonce comes after the hash's `;`, so
+/// a caller that reads the hash as everything before the first `;` reads
+/// it as before.
+fn prepared_line(tx_id: &str, nonce: Option<u64>) -> String {
+    let nonce = nonce
+        .map(|nonce| format!(" nonce {nonce};"))
+        .unwrap_or_default();
+    format!(
+        "  Prepared TX {tx_id};{nonce} reconcile this exact hash before retrying if submission is interrupted"
+    )
+}
+
+/// The nonce a transaction's bytes are signed with, if they are a Moonlight
+/// transaction.
+fn moonlight_nonce(tx_bytes: &[u8]) -> Option<u64> {
+    match Transaction::from_slice(tx_bytes) {
+        Ok(Transaction::Moonlight(tx)) => Some(tx.nonce()),
+        _ => None,
+    }
 }
 
 /// Wait for the exact transaction to be persisted and fail closed on a
