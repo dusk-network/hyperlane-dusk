@@ -2450,6 +2450,157 @@ class AgentEnvironment(unittest.TestCase):
         self.assertEqual(stop.returncode, 0, stop.stderr)
 
 
+# Stands in for an agent in demo/e2e-*.sh's launches, where AGENT_BIN_DIR
+# points: writes the environment and the directory it was started in next
+# to its config. The scripts' default binaries, which a launch must not
+# run, exit without a word.
+E2E_AGENT_STUB = """#!/bin/sh
+env > "${CONFIG_FILES%.json}.$(basename "$0").env"
+pwd > "${CONFIG_FILES%.json}.$(basename "$0").cwd"
+"""
+# An agent launch in demo/e2e-*.sh: a subshell that changes to the run
+# directory and execs the agent under `env -i`, logging, in the background.
+E2E_LAUNCH = re.compile(r'^[ \t]*\(cd "[^"]+" && \\\n[ \t]*exec env[^\n]*\\\n[ \t]*>>?"\$\w+" 2>&1\) &', re.M)
+
+
+class E2eAgentEnvironment(unittest.TestCase):
+    """Every agent the E2E scripts (demo/e2e-*.sh) start runs from
+    AGENT_BIN_DIR, in AGENT_RUN_DIR, with only PATH, HOME, DUSK_TX_BIN and
+    its CONFIG_FILES, whatever the operator's shell holds."""
+
+    def launch(self, launch, script):
+        """Run one launch as its script would, with the script's own agent
+        settings; returns the environment and directory the agent got."""
+        with tempfile.TemporaryDirectory(prefix="hyperlane-e2e-launch-") as name:
+            tmp = Path(name)
+            bin_dir, run_dir = tmp / "bin", tmp / "run"
+            default = tmp / "hyperlane-monorepo" / "rust" / "main" / "target" / "debug"
+            for directory in (bin_dir, run_dir, default, tmp / "hyperlane" / "demo"):
+                directory.mkdir(parents=True)
+            for agent in ("relayer", "validator"):
+                write_executable(bin_dir / agent, E2E_AGENT_STUB)
+                write_executable(default / agent, "#!/bin/sh\nexit 3\n")
+            config = tmp / "agent.json"
+            settings = "\n".join(line for line in script.splitlines() if line.startswith(
+                ("AGENT_RUN_DIR=", "BUILD_AGENTS=", '[ -z "${AGENT_BIN_DIR', "AGENT_BIN_DIR=")))
+            program = (f"set -eu\nSCRIPT_DIR={tmp}/hyperlane/demo\nDUSK_TX=/usr/bin/false\n"
+                       f"cfg={config}; relayer_cfg={config}; log={tmp}/agent.log; relayer_log={tmp}/agent.log\n"
+                       f"{settings}\n{launch}\nwait\n")
+            env = {"PATH": os.environ["PATH"], "HOME": str(tmp), "AGENT_BIN_DIR": str(bin_dir),
+                   "AGENT_RUN_DIR": str(run_dir), **OPERATOR_ENV}
+            result = subprocess.run(["bash", "-c", program], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dumps = list(tmp.glob("agent.*.env"))
+            self.assertEqual(len(dumps), 1, f"the launch ran no agent from AGENT_BIN_DIR: {launch.strip()}")
+            environment = dict(line.split("=", 1) for line in dumps[0].read_text().splitlines() if "=" in line)
+            cwd = dumps[0].with_suffix(".cwd").read_text().strip()
+            return environment, cwd, str(config), str(run_dir)
+
+    def test_every_agent_starts_with_a_clean_environment(self):
+        scripts = sorted((ROOT / "demo").glob("e2e-*.sh"))
+        checked = 0
+        for script in scripts:
+            text = script.read_text()
+            launches = [match.group(0) for match in E2E_LAUNCH.finditer(text)]
+            # Every agent the script starts is in a launch this test knows.
+            self.assertEqual(len(launches), text.count('"$AGENT_BIN_DIR/'), script.name)
+            if "target/debug" in text:
+                self.assertTrue(launches, f"{script.name} starts agents in a form this test doesn't know")
+            for launch in launches:
+                with self.subTest(script=script.name, launch=launch.strip()[:80]):
+                    environment, cwd, config, run_dir = self.launch(launch, text)
+                    self.assertEqual(environment["CONFIG_FILES"], config)
+                    self.assertEqual(environment["DUSK_TX_BIN"], "/usr/bin/false")
+                    self.assertEqual(cwd, run_dir)
+                    self.assertEqual(set(environment) - {"PWD", "SHLVL", "_", "OLDPWD"},
+                                     {"PATH", "HOME", "DUSK_TX_BIN", "CONFIG_FILES"})
+                checked += 1
+        # The scripts start eleven agents between them.
+        self.assertGreaterEqual(checked, 11)
+
+
+class BenchConfigs(unittest.TestCase):
+    """demo/bench/agents.sh configs: every Dusk chain batches its reads
+    through the multicall setup deployed, unless BATCH_READS=0, and a
+    multicall never deployed is refused; the relayer delivers to Dusk one at
+    a time, as on testnet, unless PIPELINE_DELIVERIES=1; each agent reaches
+    Rusk through its own proxy port."""
+
+    AGENTS = ("relayer", "validator-dusk-1", "validator-dusk-2", "validator-dusk-3")
+
+    def configs(self, deployed=True, template=None, **settings):
+        with tempfile.TemporaryDirectory(prefix="hyperlane-bench-configs-") as name:
+            root = Path(name)
+            (root / "demo" / "bench").mkdir(parents=True)
+            shutil.copy2(ROOT / "demo" / "bench" / "agents.sh", root / "demo" / "bench" / "agents.sh")
+            (root / "demo" / ".env.bridge").write_text("RUSK_HTTP_PORT=8080\nANVIL_PORT=8545\n")
+            bench = root / "bench"
+            (bench / "deploy").mkdir(parents=True)
+            dusk = {"name": "dusk", "rpcUrls": [{"http": "http://elsewhere/"}], **(template or {})}
+            (bench / "deploy" / "relayer.json").write_text(json.dumps(
+                {"db": "x", "chains": {"anvil": {"name": "anvil"}, "dusk": dusk}}))
+            (bench / "deploy" / "validator-dusk.json").write_text(json.dumps({"db": "y", "chains": {"dusk": dusk}}))
+            if deployed:
+                (bench / "deploy" / "multicall.json").write_text(json.dumps({"contract_id": MULTICALL,
+                                                                             "deployed": True}))
+            env = {"PATH": os.environ["PATH"], "HOME": str(root), "BENCH_DIR": str(bench),
+                   **{key: str(value) for key, value in settings.items()}}
+            result = subprocess.run(["bash", str(root / "demo" / "bench" / "agents.sh"), "configs"],
+                                    env=env, capture_output=True, text=True, timeout=60)
+            configs = {}
+            if result.returncode == 0:
+                for agent in (*self.AGENTS, "validator-evm"):
+                    configs[agent] = json.loads((bench / "agents" / f"{agent}.json").read_text())
+            return result, configs
+
+    def dusk(self, configs, agent):
+        return configs[agent]["chains"]["dusk"]
+
+    def test_the_agents_batch_their_reads_through_the_multicall(self):
+        result, configs = self.configs()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for agent in self.AGENTS:
+            self.assertEqual(self.dusk(configs, agent)["batchContractAddress"], "0x" + MULTICALL)
+        self.assertEqual(self.dusk(configs, "relayer")["rpcUrls"], [{"http": "http://127.0.0.1:18100/"}])
+        self.assertEqual(self.dusk(configs, "validator-dusk-2")["rpcUrls"], [{"http": "http://127.0.0.1:18102/"}])
+        # BATCH_READS=0: single queries, even if the template names the multicall.
+        result, configs = self.configs(template={"batchContractAddress": "0x" + MULTICALL}, BATCH_READS=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for agent in self.AGENTS:
+            self.assertNotIn("batchContractAddress", self.dusk(configs, agent))
+        # Batching reads through a multicall setup never deployed is refused.
+        result, _ = self.configs(deployed=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No Multicall for Dusk deployed", result.stderr)
+
+    def test_the_relayer_delivers_one_at_a_time_unless_asked_to_pipeline(self):
+        result, configs = self.configs()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for agent in self.AGENTS:
+            self.assertNotIn("maxBatchSize", self.dusk(configs, agent))
+            self.assertNotIn("pipelineDeliveries", self.dusk(configs, agent))
+        for settings, batch in (({"PIPELINE_DELIVERIES": 1}, 16),
+                                ({"PIPELINE_DELIVERIES": 1, "DUSK_RELAYER_MAX_BATCH_SIZE": 8}, 8)):
+            with self.subTest(settings=settings):
+                result, configs = self.configs(**settings)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                relayer = self.dusk(configs, "relayer")
+                self.assertEqual((relayer["pipelineDeliveries"], relayer["maxBatchSize"]), (True, batch))
+                for agent in self.AGENTS[1:]:
+                    self.assertNotIn("pipelineDeliveries", self.dusk(configs, agent))
+                    self.assertNotIn("maxBatchSize", self.dusk(configs, agent))
+        for settings, expected in [
+            ({"PIPELINE_DELIVERIES": 1, "DUSK_RELAYER_MAX_BATCH_SIZE": 1}, "from 2 to 64"),
+            ({"PIPELINE_DELIVERIES": 1, "DUSK_RELAYER_MAX_BATCH_SIZE": 65}, "from 2 to 64"),
+            ({"DUSK_RELAYER_MAX_BATCH_SIZE": 16}, "only counts with PIPELINE_DELIVERIES=1"),
+            ({"PIPELINE_DELIVERIES": 2}, "PIPELINE_DELIVERIES must be 0"),
+        ]:
+            with self.subTest(settings=settings):
+                result, _ = self.configs(**settings)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+
+
 # Encrypt a consensus key pair the way rusk-wallet's export does.
 def consensus_keys(secret_key, public_key, password):
     from cryptography.hazmat.primitives import hashes
