@@ -184,9 +184,11 @@ enum Command {
         no_wait: bool,
         /// Send only on the caller's go-ahead. Once the transaction is
         /// signed and its `Prepared TX <hash>` line is on stderr, read one
-        /// more line from stdin: only the line `send` sends it. The end of
-        /// stdin, a failed read, any other line, or none within 30 seconds
-        /// sends nothing to the node: the command prints `Not submitted:
+        /// more line from stdin: only the line `send` sends it. Before
+        /// that, only unsigned reads reach the node, its chain ID and,
+        /// without --nonce, the signer's account; nothing signed does. The
+        /// end of stdin, a failed read, any other line, or none within 30
+        /// seconds sends nothing more: the command prints `Not submitted:
         /// <reason>` on stderr and fails. With --secret-key-stdin the key
         /// is then the next line of stdin, not the rest of it.
         #[arg(long)]
@@ -2685,11 +2687,11 @@ mod tests {
     /// With `--ack-before-send`, `call` sends its transaction only on the
     /// line `send`: then it preverifies and propagates it as without the
     /// flag. The end of stdin, another line or no line within the timeout
-    /// sends nothing: the node has had the chain ID query alone, no
-    /// preverify and no propagate. The error names the transaction the
-    /// go-ahead was asked for and says it wasn't submitted, after the
-    /// `submission failed: ` the agents read a preverify refusal's detail
-    /// from.
+    /// sends nothing more: with the nonce given, the node has had the chain
+    /// ID query alone, no preverify and no propagate. The error names the
+    /// transaction the go-ahead was asked for and says it wasn't submitted,
+    /// after the `submission failed: ` the agents read a preverify
+    /// refusal's detail from.
     #[tokio::test]
     async fn call_sends_only_on_the_go_ahead() {
         use dusk_core::transfer::Transaction;
@@ -5665,9 +5667,9 @@ async fn propagate(client: &RuesClient, tx_id: &str, tx_bytes: &[u8]) -> Result<
 /// [`propagate`]. With `queue_future_nonce`, a preverify refusal only
 /// because the nonce is ahead of the account's next one doesn't stop the
 /// transaction: the node holds it until the nonces before it arrive. With
-/// `ack`, nothing reaches the node, preverify included, before the
+/// `ack`, the transaction reaches the node, preverify included, only on the
 /// caller's go-ahead; without one it fails, with `Not submitted: <reason>`
-/// on stderr, having sent nothing.
+/// on stderr, and the node never gets it.
 async fn propagate_with(
     client: &RuesClient,
     tx_id: &str,

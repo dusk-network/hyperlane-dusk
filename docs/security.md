@@ -240,9 +240,11 @@ fails without it.
 | LOW-19 | `deploy` set `DUSK_FEE_BENEFICIARY` on the recorded Dusk IGP and ProtocolFee without checking that the recorded Mailbox calls them (LOW-17): its preflight doesn't. Restored state naming a detached ProtocolFee the same key owns had its beneficiary changed, and with it who can claim the fees it holds. | Fixed. `deploy` checks the recorded Dusk deployment, the fee contracts' binding included, once its contracts are deployed or found recorded, before it sets a beneficiary. |
 
 The same round added `dusk-tx call --ack-before-send`, so the agents can
-keep a transaction's hash before anything sends it: the helper signs the
-call, names it, and sends it only on the line `send` within 30 seconds, and
-otherwise sends nothing and says so ([operations.md](operations.md#acknowledged-sends)).
+keep a transaction's hash before it is sent: the helper signs the call,
+names it, and sends it only on the line `send` within 30 seconds, and
+otherwise never sends it and says so. Before `send` only unsigned reads
+reach the node, its chain ID and, without `--nonce`, the signer's account
+([operations.md](operations.md#acknowledged-sends)).
 
 ## Owner powers
 

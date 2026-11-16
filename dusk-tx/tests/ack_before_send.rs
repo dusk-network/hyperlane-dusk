@@ -12,13 +12,28 @@ use std::time::{Duration, Instant};
 /// How long one step may take before the test gives up on it.
 const STEP: Duration = Duration::from_secs(30);
 
-/// A RUES endpoint on localhost that reports chain ID 7 and answers every
-/// other request with an empty 200, one request a connection. Sends the
-/// path of each request it answered.
+/// The transfer contract's answer to an `account` query: nonce 41.
+fn account_reply() -> Vec<u8> {
+    use rkyv::ser::{serializers::AllocSerializer, Serializer};
+    let mut serializer = AllocSerializer::<256>::default();
+    serializer
+        .serialize_value(&dusk_core::transfer::moonlight::AccountData {
+            nonce: 41,
+            balance: 1_000_000_000_000_000,
+        })
+        .unwrap();
+    serializer.into_serializer().into_inner().to_vec()
+}
+
+/// A RUES endpoint on localhost that reports chain ID 7, answers the
+/// account query with nonce 41 and every other request with an empty 200,
+/// one request a connection. Sends the path of each request it gets before
+/// it answers.
 fn mock_rues() -> (String, Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let (paths, received) = channel();
+    let account = account_reply();
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
@@ -46,18 +61,20 @@ fn mock_rues() -> (String, Receiver<String>) {
             let _ = reader.read_exact(&mut body);
             let reply: &[u8] = if path.ends_with("/chain_id") {
                 &[7]
+            } else if path.ends_with("/account") {
+                &account
             } else {
                 &[]
             };
+            if paths.send(path).is_err() {
+                return;
+            }
             let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 reply.len()
             );
             let _ = stream.write_all(reply);
-            if paths.send(path).is_err() {
-                return;
-            }
         }
     });
     (url, received)
@@ -74,9 +91,10 @@ struct Prepared {
     stderr: Receiver<String>,
 }
 
-/// Start the call and wait for its `Prepared TX` line, which must come
-/// while stdin is still open and nothing has answered it.
-fn prepared(url: &str) -> Prepared {
+/// Start the call, signing with `nonce` or, without one, the account's
+/// next, and wait for its `Prepared TX` line, which must come while stdin
+/// is still open and nothing has answered it.
+fn prepared(url: &str, nonce: Option<&str>) -> Prepared {
     let contract = "22".repeat(32);
     let mut child = Command::new(env!("CARGO_BIN_EXE_dusk-tx"))
         .args([
@@ -95,11 +113,10 @@ fn prepared(url: &str) -> Prepared {
             "5000000",
             "--gas-price",
             "1",
-            "--nonce",
-            "42",
             "--no-wait",
             "--ack-before-send",
         ])
+        .args(nonce.map(|nonce| ["--nonce", nonce]).into_iter().flatten())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -160,9 +177,9 @@ fn finish(mut child: Child) -> (ExitStatus, String) {
     (status, stdout)
 }
 
-/// The `Prepared TX` line reaches stderr while dusk-tx waits for the
-/// go-ahead, before anything but the chain ID query reaches the node, and
-/// `send` then sends that transaction.
+/// With the nonce given, the `Prepared TX` line reaches stderr while
+/// dusk-tx waits for the go-ahead, before anything but the chain ID query
+/// reaches the node, and `send` then sends that transaction.
 #[test]
 fn the_prepared_line_is_out_before_the_go_ahead_and_send_sends_it() {
     let (url, requests) = mock_rues();
@@ -172,7 +189,7 @@ fn the_prepared_line_is_out_before_the_go_ahead_and_send_sends_it() {
         mut stdin,
         tx_id,
         stderr: _stderr,
-    } = prepared(&url);
+    } = prepared(&url, Some("42"));
     let first = requests.recv_timeout(STEP).unwrap();
     assert!(first.ends_with("/chain_id"), "{first}");
     assert!(
@@ -205,7 +222,7 @@ fn closing_stdin_before_the_go_ahead_sends_nothing() {
         stdin,
         tx_id,
         stderr,
-    } = prepared(&url);
+    } = prepared(&url, Some("42"));
     drop(stdin);
     let (status, stdout) = finish(child);
     assert_eq!(status.code(), Some(1), "{stdout}");
@@ -224,4 +241,52 @@ fn closing_stdin_before_the_go_ahead_sends_nothing() {
     let sent: Vec<String> = requests.try_iter().collect();
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0].ends_with("/chain_id"), "{sent:?}");
+}
+
+/// Without `--nonce`, dusk-tx asks the node for the signer's account, to
+/// sign with its next nonce. Before the go-ahead the node gets those two
+/// unsigned reads, the chain ID and the account, and nothing signed: no
+/// preverify and no propagate. `send` then sends the transaction, at the
+/// account's next nonce; closing stdin sends nothing more.
+#[test]
+fn without_a_nonce_only_unsigned_reads_come_before_the_go_ahead() {
+    for go_ahead in [true, false] {
+        let (url, requests) = mock_rues();
+        let Prepared {
+            child,
+            mut stdin,
+            tx_id,
+            stderr: _stderr,
+        } = prepared(&url, None);
+        let before: Vec<String> = (0..2)
+            .map(|_| requests.recv_timeout(STEP).unwrap())
+            .collect();
+        assert!(
+            before[0].ends_with("/chain_id") && before[1].ends_with("/account"),
+            "{before:?}"
+        );
+        assert!(
+            requests.recv_timeout(Duration::from_millis(500)).is_err(),
+            "nothing more reaches the node before the go-ahead"
+        );
+        if go_ahead {
+            stdin.write_all(b"send\n").unwrap();
+        }
+        drop(stdin);
+        let (status, stdout) = finish(child);
+        let output: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let after: Vec<String> = requests.try_iter().collect();
+        if go_ahead {
+            assert!(status.success(), "{stdout}");
+            assert_eq!(output["tx_id"], tx_id);
+            assert_eq!(output["nonce"], 42, "the account's next nonce");
+            assert_eq!(
+                after,
+                ["/on/transactions/preverify", "/on/transactions/propagate"]
+            );
+        } else {
+            assert_eq!(status.code(), Some(1), "{stdout}");
+            assert_eq!(after, Vec::<String>::new());
+        }
+    }
 }
