@@ -1156,6 +1156,7 @@ delivery is simulated once. What remains, in order of what it would save:
    here), with no delay to the delivery: the payment was indexed before the
    signatures came. Plan the relayer's log retention for about 60 MB a day
    at idle and 50 to 100 KiB per message at info level. In the tooling,
-   `dusk-tx transfer-remote --native` asks the route for `wrapped_token`
+   `dusk-tx transfer-remote --native` asked the route for `wrapped_token`
    and `name`, which a native route lacks: two failed queries (500) a
-   transfer.
+   transfer. Done since: it now reads the route's `state_version`
+   instead.

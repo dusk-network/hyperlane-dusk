@@ -83,6 +83,10 @@ const OWNER_CALL_GAS_LIMIT: u64 = 3_000_000;
 const PAY_FOR_GAS_GAS_LIMIT: u64 = 3_000_000;
 /// The first IGP `state_version` with `pay_for_gas` and `quote_pay_for_gas`.
 const IGP_TOP_UP_STATE_VERSION: u32 = 4;
+/// WarpNative's `state_version` in this checkout. Its DRC20 routes report
+/// others (WarpDrc20 7, WarpDrc20Collateral 6), so `transfer-remote
+/// --native` tells a native route by it.
+const WARP_NATIVE_STATE_VERSION: u32 = 4;
 /// The hook types the fee contracts report (Hyperlane's HookType).
 const IGP_HOOK_TYPE: u8 = 4;
 const PROTOCOL_FEE_HOOK_TYPE: u8 = 6;
@@ -2741,6 +2745,77 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `transfer-remote --native` tells a native route by its
+    /// `state_version`, which every route answers, and never asks it for
+    /// `name` or `wrapped_token`, which only DRC20 routes have: both queries
+    /// failed, and the node logged each as an error. A DRC20 route is
+    /// refused before the key is read.
+    #[tokio::test]
+    async fn native_transfers_ask_the_route_nothing_it_lacks() {
+        let route = "22".repeat(32);
+        let transfer = |url: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "transfer-remote",
+                "--native",
+                "--rues-url",
+                url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--warp-contract",
+                &route,
+                "--destination",
+                "11155111",
+                "--recipient",
+                &"33".repeat(20),
+                "--amount",
+                "1000000000",
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/enrolled_router", 200, vec![0x11; 32]),
+            ("/state_version", 200, super::rkyv_serialize(&4u32)),
+            (
+                "/quote_transfer_remote",
+                200,
+                super::rkyv_serialize(&6_000_000_000u64),
+            ),
+        ]);
+        // It gets as far as the key, which doesn't exist (or its password,
+        // which a test of the password's sources may hold at the time).
+        let error = super::run(transfer(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        let paths: Vec<String> = server
+            .join()
+            .unwrap()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        assert_eq!(paths.len(), 4, "{paths:?}");
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.ends_with("/name") || path.ends_with("/wrapped_token")),
+            "{paths:?}"
+        );
+
+        for version in [7u32, 6] {
+            let (url, server) = mock_rues(vec![
+                ("/chain_id", 200, vec![2]),
+                ("/enrolled_router", 200, vec![0x11; 32]),
+                ("/state_version", 200, super::rkyv_serialize(&version)),
+            ]);
+            let error = super::run(transfer(&url)).await.unwrap_err();
+            assert!(error.contains("drop --native"), "{error}");
+            assert_eq!(server.join().unwrap().len(), 3);
+        }
     }
 
     /// `deploy-wasm` computes the contract ID as Rusk does, from the Wasm,
@@ -6536,22 +6611,39 @@ async fn cmd_transfer_remote(
             "The route has no router enrolled for destination domain {destination}"
         ));
     }
-    let bridges_token = client
-        .contract_query::<_, String>(&warp_bytes, "name", &())
-        .await
-        .is_ok()
-        || client
-            .contract_query::<_, [u8; 32]>(&warp_bytes, "wrapped_token", &())
+    // A native route takes the amount with the transaction, a DRC20 route
+    // from the token: either kind sent the other way fails on chain. A
+    // native route is told by its state_version, which every route answers,
+    // so it is never asked for a view only a DRC20 route has: that query
+    // would only fail, and the node logs every failed query as an error.
+    if native {
+        let version: u32 = client
+            .contract_query(&warp_bytes, "state_version", &())
             .await
-            .is_ok();
-    if native && bridges_token {
-        return Err("This route bridges a DRC20 token, not native DUSK: drop --native".into());
-    }
-    if !native && !bridges_token {
-        return Err(
-            "This route bridges native DUSK: add --native so the amount goes with the transaction"
-                .into(),
-        );
+            .map_err(|e| format!("Can't read the state version of {warp_contract_hex}: {e}"))?;
+        if version != WARP_NATIVE_STATE_VERSION {
+            return Err(format!(
+                "The route reports state_version {version}, not WarpNative's \
+                 {WARP_NATIVE_STATE_VERSION}: if it bridges a DRC20 token, drop --native"
+            ));
+        }
+    } else {
+        // A synthetic route has a `name`, a collateral route a
+        // `wrapped_token`.
+        let bridges_token = client
+            .contract_query::<_, String>(&warp_bytes, "name", &())
+            .await
+            .is_ok()
+            || client
+                .contract_query::<_, [u8; 32]>(&warp_bytes, "wrapped_token", &())
+                .await
+                .is_ok();
+        if !bridges_token {
+            return Err(
+                "This route bridges native DUSK: add --native so the amount goes with the transaction"
+                    .into(),
+            );
+        }
     }
     let recipient_hex = hex::encode(recipient);
 

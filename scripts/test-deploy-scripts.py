@@ -18,6 +18,7 @@ import json
 from math import ceil
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -1677,6 +1678,36 @@ class TestnetDeploy(TestnetScript):
                                   f"records the EVM DUSK token {token} without the transaction that created")
                 self.assertEqual(self.traced("cast send"), [])
                 self.assertEqual(self.traced("forge"), [])
+
+class StateVersions(unittest.TestCase):
+    """The state versions the tooling expects are the contracts' own."""
+
+    CRATES = {"mailbox": "mailbox", "merkle_tree_hook": "merkle-tree-hook", "igp": "igp",
+              "validator_announce": "validator-announce", "warp_native": "warp-native",
+              "warp_drc20": "warp-drc20", "warp_drc20_collateral": "warp-drc20-collateral"}
+
+    def contract_version(self, crate):
+        source = (ROOT / "contracts" / crate / "src" / "lib.rs").read_text()
+        [version] = re.findall(r"pub fn state_version\(&self\) -> u32 \{\s*(\d+)\s*\}", source)
+        return int(version)
+
+    def test_the_tooling_expects_the_contracts_versions(self):
+        script = TESTNET_SH.read_text()
+        expected = {}
+        for name in ("CORE_STATE_VERSIONS", "ROUTE_STATE_VERSIONS"):
+            [entries] = re.findall(rf'^{name}="([^"]*)"', script, re.M)
+            expected.update(entry.split("=") for entry in entries.split())
+        self.assertEqual(sorted(expected), sorted(self.CRATES))
+        for key, crate in self.CRATES.items():
+            self.assertEqual(int(expected[key]), self.contract_version(crate), key)
+        # transfer-remote --native tells a native route by its version, which
+        # no DRC20 route of this checkout reports.
+        dusk_tx = (ROOT / "dusk-tx" / "src" / "main.rs").read_text()
+        [native] = re.findall(r"const WARP_NATIVE_STATE_VERSION: u32 = (\d+);", dusk_tx)
+        self.assertEqual(int(native), self.contract_version("warp-native"))
+        self.assertNotIn(int(native), [self.contract_version("warp-drc20"),
+                                       self.contract_version("warp-drc20-collateral")])
+
 
 SOLIDITY_DIR = Path(os.environ.get("HYPERLANE_SOLIDITY_DIR", ROOT.parent / "hyperlane-monorepo" / "solidity"))
 # Multicall for Dusk's v0.1.0 Wasm, if one is at hand: the Anvil tests then
