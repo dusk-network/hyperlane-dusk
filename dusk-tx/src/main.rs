@@ -182,6 +182,15 @@ enum Command {
         /// still drop it: reconcile that hash to learn whether it executed.
         #[arg(long)]
         no_wait: bool,
+        /// Send only on the caller's go-ahead. Once the transaction is
+        /// signed and its `Prepared TX <hash>` line is on stderr, read one
+        /// more line from stdin: only the line `send` sends it. The end of
+        /// stdin, a failed read, any other line, or none within 30 seconds
+        /// sends nothing to the node: the command prints `Not submitted:
+        /// <reason>` on stderr and fails. With --secret-key-stdin the key
+        /// is then the next line of stdin, not the rest of it.
+        #[arg(long)]
+        ack_before_send: bool,
     },
     /// Deploy the full Hyperlane contract stack.
     DeployHyperlane {
@@ -997,6 +1006,7 @@ async fn run(command: Command) -> Result<(), String> {
             simulate_only,
             nonce,
             no_wait,
+            ack_before_send,
         } => {
             cmd_call(
                 &rues_url,
@@ -1013,6 +1023,7 @@ async fn run(command: Command) -> Result<(), String> {
                 expected_chain_id,
                 simulate_only,
                 CallSubmission { nonce, no_wait },
+                ack_before_send.then(SendAck::stdin),
             )
             .await
         }
@@ -1577,11 +1588,42 @@ fn load_keys(
     secret_key_hex: Option<String>,
     secret_key_stdin: bool,
 ) -> Result<(BlsSecretKey, BlsPublicKey), String> {
+    load_keys_with(
+        keys_path,
+        password,
+        secret_key_hex,
+        secret_key_stdin,
+        StdinKey::Rest,
+    )
+}
+
+/// How `--secret-key-stdin` reads the key.
+#[derive(Debug, Clone, Copy)]
+enum StdinKey {
+    /// All that is left on stdin.
+    Rest,
+    /// The next line only: `call --ack-before-send` reads its go-ahead
+    /// from the line after it.
+    Line,
+}
+
+/// [`load_keys`], reading a `--secret-key-stdin` key as `stdin_key` says.
+fn load_keys_with(
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    stdin_key: StdinKey,
+) -> Result<(BlsSecretKey, BlsPublicKey), String> {
     if secret_key_stdin {
         if secret_key_hex.is_some() || keys_path.is_some() {
             return Err("Provide only one of --keys, --secret-key, or --secret-key-stdin".into());
         }
-        let mut s = read_secret_key_hex(std::io::stdin().lock())?;
+        let stdin = std::io::stdin().lock();
+        let mut s = match stdin_key {
+            StdinKey::Rest => read_secret_key_hex(stdin)?,
+            StdinKey::Line => read_secret_key_line(stdin)?,
+        };
         if let Some(stripped) = s.strip_prefix("0x") {
             s = stripped.to_string();
         }
@@ -1636,6 +1678,23 @@ fn read_secret_key_hex(reader: impl Read) -> Result<String, String> {
         ));
     }
     Ok(buf.trim().to_string())
+}
+
+/// The key on the next line of stdin. Nothing after its newline is read,
+/// so the caller can keep stdin open and write more.
+fn read_secret_key_line(reader: impl BufRead) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_SECRET_KEY_STDIN_BYTES + 1) as u64)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|e| format!("Failed to read secret key from stdin: {e}"))?;
+    if bytes.len() > MAX_SECRET_KEY_STDIN_BYTES {
+        return Err(format!(
+            "Secret key stdin line exceeds {MAX_SECRET_KEY_STDIN_BYTES} bytes"
+        ));
+    }
+    let line = String::from_utf8(bytes).map_err(|_| "Secret key stdin must be UTF-8")?;
+    Ok(line.trim().to_string())
 }
 
 /// Resolve the consensus.keys password: an explicit `--password` first, then
@@ -2394,6 +2453,7 @@ mod tests {
                 nonce: Some(42),
                 no_wait: true,
             },
+            None,
         )
         .await
         .unwrap();
@@ -2439,7 +2499,7 @@ mod tests {
         let gap = b"Tx ab not accepted: Missing intermediate nonce 8".to_vec();
         let submit = |url: String, queue: bool| async move {
             let client = super::RuesClient::new(&url).unwrap();
-            super::propagate_with(&client, &"ab".repeat(32), &[1, 2], queue).await
+            super::propagate_with(&client, &"ab".repeat(32), &[1, 2], queue, None).await
         };
 
         let (url, server) = mock_rues(vec![("/on/transactions/preverify", 400, gap.clone())]);
@@ -2484,6 +2544,248 @@ mod tests {
             "{error}"
         );
         assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    /// The agents pass `--ack-before-send` once `call --help` lists it. It
+    /// is off unless given, and waits 30 seconds.
+    #[test]
+    fn call_takes_ack_before_send() {
+        use clap::CommandFactory;
+        let contract = "11".repeat(32);
+        let base = [
+            "dusk-tx",
+            "call",
+            "--contract",
+            &contract,
+            "--fn-name",
+            "process",
+            "--expected-chain-id",
+            "1",
+        ];
+        let acks = |extra: &[&str]| match Cli::try_parse_from(base.iter().chain(extra).copied())
+            .unwrap()
+            .command
+        {
+            super::Command::Call {
+                ack_before_send, ..
+            } => ack_before_send,
+            _ => unreachable!("parsed call"),
+        };
+        assert!(!acks(&[]));
+        assert!(acks(&["--ack-before-send"]));
+        let help = Cli::command()
+            .find_subcommand_mut("call")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(
+            help.contains("--ack-before-send") && help.contains("Not submitted:"),
+            "{help}"
+        );
+        assert_eq!(super::SEND_ACK_TIMEOUT, Duration::from_secs(30));
+    }
+
+    /// A go-ahead read from `input`, waiting at most `timeout`.
+    fn ack_from(input: &'static [u8], timeout: Duration) -> super::SendAck {
+        super::SendAck {
+            input: Box::new(move || Box::new(input)),
+            timeout,
+        }
+    }
+
+    /// Input that blocks until its sender is dropped, then ends.
+    struct HeldInput(std::sync::mpsc::Receiver<()>);
+
+    impl std::io::Read for HeldInput {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            let _ = self.0.recv();
+            Ok(0)
+        }
+    }
+
+    /// A go-ahead that never comes, waiting at most `timeout`. Its read
+    /// ends once the returned sender is dropped.
+    fn held_ack(timeout: Duration) -> (super::SendAck, std::sync::mpsc::Sender<()>) {
+        let (release, held) = std::sync::mpsc::channel();
+        let ack = super::SendAck {
+            input: Box::new(move || Box::new(std::io::BufReader::new(HeldInput(held)))),
+            timeout,
+        };
+        (ack, release)
+    }
+
+    /// Only the line `send` is a go-ahead, as written: not another case,
+    /// spacing or line ending, not a longer line, and not `send` without
+    /// its newline before the end of stdin. Only the first line counts.
+    #[tokio::test]
+    async fn the_go_ahead_is_exactly_the_line_send() {
+        let wait = |input: &'static [u8]| ack_from(input, Duration::from_secs(10)).wait();
+        assert_eq!(wait(b"send\n").await, Ok(()));
+        assert_eq!(wait(b"send\nanything\n").await, Ok(()));
+        for closed in [&b""[..], b"send", b"sen"] {
+            assert_eq!(
+                wait(closed).await.unwrap_err(),
+                "stdin closed before the line \"send\"",
+                "{closed:?}"
+            );
+        }
+        let long = &[b'x'; 100][..];
+        for other in [
+            &b"SEND\n"[..],
+            b"send \n",
+            b" send\n",
+            b"send\r\n",
+            b"sendx\n",
+            b"send\0\n",
+            b"\n",
+            b"yes\n",
+            b"anything\nsend\n",
+            long,
+        ] {
+            assert_eq!(
+                wait(other).await.unwrap_err(),
+                "the line on stdin was not \"send\"",
+                "{other:?}"
+            );
+        }
+
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("the pipe broke"))
+            }
+        }
+        let broken = super::SendAck {
+            input: Box::new(|| Box::new(std::io::BufReader::new(Broken))),
+            timeout: Duration::from_secs(10),
+        };
+        assert_eq!(
+            broken.wait().await.unwrap_err(),
+            "reading stdin failed: the pipe broke"
+        );
+    }
+
+    /// No line within the timeout is a refusal, which comes when the
+    /// timeout ends, whatever the read is doing.
+    #[tokio::test]
+    async fn no_go_ahead_within_the_timeout_is_a_refusal() {
+        let (ack, release) = held_ack(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let refusal = tokio::time::timeout(Duration::from_secs(10), ack.wait())
+            .await
+            .expect("the wait ends with its timeout");
+        assert_eq!(
+            refusal.unwrap_err(),
+            "no line \"send\" on stdin within 200ms"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(release);
+    }
+
+    /// With `--ack-before-send`, `call` sends its transaction only on the
+    /// line `send`: then it preverifies and propagates it as without the
+    /// flag. The end of stdin, another line or no line within the timeout
+    /// sends nothing: the node has had the chain ID query alone, no
+    /// preverify and no propagate. The error names the transaction the
+    /// go-ahead was asked for and says it wasn't submitted, after the
+    /// `submission failed: ` the agents read a preverify refusal's detail
+    /// from.
+    #[tokio::test]
+    async fn call_sends_only_on_the_go_ahead() {
+        use dusk_core::transfer::Transaction;
+        let contract = "22".repeat(32);
+        let call = |url: String, ack: super::SendAck| {
+            let contract = contract.clone();
+            async move {
+                super::call(
+                    &url,
+                    None,
+                    "",
+                    Some("11".repeat(32)),
+                    false,
+                    &contract,
+                    "process",
+                    "0102",
+                    5_000_000,
+                    1,
+                    7,
+                    false,
+                    super::CallSubmission {
+                        nonce: Some(42),
+                        no_wait: true,
+                    },
+                    Some(ack),
+                )
+                .await
+            }
+        };
+
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![7]),
+            ("/on/transactions/preverify", 200, Vec::new()),
+            ("/on/transactions/propagate", 200, Vec::new()),
+        ]);
+        let output = call(url, ack_from(b"send\n", Duration::from_secs(10)))
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3, "the chain ID, preverify and propagate");
+        let sent = Transaction::from_slice(&requests[2].1).unwrap();
+        let tx_id = hex::encode(sent.hash().to_bytes());
+        assert_eq!(output["tx_id"], tx_id);
+        assert_eq!(output["submitted"], true);
+
+        let (held, release) = held_ack(Duration::from_millis(200));
+        for (ack, reason) in [
+            (
+                ack_from(b"", Duration::from_secs(10)),
+                "stdin closed before the line \"send\"",
+            ),
+            (
+                ack_from(b"sned\n", Duration::from_secs(10)),
+                "the line on stdin was not \"send\"",
+            ),
+            (held, "no line \"send\" on stdin within 200ms"),
+        ] {
+            // An endpoint that answers the chain ID query, then is gone: a
+            // preverify would fail, with another error.
+            let (url, server) = mock_rues(vec![("/chain_id", 200, vec![7])]);
+            let error = tokio::time::timeout(Duration::from_secs(10), call(url, ack))
+                .await
+                .expect("the refusal comes by the timeout")
+                .unwrap_err();
+            assert_eq!(server.join().unwrap().len(), 1, "the chain ID only");
+            assert_eq!(
+                error,
+                format!("Transaction {tx_id} submission failed: Not submitted: {reason}")
+            );
+        }
+        drop(release);
+    }
+
+    /// With the go-ahead on the line after it, the key is read up to its
+    /// newline and no further.
+    #[test]
+    fn a_key_line_leaves_the_rest_of_stdin_unread() {
+        use std::io::Read;
+        let key = "11".repeat(32);
+        let mut stdin = std::io::Cursor::new(format!(" 0x{key}\r\nsend\n").into_bytes());
+        assert_eq!(
+            super::read_secret_key_line(&mut stdin).unwrap(),
+            format!("0x{key}")
+        );
+        let mut rest = String::new();
+        stdin.read_to_string(&mut rest).unwrap();
+        assert_eq!(rest, "send\n");
+
+        let long = format!("{}\nsend\n", "a".repeat(MAX_SECRET_KEY_STDIN_BYTES));
+        assert!(
+            super::read_secret_key_line(long.as_bytes())
+                .unwrap_err()
+                .contains("exceeds 128 bytes"),
+            "a line of the most bytes is too long with its newline"
+        );
+        assert!(super::read_secret_key_line(&[0xff, b'\n'][..]).is_err());
     }
 
     /// `pay-for-gas` takes a message ID with its destination, as `payForGas`
@@ -3950,6 +4252,76 @@ struct CallSubmission {
     no_wait: bool,
 }
 
+/// How long `call --ack-before-send` waits for its go-ahead.
+const SEND_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+/// The most bytes of the go-ahead line read: `send` and its newline, with
+/// room to spare. A longer line isn't `send`.
+const MAX_SEND_ACK_LINE_BYTES: u64 = 64;
+
+/// `call --ack-before-send`: `call` names its signed transaction
+/// (`Prepared TX <hash>` on stderr), then sends it only on the caller's
+/// go-ahead, the line `send` read from `input` within `timeout`.
+struct SendAck {
+    /// Opens what the line is read from: stdin, or a test's input. It runs
+    /// on the thread that reads the line.
+    input: Box<dyn FnOnce() -> Box<dyn BufRead> + Send>,
+    timeout: Duration,
+}
+
+impl SendAck {
+    fn stdin() -> Self {
+        Self {
+            input: Box::new(|| Box::new(std::io::stdin().lock())),
+            timeout: SEND_ACK_TIMEOUT,
+        }
+    }
+
+    /// Wait for the line `send`, without its newline. The end of the
+    /// input, a failed read, any other line or none within the timeout is
+    /// a refusal, with its reason.
+    async fn wait(self) -> Result<(), String> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let input = self.input;
+        // A blocking read can't be cancelled, so it gets a thread of its
+        // own: after a timeout it is left blocked, and ends with the
+        // process. On the runtime's blocking pool it would hold up the
+        // runtime's shutdown until the read returned.
+        std::thread::spawn(move || {
+            let mut line = Vec::new();
+            let read = input()
+                .take(MAX_SEND_ACK_LINE_BYTES)
+                .read_until(b'\n', &mut line)
+                .map(|_| line);
+            let _ = sender.send(read);
+        });
+        let line = match tokio::time::timeout(self.timeout, receiver).await {
+            Err(_) => {
+                return Err(format!(
+                    "no line \"send\" on stdin within {:?}",
+                    self.timeout
+                ))
+            }
+            Ok(Err(_)) => return Err("the stdin reader stopped without a line".into()),
+            Ok(Ok(Err(error))) => return Err(format!("reading stdin failed: {error}")),
+            Ok(Ok(Ok(line))) => line,
+        };
+        match line.strip_suffix(b"\n") {
+            Some(b"send") => Ok(()),
+            None if (line.len() as u64) < MAX_SEND_ACK_LINE_BYTES => {
+                Err("stdin closed before the line \"send\"".into())
+            }
+            _ => Err("the line on stdin was not \"send\"".into()),
+        }
+    }
+}
+
+/// The error of a transaction `call --ack-before-send` didn't send. The
+/// agents tell it from one with an unknown outcome by its detail, after
+/// `submission failed: `, as they tell a preverify refusal.
+fn not_submitted_error(tx_id: &str, reason: &str) -> String {
+    format!("Transaction {tx_id} submission failed: Not submitted: {reason}")
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_call(
     rues_url: &str,
@@ -3966,6 +4338,7 @@ async fn cmd_call(
     expected_chain_id: u8,
     simulate_only: bool,
     submission: CallSubmission,
+    ack: Option<SendAck>,
 ) -> Result<(), String> {
     let stdin_url;
     let rues_url = if rues_url_stdin {
@@ -3991,6 +4364,7 @@ async fn cmd_call(
         expected_chain_id,
         simulate_only,
         submission,
+        ack,
     )
     .await?;
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -4052,7 +4426,8 @@ fn check_call_submission(
     Ok(())
 }
 
-/// Sign and submit a contract call, and return `call`'s JSON output.
+/// Sign and submit a contract call, and return `call`'s JSON output. With
+/// `ack`, the call is sent only on the caller's go-ahead (`SendAck`).
 #[allow(clippy::too_many_arguments)]
 async fn call(
     rues_url: &str,
@@ -4068,12 +4443,25 @@ async fn call(
     expected_chain_id: u8,
     simulate_only: bool,
     submission: CallSubmission,
+    ack: Option<SendAck>,
 ) -> Result<serde_json::Value, String> {
     let (contract_id, fn_args) =
         parse_call_inputs(contract_hex, args_hex, simulate_only, submission)?;
     let client = RuesClient::new(rues_url)?;
     let chain_id = bind_chain_id(&client, expected_chain_id).await?;
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    // The go-ahead comes on the line after the key, so the key is one line.
+    let stdin_key = if ack.is_some() {
+        StdinKey::Line
+    } else {
+        StdinKey::Rest
+    };
+    let (sk, pk) = load_keys_with(
+        keys_path,
+        password,
+        secret_key_hex,
+        secret_key_stdin,
+        stdin_key,
+    )?;
 
     // Query the account only after endpoint identity is bound, and only if
     // the caller didn't choose the nonce.
@@ -4100,10 +4488,10 @@ async fn call(
     // caller's earlier transactions are in flight: the node holds it.
     let queue_future_nonce = submission.nonce.is_some();
     let confirmation = if submission.no_wait {
-        propagate_with(&client, &tx_id, &tx_bytes, queue_future_nonce).await?;
+        propagate_with(&client, &tx_id, &tx_bytes, queue_future_nonce, ack).await?;
         None
     } else {
-        Some(propagate_and_wait_with(&client, &tx_id, &tx_bytes, queue_future_nonce).await?)
+        Some(propagate_and_wait_with(&client, &tx_id, &tx_bytes, queue_future_nonce, ack).await?)
     };
     Ok(call_output(
         contract_hex,
@@ -5248,7 +5636,7 @@ async fn propagate_and_wait(
     tx_id: &str,
     tx_bytes: &[u8],
 ) -> Result<Confirmation, String> {
-    propagate_and_wait_with(client, tx_id, tx_bytes, false).await
+    propagate_and_wait_with(client, tx_id, tx_bytes, false, None).await
 }
 
 /// [`propagate_and_wait`], submitting with [`propagate_with`].
@@ -5257,8 +5645,9 @@ async fn propagate_and_wait_with(
     tx_id: &str,
     tx_bytes: &[u8],
     queue_future_nonce: bool,
+    ack: Option<SendAck>,
 ) -> Result<Confirmation, String> {
-    propagate_with(client, tx_id, tx_bytes, queue_future_nonce).await?;
+    propagate_with(client, tx_id, tx_bytes, queue_future_nonce, ack).await?;
     match finality_wait() {
         Some(timeout) => wait_for_finality(client, tx_id, timeout).await,
         None => {
@@ -5270,17 +5659,21 @@ async fn propagate_and_wait_with(
 
 /// Submit a transaction while preserving its exact reconciliation hash.
 async fn propagate(client: &RuesClient, tx_id: &str, tx_bytes: &[u8]) -> Result<(), String> {
-    propagate_with(client, tx_id, tx_bytes, false).await
+    propagate_with(client, tx_id, tx_bytes, false, None).await
 }
 
 /// [`propagate`]. With `queue_future_nonce`, a preverify refusal only
 /// because the nonce is ahead of the account's next one doesn't stop the
-/// transaction: the node holds it until the nonces before it arrive.
+/// transaction: the node holds it until the nonces before it arrive. With
+/// `ack`, nothing reaches the node, preverify included, before the
+/// caller's go-ahead; without one it fails, with `Not submitted: <reason>`
+/// on stderr, having sent nothing.
 async fn propagate_with(
     client: &RuesClient,
     tx_id: &str,
     tx_bytes: &[u8],
     queue_future_nonce: bool,
+    ack: Option<SendAck>,
 ) -> Result<(), String> {
     // Emit the locally computed reconciliation identity before the first
     // remote write. This gives an interrupted operator a concrete hash to
@@ -5289,6 +5682,20 @@ async fn propagate_with(
     eprintln!(
         "  Prepared TX {tx_id}; reconcile this exact hash before retrying if submission is interrupted"
     );
+    if let Some(ack) = ack {
+        // The caller answers once it has that hash, so the line must be out
+        // of any buffer before the wait starts.
+        let refusal = match std::io::Write::flush(&mut std::io::stderr()) {
+            Ok(()) => ack.wait().await.err(),
+            Err(error) => Some(format!(
+                "writing the prepared line to stderr failed: {error}"
+            )),
+        };
+        if let Some(reason) = refusal {
+            eprintln!("Not submitted: {reason}");
+            return Err(not_submitted_error(tx_id, &reason));
+        }
+    }
     client
         .propagate_tx(tx_bytes, queue_future_nonce)
         .await

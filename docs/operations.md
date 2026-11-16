@@ -46,7 +46,8 @@ Option 1 is fine for testnet. Mainnet needs an explicit choice.
 - A raw BLS secret key goes through `--secret-key-stdin`.
 - An authenticated RPC URL goes through `--rues-url-stdin`, which the agents
   use. When both are used, the URL is the first stdin line and the key the
-  second.
+  second. With `call --ack-before-send` the key is one line, and the line
+  after it is the go-ahead to send ([below](#acknowledged-sends)).
 
 Never commit or upload generated agent configs, `*.key`, `*.keys`, `.env*`
 files or password files. `make secret-hygiene` checks the tracked source.
@@ -351,6 +352,20 @@ node doesn't confirm is reported as `... Propagation outcome unknown ...`.
 The relayer uses both flags only when it pipelines its deliveries
 ([below](#deliveries-to-dusk)), which the configs `agent-configs` writes
 leave off.
+
+### Acknowledged sends
+
+`dusk-tx call --ack-before-send` lets its caller keep a transaction's hash
+before anything is sent. Once `call` has signed the transaction and printed
+`Prepared TX <hash>; ...` on stderr, it reads one more line from stdin and
+sends the transaction only if that line is `send`. The end of stdin, a
+failed read, any other line, or no line within 30 seconds sends nothing to
+the node, preverify included: `call` prints `Not submitted: <reason>` on
+stderr and fails with `Transaction <hash> submission failed: Not submitted:
+<reason>`. With `--secret-key-stdin`, the key is then the next line of
+stdin, not the rest of it, and the caller keeps stdin open after it.
+`call --help` lists the flag, which is how a caller tells a `dusk-tx` that
+has it.
 
 ## Deliveries to Dusk
 
