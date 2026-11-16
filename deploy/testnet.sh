@@ -1133,6 +1133,7 @@ deploy_dusk() {
         --multisig-validators "$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")" \
         --multisig-threshold "$EVM_ORIGIN_THRESHOLD" \
         --igp-domain-config "$(fee '.dusk_igp.config')" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         > "$out" || fail "Dusk deployment failed: $(jq -r '.error // empty' "$out" 2>/dev/null)"
     state_set --slurpfile d "$out" --arg domain "$DUSK_DOMAIN" \
         '.dusk = $d[0].contracts | .dusk_domain = ($domain | tonumber)'
@@ -1322,7 +1323,8 @@ enroll_routers() {
     if [ "$(lower "$enrolled")" != "$(pad32 "$token")" ]; then
         info "Enrolling the $EVM_CHAIN_NAME token on the Dusk route..."
         dusk_tx enroll-router --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-            --warp-contract "$route" --domain "$EVM_DOMAIN" --router "$(pad32 "$token")" >/dev/null \
+            --warp-contract "$route" --domain "$EVM_DOMAIN" --router "$(pad32 "$token")" \
+            --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" >/dev/null \
             || fail "Dusk router enrollment failed"
     fi
     enrolled="$(dusk_query --contract "$route" --method enrolled_router --return-type bytes32 \

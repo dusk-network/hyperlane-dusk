@@ -114,9 +114,12 @@ def set_pricing(igp, config):
     domain, overhead, rate, price = (int(part) for part in config.split(":"))
     queries[f"{igp}/domain_gas_config/{domain}"] = {"value": {
         "gas_overhead": overhead, "token_exchange_rate": rate, "gas_price": price}}
-# As dusk-tx does: the fee commands that sign need --expected-chain-id, and
-# refuse an endpoint on another chain (FIXTURE_DUSK_CHAIN_ID, or 2).
-if args[0] in ("set-igp-config", "set-beneficiary", "claim-fees", "pay-for-gas") and "--quote-only" not in args:
+# As dusk-tx does: every command that signs needs --expected-chain-id, and
+# refuses an endpoint on another chain (FIXTURE_DUSK_CHAIN_ID, or 2).
+SIGNING = ("call", "deploy-hyperlane", "deploy-wasm", "fund-dispatch", "withdraw-dispatch", "dispatch",
+           "process", "enroll-router", "register-account", "claim-pending", "set-igp-config",
+           "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote")
+if args[0] in SIGNING and "--quote-only" not in args:
     expected, endpoint = opt("--expected-chain-id"), os.environ.get("FIXTURE_DUSK_CHAIN_ID", "2")
     if expected is None:
         out({"success": False, "error": f"stub dusk-tx: {args[0]} needs --expected-chain-id"}, 2)
@@ -1518,6 +1521,10 @@ class TestnetDeploy(TestnetScript):
         self.assert_ok(result)
         [deploy] = self.traced("dusk-tx deploy-hyperlane")
         self.assertIn(f"--igp-domain-config {EVM_DOMAIN}:110000:375000:1000000000", deploy)
+        # Every Dusk transaction is signed for DUSK_EXPECTED_CHAIN_ID only.
+        [enroll] = self.traced("dusk-tx enroll-router")
+        for sent in (deploy, enroll):
+            self.assertIn("--expected-chain-id 2", sent)
         state = self.state()
         evm = self.evm["contracts"]
         oracle, igp, hook, token = (state["evm"][key] for key in

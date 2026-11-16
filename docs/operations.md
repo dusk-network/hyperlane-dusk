@@ -69,7 +69,8 @@ Mailbox:
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)
-dusk-tx fund-dispatch --mailbox <mailbox> --payer <sender> --amount <lux>
+dusk-tx fund-dispatch --mailbox <mailbox> --payer <sender> --amount <lux> \
+    --expected-chain-id <id>
 
 # Withdraw your own unused credit, optionally to a treasury account
 dusk-tx withdraw-dispatch --target <mailbox> --amount <lux> \
@@ -187,10 +188,9 @@ dusk-tx pay-for-gas --rues-url <node> --keys payer.keys --igp <dusk igp> \
 ```
 
 - `--expected-chain-id` is the chain you mean to pay on (2 on testnet). As
-  with every `dusk-tx` command that changes a fee contract or pays one
-  (`set-igp-config`, `set-beneficiary`, `claim-fees`, `pay-for-gas`), the
-  command asks the node its chain ID first and stops on any other, before it
-  queries a contract or reads the key. `--quote-only` doesn't need it.
+  with every `dusk-tx` command that sends a transaction, the command asks
+  the node its chain ID first and stops on any other, before it queries a
+  contract or reads the key. `--quote-only` doesn't need it.
 
 - `--nonce` is the message's nonce on the Dusk Mailbox (`dusk-tx
   dispatched-message` prints a message by nonce). `pay-for-gas` reads the

@@ -341,12 +341,14 @@ export DUSK_CONSENSUS_PASSWORD=...
 # default prices; dusk-tx adds the fee.
 target/release/dusk-tx transfer-remote --native --rues-url $DUSK --keys my.keys \
   --warp-contract $ROUTE --destination 11155111 \
-  --recipient 000000000000000000000000<your sepolia address, no 0x> --amount 1000000000
+  --recipient 000000000000000000000000<your sepolia address, no 0x> --amount 1000000000 \
+  --expected-chain-id 2
 cast call $TOKEN "balanceOf(address)(uint256)" <your sepolia address> --rpc-url $EVM_RPC
 
 # Sepolia -> Dusk: burn on Sepolia, release on Dusk. Register your account on
 # the route once first; until you do, transfers to you wait in escrow.
-target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE
+target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
+  --expected-chain-id 2
 H=$(target/release/dusk-tx account --offline --keys my.keys | jq -r .account_h256)
 FEE=$(cast call $TOKEN "quoteGasPayment(uint32)(uint256)" 1146442572 --rpc-url $EVM_RPC | awk '{print $1}')
 cast send $TOKEN "transferRemote(uint32,bytes32,uint256)" 1146442572 0x$H 1000000000 \
@@ -357,6 +359,10 @@ target/release/dusk-tx account --rues-url $DUSK --keys my.keys
 `quoteGasPayment` on the token is what a transfer to Dusk pays: our IGP's
 fee and Hyperlane's 1 wei protocol fee, 130,200,000,001 wei at the default
 prices. Sending less reverts; the token's hook refunds anything above it.
+
+Every `dusk-tx` command that sends a transaction takes the chain it is for
+as `--expected-chain-id` (2 on testnet), and stops before it reads the key
+when the node reports another chain.
 
 `--recipient` takes a 20-byte EVM address and pads it to 32 bytes, as
 Hyperlane does. `dusk-tx` refuses a 32-byte value whose first 12 bytes aren't
@@ -374,9 +380,10 @@ the escrow is under. The claimant only pays the gas:
 target/release/dusk-tx account --rues-url $DUSK --address <base58 address> --warp-contract $ROUTE
 # Claim your own escrow, or someone else's with --for; either also registers the account
 target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
-  [--for <base58 address>]
+  --expected-chain-id 2 [--for <base58 address>]
 # Register your own account in advance, so transfers arrive directly
-target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE
+target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
+  --expected-chain-id 2
 ```
 
 Nobody can register an account for someone else in advance: only a claim of

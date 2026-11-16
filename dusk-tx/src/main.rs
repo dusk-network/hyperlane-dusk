@@ -17,9 +17,11 @@
 //!   account            Show an account's address, recipient hash and balance
 //!   export-signer-key  Write an agent signer key file from consensus.keys
 //!
-//! Every command that sends a transaction waits until the transaction is
-//! included in a block, then says whether that block is final (`finalized`).
-//! With `--wait-finality` it waits until it is.
+//! Every command that sends a transaction takes the chain it signs for
+//! (`--expected-chain-id`), and stops before it queries a contract or reads
+//! the key when the node reports another one. It waits until the
+//! transaction is included in a block, then says whether that block is final
+//! (`finalized`). With `--wait-finality` it waits until it is.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -155,10 +157,10 @@ enum Command {
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
         #[arg(long, default_value = "1")]
         gas_price: u64,
-        /// Expected native Dusk chain ID. The endpoint must match before the
-        /// signer is read or a transaction is constructed.
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// the signer is read or a transaction is constructed.
         #[arg(long)]
-        expected_chain_id: Option<u8>,
+        expected_chain_id: u8,
         /// Reserved until Rusk supports a non-replayable simulation envelope.
         #[arg(long)]
         simulate_only: bool,
@@ -243,6 +245,11 @@ enum Command {
         /// Threshold (m-of-n) for `messageIdMultisig`.
         #[arg(long, default_value = "0")]
         multisig_threshold: u8,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
     },
     /// Deploy one contract from its Wasm, with a deploy nonce and an owner
     /// that need not be the signer. A contract ID is BLAKE2b-256 of the
@@ -280,9 +287,11 @@ enum Command {
         /// chars). Nothing is sent if they give another.
         #[arg(long)]
         expected_id: Option<String>,
-        /// Expected native Dusk chain ID, checked before the signer is read.
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
         #[arg(long)]
-        expected_chain_id: Option<u8>,
+        expected_chain_id: u8,
         /// Gas limit. Defaults to the bytecode charge, 100 gas per Wasm
         /// byte, plus 10M.
         #[arg(long)]
@@ -352,6 +361,10 @@ enum Command {
         /// Native DUSK amount in LUX.
         #[arg(long)]
         amount: u64,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// the signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -424,6 +437,10 @@ enum Command {
         /// Message body (UTF-8 string or hex with 0x prefix).
         #[arg(long, default_value = "Hello from Dusk!")]
         body: String,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// the signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -454,6 +471,10 @@ enum Command {
         /// ISM metadata (hex). Empty metadata is valid for TestMock only.
         #[arg(long, default_value = "")]
         metadata: String,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// the signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -508,6 +529,10 @@ enum Command {
         /// Remote router H256 (64 hex chars).
         #[arg(long)]
         router: String,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// the signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -532,6 +557,10 @@ enum Command {
         /// Warp route contract ID (64 hex chars).
         #[arg(long, name = "warp-contract")]
         warp_contract: String,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// the signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -564,6 +593,11 @@ enum Command {
         /// account; the signer only pays the gas.
         #[arg(long = "for")]
         for_account: Option<String>,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         /// Gas limit. Defaults to 3M for the signer's own claim
         /// (`claim_pending`, about 1.9M gas) and 80M for another account's
         /// (`claim_pending_for`, about 59M, because the route decodes the
@@ -772,6 +806,10 @@ enum Command {
         spender: String,
         #[arg(long)]
         amount: u64,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// the signer is read or a transaction is constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -836,6 +874,11 @@ enum Command {
         /// quoted dispatch fee.
         #[arg(long)]
         native: bool,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
         #[arg(long, default_value = "30000000")]
         gas_limit: u64,
         /// Gas price in LUX per unit of gas. Calls only need a price above zero.
@@ -914,7 +957,16 @@ async fn main() {
                 .then(|| Duration::from_secs(cli.finality_timeout)),
         )
         .expect("set once");
-    let result = match cli.command {
+    if let Err(e) = run(cli.command).await {
+        let output = json!({ "success": false, "error": e });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        std::process::exit(1);
+    }
+}
+
+/// Run one command. On success it has printed its JSON output.
+async fn run(command: Command) -> Result<(), String> {
+    match command {
         Command::Call {
             rues_url,
             rues_url_stdin,
@@ -970,6 +1022,7 @@ async fn main() {
             igp_domain_configs,
             multisig_validators,
             multisig_threshold,
+            expected_chain_id,
         } => {
             cmd_deploy_hyperlane(
                 &rues_url,
@@ -991,6 +1044,7 @@ async fn main() {
                 &igp_domain_configs,
                 &multisig_validators,
                 multisig_threshold,
+                expected_chain_id,
             )
             .await
         }
@@ -1057,6 +1111,7 @@ async fn main() {
             mailbox,
             payer,
             amount,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1069,6 +1124,7 @@ async fn main() {
                 &mailbox,
                 &payer,
                 amount,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1113,6 +1169,7 @@ async fn main() {
             destination,
             recipient,
             body,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1127,6 +1184,7 @@ async fn main() {
                 destination,
                 &recipient,
                 &body,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1141,6 +1199,7 @@ async fn main() {
             message,
             metadata,
             secret_key_stdin,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1153,6 +1212,7 @@ async fn main() {
                 &mailbox,
                 &message,
                 &metadata,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1184,6 +1244,7 @@ async fn main() {
             secret_key_stdin,
             domain,
             router,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1196,6 +1257,7 @@ async fn main() {
                 &warp_contract,
                 domain,
                 &router,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1208,6 +1270,7 @@ async fn main() {
             secret_key,
             warp_contract,
             secret_key_stdin,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1218,6 +1281,7 @@ async fn main() {
                 secret_key,
                 secret_key_stdin,
                 &warp_contract,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1231,6 +1295,7 @@ async fn main() {
             secret_key_stdin,
             warp_contract,
             for_account,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1242,6 +1307,7 @@ async fn main() {
                 secret_key_stdin,
                 &warp_contract,
                 for_account.as_deref(),
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1375,6 +1441,7 @@ async fn main() {
             token,
             spender,
             amount,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1387,6 +1454,7 @@ async fn main() {
                 &token,
                 &spender,
                 amount,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1424,6 +1492,7 @@ async fn main() {
             raw_recipient,
             amount,
             native,
+            expected_chain_id,
             gas_limit,
             gas_price,
         } => {
@@ -1439,6 +1508,7 @@ async fn main() {
                 raw_recipient,
                 amount,
                 native,
+                expected_chain_id,
                 gas_limit,
                 gas_price,
             )
@@ -1455,23 +1525,20 @@ async fn main() {
             warp_contract,
             offline,
         } => {
-            let account = if let Some(address) = address {
-                parse_moonlight_address(&address)
+            let pk = if let Some(address) = address {
+                parse_moonlight_address(&address)?
             } else if let Some(public_key) = public_key {
-                parse_account_public_key(&public_key)
+                parse_account_public_key(&public_key)?
             } else {
                 load_keys(
                     keys,
                     password.as_deref().unwrap_or_default(),
                     secret_key,
                     secret_key_stdin,
-                )
-                .map(|(_, pk)| pk)
+                )?
+                .1
             };
-            match account {
-                Ok(pk) => cmd_account(&rues_url, &pk, warp_contract.as_deref(), offline).await,
-                Err(e) => Err(e),
-            }
+            cmd_account(&rues_url, &pk, warp_contract.as_deref(), offline).await
         }
         Command::DispatchedMessage {
             rues_url,
@@ -1483,12 +1550,6 @@ async fn main() {
             password,
             out,
         } => cmd_export_signer_key(keys, password.as_deref().unwrap_or_default(), &out),
-    };
-
-    if let Err(e) = result {
-        let output = json!({ "success": false, "error": e });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        std::process::exit(1);
     }
 }
 
@@ -1678,7 +1739,14 @@ mod tests {
     fn only_claim_pending_takes_another_account() {
         let route = "11".repeat(32);
         let account = "22".repeat(96);
-        let register = ["dusk-tx", "register-account", "--warp-contract", &route];
+        let register = [
+            "dusk-tx",
+            "register-account",
+            "--warp-contract",
+            &route,
+            "--expected-chain-id",
+            "2",
+        ];
         assert!(Cli::try_parse_from(register).is_ok());
         assert!(Cli::try_parse_from(register.into_iter().chain(["--for", &account])).is_err());
         assert!(Cli::try_parse_from([
@@ -1688,6 +1756,8 @@ mod tests {
             &route,
             "--for",
             &account,
+            "--expected-chain-id",
+            "2",
         ])
         .is_ok());
     }
@@ -1730,7 +1800,14 @@ mod tests {
     fn claim_pending_gas_limit_is_optional() {
         let route = "11".repeat(32);
         let gas_limit = |extra: &[&str]| {
-            let args = ["dusk-tx", "claim-pending", "--warp-contract", &route];
+            let args = [
+                "dusk-tx",
+                "claim-pending",
+                "--warp-contract",
+                &route,
+                "--expected-chain-id",
+                "2",
+            ];
             match Cli::try_parse_from(args.iter().chain(extra))
                 .unwrap()
                 .command
@@ -1745,9 +1822,8 @@ mod tests {
 
     #[test]
     fn signing_chain_id_must_match_the_configured_endpoint_identity() {
-        assert_eq!(resolve_signing_chain_id(None, 1).unwrap(), 1);
-        assert_eq!(resolve_signing_chain_id(Some(1), 1).unwrap(), 1);
-        assert!(resolve_signing_chain_id(Some(1), 2)
+        assert_eq!(resolve_signing_chain_id(1, 1).unwrap(), 1);
+        assert!(resolve_signing_chain_id(1, 2)
             .unwrap_err()
             .contains("does not match endpoint chain ID"));
     }
@@ -1854,6 +1930,8 @@ mod tests {
             "dusk-tx",
             "call",
             "--rues-url-stdin",
+            "--expected-chain-id",
+            "1",
             "--secret-key-stdin",
             "--contract",
             &contract,
@@ -2160,6 +2238,8 @@ mod tests {
             &contract,
             "--fn-name",
             "process",
+            "--expected-chain-id",
+            "1",
         ];
         match Cli::try_parse_from(base).unwrap().command {
             super::Command::Call { nonce, no_wait, .. } => {
@@ -2292,7 +2372,7 @@ mod tests {
             "0102",
             5_000_000,
             1,
-            Some(7),
+            7,
             false,
             super::CallSubmission {
                 nonce: Some(42),
@@ -2467,13 +2547,57 @@ mod tests {
         );
     }
 
-    /// The fee commands sign only for the chain the caller names, as
-    /// `withdraw-dispatch` does: each needs `--expected-chain-id`, except
-    /// `pay-for-gas --quote-only`, which signs nothing.
-    #[test]
-    fn fee_commands_require_an_expected_chain_id() {
-        let id = "11".repeat(32);
-        let commands = [
+    /// The arguments of every command that sends a transaction, complete
+    /// but for its RUES URL, its key and `--expected-chain-id`. `wasm` is
+    /// the Wasm `deploy-wasm` reads.
+    fn signing_commands(wasm: &str) -> Vec<Vec<String>> {
+        let id = "22".repeat(32);
+        let (_, account) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let account = hex::encode(account.to_bytes());
+        let evm_address = "33".repeat(20);
+        let commands: Vec<Vec<&str>> = vec![
+            vec!["call", "--contract", &id, "--fn-name", "process"],
+            vec![
+                "deploy-hyperlane",
+                "--default-ism",
+                "testMock",
+                "--igp-domain-config",
+                "1:0:10000000000:1",
+            ],
+            vec!["deploy-wasm", "--wasm", wasm],
+            vec![
+                "fund-dispatch",
+                "--mailbox",
+                &id,
+                "--payer",
+                &id,
+                "--amount",
+                "1",
+            ],
+            vec!["withdraw-dispatch", "--target", &id, "--amount", "1"],
+            vec![
+                "dispatch",
+                "--mailbox",
+                &id,
+                "--test-recipient",
+                &id,
+                "--destination",
+                "1",
+                "--recipient",
+                &id,
+            ],
+            vec!["process", "--mailbox", &id, "--message", "00"],
+            vec![
+                "enroll-router",
+                "--warp-contract",
+                &id,
+                "--domain",
+                "1",
+                "--router",
+                &id,
+            ],
+            vec!["register-account", "--warp-contract", &id],
+            vec!["claim-pending", "--warp-contract", &id],
             vec![
                 "set-igp-config",
                 "--igp",
@@ -2481,116 +2605,142 @@ mod tests {
                 "--igp-domain-config",
                 "1:0:10000000000:1",
             ],
-            vec!["set-beneficiary", "--contract", &id, "--beneficiary", "x"],
+            vec![
+                "set-beneficiary",
+                "--contract",
+                &id,
+                "--beneficiary",
+                &account,
+            ],
             vec!["claim-fees", "--contract", &id],
-            vec!["pay-for-gas", "--igp", &id, "--nonce", "1", "--gas-amount", "1"],
+            vec![
+                "pay-for-gas",
+                "--igp",
+                &id,
+                "--message-id",
+                &id,
+                "--destination",
+                "1",
+                "--gas-amount",
+                "1",
+            ],
+            vec![
+                "drc20-approve",
+                "--token",
+                &id,
+                "--spender",
+                &id,
+                "--amount",
+                "1",
+            ],
+            vec![
+                "transfer-remote",
+                "--warp-contract",
+                &id,
+                "--destination",
+                "1",
+                "--recipient",
+                &evm_address,
+                "--amount",
+                "1",
+            ],
         ];
-        for args in commands {
-            let parse = |extra: &[&str]| {
-                Cli::try_parse_from(
-                    ["dusk-tx"]
-                        .iter()
-                        .chain(args.iter())
-                        .chain(extra.iter())
-                        .copied(),
-                )
-            };
-            assert!(parse(&[]).is_err(), "{args:?} without --expected-chain-id");
-            assert!(parse(&["--expected-chain-id", "2"]).is_ok(), "{args:?}");
-        }
-        assert!(Cli::try_parse_from([
-            "dusk-tx",
-            "pay-for-gas",
-            "--igp",
-            &id,
-            "--nonce",
-            "1",
-            "--gas-amount",
-            "1",
-            "--quote-only",
-        ])
-        .is_ok());
+        commands
+            .into_iter()
+            .map(|args| args.into_iter().map(String::from).collect())
+            .collect()
     }
 
-    /// A fee command against an endpoint on another chain stops once it has
-    /// the endpoint's chain ID: before it queries a contract, opens the
-    /// signer's key file or builds a transaction. The key file here doesn't
-    /// exist, so reading it first would fail differently.
+    /// Every command that sends a transaction signs only for the chain the
+    /// caller names, as `withdraw-dispatch` always has: none runs without
+    /// `--expected-chain-id`, except `pay-for-gas --quote-only`, which signs
+    /// nothing. Every other command only reads.
+    #[test]
+    fn every_command_that_signs_requires_an_expected_chain_id() {
+        use clap::CommandFactory;
+        let parse = |args: &[String], extra: &[&str]| {
+            Cli::try_parse_from(
+                std::iter::once("dusk-tx")
+                    .chain(args.iter().map(String::as_str))
+                    .chain(extra.iter().copied()),
+            )
+        };
+        let commands = signing_commands("contract.wasm");
+        for args in &commands {
+            assert!(
+                parse(args, &[]).is_err(),
+                "{args:?} without --expected-chain-id"
+            );
+            assert!(
+                parse(args, &["--expected-chain-id", "2"]).is_ok(),
+                "{args:?}"
+            );
+        }
+        let pay_for_gas = commands
+            .iter()
+            .find(|args| args[0] == "pay-for-gas")
+            .unwrap();
+        assert!(parse(pay_for_gas, &["--quote-only"]).is_ok());
+
+        let signing: Vec<&str> = commands.iter().map(|args| args[0].as_str()).collect();
+        let reads = [
+            "query",
+            "encode-message",
+            "drc20-balance",
+            "dispatched-message",
+            "account",
+            "export-signer-key",
+        ];
+        for command in Cli::command().get_subcommands() {
+            let name = command.get_name();
+            assert!(
+                signing.contains(&name) || reads.contains(&name),
+                "{name} is listed neither as a command that signs nor as one that only reads"
+            );
+        }
+    }
+
+    /// Every command that sends a transaction, against an endpoint on
+    /// another chain, stops once it has the endpoint's chain ID: before it
+    /// queries a contract, opens the signer's key file or builds a
+    /// transaction. The key file here doesn't exist, so reading it first
+    /// would fail differently.
     #[tokio::test]
-    async fn fee_commands_check_the_chain_before_anything_else() {
-        let id = "22".repeat(32);
-        let keys = || Some(std::path::PathBuf::from("/nonexistent/dusk-tx-test.keys"));
-        let (_, beneficiary) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
-        let beneficiary = hex::encode(beneficiary.to_bytes());
-        for command in ["set-igp-config", "set-beneficiary", "claim-fees", "pay-for-gas"] {
+    async fn every_command_that_signs_checks_the_chain_before_anything_else() {
+        let dir = std::env::temp_dir().join(format!("dusk-tx-chain-first-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wasm = dir.join("contract.wasm");
+        std::fs::write(&wasm, b"\0asm\x01\0\0\0").unwrap();
+        for args in signing_commands(wasm.to_str().unwrap()) {
             let (url, server) = mock_rues(vec![("/chain_id", 200, vec![1])]);
-            let result = match command {
-                "set-igp-config" => {
-                    super::cmd_set_igp_config(
-                        &url,
-                        keys(),
-                        "",
-                        None,
-                        false,
-                        &id,
-                        "1:0:10000000000:1",
-                        2,
-                        3_000_000,
-                        1,
-                    )
-                    .await
-                }
-                "set-beneficiary" => {
-                    super::cmd_set_beneficiary(
-                        &url,
-                        keys(),
-                        "",
-                        None,
-                        false,
-                        &id,
-                        &beneficiary,
-                        2,
-                        3_000_000,
-                        1,
-                    )
-                    .await
-                }
-                "claim-fees" => {
-                    super::cmd_claim_fees(&url, keys(), "", None, false, &id, 2, 3_000_000, 1).await
-                }
-                _ => {
-                    super::cmd_pay_for_gas(
-                        &url,
-                        keys(),
-                        "",
-                        None,
-                        false,
-                        &id,
-                        super::TopUpMessage::Id {
-                            id: id.clone(),
-                            destination: 1,
-                        },
-                        1,
-                        None,
-                        false,
-                        Some(2),
-                        3_000_000,
-                        1,
-                    )
-                    .await
-                }
-            };
-            let error = result.unwrap_err();
+            let tail = [
+                "--rues-url",
+                &url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--expected-chain-id",
+                "2",
+            ];
+            let cli = Cli::try_parse_from(
+                std::iter::once("dusk-tx")
+                    .chain(args.iter().map(String::as_str))
+                    .chain(tail),
+            )
+            .unwrap();
+            let error = super::run(cli.command).await.unwrap_err();
             assert!(
                 error.contains("Configured Dusk chain ID 2 does not match endpoint chain ID 1"),
-                "{command}: {error}"
+                "{}: {error}",
+                args[0]
             );
             assert_eq!(
                 server.join().unwrap().len(),
                 1,
-                "{command} asked for nothing but the chain ID"
+                "{} asked for nothing but the chain ID",
+                args[0]
             );
         }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `deploy-wasm` computes the contract ID as Rusk does, from the Wasm,
@@ -2609,9 +2759,15 @@ mod tests {
         let bytecode = b"\0asm\x01\0\0\0".to_vec();
         let owner = super::parse_account_arg(OWNER).unwrap();
         let id_0 = super::parse_bytes32(ID_0).unwrap();
-        assert_eq!(super::check_deploy_id(&bytecode, 0, &owner, &id_0), Ok(id_0));
+        assert_eq!(
+            super::check_deploy_id(&bytecode, 0, &owner, &id_0),
+            Ok(id_0)
+        );
         let error = super::check_deploy_id(&bytecode, 7, &owner, &id_0).unwrap_err();
-        assert!(error.contains(&format!("give the contract ID {ID_7}, not {ID_0}")), "{error}");
+        assert!(
+            error.contains(&format!("give the contract ID {ID_7}, not {ID_0}")),
+            "{error}"
+        );
 
         let dir = std::env::temp_dir().join(format!("dusk-tx-deploy-wasm-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2631,7 +2787,7 @@ mod tests {
             Some(OWNER),
             0,
             Some(ID_7),
-            Some(0),
+            0,
             None,
             2000,
         )
@@ -2641,7 +2797,10 @@ mod tests {
         assert!(server.join().unwrap().is_empty());
 
         // The contract is there already: reported, and no key is read.
-        let (url, server) = mock_rues(vec![("/chain_id", 200, vec![0]), ("/owner", 200, Vec::new())]);
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![0]),
+            ("/owner", 200, Vec::new()),
+        ]);
         super::cmd_deploy_wasm(
             &url,
             no_keys(),
@@ -2652,7 +2811,7 @@ mod tests {
             Some(OWNER),
             0,
             Some(ID_0),
-            Some(0),
+            0,
             None,
             2000,
         )
@@ -3385,6 +3544,7 @@ async fn cmd_fund_dispatch(
     mailbox_hex: &str,
     payer_hex: &str,
     amount: u64,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -3395,7 +3555,7 @@ async fn cmd_fund_dispatch(
     let payer = parse_bytes32(payer_hex)?;
     let args = rkyv_serialize(&(payer, amount));
     let client = RuesClient::new(rues_url)?;
-    let chain_id = client.query_chain_id().await?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call_with_deposit(
@@ -3448,8 +3608,7 @@ async fn cmd_withdraw_dispatch(
         .map(parse_account_public_key)
         .transpose()?;
     let client = RuesClient::new(rues_url)?;
-    let observed_chain_id = client.query_chain_id().await?;
-    let chain_id = resolve_signing_chain_id(Some(expected_chain_id), observed_chain_id)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let recipient = explicit_recipient.unwrap_or(pk);
     let args = rkyv_serialize(&(recipient, amount));
@@ -3536,7 +3695,7 @@ async fn cmd_call(
     args_hex: &str,
     gas_limit: u64,
     gas_price: u64,
-    expected_chain_id: Option<u8>,
+    expected_chain_id: u8,
     simulate_only: bool,
     submission: CallSubmission,
 ) -> Result<(), String> {
@@ -3638,15 +3797,14 @@ async fn call(
     args_hex: &str,
     gas_limit: u64,
     gas_price: u64,
-    expected_chain_id: Option<u8>,
+    expected_chain_id: u8,
     simulate_only: bool,
     submission: CallSubmission,
 ) -> Result<serde_json::Value, String> {
     let (contract_id, fn_args) =
         parse_call_inputs(contract_hex, args_hex, simulate_only, submission)?;
     let client = RuesClient::new(rues_url)?;
-    let observed_chain_id = client.query_chain_id().await?;
-    let chain_id = resolve_signing_chain_id(expected_chain_id, observed_chain_id)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
     // Query the account only after endpoint identity is bound, and only if
@@ -3712,22 +3870,20 @@ fn call_output(
 }
 
 /// The chain ID a command signs for: the endpoint's, which must be
-/// `expected`. The fee commands bind it before they query anything else,
-/// read the signer or build a transaction.
+/// `expected` (`--expected-chain-id`, which every command that sends a
+/// transaction requires). Each binds it before it reads the signer or
+/// builds a transaction, and before it queries anything else.
 async fn bind_chain_id(client: &RuesClient, expected: u8) -> Result<u8, String> {
-    resolve_signing_chain_id(Some(expected), client.query_chain_id().await?)
+    resolve_signing_chain_id(expected, client.query_chain_id().await?)
 }
 
-fn resolve_signing_chain_id(expected: Option<u8>, observed: u8) -> Result<u8, String> {
-    if let Some(expected) = expected {
-        if observed != expected {
-            return Err(format!(
-                "Configured Dusk chain ID {expected} does not match endpoint chain ID {observed}"
-            ));
-        }
-        return Ok(expected);
+fn resolve_signing_chain_id(expected: u8, observed: u8) -> Result<u8, String> {
+    if observed != expected {
+        return Err(format!(
+            "Configured Dusk chain ID {expected} does not match endpoint chain ID {observed}"
+        ));
     }
-    Ok(observed)
+    Ok(expected)
 }
 
 fn submission_error_with_hash(tx_id: &str, error: &str) -> String {
@@ -3769,11 +3925,9 @@ async fn cmd_deploy_hyperlane(
     igp_domain_config_args: &[String],
     multisig_validators: &str,
     multisig_threshold: u8,
+    expected_chain_id: u8,
 ) -> Result<(), String> {
     let igp_domain_configs = parse_igp_domain_configs(igp_domain_config_args)?;
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url)?;
-
     let default_ism = parse_default_ism(default_ism)?;
     let (multisig_validators, multisig_threshold) = match default_ism {
         DefaultIsm::TestMock => (Vec::<EthAddress>::new(), 0u8),
@@ -3803,8 +3957,10 @@ async fn cmd_deploy_hyperlane(
         }
     };
 
-    // Get chain info
-    let chain_id = client.query_chain_id().await?;
+    // The chain every deploy is signed for, before the key is read.
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (account_nonce, balance) = client.query_account(&pk).await?;
     let pk_short = hex::encode(&pk.to_bytes()[..8]);
 
@@ -4588,7 +4744,7 @@ async fn cmd_deploy_wasm(
     owner_arg: Option<&str>,
     deploy_nonce: u64,
     expected_id: Option<&str>,
-    expected_chain_id: Option<u8>,
+    expected_chain_id: u8,
     gas_limit: Option<u64>,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -4601,10 +4757,7 @@ async fn cmd_deploy_wasm(
         check_deploy_id(&bytecode, deploy_nonce, owner, expected)?;
     }
     let client = RuesClient::new(rues_url)?;
-    let chain_id = match expected_chain_id {
-        Some(expected) => bind_chain_id(&client, expected).await?,
-        None => client.query_chain_id().await?,
-    };
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let signer = match &owner {
         Some(_) => None,
         None => Some(load_keys(
@@ -5351,6 +5504,7 @@ async fn cmd_dispatch(
     destination: u32,
     recipient_hex: &str,
     body: &str,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -5362,7 +5516,7 @@ async fn cmd_dispatch(
         body,
     )?;
     let client = RuesClient::new(rues_url)?;
-    let chain_id = client.query_chain_id().await?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
@@ -5428,6 +5582,7 @@ async fn cmd_process(
     mailbox_hex: &str,
     message_hex: &str,
     metadata_hex: &str,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -5435,8 +5590,8 @@ async fn cmd_process(
     let (process_args, message_id) = prepare_process_call(message_hex, metadata_hex)?;
 
     let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
@@ -5541,19 +5696,19 @@ async fn cmd_enroll_router(
     warp_contract_hex: &str,
     domain: u32,
     router_hex: &str,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url)?;
-
     let warp_id = ContractId::from_bytes(parse_bytes32(warp_contract_hex)?);
     let router = parse_bytes32(router_hex)?;
 
     // Serialize args: (domain: u32, router: H256)
     let enroll_args = rkyv_serialize(&(domain, router));
 
-    let chain_id = client.query_chain_id().await?;
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
@@ -5592,18 +5747,18 @@ async fn cmd_register_account(
     secret_key_hex: Option<String>,
     secret_key_stdin: bool,
     warp_contract_hex: &str,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let client = RuesClient::new(rues_url)?;
-
     let warp_bytes = parse_bytes32(warp_contract_hex)?;
     let warp_id = ContractId::from_bytes(warp_bytes);
 
     // The route registers the transaction signer. Only a claim registers an
     // account for someone else (claim-pending --for).
-    let chain_id = client.query_chain_id().await?;
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call(
@@ -5691,12 +5846,14 @@ async fn cmd_claim_pending(
     secret_key_stdin: bool,
     warp_contract_hex: &str,
     for_account: Option<&str>,
+    expected_chain_id: u8,
     gas_limit: Option<u64>,
     gas_price: u64,
 ) -> Result<(), String> {
     let account = for_account.map(parse_account_arg).transpose()?;
-    let client = RuesClient::new(rues_url)?;
     let warp_bytes = parse_bytes32(warp_contract_hex)?;
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let claim = claim_call(&pk, account, gas_limit);
     let target = claim.account;
@@ -5719,7 +5876,6 @@ async fn cmd_claim_pending(
 
     // Either call also registers the account, so later transfers to it are
     // paid out directly.
-    let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
@@ -6271,6 +6427,7 @@ async fn cmd_drc20_approve(
     token_hex: &str,
     spender_hex: &str,
     amount: u64,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -6281,7 +6438,7 @@ async fn cmd_drc20_approve(
         amount,
     });
     let client = RuesClient::new(rues_url)?;
-    let chain_id = client.query_chain_id().await?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _) = client.query_account(&pk).await?;
     let tx = moonlight_call(
@@ -6354,6 +6511,7 @@ async fn cmd_transfer_remote(
     raw_recipient: bool,
     amount: u64,
     native: bool,
+    expected_chain_id: u8,
     gas_limit: u64,
     gas_price: u64,
 ) -> Result<(), String> {
@@ -6364,6 +6522,7 @@ async fn cmd_transfer_remote(
         return Err("Amount must be greater than zero".into());
     }
     let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
 
     // Check the route before signing anything: a transaction that fails on
     // chain is charged its whole gas limit, and the node reports a failed
@@ -6419,7 +6578,6 @@ async fn cmd_transfer_remote(
     // Serialize args: (destination: u32, recipient: H256, amount: u64)
     let transfer_args = rkyv_serialize(&(destination, recipient, amount));
 
-    let chain_id = client.query_chain_id().await?;
     let (nonce, _balance) = client.query_account(&pk).await?;
 
     let tx = moonlight_call_with_deposit(

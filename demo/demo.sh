@@ -287,6 +287,10 @@ DUSK_CHAIN_ID=$(curl -s -X POST \
 if [ -z "$DUSK_CHAIN_ID" ]; then
     fail "Dusk node not reachable at $DUSK_RUES_URL. Start the rusk-duskevm Docker container first."
 fi
+[[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] || fail "Dusk node at $DUSK_RUES_URL returned no chain ID"
+# Every Dusk transaction below is signed for this chain only
+# (dusk-tx --expected-chain-id).
+DUSK_EXPECTED_CHAIN_ID=$((16#$DUSK_CHAIN_ID))
 ok "Dusk node connected"
 
 if [ "${1:-}" = "--skip-deploy" ]; then
@@ -304,6 +308,7 @@ else
         --warp-name "$TOKEN_NAME" \
         --warp-symbol "$TOKEN_SYMBOL" \
         --warp-decimals "$TOKEN_DECIMALS" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         > "$DUSK_DEPLOY_OUTPUT" || fail "Dusk deployment failed"
     ok "Dusk contracts deployed"
 fi
@@ -357,6 +362,7 @@ if [ "$CURRENT_DISPATCH_CREDIT" -lt "$DUSK_DISPATCH_FEE_CREDIT" ]; then
         --mailbox "$DUSK_MAILBOX" \
         --payer "$DUSK_WARP" \
         --amount "$DISPATCH_CREDIT_DEFICIT" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to fund WarpDrc20 dispatch fee deficit"
     ok "Dusk: WarpDrc20 dispatch credit brought to target"
 else
@@ -384,6 +390,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --warp-contract "$DUSK_WARP" \
     --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     > /dev/null || fail "Failed to enroll remote router on Dusk"
 ok "Dusk: Remote router enrolled (domain=$EVM_DOMAIN -> ${EVM_TOKEN})"
 
@@ -393,7 +400,8 @@ step "Dusk: Registering deployer BLS key on WarpDrc20..."
 REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --warp-contract "$DUSK_WARP" 2>/dev/null) || fail "Failed to register account on Dusk"
+    --warp-contract "$DUSK_WARP" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>/dev/null) || fail "Failed to register account on Dusk"
 DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
 ok "Dusk: Account registered (H256: ${DUSK_ACCOUNT_H256:0:16}...)"
 
@@ -492,7 +500,8 @@ PROCESS_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" proces
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
     --mailbox "$DUSK_MAILBOX" \
-    --message "$RELAY_MSG" 2>/dev/null) || fail "Failed to process message on Dusk"
+    --message "$RELAY_MSG" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>/dev/null) || fail "Failed to process message on Dusk"
 ok "Dusk: Message processed!"
 
 # Wait for Dusk block
@@ -535,6 +544,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
     --destination "$EVM_DOMAIN" \
     --recipient "$EVM_RECIPIENT_PAD32" \
     --amount "$BRIDGE_DUSK_TO_EVM" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     > /dev/null || fail "Failed to call transfer_remote on Dusk"
 ok "Dusk: transfer_remote sent (1 $TOKEN_SYMBOL burned)"
 

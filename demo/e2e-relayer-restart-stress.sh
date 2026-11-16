@@ -273,6 +273,10 @@ dusk_mailbox="$(jq -r '.dusk.mailbox' "$state")"
 account_h256="$(jq -r '.account_h256' "$state")"
 evm_domain="$(jq -r '.evm_domain' "$state")"
 dusk_domain="$(jq -r '.dusk_domain' "$state")"
+# Dusk transactions are signed for the deployment's chain only.
+dusk_chain_id_hex="$(jq -er '.dusk_chain_id | strings | select(test("^[0-9A-Fa-f]{2}$"))' "$state")" \
+    || fail "deployment state has an invalid Dusk chain ID"
+dusk_chain_id=$((16#$dusk_chain_id_hex))
 evm_recipient_pad32="$(pad_evm_address "$ANVIL_DEPLOYER")"
 
 dusk_supply_before="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
@@ -319,7 +323,8 @@ for i in $(seq 1 "$TRANSFERS"); do
       --warp-contract "$dusk_warp" \
       --destination "$evm_domain" \
       --recipient "$evm_recipient_pad32" \
-      --amount "$amount_wei" >"$dusk_transfer_log" 2>&1 || {
+      --amount "$amount_wei" \
+      --expected-chain-id "$dusk_chain_id" >"$dusk_transfer_log" 2>&1 || {
           cat "$dusk_transfer_log" >&2 || true
           fail "Dusk -> EVM transfer $i/$TRANSFERS failed (log: $dusk_transfer_log)"
       }

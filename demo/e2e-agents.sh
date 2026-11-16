@@ -266,6 +266,7 @@ wait_for_dusk_announcements() {
 run_quorum_check() {
     local relayer_pid="$1" relayer_log="$2" evm_token="$3" dusk_warp="$4"
     local dusk_domain="$5" evm_domain="$6" account_h256="$7" evm_recipient="$8"
+    local dusk_chain_id="$9"
     local n="$VALIDATOR_COUNT" m="$VALIDATOR_THRESHOLD" i one
     one="$(to_wei 1)"
 
@@ -286,7 +287,8 @@ run_quorum_check() {
         DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
           --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
           --warp-contract "$dusk_warp" --destination "$evm_domain" \
-          --recipient "$evm_recipient" --amount "$one" >/dev/null
+          --recipient "$evm_recipient" --amount "$one" \
+          --expected-chain-id "$dusk_chain_id" >/dev/null
     }
     # wait_value <label> <getter> <target>
     wait_value() {
@@ -586,7 +588,8 @@ PY
       --warp-contract "$dusk_warp" \
       --destination "$evm_domain" \
       --recipient "$evm_recipient_pad32" \
-      --amount "$amount_to_evm_wei" >/dev/null
+      --amount "$amount_to_evm_wei" \
+      --expected-chain-id "$dusk_chain_id" >/dev/null
 
     local expected_evm_balance
     expected_evm_balance="$(
@@ -632,7 +635,8 @@ PY
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
       --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
       --warp-contract "$dusk_warp_native" --destination "$evm_domain" \
-      --recipient "$evm_recipient_pad32" --amount "$native_send" --native >/dev/null
+      --recipient "$evm_recipient_pad32" --amount "$native_send" --native \
+      --expected-chain-id "$dusk_chain_id" >/dev/null
 
     start_ts="$(date +%s)"
     while true; do
@@ -685,7 +689,8 @@ PY
       --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-approve \
       --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" \
-      --spender "$dusk_warp_collateral" --amount "$collateral_send" >/dev/null
+      --spender "$dusk_warp_collateral" --amount "$collateral_send" \
+      --expected-chain-id "$dusk_chain_id" >/dev/null
 
     local evm_collateral_before evm_collateral_target
     evm_collateral_before="$(cast call "$evm_collateral_token" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"
@@ -694,7 +699,8 @@ PY
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
       --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
       --warp-contract "$dusk_warp_collateral" --destination "$evm_domain" \
-      --recipient "$evm_recipient_pad32" --amount "$collateral_send" >/dev/null
+      --recipient "$evm_recipient_pad32" --amount "$collateral_send" \
+      --expected-chain-id "$dusk_chain_id" >/dev/null
     start_ts="$(date +%s)"
     while true; do
         now="$(date +%s)"
@@ -769,7 +775,7 @@ PY_CHECK
 
     if [ "$ism" = "messageIdMultisig" ]; then
         run_quorum_check "$relayer_pid" "$relayer_log" "$evm_token" "$dusk_warp" \
-          "$dusk_domain" "$evm_domain" "$account_h256" "$evm_recipient_pad32"
+          "$dusk_domain" "$evm_domain" "$account_h256" "$evm_recipient_pad32" "$dusk_chain_id"
     fi
 
     # Cleanup agents + env.

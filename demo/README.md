@@ -378,11 +378,12 @@ bash demo/demo.sh --skip-deploy
 # Deploy the full local route matrix on Dusk
 dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc20 \
     --igp-domain-config 31338:200000:10000000000:1 \
-    --deploy-warp-native --warp-collateral-token warp-drc20
+    --deploy-warp-native --warp-collateral-token warp-drc20 --expected-chain-id <u8>
 
 # Pre-fund Mailbox dispatch credit for a direct dispatcher (warp routes
 # charge each transfer's fee to its sender instead)
-dusk-tx fund-dispatch --mailbox <hex> --payer <sender-hex> --amount <lux>
+dusk-tx fund-dispatch --mailbox <hex> --payer <sender-hex> --amount <lux> \
+    --expected-chain-id <u8>
 
 # Withdraw a Moonlight account's own unused credit to the signing account
 dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux> \
@@ -407,34 +408,36 @@ dusk-tx query --contract <validator-announce-hex> \
     --arg-u32-pair 0,2
 
 # Enroll a remote router
-dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex>
+dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex> \
+    --expected-chain-id <u8>
 
 # Register BLS key for receiving bridged tokens
-dusk-tx register-account --warp-contract <hex>
+dusk-tx register-account --warp-contract <hex> --expected-chain-id <u8>
 
 # Approve collateral custody and inspect DRC20 balances
-dusk-tx drc20-approve --token <hex> --spender <collateral-route-hex> --amount <amount>
+dusk-tx drc20-approve --token <hex> --spender <collateral-route-hex> --amount <amount> \
+    --expected-chain-id <u8>
 dusk-tx drc20-balance --token <hex>
 dusk-tx drc20-balance --token <hex> --account-contract <hex>
 
 # Send tokens to a remote chain
 dusk-tx transfer-remote --warp-contract <hex> --destination 31338 \
-    --recipient <hex> --amount 1000000000000000000
+    --recipient <hex> --amount 1000000000000000000 --expected-chain-id <u8>
 
 # Native DUSK sends attach an exact Moonlight deposit
 dusk-tx transfer-remote --warp-contract <native-route-hex> --destination 31338 \
-    --recipient <hex> --amount 100000000 --native
+    --recipient <hex> --amount 100000000 --native --expected-chain-id <u8>
 
 # Encode a Hyperlane message (no TX)
 dusk-tx encode-message --nonce 0 --origin 31338 --sender <hex> \
     --destination 4242 --recipient <hex> --body <hex>
 
 # Process an inbound message (multisig deployments require relayer metadata)
-dusk-tx process --mailbox <hex> --message <hex> --metadata <hex>
+dusk-tx process --mailbox <hex> --message <hex> --metadata <hex> --expected-chain-id <u8>
 
 # Dispatch a message via TestRecipient
 dusk-tx dispatch --mailbox <hex> --test-recipient <hex> \
-    --destination 31338 --recipient <hex> --body "Hello!"
+    --destination 31338 --recipient <hex> --body "Hello!" --expected-chain-id <u8>
 ```
 
 `--metadata` may be omitted only when the selected ISM accepts empty metadata,

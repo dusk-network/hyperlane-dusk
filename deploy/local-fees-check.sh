@@ -69,7 +69,9 @@ s() { jq -r "$1" "$STATE"; }
 num() { awk 'NR == 1 {print $1}'; }
 pad32() { local a="${1#0x}"; printf '000000000000000000000000%s' "${a,,}"; }
 dq() { "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" "$@" | jq -er '.value'; }
-dtx() { "$DUSK_TX" "$@" --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS"; }
+# A Dusk transaction signed with DUSK_KEYS, for the rehearsal's chain only.
+dtx() { "$DUSK_TX" "$@" --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID"; }
+daccount() { "$DUSK_TX" account "$@" --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS"; }
 
 EVM_USER="$(cast wallet address --private-key "$EVM_USER_KEY")"
 DUSK_IGP="$(s .dusk.igp)" DUSK_PF="$(s .dusk.protocol_fee)" DUSK_MAILBOX="$(s .dusk.mailbox)"
@@ -126,7 +128,7 @@ dusk_height() { gql 'query { block(height: -1) { header { height } } }' | jq -er
 
 # The transfer from Anvil (3.) pays the deployer, which a fresh route holds
 # in escrow until the account is registered.
-if [ "$(dtx account --warp-contract "$DUSK_ROUTE" | jq -r '.route.registered')" != true ]; then
+if [ "$(daccount --warp-contract "$DUSK_ROUTE" | jq -r '.route.registered')" != true ]; then
     dtx register-account --warp-contract "$DUSK_ROUTE" >/dev/null || fail "Can't register the deployer on $DUSK_ROUTE"
     ok "registered the deployer on the native route"
 fi
@@ -170,7 +172,7 @@ info "delivering it used $small_gas gas"
 # ── 3. A warp transfer from Anvil ────────────────────────────────────────────
 
 quote="$(cast call "$EVM_TOKEN" "quoteGasPayment(uint32)(uint256)" "$DUSK_DOMAIN" --rpc-url "$EVM_RPC" | num)"
-account="$(dtx account --offline | jq -r .account_h256)"
+account="$(daccount --offline | jq -r .account_h256)"
 locked="$(dq --contract 0100000000000000000000000000000000000000000000000000000000000000 \
     --method contract_balance --return-type u64 --arg-bytes32 "$DUSK_ROUTE")"
 igp_balance="$(cast balance "$EVM_IGP" --rpc-url "$EVM_RPC")"
@@ -236,8 +238,7 @@ info "the 2 KiB message needs about $((small_gas + handle_gas)) gas, so $needed 
 igp_count() { dq --contract "$DUSK_IGP" --method gas_payment_count --return-type u32; }
 records="$(igp_count)"
 first=$(( missing / 2 ))
-out="$(dtx pay-for-gas --igp "$DUSK_IGP" --message-id "$heavy_id" --destination "$EVM_DOMAIN" --gas-amount "$first" \
-    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
+out="$(dtx pay-for-gas --igp "$DUSK_IGP" --message-id "$heavy_id" --destination "$EVM_DOMAIN" --gas-amount "$first")" \
     || fail "the first top-up failed: $out"
 info "paid the Dusk IGP $(jq -r .paid <<<"$out") LUX for $first more gas for it"
 never_within "$UNPAID_WATCH" "the relayer delivered the 2 KiB message from Dusk with $((PAID_GAS + first)) of the $needed gas it needs paid for" \
@@ -250,8 +251,7 @@ ok "not delivered after ${UNPAID_WATCH}s with $((PAID_GAS + first)) gas paid for
 rest=$(( missing - first + missing / 10 ))
 quote="$("$DUSK_TX" pay-for-gas --rues-url "$DUSK_RUES_URL" --igp "$DUSK_IGP" --nonce "$heavy_nonce" \
     --gas-amount "$rest" --quote-only | jq -er '.quote')" || fail "Can't quote the second top-up"
-out="$(dtx pay-for-gas --igp "$DUSK_IGP" --nonce "$heavy_nonce" --gas-amount "$rest" --max-payment $((2 * quote)) \
-    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
+out="$(dtx pay-for-gas --igp "$DUSK_IGP" --nonce "$heavy_nonce" --gas-amount "$rest" --max-payment $((2 * quote)))" \
     || fail "the second top-up failed: $out"
 [ "$(jq -r .message_id <<<"$out")" = "$heavy_id" ] && [ "$(jq -r .destination <<<"$out")" = "$EVM_DOMAIN" ] \
     || fail "pay-for-gas --nonce $heavy_nonce paid for $(jq -c '{message_id, destination}' <<<"$out"), not the 2 KiB message"

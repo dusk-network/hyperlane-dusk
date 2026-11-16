@@ -94,6 +94,11 @@ EVM_TOKEN=$(jq -r '.evm.token' "$BRIDGE_STATE_FILE")
 DUSK_MAILBOX=$(jq -r '.dusk.mailbox' "$BRIDGE_STATE_FILE")
 DUSK_WARP=$(jq -r '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")
 DUSK_ACCOUNT_H256=$(jq -r '.account_h256' "$BRIDGE_STATE_FILE")
+# The chain the deployment is on: Dusk transactions are signed for it only
+# (dusk-tx --expected-chain-id).
+DUSK_CHAIN_ID_HEX=$(jq -er '.dusk_chain_id | strings | select(test("^[0-9A-Fa-f]{2}$"))' "$BRIDGE_STATE_FILE") \
+    || fail "$BRIDGE_STATE_FILE has no Dusk chain ID; deploy again with demo/deploy.sh"
+DUSK_EXPECTED_CHAIN_ID=$((16#$DUSK_CHAIN_ID_HEX))
 
 # ── Command: status ──────────────────────────────────────────────────────────
 
@@ -214,7 +219,8 @@ cmd_to_dusk() {
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
         --mailbox "$DUSK_MAILBOX" \
-        --message "$relay_msg"); then
+        --message "$relay_msg" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID"); then
         dusk_process_error=$(echo "$dusk_process_result" | jq -r '.error // empty' 2>/dev/null || true)
         [ -n "$dusk_process_error" ] && fail "Dusk process failed: $dusk_process_error"
         fail "Dusk process failed; do not retry until the prepared TX hash printed above is reconciled"
@@ -282,7 +288,8 @@ cmd_to_evm() {
         --warp-contract "$DUSK_WARP" \
         --destination "$EVM_DOMAIN" \
         --recipient "$evm_recipient_pad32" \
-        --amount "$amount_wei"); then
+        --amount "$amount_wei" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID"); then
         dusk_transfer_error=$(echo "$dusk_transfer_result" | jq -r '.error // empty' 2>/dev/null || true)
         [ -n "$dusk_transfer_error" ] && fail "Dusk transfer_remote failed: $dusk_transfer_error"
         fail "Dusk transfer_remote failed; do not retry until the prepared TX hash printed above is reconciled"

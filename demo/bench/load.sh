@@ -36,6 +36,9 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 now() { date +%s.%N; }
 
 ROUTE="$(jq -r .dusk.warp_native "$STATE")"
+# The chain the bench deployed to: transfers are signed for it only.
+DUSK_CHAIN_ID="$(sed -n 's/^DUSK_EXPECTED_CHAIN_ID=//p' "$BENCH_DIR/rehearsal.env")"
+[[ "$DUSK_CHAIN_ID" =~ ^[0-9]+$ ]] || fail "$BENCH_DIR/rehearsal.env records no DUSK_EXPECTED_CHAIN_ID"
 TOKEN="$(jq -r .evm.token "$STATE")"
 DUSK_DOMAIN="$(jq -r .dusk_domain "$STATE")"
 EVM_DOMAIN="$(jq -r .evm_domain "$STATE")"
@@ -48,7 +51,7 @@ dusk_to_evm() {
         out="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote --native \
             --rues-url "$DUSK_URL" --keys "$CONSENSUS_KEYS" --warp-contract "$ROUTE" \
             --destination "$EVM_DOMAIN" --recipient "${ANVIL_DEPLOYER#0x}" --amount "$amount" \
-            2>>"$BENCH_DIR/logs/load.stderr")" || rc=$?
+            --expected-chain-id "$DUSK_CHAIN_ID" 2>>"$BENCH_DIR/logs/load.stderr")" || rc=$?
         jq -cn --argjson ts "$start" --argjson end "$(now)" --argjson i "$i" --argjson rc "$rc" \
             --arg out "$out" '{ts: $ts, end: $end, dir: "dusk-to-evm", i: $i, rc: $rc}
               + (($out | fromjson? // {error: $out[0:300]})

@@ -148,6 +148,10 @@ DUSK_CHAIN_ID=$(curl -s -X POST \
     "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
     --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
 [ -n "$DUSK_CHAIN_ID" ] || fail "Cannot connect to Dusk RUES at $DUSK_RUES_URL"
+[[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] || fail "Dusk RUES at $DUSK_RUES_URL returned no chain ID"
+# Every Dusk transaction below is signed for this chain only
+# (dusk-tx --expected-chain-id).
+DUSK_EXPECTED_CHAIN_ID=$((16#$DUSK_CHAIN_ID))
 ok "Dusk RUES reachable"
 
 validate_evm_contract() {
@@ -420,6 +424,7 @@ ensure_dispatch_credit() {
         --mailbox "$mailbox" \
         --payer "$route" \
         --amount "$deficit" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to fund $label dispatch fee deficit"
     response=$("$DUSK_TX" query \
         --rues-url "$DUSK_RUES_URL" \
@@ -937,6 +942,7 @@ DUSK_DEPLOY_CMD=(
         --warp-decimals "$TOKEN_DECIMALS"
         --default-ism "$DUSK_DEFAULT_ISM"
         --igp-domain-config "$EVM_DOMAIN:$DUSK_IGP_GAS_OVERHEAD:$DUSK_IGP_TOKEN_EXCHANGE_RATE:$DUSK_IGP_GAS_PRICE"
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID"
 )
 if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
     DUSK_DEPLOY_CMD+=(
@@ -966,7 +972,7 @@ if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
         --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" \
         --owner r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW \
         --deploy-nonce 0 --expected-id 93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4 \
-        --expected-chain-id "$((16#$DUSK_CHAIN_ID))")" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
         || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' <<<"$MULTICALL_OUT" 2>/dev/null)"
     DUSK_MULTICALL="$(jq -r '.contract_id' <<<"$MULTICALL_OUT")"
     ok "Multicall for Dusk at $DUSK_MULTICALL"
@@ -1043,7 +1049,8 @@ ENROLL_OUT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-rou
     --keys "$CONSENSUS_KEYS" \
     --warp-contract "$DUSK_WARP" \
     --domain "$EVM_DOMAIN" \
-    --router "$(pad_evm_address "$EVM_TOKEN")" 2>&1) || {
+    --router "$(pad_evm_address "$EVM_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>&1) || {
         err=$(echo "$ENROLL_OUT" | jq -r '.error // empty' 2>/dev/null || true)
         fail "Failed to enroll remote router on Dusk${err:+: $err}"
     }
@@ -1062,6 +1069,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
     --warp-contract "$DUSK_WARP_NATIVE" --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_NATIVE_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     >/dev/null || fail "Failed to enroll EVM native token on Dusk"
 ok "Dusk native router enrolled"
 
@@ -1078,6 +1086,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
     --warp-contract "$DUSK_WARP_COLLATERAL" --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_COLLATERAL_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     >/dev/null || fail "Failed to enroll EVM collateral token on Dusk"
 ok "Dusk collateral router enrolled"
 
@@ -1089,7 +1098,8 @@ step "Registering deployer's BLS key on WarpDrc20..."
 REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --warp-contract "$DUSK_WARP") || {
+    --warp-contract "$DUSK_WARP" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID") || {
         echo "$REGISTER_RESULT" >&2
         fail "Failed to register account on WarpDrc20"
     }
@@ -1103,6 +1113,7 @@ if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
         --warp-contract "$DUSK_WARP_COLLATERAL" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to register on WarpDrc20Collateral"
     ok "WarpDrc20Collateral account registered"
 fi
@@ -1114,6 +1125,7 @@ if [ -n "$DUSK_WARP_NATIVE" ] && [ "$DUSK_WARP_NATIVE" != "null" ]; then
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
         --warp-contract "$DUSK_WARP_NATIVE" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to register on WarpNative"
     ok "WarpNative account registered"
 fi
