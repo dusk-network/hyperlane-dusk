@@ -19,3 +19,8 @@ data-driver = []
 
 [lib]
 crate-type = ["cdylib"]
+
+[lints.rust]
+# `make warp-drc20-collateral-unguarded` builds a test-only copy of the route
+# without its reentrancy guard; see `enter` in src/lib.rs.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(hyperlane_dusk_unguarded_test)"] }

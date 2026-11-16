@@ -68,6 +68,7 @@ impl TestSession {
     }
 
     /// Returns the current block-height.
+    #[allow(dead_code)]
     pub fn block_height(&self) -> u64 {
         rkyv_deserialize(self.0.meta(Metadata::BLOCK_HEIGHT).unwrap())
     }
@@ -76,6 +77,17 @@ impl TestSession {
     #[allow(dead_code)]
     pub fn set_block_height(&mut self, block_height: u64) {
         let _ = self.0.set_meta(Metadata::BLOCK_HEIGHT, block_height);
+    }
+
+    /// The size of a contract's linear memory in bytes. It only grows.
+    #[allow(dead_code)]
+    pub fn memory_len(&mut self, contract: ContractId) -> u64 {
+        let len = self
+            .0
+            .memory_len(contract)
+            .expect("memory_len should succeed")
+            .expect("the contract should exist");
+        u64::try_from(len).expect("memory length fits u64")
     }
 
     /// Query the chain-id.
@@ -95,6 +107,7 @@ impl TestSession {
     }
 
     /// Query the transfer contract for a contract's transparent DUSK balance.
+    #[allow(dead_code)]
     pub fn contract_balance(&mut self, contract: &ContractId) -> Result<u64, VMError> {
         let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
             PlonkVersion::V3,
@@ -106,6 +119,7 @@ impl TestSession {
     }
 
     /// Direct call (bypasses transfer contract, no gas, no auth).
+    #[allow(dead_code)]
     pub fn direct_call<A, R>(
         &mut self,
         contract: ContractId,
@@ -131,7 +145,32 @@ impl TestSession {
             })
     }
 
+    /// A read-only query with the archived argument `fn_args`, as a node
+    /// runs one over HTTP: a direct call with the block gas limit. Returns
+    /// the raw reply and the gas spent.
+    #[allow(dead_code)]
+    pub fn query_raw(
+        &mut self,
+        contract: ContractId,
+        fn_name: &str,
+        fn_args: Vec<u8>,
+        gas_limit: u64,
+    ) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
+        self.0
+            .call_raw(contract, fn_name, fn_args, gas_limit)
+            .map_err(|e| match e {
+                VMError::Panic(panic_msg) => ContractError::Panic(panic_msg),
+                VMError::OutOfGas => ContractError::OutOfGas,
+                _ => ContractError::Panic(format!("{e}")),
+            })
+    }
+
     /// Call through the transfer contract (Moonlight tx, with auth).
+    #[allow(dead_code)]
     pub fn call_public<A, R>(
         &mut self,
         sender_sk: &AccountSecretKey,
@@ -149,6 +188,7 @@ impl TestSession {
     }
 
     /// Call through the transfer contract with an attached DUSK deposit.
+    #[allow(dead_code)]
     pub fn call_public_with_deposit<A, R>(
         &mut self,
         sender_sk: &AccountSecretKey,
@@ -163,37 +203,116 @@ impl TestSession {
         R: Archive,
         R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
     {
+        self.call_public_with(sender_sk, contract, fn_name, fn_arg, deposit, GAS_LIMIT)
+    }
+
+    /// Call through the transfer contract with the transaction's gas limit
+    /// set to `gas_limit`, as a relayer or a user submits it. A call that
+    /// needs more gas fails with `OutOfGas` and is charged the whole limit.
+    #[allow(dead_code)]
+    pub fn call_public_with_gas_limit<A, R>(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_arg: &A,
+        gas_limit: u64,
+    ) -> Result<CallReceipt<R>, ContractError>
+    where
+        A: for<'b> Serialize<StandardBufSerializer<'b>>,
+        A::Archived: for<'b> CheckBytes<DefaultValidator<'b>>,
+        R: Archive,
+        R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
+    {
+        self.call_public_with(sender_sk, contract, fn_name, fn_arg, 0, gas_limit)
+    }
+
+    /// [`Self::call_public_with_gas_limit`] with an attached DUSK deposit.
+    /// A transaction that fails is charged its whole gas limit and gets its
+    /// deposit back.
+    #[allow(dead_code)]
+    pub fn call_public_with_deposit_and_gas_limit<A, R>(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_arg: &A,
+        deposit: u64,
+        gas_limit: u64,
+    ) -> Result<CallReceipt<R>, ContractError>
+    where
+        A: for<'b> Serialize<StandardBufSerializer<'b>>,
+        A::Archived: for<'b> CheckBytes<DefaultValidator<'b>>,
+        R: Archive,
+        R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
+    {
+        self.call_public_with(sender_sk, contract, fn_name, fn_arg, deposit, gas_limit)
+    }
+
+    /// Call through the transfer contract with arguments already serialized,
+    /// for arguments too large for [`rkyv_serialize`]'s scratch space, such
+    /// as long batches of calls. Returns the raw return value.
+    #[allow(dead_code)]
+    pub fn call_public_raw(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_args: Vec<u8>,
+    ) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+        self.call_public_raw_with_deposit(sender_sk, contract, fn_name, fn_args, 0)
+    }
+
+    /// [`Self::call_public_raw`] with an attached DUSK deposit.
+    #[allow(dead_code)]
+    pub fn call_public_raw_with_deposit(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_args: Vec<u8>,
+        deposit: u64,
+    ) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+        let contract_call = ContractCall {
+            contract,
+            fn_name: String::from(fn_name),
+            fn_args,
+        };
+        let receipt = self.execute_moonlight(sender_sk, None, 0, deposit, GAS_LIMIT, contract_call);
+        match receipt.data {
+            Ok(data) => Ok(CallReceipt {
+                gas_limit: receipt.gas_limit,
+                gas_spent: receipt.gas_spent,
+                events: receipt.events,
+                call_tree: receipt.call_tree,
+                data,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn call_public_with<A, R>(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        contract: ContractId,
+        fn_name: &str,
+        fn_arg: &A,
+        deposit: u64,
+        gas_limit: u64,
+    ) -> Result<CallReceipt<R>, ContractError>
+    where
+        A: for<'b> Serialize<StandardBufSerializer<'b>>,
+        A::Archived: for<'b> CheckBytes<DefaultValidator<'b>>,
+        R: Archive,
+        R::Archived: Deserialize<R, Infallible> + for<'b> CheckBytes<DefaultValidator<'b>>,
+    {
         let contract_call = ContractCall {
             contract,
             fn_name: String::from(fn_name),
             fn_args: rkyv_serialize(fn_arg),
         };
 
-        let moonlight_pk = AccountPublicKey::from(sender_sk);
-
-        let AccountData { nonce, .. } = self
-            .account(&moonlight_pk)
-            .expect("Getting the account should succeed");
-
-        let transaction = Transaction::moonlight(
-            sender_sk,
-            None,
-            0,
-            deposit,
-            GAS_LIMIT,
-            LUX,
-            nonce + 1,
-            CHAIN_ID,
-            Some(contract_call),
-        )
-        .expect("Creating moonlight transaction should succeed");
-
-        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
-            PlonkVersion::V3,
-            HardFork::Boreas,
-        ));
-        let receipt = execute(&mut self.0, &transaction, &CONFIG)
-            .unwrap_or_else(|e| panic!("Unspendable transaction due to '{e}'"));
+        let receipt = self.execute_moonlight(sender_sk, None, 0, deposit, gas_limit, contract_call);
 
         match receipt.data {
             Ok(serialized) => Ok(CallReceipt {
@@ -205,6 +324,67 @@ impl TestSession {
             }),
             Err(e) => Err(e),
         }
+    }
+
+    /// Send `value` LUX from `sender_sk`'s account to `receiver` in a plain
+    /// Moonlight transfer, with no contract call. Returns the gas it spent.
+    #[allow(dead_code)]
+    pub fn transfer(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        receiver: &AccountPublicKey,
+        value: u64,
+    ) -> u64 {
+        let receipt = self.execute_moonlight(
+            sender_sk,
+            Some(*receiver),
+            value,
+            0,
+            GAS_LIMIT,
+            None::<ContractCall>,
+        );
+        receipt
+            .data
+            .unwrap_or_else(|e| panic!("transfer should succeed: {e}"));
+        receipt.gas_spent
+    }
+
+    /// Sign a Moonlight transaction with the sender's next nonce and execute
+    /// it at a gas price of 1 LUX.
+    fn execute_moonlight(
+        &mut self,
+        sender_sk: &AccountSecretKey,
+        receiver: Option<AccountPublicKey>,
+        value: u64,
+        deposit: u64,
+        gas_limit: u64,
+        call: impl Into<Option<ContractCall>>,
+    ) -> CallReceipt<Result<Vec<u8>, ContractError>> {
+        let moonlight_pk = AccountPublicKey::from(sender_sk);
+
+        let AccountData { nonce, .. } = self
+            .account(&moonlight_pk)
+            .expect("Getting the account should succeed");
+
+        let transaction = Transaction::moonlight(
+            sender_sk,
+            receiver,
+            value,
+            deposit,
+            gas_limit,
+            LUX,
+            nonce + 1,
+            CHAIN_ID,
+            call.into(),
+        )
+        .expect("Creating moonlight transaction should succeed");
+
+        let _host_query_policy = set_host_query_policy(HostQueryPolicy::from_versions(
+            PlonkVersion::V3,
+            HardFork::Boreas,
+        ));
+        execute(&mut self.0, &transaction, &CONFIG)
+            .unwrap_or_else(|e| panic!("Unspendable transaction due to '{e}'"))
     }
 }
 

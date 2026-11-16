@@ -17,6 +17,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
 
+# The agents run in AGENT_RUN_DIR, which holds Hyperlane's config/ directory,
+# from the binaries in AGENT_BIN_DIR: by default hyperlane-monorepo/rust/main
+# and its debug build, which this script builds first; with AGENT_BIN_DIR
+# set, the binaries there as they are. Each agent starts with only PATH,
+# HOME, DUSK_TX_BIN and its config, as deploy/local-agents.sh starts them:
+# Hyperlane applies every HYP_* variable over the config files, so one left
+# in the shell, such as HYP_CHAINS_DUSK_CUSTOMRPCURLS, would point the agent
+# at another node, and others (CONFIG_FILES, RUST_LOG, AWS_*) change what it
+# does.
+AGENT_RUN_DIR="${AGENT_RUN_DIR:-$SCRIPT_DIR/../../hyperlane-monorepo/rust/main}"
+BUILD_AGENTS=true
+[ -z "${AGENT_BIN_DIR:-}" ] || BUILD_AGENTS=false
+AGENT_BIN_DIR="${AGENT_BIN_DIR:-$AGENT_RUN_DIR/target/debug}"
+
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[INFO] $*" >&2; }
 
@@ -91,8 +105,8 @@ start_relayer() {
     local attempt
 
     for attempt in 1 2 3 4 5; do
-        (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-          exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" ./target/debug/relayer \
+        (cd "$AGENT_RUN_DIR" && \
+          exec env -i PATH="$PATH" HOME="$HOME" DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" "$AGENT_BIN_DIR/relayer" \
           >"$log" 2>&1) &
         CURRENT_RELAYER_PID="$!"
         sleep 2
@@ -250,7 +264,7 @@ generated_dusk_signer_key_file="$(echo "$cfg_json" | jq -r '.duskSignerKeyFile /
     || fail "generator returned an unexpected Dusk signer path"
 
 info "Building relayer binary..."
-(cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer >/dev/null)
+[ "$BUILD_AGENTS" = false ] || (cd "$AGENT_RUN_DIR" && cargo build -p relayer >/dev/null)
 
 state="$BRIDGE_STATE_FILE"
 evm_token="$(jq -r '.evm.token' "$state")"
@@ -259,6 +273,10 @@ dusk_mailbox="$(jq -r '.dusk.mailbox' "$state")"
 account_h256="$(jq -r '.account_h256' "$state")"
 evm_domain="$(jq -r '.evm_domain' "$state")"
 dusk_domain="$(jq -r '.dusk_domain' "$state")"
+# Dusk transactions are signed for the deployment's chain only.
+dusk_chain_id_hex="$(jq -er '.dusk_chain_id | strings | select(test("^[0-9A-Fa-f]{2}$"))' "$state")" \
+    || fail "deployment state has an invalid Dusk chain ID"
+dusk_chain_id=$((16#$dusk_chain_id_hex))
 evm_recipient_pad32="$(pad_evm_address "$ANVIL_DEPLOYER")"
 
 dusk_supply_before="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
@@ -305,7 +323,8 @@ for i in $(seq 1 "$TRANSFERS"); do
       --warp-contract "$dusk_warp" \
       --destination "$evm_domain" \
       --recipient "$evm_recipient_pad32" \
-      --amount "$amount_wei" >"$dusk_transfer_log" 2>&1 || {
+      --amount "$amount_wei" \
+      --expected-chain-id "$dusk_chain_id" >"$dusk_transfer_log" 2>&1 || {
           cat "$dusk_transfer_log" >&2 || true
           fail "Dusk -> EVM transfer $i/$TRANSFERS failed (log: $dusk_transfer_log)"
       }

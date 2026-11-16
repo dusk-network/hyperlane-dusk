@@ -28,6 +28,10 @@ set -euo pipefail
 # ── Configuration ────────────────────────────────────────────────────────────
 
 DUSK_RUES_URL="${RUES_URL:-http://localhost:18090/}"
+# The Dusk chain every transaction is signed for (dusk-tx
+# --expected-chain-id): a local devnet's, 0, unless set. The node must
+# report it before anything is deployed.
+DUSK_EXPECTED_CHAIN_ID="${DUSK_EXPECTED_CHAIN_ID:-0}"
 DUSK_DOMAIN=4242
 ANVIL_PORT=8545
 ANVIL_CHAIN_ID=31338
@@ -153,6 +157,25 @@ if [ ! -d "$SOLIDITY_DIR/dependencies" ]; then
 fi
 ok "Solidity dependencies installed"
 
+# The Dusk node must be on DUSK_EXPECTED_CHAIN_ID before anything is
+# deployed on either chain. Its answer never takes the setting's place.
+[[ "$DUSK_EXPECTED_CHAIN_ID" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$DUSK_EXPECTED_CHAIN_ID))" -le 255 ] \
+    || fail "DUSK_EXPECTED_CHAIN_ID must be a Dusk chain ID from 0 to 255, not '$DUSK_EXPECTED_CHAIN_ID'"
+DUSK_EXPECTED_CHAIN_ID=$((10#$DUSK_EXPECTED_CHAIN_ID))
+step "Checking Dusk node..."
+DUSK_CHAIN_ID=$(curl -s -X POST \
+    -H "Content-Type: application/octet-stream" \
+    "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
+    --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
+
+if [ -z "$DUSK_CHAIN_ID" ]; then
+    fail "Dusk node not reachable at $DUSK_RUES_URL. Start the rusk-duskevm Docker container first."
+fi
+[[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] || fail "Dusk node at $DUSK_RUES_URL returned no chain ID"
+[ "$((16#$DUSK_CHAIN_ID))" -eq "$DUSK_EXPECTED_CHAIN_ID" ] \
+    || fail "Dusk node at $DUSK_RUES_URL is on chain ID $((16#$DUSK_CHAIN_ID)), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID (a local devnet's is 0). Nothing was signed. Point RUES_URL at the devnet, or set DUSK_EXPECTED_CHAIN_ID to the chain you mean."
+ok "Dusk node connected, on chain ID $DUSK_EXPECTED_CHAIN_ID"
+
 # ── Step 1: Start Anvil ──────────────────────────────────────────────────────
 
 header "Step 1: Starting Anvil (EVM Local Node)"
@@ -277,18 +300,8 @@ info "  HypERC20:     $EVM_TOKEN"
 
 header "Step 3: Deploying Hyperlane on Dusk (domain=$DUSK_DOMAIN)"
 
-# Check Dusk node connectivity
-step "Checking Dusk node..."
-DUSK_CHAIN_ID=$(curl -s -X POST \
-    -H "Content-Type: application/octet-stream" \
-    "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
-    --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
-
-if [ -z "$DUSK_CHAIN_ID" ]; then
-    fail "Dusk node not reachable at $DUSK_RUES_URL. Start the rusk-duskevm Docker container first."
-fi
-ok "Dusk node connected"
-
+# Every Dusk transaction below is signed for DUSK_EXPECTED_CHAIN_ID only
+# (dusk-tx --expected-chain-id), which Step 0 found the node on.
 if [ "${1:-}" = "--skip-deploy" ]; then
     info "Skipping Dusk deployment after canonical validation"
 else
@@ -304,6 +317,7 @@ else
         --warp-name "$TOKEN_NAME" \
         --warp-symbol "$TOKEN_SYMBOL" \
         --warp-decimals "$TOKEN_DECIMALS" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         > "$DUSK_DEPLOY_OUTPUT" || fail "Dusk deployment failed"
     ok "Dusk contracts deployed"
 fi
@@ -357,6 +371,7 @@ if [ "$CURRENT_DISPATCH_CREDIT" -lt "$DUSK_DISPATCH_FEE_CREDIT" ]; then
         --mailbox "$DUSK_MAILBOX" \
         --payer "$DUSK_WARP" \
         --amount "$DISPATCH_CREDIT_DEFICIT" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to fund WarpDrc20 dispatch fee deficit"
     ok "Dusk: WarpDrc20 dispatch credit brought to target"
 else
@@ -384,6 +399,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --warp-contract "$DUSK_WARP" \
     --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     > /dev/null || fail "Failed to enroll remote router on Dusk"
 ok "Dusk: Remote router enrolled (domain=$EVM_DOMAIN -> ${EVM_TOKEN})"
 
@@ -393,7 +409,8 @@ step "Dusk: Registering deployer BLS key on WarpDrc20..."
 REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --warp-contract "$DUSK_WARP" 2>/dev/null) || fail "Failed to register account on Dusk"
+    --warp-contract "$DUSK_WARP" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>/dev/null) || fail "Failed to register account on Dusk"
 DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
 ok "Dusk: Account registered (H256: ${DUSK_ACCOUNT_H256:0:16}...)"
 
@@ -492,7 +509,8 @@ PROCESS_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" proces
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
     --mailbox "$DUSK_MAILBOX" \
-    --message "$RELAY_MSG" 2>/dev/null) || fail "Failed to process message on Dusk"
+    --message "$RELAY_MSG" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>/dev/null) || fail "Failed to process message on Dusk"
 ok "Dusk: Message processed!"
 
 # Wait for Dusk block
@@ -535,6 +553,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" transfer-remote \
     --destination "$EVM_DOMAIN" \
     --recipient "$EVM_RECIPIENT_PAD32" \
     --amount "$BRIDGE_DUSK_TO_EVM" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     > /dev/null || fail "Failed to call transfer_remote on Dusk"
 ok "Dusk: transfer_remote sent (1 $TOKEN_SYMBOL burned)"
 
@@ -553,14 +572,12 @@ ok "Dusk WarpDrc20 supply: $DUSK_SUPPLY_BURN (after burning 1 token)"
 
 # Read the dispatched message from Dusk Mailbox
 step "Dusk: Reading dispatched message from Mailbox..."
-DISPATCHED_MSG_JSON=$("$DUSK_TX" query \
+DISPATCHED_MSG_JSON=$("$DUSK_TX" dispatched-message \
     --rues-url "$DUSK_RUES_URL" \
-    --contract "$DUSK_MAILBOX" \
-    --method dispatched_message \
-    --arg-u32 "$DUSK_NONCE_BEFORE" \
-    --return-type bytes 2>/dev/null) || fail "Failed to read dispatched message"
+    --mailbox "$DUSK_MAILBOX" \
+    --nonce "$DUSK_NONCE_BEFORE" 2>/dev/null) || fail "Failed to read dispatched message"
 
-DISPATCHED_MSG=$(echo "$DISPATCHED_MSG_JSON" | jq -r '.value')
+DISPATCHED_MSG=$(echo "$DISPATCHED_MSG_JSON" | jq -r '.message')
 DISPATCHED_LEN=$(echo "$DISPATCHED_MSG_JSON" | jq -r '.length')
 ok "Dispatched message read (${DISPATCHED_LEN} bytes)"
 

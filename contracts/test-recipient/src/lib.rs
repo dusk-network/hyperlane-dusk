@@ -40,8 +40,10 @@ mod test_recipient {
         last_body: Vec<u8>,
         /// Total number of messages received.
         handled_count: u32,
-        /// ISM override (returned by `interchain_security_module`).
-        /// Zero means "use mailbox default".
+        /// ISM returned by `interchain_security_module`. Always zero, so
+        /// deliveries use the Mailbox's default ISM. There is deliberately no
+        /// setter: without an owner, anyone could point it at an ISM that
+        /// accepts everything.
         ism: ContractId,
         /// Native DUSK received through the pending-escrow test callback.
         native_pending_received: u64,
@@ -114,15 +116,6 @@ mod test_recipient {
         /// Returns the total number of messages handled.
         pub fn handled_count(&self) -> u32 {
             self.handled_count
-        }
-
-        // =================================================================
-        // Admin
-        // =================================================================
-
-        /// Set the ISM override. Pass zero `ContractId` to use the Mailbox's default.
-        pub fn set_interchain_security_module(&mut self, ism: ContractId) {
-            self.ism = ism;
         }
 
         // =================================================================

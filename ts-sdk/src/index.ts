@@ -5,6 +5,7 @@
 export { RuesClient } from "./rues-client.js";
 export type { RuesClientOptions, RuesRequestOptions } from "./rues-client.js";
 export { DuskMailbox } from "./mailbox.js";
+export { DuskIgp } from "./igp.js";
 export type { WasmBindings } from "./mailbox.js";
 export {
   DuskWarpRoute,
@@ -20,4 +21,5 @@ export type {
   DomainGasConfig,
   ContractQuery,
   MailboxState,
+  PayForGasCall,
 } from "./types.js";

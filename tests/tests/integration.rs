@@ -138,7 +138,9 @@ const REENTRANT_HOOK_ID: ContractId = ContractId::from_bytes([24; 32]);
 
 const DEPLOYER: [u8; 64] = [0u8; 64];
 const INITIAL_DUSK_BALANCE: u64 = dusk(1_000.0);
-const WITHDRAW_DEFAULT_GAS_LIMIT: u64 = 30_000_000;
+/// `dusk-tx withdraw-dispatch`'s default gas limit: the Mailbox decodes the
+/// recipient key, about 57M gas.
+const WITHDRAW_DEFAULT_GAS_LIMIT: u64 = 80_000_000;
 
 /// Local domain for the Dusk chain in tests.
 const LOCAL_DOMAIN: u32 = 4242;
@@ -184,6 +186,11 @@ impl HyperlaneSession {
     /// The `#[dusk_forge::contract]` macro wires the `init()` method as the
     /// WASM init export, so `init_arg` during deployment IS the initialization.
     fn new() -> Self {
+        Self::with_mailbox(MAILBOX_BYTECODE)
+    }
+
+    /// As [`Self::new`], with the Mailbox deployed from `mailbox_bytecode`.
+    fn with_mailbox(mailbox_bytecode: &[u8]) -> Self {
         let mut session = TestSession::instantiate(vec![
             (&*OWNER_PK, INITIAL_DUSK_BALANCE),
             (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
@@ -222,7 +229,7 @@ impl HyperlaneSession {
         // Deploy Mailbox with init_arg (calls init(local_domain, owner, ism, hook, required_hook))
         session
             .deploy(
-                MAILBOX_BYTECODE,
+                mailbox_bytecode,
                 dusk_vm::ContractData::builder()
                     .owner(DEPLOYER)
                     .init_arg(&(
@@ -292,25 +299,25 @@ impl HyperlaneSession {
             .data
     }
 
-    fn mailbox_dispatched_message(&mut self, nonce: u32) -> Vec<u8> {
+    fn mailbox_dispatched_id(&mut self, nonce: u32) -> MessageId {
         self.session
-            .direct_call::<_, Vec<u8>>(MAILBOX_ID, "dispatched_message", &(nonce,))
-            .expect("dispatched_message should succeed")
+            .direct_call::<_, MessageId>(MAILBOX_ID, "dispatched_id", &(nonce,))
+            .expect("dispatched_id should succeed")
             .data
     }
 
-    fn mailbox_processed_at_index(&mut self, index: u32) -> MessageId {
-        self.session
-            .direct_call::<_, MessageId>(MAILBOX_ID, "processed_at_index", &(index,))
-            .expect("processed_at_index should succeed")
-            .data
-    }
-
-    fn mailbox_processed_count(&mut self) -> u32 {
-        self.session
-            .direct_call::<_, u32>(MAILBOX_ID, "processed_count", &())
-            .expect("processed_count should succeed")
-            .data
+    /// The message a dispatch receipt's `Dispatch` event carries for `nonce`,
+    /// checked against the ID the Mailbox stored for that nonce.
+    fn dispatched_message<R>(&mut self, receipt: &CallReceipt<R>, nonce: u32) -> Vec<u8> {
+        let encoded = receipt
+            .events
+            .iter()
+            .filter(|e| e.source == MAILBOX_ID && e.topic == events::Dispatch::TOPIC)
+            .map(|e| test_session::rkyv_deserialize::<events::Dispatch>(&e.data).message)
+            .find(|m| message::decode(m).is_some_and(|d| d.nonce == nonce))
+            .expect("the receipt should carry the Dispatch event");
+        assert_eq!(message::id(&encoded), self.mailbox_dispatched_id(nonce));
+        encoded
     }
 
     // =================================================================
@@ -458,6 +465,25 @@ fn assert_deploy_panic(result: Result<ContractId, VMError>, expected_panic: &str
     }
 }
 
+fn state_version(session: &mut TestSession, contract: ContractId) -> u32 {
+    session
+        .direct_call::<_, u32>(contract, "state_version", &())
+        .expect("state_version should succeed")
+        .data
+}
+
+/// The message IDs of the deliveries a receipt records: its `ProcessId`
+/// events from the Mailbox that weren't rolled back. Agents index deliveries
+/// from these events; the Mailbox keeps no list of them.
+fn delivered_ids<R>(receipt: &CallReceipt<R>) -> Vec<MessageId> {
+    receipt
+        .events
+        .iter()
+        .filter(|e| e.source == MAILBOX_ID && e.topic == events::ProcessId::TOPIC && !e.reverted)
+        .map(|e| test_session::rkyv_deserialize::<events::ProcessId>(&e.data).message_id)
+        .collect()
+}
+
 fn sample_encoded_message(recipient: ContractId) -> Vec<u8> {
     message::encode(
         VERSION,
@@ -479,7 +505,7 @@ fn test_mailbox_init() {
     let mut s = HyperlaneSession::new();
 
     for (contract, label, expected) in [
-        (MAILBOX_ID, "Mailbox", 3),
+        (MAILBOX_ID, "Mailbox", 5),
         (TEST_MOCK_ID, "TestMock", 1),
         (TEST_RECIPIENT_ID, "TestRecipient", 1),
     ] {
@@ -707,8 +733,7 @@ fn test_process_rejects_replay_during_recipient_ism_resolution() {
             .data
     );
     assert!(s.mailbox_delivered(message::id(&encoded)));
-    assert_eq!(s.mailbox_processed_count(), 1);
-    assert_eq!(s.mailbox_processed_at_index(0), message::id(&encoded));
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&encoded)]);
     assert_eq!(
         receipt
             .events
@@ -754,15 +779,15 @@ fn test_process_rejected_ism_rolls_back_delivery_reservation() {
         r#"Mailbox: ISM call failed: Panic("MultisigISM: metadata too short")"#,
     );
     assert!(!s.mailbox_delivered(message::id(&encoded)));
-    assert_eq!(s.mailbox_processed_count(), 0);
     assert_eq!(s.recipient_handled_count(), 0);
     s.session
         .call_public::<_, ()>(&OWNER_SK, MAILBOX_ID, "set_default_ism", &(TEST_MOCK_ID,))
         .unwrap();
-    s.mailbox_process_via_tx(Vec::new(), encoded.clone())
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), encoded.clone())
         .unwrap();
     assert!(s.mailbox_delivered(message::id(&encoded)));
-    assert_eq!(s.mailbox_processed_count(), 1);
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&encoded)]);
     assert_eq!(s.recipient_handled_count(), 1);
 }
 
@@ -853,45 +878,57 @@ fn test_process_multiple_messages() {
 }
 
 // =============================================================================
-// Tests: Indexer query methods (dispatched_message, processed_at_index)
+// Tests: Delivery indexing from events
 // =============================================================================
 
+/// The Mailbox keeps no list of deliveries (`processed_count`,
+/// `processed_at_index` and `delivered_at` are gone). Each delivery emits one
+/// `Process` event, with the origin, sender and recipient, and one
+/// `ProcessId` event with the message ID; agents index those.
 #[test]
-fn test_indexer_queries() {
+fn test_process_events_index_deliveries() {
     let mut s = HyperlaneSession::new();
+    for name in [
+        "processed_count",
+        "processed_at_index",
+        "processed_block_height_at_index",
+        "delivered_at",
+    ] {
+        let result = s.session.direct_call::<_, u32>(MAILBOX_ID, name, &(0u32,));
+        assert!(result.is_err(), "{name} should no longer exist");
+    }
 
-    // Initial state: no dispatched messages, no processed messages
-    assert_eq!(s.mailbox_processed_count(), 0);
-
-    // Process three messages with different nonces
-    let mut message_ids = Vec::new();
     for i in 0u32..3 {
-        let body = format!("message {i}");
+        let sender = [0xA0 + i as u8; 32];
         let encoded = message::encode(
             VERSION,
             i,
             REMOTE_DOMAIN,
-            [0xABu8; 32],
+            sender,
             LOCAL_DOMAIN,
             TEST_RECIPIENT_ID.to_bytes(),
-            body.as_bytes(),
+            format!("message {i}").as_bytes(),
         );
         let id = message::id(&encoded);
-        message_ids.push(id);
-
-        s.mailbox_process(Vec::new(), encoded)
+        assert!(!s.mailbox_delivered(id));
+        let receipt = s
+            .mailbox_process_via_tx(Vec::new(), encoded)
             .expect("process should succeed");
-    }
-
-    // Verify processed_count
-    assert_eq!(s.mailbox_processed_count(), 3);
-
-    // Verify processed_at_index returns the correct message IDs in order
-    for i in 0u32..3 {
+        assert!(s.mailbox_delivered(id));
+        assert_eq!(delivered_ids(&receipt), vec![id]);
+        let process: Vec<events::Process> = receipt
+            .events
+            .iter()
+            .filter(|e| e.source == MAILBOX_ID && e.topic == events::Process::TOPIC)
+            .map(|e| test_session::rkyv_deserialize(&e.data))
+            .collect();
         assert_eq!(
-            s.mailbox_processed_at_index(i),
-            message_ids[i as usize],
-            "processed_at_index({i}) should match"
+            process,
+            vec![events::Process {
+                origin: REMOTE_DOMAIN,
+                sender,
+                recipient: TEST_RECIPIENT_ID.to_bytes(),
+            }]
         );
     }
 }
@@ -939,7 +976,7 @@ fn test_dispatch_via_transaction() {
             .direct_call::<_, u32>(MAILBOX_ID, "state_version", &())
             .expect("Mailbox state_version should succeed")
             .data,
-        3
+        5
     );
     assert_eq!(s.merkle_count(), 0);
     assert_eq!(
@@ -947,7 +984,7 @@ fn test_dispatch_via_transaction() {
             .direct_call::<_, u32>(MERKLE_TREE_HOOK_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        1
+        2
     );
 
     let destination = REMOTE_DOMAIN;
@@ -978,17 +1015,15 @@ fn test_dispatch_via_transaction() {
         .expect("inserted_block_height should succeed")
         .data;
     assert_eq!(insertion_height, s.session.block_height());
-    let root_at: H256 = s
+    // The hook no longer stores a root per insertion; validators compute it
+    // from the stored message IDs.
+    assert!(s
         .session
         .direct_call::<_, H256>(MERKLE_TREE_HOOK_ID, "root_at", &(0u32,))
-        .expect("root_at should succeed")
-        .data;
-    let root: H256 = s
-        .session
-        .direct_call::<_, H256>(MERKLE_TREE_HOOK_ID, "root", &())
-        .expect("root should succeed")
-        .data;
-    assert_eq!(root_at, root);
+        .is_err());
+    let mut tree = hyperlane_dusk_types::merkle::IncrementalMerkle::new();
+    tree.insert(message_id);
+    assert_eq!(s.merkle_root(), tree.root());
     assert_eq!(
         s.session
             .direct_call::<_, Vec<H256>>(MERKLE_TREE_HOOK_ID, "message_ids", &(0u32, 256u32))
@@ -997,8 +1032,8 @@ fn test_dispatch_via_transaction() {
         vec![message_id]
     );
 
-    // Verify dispatched_message is stored and decodable
-    let encoded = s.mailbox_dispatched_message(0);
+    // The Dispatch event carries the message, and the Mailbox stores its ID
+    let encoded = s.dispatched_message(&receipt, 0);
     let msg = message::decode(&encoded).expect("decode should succeed");
     assert_eq!(msg.version, VERSION);
     assert_eq!(msg.nonce, 0);
@@ -1037,7 +1072,7 @@ fn test_dispatch_via_recipient_proxy() {
     assert_eq!(s.merkle_count(), 1);
 
     // Verify the message sender is TestRecipient's ContractId
-    let encoded = s.mailbox_dispatched_message(0);
+    let encoded = s.dispatched_message(&receipt, 0);
     let msg = message::decode(&encoded).expect("decode should succeed");
     assert_eq!(msg.sender, TEST_RECIPIENT_ID.to_bytes());
     assert_eq!(msg.body, body);
@@ -1138,7 +1173,7 @@ fn assert_dispatch_reentry_rejected(stage: u8, fee: u64) {
         0
     );
     assert_eq!(s.mailbox_nonce(), 1);
-    let encoded = s.mailbox_dispatched_message(0);
+    let encoded = s.dispatched_message(&receipt, 0);
     let decoded = message::decode(&encoded).expect("stored message should decode");
     assert_eq!(decoded.nonce, 0);
     assert_eq!(decoded.destination, destination);
@@ -1163,10 +1198,11 @@ fn assert_dispatch_reentry_rejected(stage: u8, fee: u64) {
     );
 
     let control_body = b"guard cleared for later dispatch".to_vec();
-    s.mailbox_dispatch_via_tx(&OWNER_SK, destination, recipient, control_body.clone())
+    let control_receipt = s
+        .mailbox_dispatch_via_tx(&OWNER_SK, destination, recipient, control_body.clone())
         .expect("later legitimate dispatch should succeed");
     assert_eq!(s.mailbox_nonce(), 2);
-    let control = message::decode(&s.mailbox_dispatched_message(1))
+    let control = message::decode(&s.dispatched_message(&control_receipt, 1))
         .expect("later stored message should decode");
     assert_eq!(control.nonce, 1);
     assert_eq!(control.body, control_body);
@@ -1230,7 +1266,7 @@ fn test_failed_post_dispatch_rolls_back_nonce_credit_custody_and_guard() {
         .call_public::<_, MessageId>(&OWNER_SK, MAILBOX_ID, "dispatch", &args)
         .expect("retry must succeed after the entire failed callback rolls back");
     assert_eq!(s.mailbox_nonce(), 1);
-    assert_eq!(message::id(&s.mailbox_dispatched_message(0)), receipt.data);
+    assert_eq!(s.mailbox_dispatched_id(0), receipt.data);
     assert_eq!(s.session.contract_balance(&MAILBOX_ID).unwrap(), 0);
     assert_eq!(s.session.contract_balance(&REENTRANT_HOOK_ID).unwrap(), fee);
 }
@@ -1380,31 +1416,15 @@ fn test_validator_announce_rejects_oversized_location_before_storage() {
     assert_contract_panic(result, "ValidatorAnnounce: storage location too long");
 }
 
+/// Pages of validators hold 1 to 256. The queries that returned location
+/// strings are gone: the contract only stores their hashes.
 #[test]
-fn test_validator_announce_rejects_unbounded_legacy_batch_query() {
+fn test_validator_announce_pages_hold_up_to_256_validators() {
     let mut session = session_with_validator_announce();
-    let result = session.direct_call::<_, Vec<Vec<alloc::string::String>>>(
-        VALIDATOR_ANNOUNCE_ID,
-        "get_announced_storage_locations",
-        &(vec![
-            EthAddress([1; 20]),
-            EthAddress([2; 20]),
-            EthAddress([3; 20]),
-        ],),
-    );
-    assert_contract_panic(result, "ValidatorAnnounce: query batch too large");
-}
-
-#[test]
-fn test_validator_announce_bounds_signed_location_history() {
-    let mut session = session_with_validator_announce();
+    let location = alloc::string::String::from("s3://validator/checkpoints");
     let mut expected = Vec::new();
-    let mut validator = EthAddress([0u8; 20]);
-
-    for index in 0..16 {
-        let location = alloc::format!("s3://validator/checkpoints/{index}");
-        let (signed_validator, signature) = validator_announcement(&location);
-        validator = signed_validator;
+    for index in 1..=3 {
+        let (validator, signature) = validator_announcement_with_index(&location, index);
         session
             .call_public::<_, bool>(
                 &OWNER_SK,
@@ -1412,19 +1432,98 @@ fn test_validator_announce_bounds_signed_location_history() {
                 "announce",
                 &(validator, location.clone(), signature),
             )
-            .expect("a valid bounded validator announcement should succeed");
-        expected.push(location);
+            .expect("announcement should succeed");
+        expected.push(validator);
     }
-
-    let locations = session
-        .direct_call::<_, Vec<alloc::string::String>>(
+    let page = |session: &mut TestSession, start: u32, limit: u32| {
+        session.direct_call::<_, Vec<EthAddress>>(
             VALIDATOR_ANNOUNCE_ID,
-            "get_announced_storage_locations_for_validator",
+            "get_announced_validators",
+            &(start, limit),
+        )
+    };
+    assert_eq!(page(&mut session, 0, 256).unwrap().data, expected);
+    assert_eq!(page(&mut session, 1, 256).unwrap().data, expected[1..]);
+    assert!(page(&mut session, 3, 256).unwrap().data.is_empty());
+    assert_contract_panic(
+        page(&mut session, 0, 257),
+        "ValidatorAnnounce: query batch too large",
+    );
+    assert_contract_panic(
+        page(&mut session, 0, 0),
+        "ValidatorAnnounce: query limit is zero",
+    );
+    for name in [
+        "get_announced_storage_locations",
+        "get_announced_storage_locations_for_validator",
+    ] {
+        assert!(session
+            .direct_call::<_, Vec<alloc::string::String>>(
+                VALIDATOR_ANNOUNCE_ID,
+                name,
+                &(expected[0],),
+            )
+            .is_err());
+    }
+}
+
+/// The location in a receipt's `ValidatorAnnouncement` event.
+fn announced_location<R>(receipt: &CallReceipt<R>) -> events::ValidatorAnnouncement {
+    let events: Vec<_> = receipt
+        .events
+        .iter()
+        .filter(|e| {
+            e.source == VALIDATOR_ANNOUNCE_ID && e.topic == events::ValidatorAnnouncement::TOPIC
+        })
+        .map(|e| test_session::rkyv_deserialize::<events::ValidatorAnnouncement>(&e.data))
+        .collect();
+    assert_eq!(events.len(), 1, "one announcement per call");
+    events[0].clone()
+}
+
+fn announced_location_hashes(session: &mut TestSession, validator: EthAddress) -> Vec<H256> {
+    session
+        .direct_call::<_, Vec<H256>>(
+            VALIDATOR_ANNOUNCE_ID,
+            "get_announced_storage_location_hashes",
             &(validator,),
         )
-        .expect("the per-validator bounded query should succeed")
-        .data;
-    assert_eq!(locations, expected);
+        .expect("location hash query should succeed")
+        .data
+}
+
+#[test]
+fn test_validator_announce_bounds_signed_location_history() {
+    let mut session = session_with_validator_announce();
+    let mut expected = Vec::new();
+    let mut validator = EthAddress([0u8; 20]);
+    assert_eq!(state_version(&mut session, VALIDATOR_ANNOUNCE_ID), 2);
+
+    for index in 0..16 {
+        let location = alloc::format!("s3://validator/checkpoints/{index}");
+        let (signed_validator, signature) = validator_announcement(&location);
+        validator = signed_validator;
+        let receipt = session
+            .call_public::<_, bool>(
+                &OWNER_SK,
+                VALIDATOR_ANNOUNCE_ID,
+                "announce",
+                &(validator, location.clone(), signature),
+            )
+            .expect("a valid bounded validator announcement should succeed");
+        // The location is only in the event; the contract keeps its hash.
+        assert_eq!(
+            announced_location(&receipt),
+            events::ValidatorAnnouncement {
+                validator,
+                storage_location: location.clone(),
+            }
+        );
+        expected.push(message::keccak256(location.as_bytes()));
+    }
+
+    assert_eq!(announced_location_hashes(&mut session, validator), expected);
+    assert!(announced_location_hashes(&mut session, EthAddress([9; 20])).is_empty());
 
     let overflow_location = alloc::string::String::from("s3://validator/checkpoints/16");
     let (_, overflow_signature) = validator_announcement(&overflow_location);
@@ -1441,6 +1540,8 @@ fn test_validator_announce_bounds_signed_location_history() {
         .expect("validator registry count should succeed")
         .data;
     assert_eq!(count, 1);
+
+    assert_eq!(announced_location_hashes(&mut session, validator), expected);
 
     let validators = session
         .direct_call::<_, Vec<EthAddress>>(
@@ -1492,8 +1593,13 @@ fn session_with_multisig_ism(
 
 // Real signatures exercise threshold counting separately from malformed-byte tests.
 fn checkpoint_signers() -> Vec<(EthAddress, SecpSecretKey)> {
+    checkpoint_signer_set(4)
+}
+
+/// `count` validator keys, sorted by address as the ISM requires.
+fn checkpoint_signer_set(count: u8) -> Vec<(EthAddress, SecpSecretKey)> {
     let secp = Secp256k1::new();
-    let mut signers: Vec<_> = (1u8..=4)
+    let mut signers: Vec<_> = (1u8..=count)
         .map(|index| {
             let mut bytes = [0u8; 32];
             bytes[31] = index;
@@ -1823,21 +1929,22 @@ fn test_recipient_ism_override() {
         .data;
     assert_eq!(ism, ContractId::from_bytes([0u8; 32]));
 
-    // Set ISM override
-    s.session
+    // There is no setter: anyone could otherwise point the deployed
+    // TestRecipient at TestMock and have unsigned messages delivered.
+    assert!(s
+        .session
         .direct_call::<_, ()>(
             TEST_RECIPIENT_ID,
             "set_interchain_security_module",
             &(TEST_MOCK_ID,),
         )
-        .expect("set_ism should succeed");
-
+        .is_err());
     let ism: ContractId = s
         .session
         .direct_call::<_, ContractId>(TEST_RECIPIENT_ID, "interchain_security_module", &())
         .expect("query should succeed")
         .data;
-    assert_eq!(ism, TEST_MOCK_ID);
+    assert_eq!(ism, ContractId::from_bytes([0u8; 32]));
 }
 
 // =============================================================================
@@ -1867,6 +1974,17 @@ fn session_with_hooks_and_igp_config(igp_configs: Vec<(u32, DomainGasConfig)>) -
 
 /// Session with production hooks, configurable protocol fee, and IGP gas configs.
 fn session_with_hooks_fee_and_igp_config(
+    protocol_fee: u64,
+    max_protocol_fee: u64,
+    igp_configs: Vec<(u32, DomainGasConfig)>,
+) -> TestSession {
+    session_with_hooks_and_igp(IGP_BYTECODE, protocol_fee, max_protocol_fee, igp_configs)
+}
+
+/// [`session_with_hooks_fee_and_igp_config`] with the IGP deployed from
+/// `igp_bytecode`.
+fn session_with_hooks_and_igp(
+    igp_bytecode: &[u8],
     protocol_fee: u64,
     max_protocol_fee: u64,
     igp_configs: Vec<(u32, DomainGasConfig)>,
@@ -1938,7 +2056,7 @@ fn session_with_hooks_fee_and_igp_config(
     // Deploy IGP with provided gas configs
     session
         .deploy(
-            IGP_BYTECODE,
+            igp_bytecode,
             dusk_vm::ContractData::builder()
                 .owner(DEPLOYER)
                 .init_arg(&(MAILBOX_ID, *OWNER_ID, *OWNER_ID, igp_configs))
@@ -2446,7 +2564,11 @@ fn test_dispatch_credit_withdrawal_is_payer_owned_and_value_backed() {
         decoded["recipient"],
         dusk_data_driver::to_json(message::keccak256(&RELAYER_PK.to_bytes())).unwrap()
     );
-    assert_eq!(decoded["amount"].as_u64(), Some(partial));
+    // The data driver encodes u64 as decimal strings so JavaScript keeps them exact.
+    assert_eq!(
+        decoded["amount"].as_str(),
+        Some(partial.to_string().as_str())
+    );
     let relayer_balance_after = s
         .session
         .account(&RELAYER_PK)
@@ -2783,11 +2905,12 @@ fn test_igp_init() {
         .data;
     assert_eq!(hook_type, 4); // HookType::Igp
 
+    // 4: `pay_for_gas` and `quote_pay_for_gas`.
     let version = session
         .direct_call::<_, u32>(IGP_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(version, 2);
+    assert_eq!(version, 4);
 
     let total: u64 = session
         .direct_call::<_, u64>(IGP_ID, "total_gas_payments", &())
@@ -3210,6 +3333,789 @@ fn test_igp_rejects_unbacked_direct_post_dispatch() {
 }
 
 // =============================================================================
+// Tests: IGP top-ups (pay_for_gas)
+// =============================================================================
+
+/// `dusk-tx pay-for-gas`'s default gas limit. A failed transaction pays its
+/// whole limit, so the limit stays near what a top-up costs, about 1.85M.
+const PAY_FOR_GAS_GAS_LIMIT: u64 = 3_000_000;
+
+/// Pricing for the top-up tests: 1 LUX per gas on the destination, and an
+/// overhead that a dispatch pays for on top of its gas limit.
+const TOP_UP_PRICING: DomainGasConfig = DomainGasConfig {
+    gas_overhead: 100_000,
+    token_exchange_rate: 10_000_000_000,
+    gas_price: 1,
+};
+
+/// The IGP's `TOP_UP_MEMORY_LIMIT`.
+const TOP_UP_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+
+/// A session whose IGP, the Mailbox's default hook, prices `REMOTE_DOMAIN`
+/// at [`TOP_UP_PRICING`].
+fn session_for_top_ups() -> TestSession {
+    session_with_hooks_and_igp_config(vec![(REMOTE_DOMAIN, TOP_UP_PRICING)])
+}
+
+/// Dispatches a message from the TestRecipient through the Mailbox's default
+/// hook, the IGP, and returns the receipt. With no hook metadata it pays for
+/// 50,000 gas plus the destination's overhead.
+fn dispatch_through_igp(session: &mut TestSession, body: &[u8]) -> CallReceipt<MessageId> {
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(MAILBOX_ID, REMOTE_DOMAIN, [0xBBu8; 32], body.to_vec()),
+        )
+        .expect("the dispatch should pay the IGP")
+}
+
+/// `payer`'s Moonlight transaction calling
+/// `pay_for_gas(id, destination, gas_amount, declared)` with a deposit of
+/// `deposit`, at `dusk-tx pay-for-gas`'s default gas limit.
+fn pay_for_gas(
+    session: &mut TestSession,
+    payer: &AccountSecretKey,
+    (id, destination, gas_amount): (MessageId, u32, u64),
+    declared: u64,
+    deposit: u64,
+) -> Result<CallReceipt<()>, ContractError> {
+    session.call_public_with_deposit_and_gas_limit::<_, ()>(
+        payer,
+        IGP_ID,
+        "pay_for_gas",
+        &(id, destination, gas_amount, declared),
+        deposit,
+        PAY_FOR_GAS_GAS_LIMIT,
+    )
+}
+
+fn quote_pay_for_gas(session: &mut TestSession, destination: u32, gas_amount: u64) -> u64 {
+    query(
+        session,
+        IGP_ID,
+        "quote_pay_for_gas",
+        &(destination, gas_amount),
+    )
+}
+
+/// Every payment record the IGP holds, at most a page of them.
+fn igp_payment_records(session: &mut TestSession) -> Vec<GasPaymentRecord> {
+    let count: u32 = query(session, IGP_ID, "gas_payment_count", &());
+    assert!(count <= 256, "{count} records are more than a page");
+    query(session, IGP_ID, "gas_payments", &(0u32, count))
+}
+
+/// What the relayer adds up for a message: the gas and the LUX of every
+/// payment for its ID and destination (hyperlane-base keys gas payments by
+/// both).
+fn paid_for(records: &[GasPaymentRecord], id: MessageId, destination: u32) -> (u64, u64) {
+    records
+        .iter()
+        .filter(|record| record.message_id == id && record.destination == destination)
+        .fold((0, 0), |(gas, lux), record| {
+            (gas + record.gas_limit, lux + record.payment)
+        })
+}
+
+/// The IGP holds what its records say it was paid, all of it claimable.
+fn assert_igp_holds_what_it_recorded(session: &mut TestSession) {
+    let total: u64 = query(session, IGP_ID, "total_gas_payments", &());
+    let claimable: u64 = query(session, IGP_ID, "claimable_fees", &());
+    let recorded: u64 = igp_payment_records(session)
+        .iter()
+        .map(|record| record.payment)
+        .sum();
+    assert_eq!(total, recorded);
+    assert_eq!(claimable, total);
+    assert_eq!(
+        session
+            .contract_balance(&IGP_ID)
+            .expect("IGP balance query should succeed"),
+        claimable
+    );
+}
+
+/// The panic message of a call that must fail.
+fn panic_message<R>(result: Result<CallReceipt<R>, ContractError>) -> String
+where
+    R: rkyv::Archive,
+    R::Archived: rkyv::Deserialize<R, rkyv::Infallible>
+        + for<'b> rkyv::bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    match result {
+        Err(ContractError::Panic(message)) => message,
+        Err(error) => panic!("expected a contract panic, got {error}"),
+        Ok(_) => panic!("the call should fail"),
+    }
+}
+
+/// The events the transfer contract emitted with `topic`, decoded.
+fn transfer_events<E>(receipt: &CallReceipt<()>, topic: &str) -> Vec<E>
+where
+    E: rkyv::Archive,
+    E::Archived: rkyv::Deserialize<E, rkyv::Infallible>
+        + for<'b> rkyv::bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    receipt
+        .events
+        .iter()
+        .filter(|e| {
+            e.source == dusk_core::transfer::TRANSFER_CONTRACT && e.topic == topic && !e.reverted
+        })
+        .map(|e| test_session::rkyv_deserialize::<E>(&e.data))
+        .collect()
+}
+
+/// A message whose dispatch paid for less gas than its delivery takes can be
+/// topped up by anyone. The IGP charges exactly its quote for the missing
+/// gas, with no overhead, and records it under the message's ID and
+/// destination; the payments the relayer adds up then cover the delivery,
+/// at the price one dispatch asking for all that gas would have paid.
+#[test]
+fn test_igp_top_up_pays_the_rest_of_an_underpaid_dispatch() {
+    let mut session = session_for_top_ups();
+    let id = dispatch_through_igp(&mut session, b"a handle that takes more gas").data;
+    let dispatch_paid = paid_for(&igp_payment_records(&mut session), id, REMOTE_DOMAIN);
+    assert_eq!(
+        dispatch_paid,
+        (150_000, 150_000),
+        "50,000 gas plus the 100,000 overhead, at 1 LUX"
+    );
+
+    // Its delivery takes 400,000 gas. Anyone may pay for the rest: here the
+    // relayer's account, not the sender.
+    let needed = 400_000u64;
+    let missing = needed - dispatch_paid.0;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, missing);
+    assert_eq!(quote, missing, "no overhead on a top-up, at 1 LUX per gas");
+    let payer_before = moonlight_balance(&mut session, &RELAYER_PK);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, missing),
+        quote,
+        quote,
+    )
+    .expect("a top-up of exactly its quote should succeed");
+    assert!(
+        receipt.gas_spent * 3 / 2 <= PAY_FOR_GAS_GAS_LIMIT,
+        "pay_for_gas took {} gas, too close to {PAY_FOR_GAS_GAS_LIMIT}",
+        receipt.gas_spent
+    );
+    assert_eq!(
+        payer_before - moonlight_balance(&mut session, &RELAYER_PK),
+        quote + receipt.gas_spent
+    );
+    assert_eq!(
+        session.contract_balance(&IGP_ID).unwrap(),
+        igp_before + quote
+    );
+
+    let records = igp_payment_records(&mut session);
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records[1],
+        GasPaymentRecord {
+            message_id: id,
+            destination: REMOTE_DOMAIN,
+            gas_limit: missing,
+            payment: quote,
+            block_height: session.block_height(),
+        }
+    );
+    let (gas, lux) = paid_for(&records, id, REMOTE_DOMAIN);
+    assert_eq!(gas, needed);
+    let as_one_dispatch: u64 = query(
+        &mut session,
+        IGP_ID,
+        "quote_gas_payment",
+        &(REMOTE_DOMAIN, needed - TOP_UP_PRICING.gas_overhead),
+    );
+    assert_eq!(lux, as_one_dispatch);
+    assert_igp_holds_what_it_recorded(&mut session);
+
+    // Payments keep adding up, from anyone: the sender adds 1,000 gas.
+    pay_for_gas(
+        &mut session,
+        &OWNER_SK,
+        (id, REMOTE_DOMAIN, 1_000),
+        1_000,
+        1_000,
+    )
+    .expect("a second top-up should succeed");
+    assert_eq!(
+        paid_for(&igp_payment_records(&mut session), id, REMOTE_DOMAIN),
+        (needed + 1_000, as_one_dispatch + 1_000)
+    );
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// The IGP charges the price at execution and sends the rest of the deposit
+/// back to the account that signed, in the same transaction. A deposit with
+/// a margin survives a price update between quoting and inclusion; one
+/// without is refused, and comes back whole.
+#[test]
+fn test_igp_top_up_refunds_the_deposit_beyond_its_price() {
+    let mut session = session_for_top_ups();
+    let id = dispatch_through_igp(&mut session, b"refund").data;
+    let gas = 100_000u64;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, gas);
+    let deposit = quote + 1_234_567;
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        deposit,
+        deposit,
+    )
+    .expect("a top-up with a margin should succeed");
+    assert!(
+        receipt.gas_spent * 3 / 2 <= PAY_FOR_GAS_GAS_LIMIT,
+        "pay_for_gas with a refund took {} gas, too close to {PAY_FOR_GAS_GAS_LIMIT}",
+        receipt.gas_spent
+    );
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        quote + receipt.gas_spent
+    );
+    // The transfer contract moved the whole deposit to the IGP, and the IGP
+    // sent the margin back to the signer.
+    let deposits: Vec<dusk_core::transfer::DepositEvent> =
+        transfer_events(&receipt, dusk_core::transfer::DEPOSIT_TOPIC);
+    assert_eq!(deposits.len(), 1);
+    assert_eq!(deposits[0].sender, Some(*RELAYER_PK));
+    assert_eq!(deposits[0].receiver, IGP_ID);
+    assert_eq!(deposits[0].value, deposit);
+    let refunds: Vec<dusk_core::transfer::ContractToAccountEvent> =
+        transfer_events(&receipt, dusk_core::transfer::CONTRACT_TO_ACCOUNT_TOPIC);
+    assert_eq!(refunds.len(), 1);
+    assert_eq!(refunds[0].sender, IGP_ID);
+    assert_eq!(refunds[0].receiver, *RELAYER_PK);
+    assert_eq!(refunds[0].value, deposit - quote);
+    assert_eq!(igp_payment_records(&mut session)[1].payment, quote);
+    assert_igp_holds_what_it_recorded(&mut session);
+
+    // The owner doubles the price after the payer quoted it.
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_domain_gas_config",
+            &(
+                REMOTE_DOMAIN,
+                DomainGasConfig {
+                    gas_price: 2,
+                    ..TOP_UP_PRICING
+                },
+            ),
+        )
+        .expect("the owner should reprice the destination");
+    let records = igp_payment_records(&mut session);
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let result = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        quote,
+        quote,
+    );
+    assert_contract_panic(result, "IGP: insufficient interchain gas payment");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        PAY_FOR_GAS_GAS_LIMIT,
+        "the refused transaction pays its gas limit and gets its deposit back"
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        3 * quote,
+        3 * quote,
+    )
+    .expect("a deposit with room for the new price should pay it");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        2 * quote + receipt.gas_spent
+    );
+    let charged = igp_payment_records(&mut session).last().unwrap().payment;
+    assert_eq!(charged, 2 * quote);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A deposit below the quote is refused, and the transaction gets it back:
+/// it pays only its gas, and nothing is recorded.
+#[test]
+fn test_igp_top_up_rejects_underpayment() {
+    let mut session = session_for_top_ups();
+    let id = dispatch_through_igp(&mut session, b"underpaid").data;
+    let gas = 250_000u64;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, gas);
+    let records = igp_payment_records(&mut session);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    for short in [quote - 1, 1, 0] {
+        let result = pay_for_gas(
+            &mut session,
+            &RELAYER_SK,
+            (id, REMOTE_DOMAIN, gas),
+            short,
+            short,
+        );
+        assert_contract_panic(result, "IGP: insufficient interchain gas payment");
+    }
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        3 * PAY_FOR_GAS_GAS_LIMIT
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A top-up is recorded only after the transfer contract has moved the
+/// transaction's deposit into the IGP, and a deposit pays for one top-up
+/// only. The declared deposit must be the transaction's exactly: declaring
+/// more would refund DUSK that never arrived. A transaction without a
+/// deposit pays nothing, and a contract can't spend the deposit of the
+/// transaction that calls it. Every refused transaction gets its deposit
+/// back.
+#[test]
+fn test_igp_top_up_takes_the_transaction_deposit_exactly_once() {
+    let mut session = session_for_top_ups();
+    rt_deploy(&mut session);
+    let id = dispatch_through_igp(&mut session, b"deposit").data;
+    let gas = 10_000u64;
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, gas);
+    let records = igp_payment_records(&mut session);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    for (declared, deposit, reason) in [
+        (quote, 0, "There is no deposit in the transaction"),
+        (
+            quote + 1,
+            quote,
+            "doesn't match the value in the transaction",
+        ),
+        (
+            quote,
+            quote + 1,
+            "doesn't match the value in the transaction",
+        ),
+    ] {
+        let message = panic_message(pay_for_gas(
+            &mut session,
+            &RELAYER_SK,
+            (id, REMOTE_DOMAIN, gas),
+            declared,
+            deposit,
+        ));
+        assert!(
+            message.contains("IGP: deposit failed") && message.contains(reason),
+            "declared {declared}, deposited {deposit}: {message}"
+        );
+    }
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        3 * PAY_FOR_GAS_GAS_LIMIT
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+
+    // A contract that the transaction calls, with the deposit, can't pay
+    // with it: the deposit is the contract's to take, not the IGP's.
+    let pay = vec![rt_action(
+        IGP_ID,
+        "pay_for_gas",
+        &(id, REMOTE_DOMAIN, gas, quote),
+    )];
+    let args = |strict: bool| {
+        rkyv::to_bytes::<_, 4096>(&(pay.clone(), strict))
+            .expect("the batch should serialize")
+            .to_vec()
+    };
+    let message = panic_message(session.call_public_raw_with_deposit(
+        &RELAYER_SK,
+        REDTEAM_ID,
+        "run",
+        args(true),
+        quote,
+    ));
+    assert!(
+        message.contains("IGP: payer must call directly"),
+        "{message}"
+    );
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = session
+        .call_public_raw_with_deposit(&RELAYER_SK, REDTEAM_ID, "run", args(false), quote)
+        .expect("the red-team contract records the failed call");
+    assert_eq!(rt_results(&mut session), vec![false]);
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        receipt.gas_spent,
+        "nobody took the deposit, so it came back whole"
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+
+    // Each transaction pays for its own top-up.
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let first = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        quote,
+        quote,
+    )
+    .expect("the first top-up should succeed");
+    let second = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, gas),
+        quote,
+        quote,
+    )
+    .expect("the second top-up should succeed");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        2 * quote + first.gas_spent + second.gas_spent
+    );
+    assert_eq!(
+        session.contract_balance(&IGP_ID).unwrap(),
+        igp_before + 2 * quote
+    );
+    assert_eq!(igp_payment_records(&mut session).len(), records.len() + 2);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A top-up is priced by its destination's pricing. A destination without
+/// any, no gas, more gas than the IGP prices, or a payment that rounds to
+/// zero is refused before the deposit is taken, and nothing is recorded.
+/// Once the owner prices a destination, top-ups to it go through, and are
+/// recorded under that destination, not the message's.
+#[test]
+fn test_igp_top_up_needs_a_priced_destination() {
+    let unpriced = 42u32;
+    let cheap = 43u32;
+    // 1 LUX per 10,000 gas, and an overhead that keeps the IGP's smallest
+    // dispatch quote at 1 LUX.
+    let cheap_pricing = DomainGasConfig {
+        gas_overhead: 10_000,
+        token_exchange_rate: 1_000_000,
+        gas_price: 1,
+    };
+    let mut session = session_with_hooks_and_igp_config(vec![
+        (REMOTE_DOMAIN, TOP_UP_PRICING),
+        (cheap, cheap_pricing),
+    ]);
+    let id = dispatch_through_igp(&mut session, b"priced").data;
+    assert_contract_panic(
+        session.direct_call::<_, u64>(IGP_ID, "quote_pay_for_gas", &(unpriced, 1_000u64)),
+        "IGP: destination is not configured",
+    );
+    let records = igp_payment_records(&mut session);
+    let igp_before = session.contract_balance(&IGP_ID).unwrap();
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    for ((destination, gas), expected) in [
+        ((unpriced, 1_000u64), "IGP: destination is not configured"),
+        ((REMOTE_DOMAIN, 0), "IGP: gas amount cannot be zero"),
+        (
+            (REMOTE_DOMAIN, 1_000_000_001),
+            "IGP: gas amount exceeds supported maximum",
+        ),
+        ((cheap, 9_999), "IGP: payment rounds to zero"),
+    ] {
+        let result = pay_for_gas(
+            &mut session,
+            &RELAYER_SK,
+            (id, destination, gas),
+            1_000_000,
+            1_000_000,
+        );
+        assert_contract_panic(result, expected);
+    }
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        4 * PAY_FOR_GAS_GAS_LIMIT
+    );
+    assert_eq!(igp_payment_records(&mut session), records);
+    assert_eq!(session.contract_balance(&IGP_ID).unwrap(), igp_before);
+    assert_eq!(quote_pay_for_gas(&mut session, cheap, 10_000), 1);
+    assert_eq!(
+        quote_pay_for_gas(&mut session, REMOTE_DOMAIN, 1_000_000_000),
+        1_000_000_000
+    );
+
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            IGP_ID,
+            "set_domain_gas_config",
+            &(unpriced, TOP_UP_PRICING),
+        )
+        .expect("the owner should price the destination");
+    pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, unpriced, 1_000),
+        1_000,
+        1_000,
+    )
+    .expect("a top-up to a priced destination should succeed");
+    let records = igp_payment_records(&mut session);
+    assert_eq!(paid_for(&records, id, unpriced), (1_000, 1_000));
+    assert_eq!(
+        paid_for(&records, id, REMOTE_DOMAIN),
+        (150_000, 150_000),
+        "a payment for another destination doesn't add to the message's"
+    );
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// A top-up emits the event a dispatch's payment does: the same topic, the
+/// same `GasPayment` struct, the same bytes for the same fields, and those
+/// fields are its record's, as hyperlane-dusk's IGP indexer rebuilds the
+/// event from `gas_payments` to find it. Agents index top-ups unchanged.
+#[test]
+fn test_igp_top_up_emits_the_gas_payment_event_of_a_dispatch() {
+    // No overhead, so topping up a dispatch's 50,000 gas has its fields.
+    let mut session = session_with_hooks_and_igp_config(vec![(
+        REMOTE_DOMAIN,
+        DomainGasConfig {
+            gas_overhead: 0,
+            ..TOP_UP_PRICING
+        },
+    )]);
+    let dispatch = dispatch_through_igp(&mut session, b"same event");
+    let id = dispatch.data;
+    let top_up = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (id, REMOTE_DOMAIN, 50_000),
+        50_000,
+        50_000,
+    )
+    .expect("the top-up should succeed");
+
+    let igp_events = |events: &[dusk_core::abi::Event]| -> Vec<dusk_core::abi::Event> {
+        events
+            .iter()
+            .filter(|e| e.source == IGP_ID && !e.reverted)
+            .cloned()
+            .collect()
+    };
+    let from_dispatch = igp_events(&dispatch.events);
+    let from_top_up = igp_events(&top_up.events);
+    assert_eq!(from_dispatch.len(), 1);
+    assert_eq!(from_top_up.len(), 1, "a top-up emits one event, GasPayment");
+    assert_eq!(from_top_up[0].topic, events::GasPayment::TOPIC);
+    assert_eq!(from_top_up[0].topic, from_dispatch[0].topic);
+    assert_eq!(from_top_up[0].data, from_dispatch[0].data);
+
+    let records = igp_payment_records(&mut session);
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records[0], records[1],
+        "both paid 50,000 LUX for 50,000 gas"
+    );
+    for (record, event) in records.iter().zip([&from_dispatch[0], &from_top_up[0]]) {
+        let rebuilt = test_session::rkyv_serialize(&events::GasPayment {
+            message_id: record.message_id,
+            gas_limit: record.gas_limit,
+            payment: record.payment,
+        });
+        assert_eq!(event.data, rebuilt);
+        let decoded = HyperlaneDataDriver
+            .decode_event(&event.topic, &event.data)
+            .unwrap();
+        assert_eq!(decoded["gas_limit"].as_str(), Some("50000"));
+        assert_eq!(decoded["payment"].as_str(), Some("50000"));
+    }
+}
+
+/// As on EVM, the IGP doesn't look a top-up's message up: a payment for an
+/// ID the Mailbox never dispatched is recorded and only costs its payer.
+/// The relayer only looks up payments for messages it has indexed, so the
+/// record never counts for anything.
+#[test]
+fn test_igp_top_up_for_an_undispatched_id_only_costs_its_payer() {
+    let mut session = session_for_top_ups();
+    let never_dispatched = [0x5Au8; 32];
+    let quote = quote_pay_for_gas(&mut session, REMOTE_DOMAIN, 5_000);
+    let before = moonlight_balance(&mut session, &RELAYER_PK);
+    let receipt = pay_for_gas(
+        &mut session,
+        &RELAYER_SK,
+        (never_dispatched, REMOTE_DOMAIN, 5_000),
+        quote,
+        quote,
+    )
+    .expect("a top-up for any ID should succeed");
+    assert_eq!(
+        before - moonlight_balance(&mut session, &RELAYER_PK),
+        quote + receipt.gas_spent
+    );
+    assert_eq!(
+        paid_for(
+            &igp_payment_records(&mut session),
+            never_dispatched,
+            REMOTE_DOMAIN
+        ),
+        (5_000, quote)
+    );
+    assert_eq!(query::<_, u32>(&mut session, MAILBOX_ID, "nonce", &()), 0);
+    assert_igp_holds_what_it_recorded(&mut session);
+}
+
+/// The most a top-up can still grow the IGP's memory, the bound it checks:
+/// the chunk of records and the larger chunk table the next record may
+/// start, each with dlmalloc's overhead, in whole pages. `log` mirrors the
+/// IGP's. The chunk table is twice as large here as in wasm32, which the
+/// page rounding hides while it stays under 32 KiB.
+fn top_up_memory_bound(log: &hyperlane_dusk_types::storage::ChunkedLog<GasPaymentRecord>) -> u64 {
+    let [chunk, table] = log.push_allocations();
+    assert!(table < 32 * 1024);
+    [chunk, table]
+        .into_iter()
+        .map(|bytes| {
+            if bytes == 0 {
+                0
+            } else {
+                (bytes as u64 + 64).next_multiple_of(WASM_PAGE)
+            }
+        })
+        .sum()
+}
+
+/// `pay_for_gas` refuses a top-up unless what it can allocate fits under
+/// 3 GiB, so top-ups never take the IGP past that, and the last GiB stays
+/// for the payments dispatches make. The IGP here starts a few pages below
+/// the limit, as if it were nearly full. Every top-up it admits leaves its
+/// memory at or below 3 GiB, and it admits exactly the top-ups whose record
+/// fits. Once top-ups are closed, dispatches still pay the IGP, past 3 GiB,
+/// and top-ups stay closed there.
+#[test]
+fn test_igp_top_ups_close_at_3_gib_and_dispatches_still_pay() {
+    let limit_pages = TOP_UP_MEMORY_LIMIT / WASM_PAGE;
+    let igp = with_initial_memory_pages(IGP_BYTECODE, limit_pages - 6);
+    let mut session =
+        session_with_hooks_and_igp(&igp, 1000, 10000, vec![(REMOTE_DOMAIN, TOP_UP_PRICING)]);
+    rt_deploy(&mut session);
+    // The red-team contract dispatches to fill chunks with dispatches'
+    // payments: each pays 1,000 LUX of protocol fee and 150,000 to the IGP.
+    let credit = 2_000_000_000u64;
+    session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(REDTEAM_ID.to_bytes(), credit),
+            credit,
+        )
+        .expect("funding the red-team contract's dispatch credit should succeed");
+    let start = session.memory_len(IGP_ID);
+    assert!(
+        (TOP_UP_MEMORY_LIMIT - 6 * WASM_PAGE..=TOP_UP_MEMORY_LIMIT - 4 * WASM_PAGE)
+            .contains(&start),
+        "starts at {start}"
+    );
+
+    let placeholder = GasPaymentRecord {
+        message_id: [0; 32],
+        destination: 0,
+        gas_limit: 0,
+        payment: 0,
+        block_height: 0,
+    };
+    let per_chunk = hyperlane_dusk_types::storage::ChunkedLog::<GasPaymentRecord>::PER_CHUNK;
+    let mut log = hyperlane_dusk_types::storage::ChunkedLog::<GasPaymentRecord>::new();
+    let mut nonce = 0u32;
+    let mut dispatch = |session: &mut TestSession,
+                        log: &mut hyperlane_dusk_types::storage::ChunkedLog<GasPaymentRecord>,
+                        count: u32| {
+        dispatch_batch(session, nonce, count).expect("dispatches should pay the IGP");
+        nonce += count;
+        for _ in 0..count {
+            log.push(placeholder);
+        }
+    };
+    let top_up = ([0x7Bu8; 32], REMOTE_DOMAIN, 1_000u64);
+    let mut admitted = 0;
+    loop {
+        let memory = session.memory_len(IGP_ID);
+        let bound = top_up_memory_bound(&log);
+        let fits = memory + bound <= TOP_UP_MEMORY_LIMIT;
+        // Up to the next chunk, records allocate nothing: dispatches fill
+        // the chunk, 256 to a transaction, but for one top-up.
+        let room = per_chunk - log.len() % per_chunk;
+        if bound == 0 && room > 1 {
+            dispatch(&mut session, &mut log, (room - 1).min(256));
+            continue;
+        }
+        match pay_for_gas(&mut session, &RELAYER_SK, top_up, 1_000, 1_000) {
+            Ok(_) => {
+                assert!(fits, "record {}: admitted at {memory} + {bound}", log.len());
+                log.push(placeholder);
+                admitted += 1;
+                let after = session.memory_len(IGP_ID);
+                assert!(
+                    after <= TOP_UP_MEMORY_LIMIT,
+                    "record {}: a top-up took the IGP to {after} bytes",
+                    log.len()
+                );
+            }
+            Err(error) => {
+                assert!(
+                    !fits,
+                    "record {}: refused at {memory} + {bound}: {error}",
+                    log.len()
+                );
+                assert_contract_panic(
+                    Err::<CallReceipt<()>, _>(error),
+                    "IGP: storage full, top-ups are closed",
+                );
+                break;
+            }
+        }
+    }
+    // Each admitted top-up that started a chunk took 2 to 3 pages; the IGP
+    // started 4 to 6 below the limit, so at least the first chunk fit.
+    assert!(admitted >= 2, "admitted {admitted} top-ups");
+    let closed_at = session.memory_len(IGP_ID);
+    assert!(closed_at <= TOP_UP_MEMORY_LIMIT);
+    let count: u32 = query(&mut session, IGP_ID, "gas_payment_count", &());
+    assert_eq!(count, log.len());
+
+    // Dispatches go on paying the IGP until its memory is past 3 GiB.
+    let mut batches = 0;
+    while session.memory_len(IGP_ID) <= TOP_UP_MEMORY_LIMIT {
+        assert!(
+            batches < 16,
+            "dispatches from {closed_at} bytes never passed the limit"
+        );
+        dispatch(&mut session, &mut log, 256);
+        batches += 1;
+    }
+    let count: u32 = query(&mut session, IGP_ID, "gas_payment_count", &());
+    assert_eq!(count, log.len());
+    let last: GasPaymentRecord = query(&mut session, IGP_ID, "gas_payment_at", &(count - 1,));
+    assert_eq!((last.destination, last.gas_limit), (REMOTE_DOMAIN, 150_000));
+    // And top-ups stay closed there, even one that starts no chunk.
+    assert_eq!(top_up_memory_bound(&log), 0);
+    assert_contract_panic(
+        pay_for_gas(&mut session, &RELAYER_SK, top_up, 1_000, 1_000),
+        "IGP: storage full, top-ups are closed",
+    );
+}
+
+// =============================================================================
 // Tests: WarpDrc20 (Synthetic token)
 // =============================================================================
 
@@ -3336,6 +4242,26 @@ fn assert_route_dispatch_credit_withdrawal(
         recipient_balance_before_rejection,
         "downstream Mailbox rejection must not pay the recipient"
     );
+
+    // The Mailbox decodes the recipient's key behind the route's wrapper
+    // too: a forged twin of the key pays the account that signs with it.
+    for (name, twin) in forged_twins(&FRESH_PK) {
+        let before = moonlight_balance(&mut session, &FRESH_PK);
+        session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                route,
+                "withdraw_dispatch_credit",
+                &(twin, 1_000u64),
+            )
+            .unwrap_or_else(|e| panic!("{name}: the route's withdrawal should succeed: {e}"));
+        assert_eq!(
+            moonlight_balance(&mut session, &FRESH_PK),
+            before + 1_000,
+            "{name}"
+        );
+        assert_eq!(moonlight_balance(&mut session, &twin), 0, "{name}");
+    }
 }
 
 fn canonical_drc20_balance_of(session: &mut TestSession, account: Drc20Account) -> u64 {
@@ -3449,7 +4375,7 @@ fn test_warp_drc20_init() {
             .direct_call::<_, u32>(WARP_DRC20_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        4
+        7
     );
 }
 
@@ -3557,7 +4483,7 @@ fn test_warp_native_init() {
             .direct_call::<_, u32>(WARP_NATIVE_ID, "state_version", &())
             .expect("state_version should succeed")
             .data,
-        2
+        4
     );
 }
 
@@ -3649,7 +4575,7 @@ fn test_warp_collateral_init() {
         .direct_call::<_, u32>(WARP_DRC20_COLLATERAL_ID, "state_version", &())
         .expect("state_version should succeed")
         .data;
-    assert_eq!(state_version, 3);
+    assert_eq!(state_version, 6);
 }
 
 #[test]
@@ -6287,8 +7213,9 @@ fn test_igp_credits_the_overhead_in_paid_gas() {
     let decoded = HyperlaneDataDriver
         .decode_event(&event.topic, &event.data)
         .unwrap();
-    assert_eq!(decoded["gas_limit"].as_u64(), Some(150_000));
-    assert_eq!(decoded["payment"].as_u64(), Some(150_000));
+    // The data driver encodes u64 as decimal strings so JavaScript keeps them exact.
+    assert_eq!(decoded["gas_limit"].as_str(), Some("150000"));
+    assert_eq!(decoded["payment"].as_str(), Some("150000"));
     session
         .call_public::<_, ()>(
             &OWNER_SK,
@@ -6331,4 +7258,3229 @@ fn test_igp_rejects_config_with_unrepresentable_adjusted_gas() {
         ),
     );
     assert_contract_panic(result, "IGP: configured adjusted gas exceeds u64");
+}
+
+// =============================================================================
+// Red team: verification (forger persona)
+//
+// The forger runs a relayer, holds at most `threshold - 1` enrolled validator
+// keys plus any number of outsider keys, and may call ValidatorAnnounce.
+// Tests named `redteam_*` assert the secure or Solidity-compatible behaviour;
+// `redteam_held_*` tests document attacks that the current code resists.
+// =============================================================================
+
+/// secp256k1 group order `n`, big-endian.
+const REDTEAM_SECP256K1_N: [u8; 32] = [
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+    0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41,
+];
+
+/// Turn a canonical low-s `r || s || v` signature into its high-s twin
+/// `r || n - s || v'`. Both recover the same signer; OpenZeppelin's
+/// `ECDSA.recover` (used by Solidity `AbstractMultisigIsm` and
+/// `ValidatorAnnounce`) rejects the high-s form.
+fn redteam_malleate_high_s(signature: &[u8]) -> Vec<u8> {
+    assert_eq!(signature.len(), 65);
+    let mut out = signature.to_vec();
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let mut diff = i16::from(REDTEAM_SECP256K1_N[i]) - i16::from(signature[32 + i]) - borrow;
+        if diff < 0 {
+            diff += 256;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        out[32 + i] = u8::try_from(diff).unwrap();
+    }
+    assert_eq!(borrow, 0, "s must be below n");
+    // Negating s negates R, so the recovery parity flips.
+    out[64] = match signature[64] {
+        27 => 28,
+        28 => 27,
+        0 => 1,
+        1 => 0,
+        v => v,
+    };
+    out
+}
+
+/// A Dusk deployment shaped like `dusk-tx deploy-hyperlane --default-ism
+/// messageIdMultisig`: the Mailbox defaults to a real 2-of-3 multisig ISM, and
+/// the TestMock (NullISM) and TestRecipient fixtures are deployed alongside it.
+fn redteam_session_with_multisig_default_ism() -> (TestSession, Vec<(EthAddress, SecpSecretKey)>) {
+    let signers = checkpoint_signers();
+    let validators: Vec<EthAddress> = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    session
+        .deploy(
+            TEST_MOCK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_MOCK_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            TEST_RECIPIENT_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_RECIPIENT_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            MERKLE_TREE_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(MERKLE_TREE_HOOK_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            MAILBOX_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    LOCAL_DOMAIN,
+                    *OWNER_ID,
+                    ISM_MULTISIG_ID,
+                    TEST_MOCK_ID,
+                    MERKLE_TREE_HOOK_ID,
+                ))
+                .contract_id(MAILBOX_ID),
+        )
+        .unwrap();
+    (session, signers)
+}
+
+/// FINDING: the deployed TestRecipient lets anyone choose its ISM, and the
+/// deploy always ships a NullISM (TestMock). A forger with no quorum gets the
+/// canonical Mailbox to accept, mark delivered and emit `Process` for a
+/// message no validator signed. Solidity's TestRecipient gates
+/// `setInterchainSecurityModule` with `onlyOwner`.
+#[test]
+fn redteam_forger_cannot_downgrade_deployed_recipient_ism() {
+    let (mut session, signers) = redteam_session_with_multisig_default_ism();
+    let forged = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xEE; 32],
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        b"never signed by the validator quorum",
+    );
+    let id = message::id(&forged);
+
+    // Baseline: with the real default ISM the forger's best metadata
+    // (threshold - 1 enrolled signer + an outsider) and empty metadata fail.
+    let partial = signed_checkpoint_metadata(&forged, &[&signers[0].1, &signers[3].1]);
+    for metadata in [partial, Vec::new()] {
+        assert!(session
+            .call_public::<_, ()>(
+                &RELAYER_SK,
+                MAILBOX_ID,
+                "process",
+                &(metadata, forged.clone())
+            )
+            .is_err());
+    }
+
+    // Attack: the forger (not the deployer, not any owner) points the deployed
+    // TestRecipient at the deployed NullISM, then relays with empty metadata.
+    let downgrade = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        TEST_RECIPIENT_ID,
+        "set_interchain_security_module",
+        &(TEST_MOCK_ID,),
+    );
+    let process = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        MAILBOX_ID,
+        "process",
+        &(Vec::<u8>::new(), forged.clone()),
+    );
+    let delivered = session
+        .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+        .unwrap()
+        .data;
+    assert!(
+        process.is_err() && !delivered,
+        "unsigned message accepted by the Mailbox: ism downgrade ok={}, process ok={}, delivered={delivered}",
+        downgrade.is_ok(),
+        process.is_ok(),
+    );
+}
+
+/// FINDING (compatibility): a high-s twin of a validator signature verifies on
+/// Dusk. OpenZeppelin `ECDSA.recover` reverts with "invalid signature 's'
+/// value", so Dusk accepts metadata the Solidity ISM rejects.
+#[test]
+fn redteam_multisig_rejects_high_s_signature() {
+    let signers = checkpoint_signers();
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![signers[0].0], 1);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let metadata = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    assert!(
+        session
+            .direct_call::<_, bool>(
+                ISM_MULTISIG_ID,
+                "verify",
+                &(metadata.clone(), message.clone())
+            )
+            .unwrap()
+            .data
+    );
+
+    let mut malleated = metadata.clone();
+    let high_s = redteam_malleate_high_s(&metadata[68..133]);
+    malleated[68..133].copy_from_slice(&high_s);
+    let result = session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(malleated, message));
+    assert!(
+        result.is_err(),
+        "high-s signature accepted by MultisigISM (OpenZeppelin ECDSA.recover rejects s > n/2)"
+    );
+}
+
+/// FINDING (compatibility): `v` of 0 or 1 verifies on Dusk. OpenZeppelin
+/// `ECDSA.recover` only accepts 27 or 28.
+#[test]
+fn redteam_multisig_rejects_raw_recovery_id_v() {
+    let signers = checkpoint_signers();
+    let mut session = session_with_multisig_ism(*OWNER_ID, vec![signers[0].0], 1);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let mut metadata = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    metadata[132] -= 27;
+    let result = session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message));
+    assert!(
+        result.is_err(),
+        "v in {{0,1}} accepted by MultisigISM (OpenZeppelin ECDSA.recover requires 27 or 28)"
+    );
+}
+
+/// FINDING (compatibility): ValidatorAnnounce shares the permissive recovery.
+#[test]
+fn redteam_validator_announce_rejects_high_s_signature() {
+    let mut session = session_with_validator_announce();
+    let location = alloc::string::String::from("s3://validator/checkpoints");
+    let (validator, signature) = validator_announcement(&location);
+    let result = session.call_public::<_, bool>(
+        &OWNER_SK,
+        VALIDATOR_ANNOUNCE_ID,
+        "announce",
+        &(validator, location, redteam_malleate_high_s(&signature)),
+    );
+    assert!(
+        result.is_err(),
+        "high-s announcement signature accepted (OpenZeppelin ECDSA.recover rejects s > n/2)"
+    );
+}
+
+/// HELD: one enrolled key presented twice under different encodings (low-s
+/// and high-s, or v=27 and v=0) is still one signer.
+#[test]
+fn redteam_held_same_signer_two_encodings_not_double_counted() {
+    let signers = checkpoint_signers();
+    let validators = signers[..3].iter().map(|(address, _)| *address).collect();
+    let mut session = session_with_multisig_ism(*OWNER_ID, validators, 2);
+    let message = sample_encoded_message(TEST_RECIPIENT_ID);
+    let single = signed_checkpoint_metadata(&message, &[&signers[0].1]);
+    let signature = single[68..133].to_vec();
+
+    let mut raw_v = signature.clone();
+    raw_v[64] -= 27;
+    for twin in [redteam_malleate_high_s(&signature), raw_v] {
+        let mut metadata = single.clone();
+        metadata.extend_from_slice(&twin);
+        // Non-canonical twins are now rejected outright, before counting.
+        assert_contract_panic(
+            session.direct_call::<_, bool>(ISM_MULTISIG_ID, "verify", &(metadata, message.clone())),
+            "MultisigISM: non-canonical signature",
+        );
+    }
+}
+
+/// HELD: only the configured caller can insert leaves into the tree that
+/// validators sign.
+#[test]
+fn redteam_held_merkle_tree_hook_rejects_foreign_insert() {
+    let mut s = HyperlaneSession::new();
+    let forged = sample_encoded_message(TEST_RECIPIENT_ID);
+    assert_contract_panic(
+        s.session.call_public::<_, ()>(
+            &RELAYER_SK,
+            MERKLE_TREE_HOOK_ID,
+            "post_dispatch",
+            &(Vec::<u8>::new(), forged.clone()),
+        ),
+        "MerkleTreeHook: caller is not mailbox",
+    );
+    // Selecting the required hook as the custom hook is also refused, so a
+    // dispatch cannot insert its own leaf twice.
+    let result = s.session.call_public::<_, MessageId>(
+        &RELAYER_SK,
+        MAILBOX_ID,
+        "dispatch",
+        &(
+            REMOTE_DOMAIN,
+            [0x01u8; 32],
+            b"x".to_vec(),
+            Vec::<u8>::new(),
+            MERKLE_TREE_HOOK_ID,
+        ),
+    );
+    assert_contract_panic(result, "Mailbox: selected hook cannot equal required hook");
+    assert_eq!(s.merkle_count(), 0);
+}
+
+/// HELD: an announcement signed for one (domain, Mailbox) does not verify on a
+/// ValidatorAnnounce bound to another domain or Mailbox.
+#[test]
+fn redteam_held_announcement_bound_to_domain_and_mailbox() {
+    let mut session = session_with_validator_announce();
+    let other_mailbox_va = ContractId::from_bytes([0x71; 32]);
+    let other_domain_va = ContractId::from_bytes([0x72; 32]);
+    for (id, init) in [
+        (other_mailbox_va, (LOCAL_DOMAIN, TEST_MOCK_ID)),
+        (other_domain_va, (REMOTE_DOMAIN, MAILBOX_ID)),
+    ] {
+        session
+            .deploy(
+                VALIDATOR_ANNOUNCE_BYTECODE,
+                dusk_vm::ContractData::builder()
+                    .owner(DEPLOYER)
+                    .init_arg(&init)
+                    .contract_id(id),
+            )
+            .unwrap();
+    }
+    let location = alloc::string::String::from("s3://validator/checkpoints");
+    let (validator, signature) = validator_announcement(&location);
+    for id in [other_mailbox_va, other_domain_va] {
+        assert_contract_panic(
+            session.call_public::<_, bool>(
+                &OWNER_SK,
+                id,
+                "announce",
+                &(validator, location.clone(), signature.clone()),
+            ),
+            "ValidatorAnnounce: invalid signature",
+        );
+    }
+    session
+        .call_public::<_, bool>(
+            &OWNER_SK,
+            VALIDATOR_ANNOUNCE_ID,
+            "announce",
+            &(validator, location.clone(), signature.clone()),
+        )
+        .unwrap();
+    assert_contract_panic(
+        session.call_public::<_, bool>(
+            &OWNER_SK,
+            VALIDATOR_ANNOUNCE_ID,
+            "announce",
+            &(validator, location, redteam_malleate_high_s(&signature)),
+        ),
+        "ValidatorAnnounce: replay",
+    );
+}
+
+// =============================================================================
+// Red team: economics
+// =============================================================================
+
+/// Encode a Hyperlane TokenMessage body exactly as an EVM `TokenRouter` does:
+/// `recipient (32) || uint256 amount (32, big-endian)`.
+fn redteam_evm_token_body(recipient: H256, amount: u128) -> Vec<u8> {
+    let mut body = recipient.to_vec();
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&amount.to_be_bytes());
+    body.extend_from_slice(&word);
+    body
+}
+
+fn redteam_inbound_synthetic(
+    session: &mut TestSession,
+    remote_router: H256,
+    nonce: u32,
+    recipient: H256,
+    amount: u128,
+) -> (MessageId, Result<CallReceipt<()>, ContractError>) {
+    let encoded = message::encode(
+        VERSION,
+        nonce,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        WARP_DRC20_ID.to_bytes(),
+        &redteam_evm_token_body(recipient, amount),
+    );
+    let id = message::id(&encoded);
+    let result = session.direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded));
+    (id, result)
+}
+
+/// One whole token at the 18 decimals the synthetic route and its EVM
+/// HypERC20 counterpart use (`TOKEN_DECIMALS=18`, scale 1/1 in deploy.sh).
+const REDTEAM_WAD: u128 = 1_000_000_000_000_000_000;
+
+/// An EVM user burns 20 tokens on the remote HypERC20 router. The Dusk side
+/// must be able to deliver them; otherwise the burned value is unrecoverable
+/// (no refund path, the message stays undeliverable forever).
+#[test]
+#[ignore = "known limitation (docs/security.md): u64 amounts cap an 18-decimal synthetic at ~18.4 tokens; synthetic routes must carry at most 9 decimals"]
+fn redteam_synthetic_inbound_above_u64_is_deliverable() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let recipient = message::keccak256(&OWNER_PK.to_bytes());
+
+    let amount = 20 * REDTEAM_WAD; // 2e19 > u64::MAX (~1.8447e19)
+    let (id, result) = redteam_inbound_synthetic(&mut session, remote_router, 0, recipient, amount);
+    if let Err(error) = &result {
+        panic!("20 tokens burned on EVM cannot be delivered on Dusk: {error}");
+    }
+    assert!(
+        session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+            .unwrap()
+            .data
+    );
+}
+
+/// An attacker with ~18.4 tokens parks them in an escrow key that no BLS key
+/// or contract can ever claim. The route's u64 supply-plus-pending capacity
+/// is then exhausted, so every later EVM->Dusk transfer from other users is
+/// burned on EVM and can never be delivered.
+#[test]
+#[ignore = "known limitation (docs/security.md): u64 amounts cap an 18-decimal synthetic at ~18.4 tokens; synthetic routes must carry at most 9 decimals"]
+fn redteam_synthetic_supply_cap_cannot_freeze_inbound() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+
+    let unclaimable_sink: H256 = [0xEE; 32];
+    let attacker_amount = 18 * REDTEAM_WAD + 400_000_000_000_000_000; // 18.4 tokens
+    let (_, result) = redteam_inbound_synthetic(
+        &mut session,
+        remote_router,
+        0,
+        unclaimable_sink,
+        attacker_amount,
+    );
+    result.expect("attacker's 18.4-token transfer fits in u64 and is escrowed");
+
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let victim = message::keccak256(&OWNER_PK.to_bytes());
+    let victim_amount = REDTEAM_WAD / 10; // 0.1 token
+    let (id, result) =
+        redteam_inbound_synthetic(&mut session, remote_router, 1, victim, victim_amount);
+    if let Err(error) = &result {
+        panic!("victim's 0.1-token transfer is frozen by the attacker's escrow: {error}");
+    }
+    assert!(
+        session
+            .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+            .unwrap()
+            .data
+    );
+}
+
+/// WarpDrc20 accepts the canonical `Phoenix` principal as a transfer target,
+/// but unlike the canonical DRC20 it has no signed-authorization path, and
+/// `sender_account()` never resolves to a Phoenix principal. Tokens sent there
+/// can never be transferred, approved, or bridged back.
+#[test]
+fn redteam_synthetic_rejects_unspendable_phoenix_recipient() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let holder = message::keccak256(&OWNER_PK.to_bytes());
+    let amount = 1_000_000u64;
+    let (_, result) =
+        redteam_inbound_synthetic(&mut session, remote_router, 0, holder, u128::from(amount));
+    result.expect("mint to the registered holder should succeed");
+
+    let phoenix = Drc20Account::Phoenix([0x07; 32]);
+    let result = session.call_public::<_, ()>(
+        &OWNER_SK,
+        WARP_DRC20_ID,
+        "transfer",
+        &hyperlane_dusk_types::drc20::TransferCall {
+            to: phoenix,
+            amount,
+        },
+    );
+    let stranded = warp_drc20_balance_of(&mut session, phoenix);
+    assert!(
+        result.is_err() && stranded == 0,
+        "WarpDrc20 moved {stranded} units to a Phoenix principal that no call can ever spend"
+    );
+}
+
+// =============================================================================
+// Red team: attacker-controlled callbacks (hook, recipient, nominated ISM,
+// native escrow claimant, route-nominated hook)
+// =============================================================================
+
+const REDTEAM_ATTACKER_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_redteam_attacker.wasm"
+);
+const REDTEAM_ID: ContractId = ContractId::from_bytes([40; 32]);
+
+/// Callback points understood by the red-team attacker contract.
+const RT_QUOTE: u8 = 0;
+const RT_POST: u8 = 1;
+const RT_PAYMENT: u8 = 2;
+const RT_ISM_LOOKUP: u8 = 3;
+const RT_VERIFY: u8 = 4;
+const RT_HANDLE: u8 = 5;
+const RT_NATIVE_PENDING: u8 = 6;
+
+type RtAction = (ContractId, String, Vec<u8>);
+
+fn rt_action<A>(target: ContractId, fn_name: &str, args: &A) -> RtAction
+where
+    A: for<'b> rkyv::Serialize<dusk_core::abi::StandardBufSerializer<'b>>,
+    A::Archived: for<'b> bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    (
+        target,
+        String::from(fn_name),
+        test_session::rkyv_serialize(args),
+    )
+}
+
+fn rt_deploy(session: &mut TestSession) {
+    session
+        .deploy(
+            REDTEAM_ATTACKER_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(REDTEAM_ID),
+        )
+        .expect("Deploying the red-team attacker should succeed");
+}
+
+fn rt_configure(session: &mut TestSession, point: u8, actions: Vec<RtAction>, panic_after: bool) {
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "configure", &(point, actions, panic_after))
+        .expect("attacker configuration should succeed");
+}
+
+fn rt_set_returns(session: &mut TestSession, quote_fee: u64, ism: ContractId) {
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "set_returns", &(quote_fee, ism))
+        .expect("attacker return configuration should succeed");
+}
+
+fn rt_results(session: &mut TestSession) -> Vec<bool> {
+    session
+        .direct_call::<_, Vec<bool>>(REDTEAM_ID, "results", &())
+        .expect("results query should succeed")
+        .data
+}
+
+/// Returns `(handled, posts, received)`.
+fn rt_counters(session: &mut TestSession) -> (u32, u32, u64) {
+    session
+        .direct_call::<_, (u32, u32, u64)>(REDTEAM_ID, "counters", &())
+        .expect("counters query should succeed")
+        .data
+}
+
+fn rt_u32(session: &mut TestSession, contract: ContractId, fn_name: &str) -> u32 {
+    session
+        .direct_call::<_, u32>(contract, fn_name, &())
+        .unwrap_or_else(|e| panic!("{fn_name} query failed: {e}"))
+        .data
+}
+
+fn rt_delivered(session: &mut TestSession, id: MessageId) -> bool {
+    session
+        .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(id,))
+        .expect("delivered query should succeed")
+        .data
+}
+
+fn rt_fee_credit(session: &mut TestSession, payer: H256) -> u64 {
+    session
+        .direct_call::<_, u64>(MAILBOX_ID, "fee_credit", &(payer,))
+        .expect("fee_credit query should succeed")
+        .data
+}
+
+/// A recipient's ISM lookup may fail and the Mailbox then falls back to the
+/// default ISM. The attacker uses that tolerated failure for speculative work:
+/// a nested dispatch, a nested delivery of someone else's message and a
+/// same-message replay, then panics. None of it may survive, and the honest
+/// message must remain deliverable afterwards.
+#[test]
+fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+
+    let attacker_msg = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"attacker inbound",
+    );
+    let honest_msg = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        b"honest inbound",
+    );
+    rt_configure(
+        &mut s.session,
+        RT_ISM_LOOKUP,
+        vec![
+            rt_action(
+                MAILBOX_ID,
+                "dispatch_default",
+                &(REMOTE_DOMAIN, [0xEEu8; 32], b"speculative".to_vec()),
+            ),
+            rt_action(
+                MAILBOX_ID,
+                "process",
+                &(Vec::<u8>::new(), honest_msg.clone()),
+            ),
+            rt_action(
+                MAILBOX_ID,
+                "process",
+                &(Vec::<u8>::new(), attacker_msg.clone()),
+            ),
+        ],
+        true,
+    );
+
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), attacker_msg.clone())
+        .expect("outer delivery falls back to the default ISM");
+
+    assert_eq!(rt_counters(&mut s.session).0, 1, "delivered exactly once");
+    assert_eq!(s.mailbox_nonce(), 0, "speculative dispatch must roll back");
+    assert_eq!(
+        s.merkle_count(),
+        0,
+        "speculative tree insert must roll back"
+    );
+    assert!(!rt_delivered(&mut s.session, message::id(&honest_msg)));
+    assert!(rt_delivered(&mut s.session, message::id(&attacker_msg)));
+    assert_eq!(s.recipient_handled_count(), 0);
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&attacker_msg)]);
+    // Piecrust keeps the rolled-back events in the receipt but flags them;
+    // the Dusk agent skips flagged events and cross-checks contract state.
+    for event in &receipt.events {
+        if event.topic == events::Dispatch::TOPIC
+            || event.topic == events::DispatchId::TOPIC
+            || event.topic == events::InsertedIntoTree::TOPIC
+        {
+            assert!(
+                event.reverted,
+                "speculative {} must be flagged",
+                event.topic
+            );
+        }
+    }
+    assert_eq!(
+        receipt
+            .events
+            .iter()
+            .filter(|event| event.topic == events::ProcessId::TOPIC && !event.reverted)
+            .count(),
+        1
+    );
+
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), honest_msg.clone())
+        .expect("the honest message must stay deliverable");
+    assert_eq!(s.recipient_handled_count(), 1);
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&honest_msg)]);
+}
+
+/// A recipient nominates itself as ISM and replays the message from both
+/// `verify` and `handle`. The delivery reservation must reject both.
+#[test]
+fn redteam_nominated_ism_and_handle_replay_rejected() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    rt_set_returns(&mut s.session, 0, REDTEAM_ID);
+
+    let msg = message::encode(
+        VERSION,
+        7,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"replay me",
+    );
+    let replay = rt_action(MAILBOX_ID, "process", &(Vec::<u8>::new(), msg.clone()));
+    rt_configure(&mut s.session, RT_VERIFY, vec![replay.clone()], false);
+    rt_configure(&mut s.session, RT_HANDLE, vec![replay], false);
+
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), msg.clone())
+        .expect("outer delivery succeeds");
+
+    assert_eq!(rt_results(&mut s.session), vec![false, false]);
+    assert_eq!(rt_counters(&mut s.session).0, 1);
+    assert_eq!(delivered_ids(&receipt), vec![message::id(&msg)]);
+}
+
+/// The attacker contract is both the dispatch sender and its own hook, and
+/// tries to withdraw its credit from each hook callback. If the Mailbox read
+/// the credit before the quote callbacks, it would pay the hooks out of other
+/// payers' pooled DUSK.
+#[test]
+fn redteam_hook_callbacks_cannot_double_spend_dispatch_credit() {
+    // Production-like hooks: required = Aggregation(Merkle, ProtocolFee 1000),
+    // default = IGP. The helper also funds 100_000_000 of TestRecipient credit,
+    // which sits in the same Mailbox pool.
+    let mut session = session_with_hooks();
+    rt_deploy(&mut session);
+    let hook_fee = 500u64;
+    let total_fee = 1000 + hook_fee;
+    rt_set_returns(&mut session, hook_fee, ContractId::from_bytes([0; 32]));
+    session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(REDTEAM_ID.to_bytes(), total_fee),
+            total_fee,
+        )
+        .expect("funding the attacker's own credit should succeed");
+    let pool_before = session.contract_balance(&MAILBOX_ID).unwrap();
+    let relayer_before = session.account(&RELAYER_PK).unwrap().balance;
+
+    let dispatch = rt_action(
+        MAILBOX_ID,
+        "dispatch",
+        &(
+            REMOTE_DOMAIN,
+            [0xA1u8; 32],
+            b"pay with withdrawn credit".to_vec(),
+            Vec::<u8>::new(),
+            REDTEAM_ID,
+        ),
+    );
+    let withdraw_all = rt_action(
+        MAILBOX_ID,
+        "withdraw_dispatch_credit",
+        &(*RELAYER_PK, total_fee),
+    );
+    let withdraw_one = rt_action(MAILBOX_ID, "withdraw_dispatch_credit", &(*RELAYER_PK, 1u64));
+
+    // 1. Withdraw everything during the quote, before the Mailbox charges.
+    rt_configure(&mut session, RT_QUOTE, vec![withdraw_all], false);
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            REDTEAM_ID,
+            "run",
+            &(vec![dispatch.clone()], false),
+        )
+        .expect("attacker transaction itself succeeds");
+    assert_eq!(rt_results(&mut session), vec![false], "dispatch must fail");
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 0);
+    assert_eq!(
+        rt_fee_credit(&mut session, REDTEAM_ID.to_bytes()),
+        total_fee
+    );
+    assert_eq!(session.contract_balance(&MAILBOX_ID).unwrap(), pool_before);
+    assert_eq!(
+        session.account(&RELAYER_PK).unwrap().balance,
+        relayer_before
+    );
+
+    // 2. Withdraw again from post-dispatch and payment, after the charge.
+    rt_configure(&mut session, RT_QUOTE, Vec::new(), false);
+    rt_configure(&mut session, RT_POST, vec![withdraw_one.clone()], false);
+    rt_configure(&mut session, RT_PAYMENT, vec![withdraw_one], false);
+    session
+        .call_public::<_, ()>(&OWNER_SK, REDTEAM_ID, "run", &(vec![dispatch], true))
+        .expect("honest-priced dispatch succeeds");
+    assert_eq!(rt_results(&mut session), vec![false, false, false, true]);
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 1);
+    assert_eq!(rt_u32(&mut session, MERKLE_TREE_HOOK_ID, "count"), 1);
+    assert_eq!(rt_fee_credit(&mut session, REDTEAM_ID.to_bytes()), 0);
+    assert_eq!(
+        session.contract_balance(&MAILBOX_ID).unwrap(),
+        pool_before - total_fee,
+        "only the attacker's own credit may leave the pool"
+    );
+    assert_eq!(
+        rt_fee_credit(&mut session, TEST_RECIPIENT_ID.to_bytes()),
+        100_000_000
+    );
+    assert_eq!(
+        session.account(&RELAYER_PK).unwrap().balance,
+        relayer_before
+    );
+    assert_eq!(rt_counters(&mut session).2, hook_fee);
+    assert_eq!(session.contract_balance(&PROTOCOL_FEE_ID).unwrap(), 1000);
+}
+
+/// A contract claimant of native escrow re-enters the route from the
+/// transfer-contract callback: a second claim, a nested inbound delivery that
+/// escrows more DUSK to itself, and a claim of that. It must receive exactly
+/// what was escrowed, and the route's custody must still cover its liability.
+#[test]
+fn redteam_native_escrow_callback_cannot_double_release() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    rt_deploy(&mut session);
+    let custody = 3_000_000u64;
+    let first = 1_000_000u64;
+    let second = 700_000u64;
+    fund_warp_native(&mut session, custody);
+
+    let inbound = |nonce: u32, amount: u64| {
+        message::encode(
+            VERSION,
+            nonce,
+            REMOTE_DOMAIN,
+            remote_router,
+            LOCAL_DOMAIN,
+            WARP_NATIVE_ID.to_bytes(),
+            &hyperlane_dusk_types::token_message::encode(REDTEAM_ID.to_bytes(), amount),
+        )
+    };
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(Vec::<u8>::new(), inbound(1, first)),
+        )
+        .expect("first escrow");
+
+    let claim = rt_action(WARP_NATIVE_ID, "claim_pending_contract", &());
+    rt_configure(
+        &mut session,
+        RT_NATIVE_PENDING,
+        vec![
+            claim.clone(),
+            rt_action(
+                MAILBOX_ID,
+                "process",
+                &(Vec::<u8>::new(), inbound(2, second)),
+            ),
+            claim.clone(),
+        ],
+        false,
+    );
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![claim], true))
+        .expect("outer claim succeeds");
+
+    assert_eq!(rt_results(&mut session), vec![false, true, true, true]);
+    assert_eq!(rt_counters(&mut session).2, first + second);
+    assert_eq!(
+        session.contract_balance(&REDTEAM_ID).unwrap(),
+        first + second
+    );
+    assert_eq!(
+        session.contract_balance(&WARP_NATIVE_ID).unwrap(),
+        custody - first - second
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(WARP_NATIVE_ID, "pending_total", &())
+            .unwrap()
+            .data,
+        0
+    );
+}
+
+/// A route owner nominates a third-party hook. Its quote callback runs before
+/// the route takes the user's deposit, re-enters `transfer_remote` with a
+/// matching amount, takes the deposit and bridges it to the attacker. The
+/// outer transfer must then fail, rolling back the nested one.
+#[test]
+fn redteam_route_hook_cannot_steal_native_deposit_during_quote() {
+    let (mut session, _remote_router) = session_with_warp_native_flow();
+    rt_deploy(&mut session);
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "set_hook", &(REDTEAM_ID,))
+        .expect("route owner nominates the hook");
+    let amount = 1_000_000_000u64; // larger than the maximum gas charge
+    rt_configure(
+        &mut session,
+        RT_QUOTE,
+        vec![rt_action(
+            WARP_NATIVE_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xAAu8; 32], amount),
+        )],
+        false,
+    );
+    let user_before = session.account(&OWNER_PK).unwrap().balance;
+
+    let result = session.call_public_with_deposit::<_, MessageId>(
+        &OWNER_SK,
+        WARP_NATIVE_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0xDDu8; 32], amount),
+        amount,
+    );
+    assert!(result.is_err(), "outer transfer must not succeed");
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 0);
+    assert_eq!(rt_u32(&mut session, MERKLE_TREE_HOOK_ID, "count"), 0);
+    assert_eq!(session.contract_balance(&WARP_NATIVE_ID).unwrap(), 0);
+    assert!(
+        user_before - session.account(&OWNER_PK).unwrap().balance < amount,
+        "the user's deposit must be refunded"
+    );
+}
+
+/// The attacker's hook delivers an inbound message to itself from
+/// `post_dispatch`; its `handle` then tries to dispatch while the outer
+/// dispatch is still running. Nonces, stored messages and the tree must stay
+/// aligned, and the guard must be clear afterwards.
+#[test]
+fn redteam_hook_process_during_dispatch_keeps_indexes_aligned() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    let inbound = message::encode(
+        VERSION,
+        3,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"delivered mid-dispatch",
+    );
+    rt_configure(
+        &mut s.session,
+        RT_POST,
+        vec![rt_action(
+            MAILBOX_ID,
+            "process",
+            &(Vec::<u8>::new(), inbound.clone()),
+        )],
+        false,
+    );
+    rt_configure(
+        &mut s.session,
+        RT_HANDLE,
+        vec![rt_action(
+            MAILBOX_ID,
+            "dispatch_default",
+            &(REMOTE_DOMAIN, [0xEEu8; 32], b"nested".to_vec()),
+        )],
+        false,
+    );
+
+    let body = b"outer".to_vec();
+    let receipt = s
+        .session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "dispatch",
+            &(
+                REMOTE_DOMAIN,
+                [0xD5u8; 32],
+                body.clone(),
+                Vec::<u8>::new(),
+                REDTEAM_ID,
+            ),
+        )
+        .expect("outer dispatch succeeds");
+
+    assert_eq!(rt_results(&mut s.session), vec![false, true]);
+    assert_eq!(rt_counters(&mut s.session).0, 1);
+    assert!(rt_delivered(&mut s.session, message::id(&inbound)));
+    assert_eq!(s.mailbox_nonce(), 1);
+    assert_eq!(s.merkle_count(), 1);
+    let stored = s.dispatched_message(&receipt, 0);
+    assert_eq!(message::decode(&stored).unwrap().body, body);
+    assert_eq!(receipt.data, message::id(&stored));
+
+    s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xD5u8; 32], b"later".to_vec())
+        .expect("guard must be clear");
+    assert_eq!(s.mailbox_nonce(), 2);
+    assert_eq!(s.merkle_count(), 2);
+}
+
+// =============================================================================
+// Red team: a collateral route re-entered from its token's callback
+// =============================================================================
+
+const CALLBACK_FEE_TOKEN_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_callback_fee_token.wasm"
+);
+/// The collateral route built without its reentrancy guard
+/// (`make warp-drc20-collateral-unguarded`), to show what the guard stops.
+const UNGUARDED_COLLATERAL_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_warp_drc20_collateral_unguarded.wasm"
+);
+const CALLBACK_FEE_TOKEN_ID: ContractId = ContractId::from_bytes([42; 32]);
+/// The attacker's callback point for the token's `tokens_to_send`.
+const RT_TOKENS_TO_SEND: u8 = 7;
+/// 10% of each transfer, rounded down: a transfer of 9 or less pays no fee.
+const TEN_PERCENT_FEE: u16 = 1_000;
+const ATTACKER_TOKENS: u64 = 1_000;
+const COLLATERAL_ROUTER: H256 = [0xCC; 32];
+
+/// A collateral route (`route_bytecode`) over the callback fee token, behind
+/// a Mailbox whose hooks charge nothing, so `transfer_remote` takes no
+/// deposit and a contract can call it. The attacker contract holds
+/// `ATTACKER_TOKENS`, has approved the route for all of them and gets the
+/// token's `tokens_to_send` callback.
+fn session_with_callback_token_route(route_bytecode: &[u8], fee_bps: u16) -> TestSession {
+    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, INITIAL_DUSK_BALANCE)]);
+    session
+        .deploy(
+            TEST_MOCK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_MOCK_ID),
+        )
+        .expect("Deploying TestMock should succeed");
+    session
+        .deploy(
+            MERKLE_TREE_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(MERKLE_TREE_HOOK_ID),
+        )
+        .expect("Deploying MerkleTreeHook should succeed");
+    session
+        .deploy(
+            MAILBOX_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    LOCAL_DOMAIN,
+                    *OWNER_ID,
+                    TEST_MOCK_ID,
+                    TEST_MOCK_ID,
+                    MERKLE_TREE_HOOK_ID,
+                ))
+                .contract_id(MAILBOX_ID),
+        )
+        .expect("Deploying Mailbox should succeed");
+    session
+        .deploy(
+            CALLBACK_FEE_TOKEN_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    fee_bps,
+                    vec![(Drc20Account::Contract(REDTEAM_ID), ATTACKER_TOKENS)],
+                ))
+                .contract_id(CALLBACK_FEE_TOKEN_ID),
+        )
+        .expect("Deploying the callback fee token should succeed");
+    session
+        .deploy(
+            route_bytecode,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    CALLBACK_FEE_TOKEN_ID,
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    vec![(REMOTE_DOMAIN, COLLATERAL_ROUTER)],
+                ))
+                .contract_id(WARP_DRC20_COLLATERAL_ID),
+        )
+        .expect("Deploying the collateral route should succeed");
+    rt_deploy(&mut session);
+    let approve = rt_action(
+        CALLBACK_FEE_TOKEN_ID,
+        "approve",
+        &Drc20ApproveCall {
+            spender: Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+            amount: ATTACKER_TOKENS,
+        },
+    );
+    let register_hook = rt_action(CALLBACK_FEE_TOKEN_ID, "register_send_hook", &());
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![approve, register_hook], true))
+        .expect("the attacker approves the route and registers its token hook");
+    session
+}
+
+fn callback_token_balance(session: &mut TestSession, account: Drc20Account) -> u64 {
+    session
+        .direct_call::<_, u64>(
+            CALLBACK_FEE_TOKEN_ID,
+            "balance_of",
+            &Drc20BalanceOf { account },
+        )
+        .expect("balance_of should succeed")
+        .data
+}
+
+fn collateral_transfer(amount: u64) -> RtAction {
+    rt_action(
+        WARP_DRC20_COLLATERAL_ID,
+        "transfer_remote",
+        &(REMOTE_DOMAIN, [0xAAu8; 32], amount),
+    )
+}
+
+/// The attack: the attacker sends 100 through the route, and from the
+/// token's callback, while the route's `transfer_from` is still running,
+/// sends 9 and then 1 more. Those two pay no fee, and land in custody
+/// between the outer transfer's before and after balances, where they make
+/// up exactly the outer transfer's fee of 10.
+fn attempt_fee_token_reentry(session: &mut TestSession) -> Result<CallReceipt<()>, ContractError> {
+    rt_configure(
+        session,
+        RT_TOKENS_TO_SEND,
+        vec![collateral_transfer(9), collateral_transfer(1)],
+        false,
+    );
+    session.direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(100)], true))
+}
+
+/// The amounts of the token messages a receipt's `Dispatch` events carry:
+/// what the remote route will mint.
+fn dispatched_token_amounts<R>(receipt: &CallReceipt<R>) -> Vec<u64> {
+    receipt
+        .events
+        .iter()
+        .filter(|e| e.source == MAILBOX_ID && e.topic == events::Dispatch::TOPIC)
+        .map(|e| {
+            let dispatched = test_session::rkyv_deserialize::<events::Dispatch>(&e.data);
+            let decoded = message::decode(&dispatched.message).expect("dispatched message");
+            token_message::decode(&decoded.body)
+                .expect("dispatched token message")
+                .amount
+        })
+        .collect()
+}
+
+/// Without the guard, the attack works: the route dispatches 110 tokens'
+/// worth of remote mints and holds 100.
+#[test]
+fn redteam_unguarded_collateral_route_mints_unbacked_tokens_on_fee_token_reentry() {
+    let mut session =
+        session_with_callback_token_route(UNGUARDED_COLLATERAL_BYTECODE, TEN_PERCENT_FEE);
+    let custody = Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID);
+
+    let receipt = attempt_fee_token_reentry(&mut session)
+        .expect("without the guard, the nested transfers satisfy both custody checks");
+
+    // The session's approval and hook registration, the two nested
+    // transfers, then the outer one.
+    assert_eq!(rt_results(&mut session), vec![true; 5]);
+    assert_eq!(dispatched_token_amounts(&receipt), vec![9, 1, 100]);
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 3);
+    assert_eq!(callback_token_balance(&mut session, custody), 100);
+    assert_eq!(
+        callback_token_balance(&mut session, Drc20Account::Contract(REDTEAM_ID)),
+        ATTACKER_TOKENS - 110
+    );
+}
+
+/// With the guard, the nested transfers are refused, the outer transfer gets
+/// 90 of its 100 into custody, and its custody check reverts the whole call.
+/// The guard is released afterwards.
+#[test]
+fn redteam_collateral_route_rejects_fee_token_reentry() {
+    let mut session =
+        session_with_callback_token_route(WARP_DRC20_COLLATERAL_BYTECODE, TEN_PERCENT_FEE);
+    let custody = Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID);
+
+    assert_contract_panic_contains(
+        attempt_fee_token_reentry(&mut session),
+        "WarpCollateral: transfer_from did not deliver exact collateral",
+    );
+    assert_eq!(rt_u32(&mut session, MAILBOX_ID, "nonce"), 0);
+    assert_eq!(callback_token_balance(&mut session, custody), 0);
+    assert_eq!(
+        callback_token_balance(&mut session, Drc20Account::Contract(REDTEAM_ID)),
+        ATTACKER_TOKENS
+    );
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(CALLBACK_FEE_TOKEN_ID, "total_supply", &())
+            .expect("total_supply should succeed")
+            .data,
+        ATTACKER_TOKENS
+    );
+
+    // A transfer small enough to pay no fee still works.
+    rt_configure(&mut session, RT_TOKENS_TO_SEND, Vec::new(), false);
+    let receipt = session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(9)], true))
+        .expect("the guard was released with the failed call");
+    assert_eq!(dispatched_token_amounts(&receipt), vec![9]);
+    assert_eq!(callback_token_balance(&mut session, custody), 9);
+}
+
+/// From the token's callback during an honest `transfer_remote`, the
+/// attacker calls each entry point that takes the guard: `transfer_remote`,
+/// `handle` (through the Mailbox's `process`), `claim_pending_contract` and
+/// `claim_pending_for`. Every nested call is refused while the outer
+/// transfer completes, and each of them works on its own afterwards.
+#[test]
+fn test_collateral_route_guard_refuses_nested_transfer_handle_and_claims() {
+    let mut session = session_with_callback_token_route(WARP_DRC20_COLLATERAL_BYTECODE, 0);
+    let route = WARP_DRC20_COLLATERAL_ID;
+    let custody = Drc20Account::Contract(route);
+    let escrowed = 50u64;
+
+    // Custody to pay from, and escrow for the attacker contract and for an
+    // account that hasn't registered.
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(500)], true))
+        .expect("an honest transfer locks custody");
+    for (nonce, recipient) in [(0, REDTEAM_ID.to_bytes()), (1, *FRESH_ID)] {
+        let inbound = inbound_transfer(route, COLLATERAL_ROUTER, nonce, recipient, escrowed);
+        session
+            .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound))
+            .expect("inbound transfer to an unregistered recipient goes to escrow");
+    }
+    let pending_total = session
+        .direct_call::<_, u64>(route, "pending_total", &())
+        .expect("pending_total should succeed")
+        .data;
+    assert_eq!(pending_total, 2 * escrowed);
+
+    let late = inbound_transfer(route, COLLATERAL_ROUTER, 2, *FRESH_ID, escrowed);
+    let nested = vec![
+        collateral_transfer(10),
+        rt_action(MAILBOX_ID, "process", &(Vec::<u8>::new(), late.clone())),
+        rt_action(route, "claim_pending_contract", &()),
+        rt_action(route, "claim_pending_for", &(*FRESH_PK,)),
+    ];
+    rt_configure(&mut session, RT_TOKENS_TO_SEND, nested.clone(), false);
+    let receipt = session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(vec![collateral_transfer(100)], true))
+        .expect("the outer transfer completes");
+
+    // The session's approval and hook registration and the transfer of
+    // 500, then the four nested calls, then the outer transfer.
+    assert_eq!(
+        rt_results(&mut session),
+        vec![true, true, true, false, false, false, false, true],
+        "every nested call is refused, the outer transfer succeeds"
+    );
+    assert_eq!(dispatched_token_amounts(&receipt), vec![100]);
+    assert_eq!(callback_token_balance(&mut session, custody), 600);
+    assert!(!rt_delivered(&mut session, message::id(&late)));
+    assert_eq!(
+        route_u64(&mut session, route, "pending_balance", *FRESH_ID),
+        escrowed
+    );
+    assert_eq!(
+        route_u64(
+            &mut session,
+            route,
+            "pending_balance",
+            REDTEAM_ID.to_bytes()
+        ),
+        escrowed
+    );
+
+    // On their own, the same calls go through.
+    rt_configure(&mut session, RT_TOKENS_TO_SEND, Vec::new(), false);
+    session
+        .direct_call::<_, ()>(REDTEAM_ID, "run", &(nested, true))
+        .expect("each call works outside another route call");
+    assert!(rt_delivered(&mut session, message::id(&late)));
+    assert_eq!(
+        route_u64(&mut session, route, "pending_balance", *FRESH_ID),
+        0
+    );
+    assert_eq!(
+        route_u64(
+            &mut session,
+            route,
+            "pending_balance",
+            REDTEAM_ID.to_bytes()
+        ),
+        0
+    );
+    assert_eq!(
+        callback_token_balance(&mut session, Drc20Account::moonlight(&FRESH_PK)),
+        2 * escrowed
+    );
+}
+
+// =============================================================================
+// Sponsored escrow claims, bounded recipient ISM lookup, Mailbox memory
+// =============================================================================
+
+/// A recipient that holds no DUSK at all.
+static FRESH_SK: LazyLock<AccountSecretKey> = LazyLock::new(|| {
+    let mut rng = StdRng::seed_from_u64(0xF2E5_4000);
+    AccountSecretKey::random(&mut rng)
+});
+static FRESH_PK: LazyLock<AccountPublicKey> = LazyLock::new(|| AccountPublicKey::from(&*FRESH_SK));
+static FRESH_ID: LazyLock<H256> = LazyLock::new(|| message::keccak256(&FRESH_PK.to_bytes()));
+
+const PLAIN_RECIPIENT_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_plain_recipient.wasm"
+);
+const PLAIN_RECIPIENT_ID: ContractId = ContractId::from_bytes([41; 32]);
+
+fn inbound_transfer(
+    route: ContractId,
+    remote_router: H256,
+    nonce: u32,
+    recipient: H256,
+    amount: u64,
+) -> Vec<u8> {
+    message::encode(
+        VERSION,
+        nonce,
+        REMOTE_DOMAIN,
+        remote_router,
+        LOCAL_DOMAIN,
+        route.to_bytes(),
+        &hyperlane_dusk_types::token_message::encode(recipient, amount),
+    )
+}
+
+fn route_u64(session: &mut TestSession, route: ContractId, fn_name: &str, h: H256) -> u64 {
+    session
+        .direct_call::<_, u64>(route, fn_name, &(h,))
+        .unwrap_or_else(|e| panic!("{fn_name} query failed: {e}"))
+        .data
+}
+
+fn route_is_registered(session: &mut TestSession, route: ContractId, h: H256) -> bool {
+    session
+        .direct_call::<_, bool>(route, "is_registered", &(h,))
+        .expect("is_registered query should succeed")
+        .data
+}
+
+fn moonlight_balance(session: &mut TestSession, pk: &AccountPublicKey) -> u64 {
+    session
+        .account(pk)
+        .expect("account query should succeed")
+        .balance
+}
+
+/// A recipient whose only DUSK is in escrow can't pay for `claim_pending`.
+/// Anyone can pay for `claim_pending_for` instead, and the DUSK still only
+/// goes to the escrowed key.
+#[test]
+fn test_warp_native_sponsor_claims_escrow_for_unfunded_recipient() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let amount = 700_000u64;
+    fund_warp_native(&mut session, amount);
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_NATIVE_ID, remote_router, 0, *FRESH_ID, amount),
+            ),
+        )
+        .expect("a transfer to an unregistered recipient goes to escrow");
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), 0);
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        amount
+    );
+
+    // A claim for a different key finds nothing and leaves the escrow alone.
+    let wrong = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_NATIVE_ID,
+        "claim_pending_for",
+        &(*OWNER_PK,),
+    );
+    assert_contract_panic(wrong, "WarpNative: no pending transfers");
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        amount
+    );
+
+    let sponsor_before = moonlight_balance(&mut session, &RELAYER_PK);
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_NATIVE_ID,
+            "claim_pending_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can claim escrow on the recipient's behalf");
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), amount);
+    assert!(
+        moonlight_balance(&mut session, &RELAYER_PK) < sponsor_before,
+        "the sponsor pays the gas and receives nothing"
+    );
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        0
+    );
+    assert!(route_is_registered(&mut session, WARP_NATIVE_ID, *FRESH_ID));
+
+    let again = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_NATIVE_ID,
+        "claim_pending_for",
+        &(*FRESH_PK,),
+    );
+    assert_contract_panic(again, "WarpNative: no pending transfers");
+}
+
+/// A sponsor can't register a recipient up front: only a claim of existing
+/// escrow registers someone else's key. The first transfer waits in escrow;
+/// claiming it for the recipient registers them, and the next transfer is
+/// paid out directly.
+///
+/// This stops registering keys in bulk, but doesn't bound how many keys a
+/// route registers: anyone can fund new keys and register each one itself
+/// (see `test_self_registration_costs_two_transactions_per_key`).
+#[test]
+fn test_warp_native_sponsor_registers_recipient_only_by_claiming_escrow() {
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    let amount = 400_000u64;
+    fund_warp_native(&mut session, 2 * amount);
+    let register = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_NATIVE_ID,
+        "register_account_for",
+        &(*FRESH_PK,),
+    );
+    assert!(
+        register.is_err(),
+        "routes don't export register_account_for"
+    );
+    assert!(!route_is_registered(
+        &mut session,
+        WARP_NATIVE_ID,
+        *FRESH_ID
+    ));
+
+    let deliver = |session: &mut TestSession, nonce| {
+        session
+            .direct_call::<_, ()>(
+                MAILBOX_ID,
+                "process",
+                &(
+                    Vec::<u8>::new(),
+                    inbound_transfer(WARP_NATIVE_ID, remote_router, nonce, *FRESH_ID, amount),
+                ),
+            )
+            .expect("inbound transfer should be delivered");
+    };
+    deliver(&mut session, 0);
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), 0);
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        amount
+    );
+
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_NATIVE_ID,
+            "claim_pending_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can claim escrow on the recipient's behalf");
+    assert!(route_is_registered(&mut session, WARP_NATIVE_ID, *FRESH_ID));
+
+    deliver(&mut session, 1);
+    assert_eq!(moonlight_balance(&mut session, &FRESH_PK), 2 * amount);
+    assert_eq!(
+        route_u64(&mut session, WARP_NATIVE_ID, "pending_balance", *FRESH_ID),
+        0
+    );
+}
+
+/// `register_account` registers the transaction's signer, so each entry a
+/// route adds costs a transaction signed by a new key, and that key needs
+/// DUSK for its gas first. Nothing else bounds the registry, and a route
+/// never removes an entry (docs/security.md lists this as open). This pins
+/// what one entry costs, which docs/security.md uses to estimate what it
+/// takes to fill a route's memory: a transfer that funds the key and the
+/// key's registration, each about 1.85M gas, almost all of it the
+/// transaction's signature check (1.75M).
+#[test]
+fn test_self_registration_costs_two_transactions_per_key() {
+    // Enough for the registration's gas at 1 LUX.
+    const FUNDING: u64 = 2_000_000;
+    let (mut session, _) = session_with_warp_native_flow();
+    for seed in 0..3u64 {
+        let sk = AccountSecretKey::random(&mut StdRng::seed_from_u64(0x5E1F_0000 + seed));
+        let pk = AccountPublicKey::from(&sk);
+        let funding = session.transfer(&RELAYER_SK, &pk, FUNDING);
+        let registration = session
+            .call_public_with_gas_limit::<_, ()>(
+                &sk,
+                WARP_NATIVE_ID,
+                "register_account",
+                &(),
+                FUNDING,
+            )
+            .expect("a funded key registers itself")
+            .gas_spent;
+        assert!(route_is_registered(
+            &mut session,
+            WARP_NATIVE_ID,
+            message::keccak256(&pk.to_bytes())
+        ));
+        // docs/security.md's estimate assumes about 1.85M gas for each.
+        for (what, gas) in [
+            ("funding transfer", funding),
+            ("registration", registration),
+        ] {
+            assert!(
+                (1_800_000..1_900_000).contains(&gas),
+                "{what} took {gas} gas"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_warp_drc20_sponsor_claims_escrow_for_unfunded_recipient() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    let amount = 650_000u64;
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_DRC20_ID, remote_router, 0, *FRESH_ID, amount),
+            ),
+        )
+        .expect("a transfer to an unregistered recipient goes to escrow");
+
+    let wrong = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_DRC20_ID,
+        "claim_pending_for",
+        &(*OWNER_PK,),
+    );
+    assert_contract_panic(wrong, "WarpDrc20: no pending transfers");
+
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_ID,
+            "claim_pending_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can claim escrow on the recipient's behalf");
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&FRESH_PK)),
+        amount
+    );
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&RELAYER_PK)),
+        0
+    );
+    assert_eq!(
+        route_u64(&mut session, WARP_DRC20_ID, "pending_balance", *FRESH_ID),
+        0
+    );
+    assert!(route_is_registered(&mut session, WARP_DRC20_ID, *FRESH_ID));
+}
+
+#[test]
+fn test_warp_collateral_sponsor_claims_escrow_for_unfunded_recipient() {
+    let (mut session, remote_router) = session_with_warp_collateral_funded_flow();
+    let amount = 300_000u64;
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(
+                    WARP_DRC20_COLLATERAL_ID,
+                    remote_router,
+                    1,
+                    *FRESH_ID,
+                    amount,
+                ),
+            ),
+        )
+        .expect("a transfer to an unregistered recipient goes to escrow");
+
+    let wrong = session.call_public::<_, ()>(
+        &RELAYER_SK,
+        WARP_DRC20_COLLATERAL_ID,
+        "claim_pending_for",
+        &(*OWNER_PK,),
+    );
+    assert_contract_panic(wrong, "WarpCollateral: no pending transfers");
+
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "claim_pending_for",
+            &(*FRESH_PK,),
+        )
+        .expect("anyone can claim escrow on the recipient's behalf");
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&FRESH_PK)),
+        amount
+    );
+    assert_eq!(
+        route_u64(
+            &mut session,
+            WARP_DRC20_COLLATERAL_ID,
+            "pending_balance",
+            *FRESH_ID
+        ),
+        0
+    );
+    assert!(route_is_registered(
+        &mut session,
+        WARP_DRC20_COLLATERAL_ID,
+        *FRESH_ID
+    ));
+}
+
+// =============================================================================
+// Forged account keys in sponsored claims
+// =============================================================================
+//
+// A `PublicKey` argument passes the archive check with any limbs. Routes find
+// a recipient by `keccak256(key.to_bytes())`, the compressed encoding, while
+// the transfer contract and DRC20 balances pay `key.to_raw_bytes()`. A forged
+// key can share the recipient's compressed bytes but not its raw bytes. These
+// tests check that every payment still reaches the recipient's real key.
+
+/// The BLS12-381 base field modulus p, as little-endian 64-bit limbs.
+const BLS12_381_P: [u64; 6] = [
+    0xb9fe_ffff_ffff_aaab,
+    0x1eab_fffe_b153_ffff,
+    0x6730_d2a0_f6b0_f624,
+    0x6477_4b84_f385_12bf,
+    0x4b1b_a7b6_434b_acd7,
+    0x1a01_11ea_397f_e69a,
+];
+
+/// `pk` with one limb of y changed. The point is off the curve, so nobody
+/// can sign for it, but its compressed encoding is still `pk`'s.
+fn off_curve_twin(pk: &AccountPublicKey) -> AccountPublicKey {
+    let mut raw = pk.to_raw_bytes();
+    // Change the lowest byte of y.c0.
+    raw[96] ^= 0x01;
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    unsafe { AccountPublicKey::from_slice_unchecked(&raw) }
+}
+
+/// `pk`'s own point with x.c0 stored as x.c0 + p. It passes `is_valid()`
+/// and has `pk`'s compressed encoding, but not `pk`'s raw bytes.
+fn unreduced_twin(pk: &AccountPublicKey) -> AccountPublicKey {
+    let mut raw = pk.to_raw_bytes();
+    let mut carry = 0u128;
+    for (limb, p) in raw[..48].chunks_exact_mut(8).zip(BLS12_381_P) {
+        let sum = u128::from(u64::from_le_bytes(limb.try_into().unwrap())) + u128::from(p) + carry;
+        limb.copy_from_slice(&(sum as u64).to_le_bytes());
+        carry = sum >> 64;
+    }
+    assert_eq!(carry, 0, "x.c0 + p fits in six limbs");
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    unsafe { AccountPublicKey::from_slice_unchecked(&raw) }
+}
+
+/// Both forged forms of `pk`.
+fn forged_twins(pk: &AccountPublicKey) -> [(&'static str, AccountPublicKey); 2] {
+    [
+        ("off-curve y", off_curve_twin(pk)),
+        ("unreduced x", unreduced_twin(pk)),
+    ]
+}
+
+fn account_key(seed: u64) -> AccountPublicKey {
+    AccountPublicKey::from(&AccountSecretKey::random(&mut StdRng::seed_from_u64(seed)))
+}
+
+/// The premise of the attack: each twin has the recipient's hash but other
+/// raw bytes, and `is_valid()` alone doesn't tell the unreduced one apart.
+#[test]
+fn test_forged_account_keys_share_the_recipient_hash() {
+    for (name, twin) in forged_twins(&FRESH_PK) {
+        assert_eq!(twin.to_bytes(), FRESH_PK.to_bytes(), "{name}");
+        assert_eq!(message::keccak256(&twin.to_bytes()), *FRESH_ID, "{name}");
+        assert_ne!(twin.to_raw_bytes(), FRESH_PK.to_raw_bytes(), "{name}");
+        let decoded = AccountPublicKey::from_bytes(&twin.to_bytes()).unwrap();
+        assert_eq!(decoded.to_raw_bytes(), FRESH_PK.to_raw_bytes(), "{name}");
+    }
+    assert!(!off_curve_twin(&FRESH_PK).is_valid());
+    assert!(unreduced_twin(&FRESH_PK).is_valid());
+}
+
+/// The three warp routes, the collateral one over two tokens, each with
+/// custody for inbound transfers.
+#[derive(Clone, Copy, Debug)]
+enum Route {
+    Native,
+    Synthetic,
+    /// WarpDrc20Collateral locking a WarpDrc20 token.
+    Collateral,
+    /// WarpDrc20Collateral locking the pinned upstream DRC20, the kind of
+    /// token a real collateral route locks. Its transfers cost more than
+    /// the WarpDrc20 token's.
+    CanonicalCollateral,
+}
+
+impl Route {
+    fn id(self) -> ContractId {
+        match self {
+            Route::Native => WARP_NATIVE_ID,
+            Route::Synthetic => WARP_DRC20_ID,
+            Route::Collateral | Route::CanonicalCollateral => WARP_DRC20_COLLATERAL_ID,
+        }
+    }
+
+    /// The prefix of the route's panic messages.
+    fn name(self) -> &'static str {
+        match self {
+            Route::Native => "WarpNative",
+            Route::Synthetic => "WarpDrc20",
+            Route::Collateral | Route::CanonicalCollateral => "WarpCollateral",
+        }
+    }
+
+    /// A session with the route deployed and able to pay out `custody`.
+    fn session(self, custody: u64) -> (TestSession, H256) {
+        match self {
+            Route::Native => {
+                let (mut session, remote_router) = session_with_warp_native_flow();
+                fund_warp_native(&mut session, custody);
+                (session, remote_router)
+            }
+            Route::Synthetic => session_with_warp_drc20_flow(),
+            Route::Collateral => {
+                assert!(custody <= 10_000_000, "the fixture locks 10M");
+                session_with_warp_collateral_funded_flow()
+            }
+            Route::CanonicalCollateral => {
+                // The owner locks `custody` tokens and keeps as many, so a
+                // payout to it updates a balance, which costs more than
+                // creating one.
+                let (mut session, remote_router) =
+                    session_with_canonical_drc20_collateral(2 * custody);
+                session
+                    .call_public::<_, ()>(
+                        &OWNER_SK,
+                        WARP_DRC20_ID,
+                        "approve",
+                        &Drc20ApproveCall {
+                            spender: Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+                            amount: custody,
+                        },
+                    )
+                    .expect("the owner approves the route");
+                session
+                    .call_public::<_, MessageId>(
+                        &OWNER_SK,
+                        WARP_DRC20_COLLATERAL_ID,
+                        "transfer_remote",
+                        &(REMOTE_DOMAIN, [0xAB; 32], custody),
+                    )
+                    .expect("the route locks the owner's tokens");
+                (session, remote_router)
+            }
+        }
+    }
+
+    /// What `pk`'s raw account holds: DUSK for WarpNative, otherwise the
+    /// token balance of its Moonlight principal.
+    fn paid_to(self, session: &mut TestSession, pk: &AccountPublicKey) -> u64 {
+        match self {
+            Route::Native => moonlight_balance(session, pk),
+            Route::Synthetic | Route::Collateral => {
+                warp_drc20_balance_of(session, Drc20Account::moonlight(pk))
+            }
+            Route::CanonicalCollateral => {
+                canonical_drc20_balance_of(session, Drc20Account::moonlight(pk))
+            }
+        }
+    }
+
+    fn deliver(
+        self,
+        session: &mut TestSession,
+        remote_router: H256,
+        nonce: u32,
+        recipient: H256,
+        amount: u64,
+    ) {
+        session
+            .direct_call::<_, ()>(
+                MAILBOX_ID,
+                "process",
+                &(
+                    Vec::<u8>::new(),
+                    inbound_transfer(self.id(), remote_router, nonce, recipient, amount),
+                ),
+            )
+            .expect("inbound transfer should be delivered");
+    }
+
+    fn pending(self, session: &mut TestSession, recipient: H256) -> u64 {
+        route_u64(session, self.id(), "pending_balance", recipient)
+    }
+
+    fn claim_for(
+        self,
+        session: &mut TestSession,
+        key: &AccountPublicKey,
+    ) -> Result<CallReceipt<()>, ContractError> {
+        session.call_public::<_, ()>(&RELAYER_SK, self.id(), "claim_pending_for", &(*key,))
+    }
+}
+
+/// `claim_pending_for` with a forged twin of the recipient's key pays the
+/// recipient's real account and registers its real key. Keys that don't
+/// decode to a valid key revert and leave their escrow alone.
+fn assert_sponsored_claim_pays_the_decoded_key(route: Route) {
+    let amount = 300_000u64;
+    let (mut session, remote_router) = route.session(6 * amount);
+    let invalid_message = format!("{}: invalid account public key", route.name());
+
+    // The identity decodes but nobody can sign for it. Changing x moves the
+    // point off the curve or out of the subgroup, so it doesn't decode.
+    let identity = AccountPublicKey::default();
+    let mut raw = FRESH_PK.to_raw_bytes();
+    // Change the lowest byte of x.c0.
+    raw[0] ^= 0x01;
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    let undecodable = unsafe { AccountPublicKey::from_slice_unchecked(&raw) };
+    assert!(AccountPublicKey::from_bytes(&undecodable.to_bytes()).is_err());
+    for (nonce, key) in [(100, identity), (101, undecodable)] {
+        let h = message::keccak256(&key.to_bytes());
+        route.deliver(&mut session, remote_router, nonce, h, amount);
+        assert_contract_panic(route.claim_for(&mut session, &key), &invalid_message);
+        assert_eq!(route.pending(&mut session, h), amount);
+        assert!(!route_is_registered(&mut session, route.id(), h));
+    }
+
+    // One victim per forged form.
+    let victims = [*FRESH_PK, account_key(0xF2E5_4001)];
+    let forged = [
+        ("off-curve y", off_curve_twin(&victims[0])),
+        ("unreduced x", unreduced_twin(&victims[1])),
+    ];
+    for ((nonce, victim), (name, twin)) in (102..).zip(&victims).zip(forged) {
+        let h = message::keccak256(&victim.to_bytes());
+        route.deliver(&mut session, remote_router, nonce, h, amount);
+        route.claim_for(&mut session, &twin).unwrap_or_else(|e| {
+            panic!("{name}: claim for a forged key should pay the real one: {e}")
+        });
+        assert_eq!(route.paid_to(&mut session, victim), amount, "{name}");
+        assert_eq!(route.paid_to(&mut session, &twin), 0, "{name}");
+        assert_eq!(route.pending(&mut session, h), 0, "{name}");
+        assert!(route_is_registered(&mut session, route.id(), h), "{name}");
+    }
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(route.id(), "pending_total", &())
+            .unwrap()
+            .data,
+        2 * amount,
+        "only the invalid keys' escrow is left"
+    );
+
+    // The registrations hold the real keys: later transfers reach them.
+    for (nonce, victim) in (110..).zip(&victims) {
+        let h = message::keccak256(&victim.to_bytes());
+        route.deliver(&mut session, remote_router, nonce, h, amount);
+        assert_eq!(route.paid_to(&mut session, victim), 2 * amount);
+        assert_eq!(route.pending(&mut session, h), 0);
+        for (name, twin) in forged_twins(victim) {
+            assert_eq!(route.paid_to(&mut session, &twin), 0, "{name}");
+        }
+    }
+}
+
+/// A recipient that registered itself keeps that registration. Routes have
+/// no call that registers someone else's key outright, and a forged key
+/// passed to `claim_pending_for` decodes to the recipient's own key, so
+/// neither the escrow waiting from before registration nor later transfers
+/// can be diverted.
+fn assert_forged_key_cannot_redirect_registered_account(route: Route) {
+    let amount = 400_000u64;
+    let (mut session, remote_router) = route.session(3 * amount);
+    route.deliver(&mut session, remote_router, 100, *OWNER_ID, amount);
+    session
+        .call_public::<_, ()>(&OWNER_SK, route.id(), "register_account", &())
+        .expect("register_account should succeed");
+    assert!(route_is_registered(&mut session, route.id(), *OWNER_ID));
+    assert_eq!(route.pending(&mut session, *OWNER_ID), amount);
+    let before = route.paid_to(&mut session, &OWNER_PK);
+
+    for (name, twin) in forged_twins(&OWNER_PK) {
+        let overwrite =
+            session.call_public::<_, ()>(&RELAYER_SK, route.id(), "register_account_for", &(twin,));
+        assert!(
+            overwrite.is_err(),
+            "{name}: routes don't export register_account_for"
+        );
+    }
+    let [(_, first), (_, second)] = forged_twins(&OWNER_PK);
+    route
+        .claim_for(&mut session, &first)
+        .expect("a claim with a forged key pays the real key");
+    assert_eq!(route.paid_to(&mut session, &OWNER_PK) - before, amount);
+    assert_contract_panic(
+        route.claim_for(&mut session, &second),
+        &format!("{}: no pending transfers", route.name()),
+    );
+
+    route.deliver(&mut session, remote_router, 101, *OWNER_ID, amount);
+    assert_eq!(route.paid_to(&mut session, &OWNER_PK) - before, 2 * amount);
+    assert_eq!(route.pending(&mut session, *OWNER_ID), 0);
+    for (name, twin) in forged_twins(&OWNER_PK) {
+        assert_eq!(route.paid_to(&mut session, &twin), 0, "{name}");
+    }
+}
+
+#[test]
+fn test_warp_native_sponsored_claim_pays_the_decoded_key() {
+    assert_sponsored_claim_pays_the_decoded_key(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_sponsored_claim_pays_the_decoded_key() {
+    assert_sponsored_claim_pays_the_decoded_key(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_sponsored_claim_pays_the_decoded_key() {
+    assert_sponsored_claim_pays_the_decoded_key(Route::Collateral);
+}
+
+#[test]
+fn test_warp_native_forged_key_cannot_redirect_registered_account() {
+    assert_forged_key_cannot_redirect_registered_account(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_forged_key_cannot_redirect_registered_account() {
+    assert_forged_key_cannot_redirect_registered_account(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_forged_key_cannot_redirect_registered_account() {
+    assert_forged_key_cannot_redirect_registered_account(Route::Collateral);
+}
+
+/// `pk` with its raw infinity byte set to 2. The archive check accepts any
+/// byte there; a real key has 0, and the identity 1.
+fn malformed_infinity_key(pk: &AccountPublicKey) -> AccountPublicKey {
+    let mut raw = pk.to_raw_bytes();
+    raw[192] = 2;
+    // SAFETY: a 193-byte raw key encoding; skipping the checks is the point.
+    unsafe { AccountPublicKey::from_slice_unchecked(&raw) }
+}
+
+/// The compressed encoding the route computes for
+/// [`malformed_infinity_key`]`(pk)`, and so the hash it looked up before it
+/// decoded keys. `to_bytes` selects in constant time on the infinity byte.
+/// With the byte at 2, those selects keep only bit 0 of each x limb and set
+/// the infinity flag, next to an x that isn't zero: an encoding no key
+/// decodes from. (This repeats dusk-bls12_381 0.14's `to_bytes`: calling it
+/// here trips `subtle`'s debug assertion that a choice is 0 or 1, which the
+/// release-built contract doesn't have.)
+fn malformed_infinity_encoding(pk: &AccountPublicKey) -> [u8; 96] {
+    let mut raw = pk.to_raw_bytes();
+    for limb in raw[..96].chunks_exact_mut(8) {
+        let low_bit = u64::from_le_bytes(limb.try_into().unwrap()) & 1;
+        limb.copy_from_slice(&low_bit.to_le_bytes());
+    }
+    raw[192] = 0;
+    // SAFETY: a 193-byte raw key encoding.
+    let mut encoding = unsafe { AccountPublicKey::from_slice_unchecked(&raw) }.to_bytes();
+    encoding[0] |= 1 << 6;
+    encoding
+}
+
+/// A key whose point is on the curve but outside the prime-order subgroup,
+/// so no secret key has it. Its compressed encoding is well formed, and
+/// decoding it fails only the subgroup check. x is the first small integer
+/// with a point on the curve.
+fn non_subgroup_key() -> AccountPublicKey {
+    use dusk_bls12_381::G2Affine;
+    let point = (1u8..=u8::MAX)
+        .find_map(|x| {
+            let mut compressed = [0u8; 96];
+            compressed[0] = 0x80; // compressed, not infinity, smaller y
+            compressed[95] = x; // x = x + 0u
+            Option::<G2Affine>::from(G2Affine::from_compressed_unchecked(&compressed))
+        })
+        .expect("a small x has a point on the curve");
+    assert!(bool::from(point.is_on_curve()));
+    assert!(!bool::from(point.is_torsion_free()));
+    // SAFETY: a 193-byte raw point encoding of a point on the curve.
+    unsafe { AccountPublicKey::from_slice_unchecked(&point.to_raw_bytes()) }
+}
+
+/// Neither fixture decodes, and each one's hash is distinct from the
+/// recipient's.
+#[test]
+fn test_malformed_and_non_subgroup_keys_do_not_decode() {
+    let malformed = malformed_infinity_encoding(&FRESH_PK);
+    assert_eq!(malformed[0] & 0xC0, 0xC0, "compressed, at infinity");
+    let mut x = malformed;
+    x[0] &= 0x1F;
+    assert_ne!(x, [0u8; 96], "an infinity flag next to a non-zero x");
+    assert!(AccountPublicKey::from_bytes(&malformed).is_err());
+
+    let key = non_subgroup_key();
+    assert!(!key.is_valid());
+    assert!(AccountPublicKey::from_bytes(&key.to_bytes()).is_err());
+
+    for encoding in [malformed, key.to_bytes()] {
+        assert_ne!(message::keccak256(&encoding), *FRESH_ID);
+    }
+}
+
+/// `claim_pending_for` reverts for a key with a malformed infinity byte and
+/// for a point outside the subgroup, even with escrow waiting under the hash
+/// the route computes for it, and changes nothing: escrow, registrations and
+/// balances stay as they were.
+fn assert_claim_for_undecodable_keys_changes_nothing(route: Route) {
+    let amount = 200_000u64;
+    let (mut session, remote_router) = route.session(3 * amount);
+    let invalid_message = format!("{}: invalid account public key", route.name());
+    route.deliver(&mut session, remote_router, 100, *FRESH_ID, amount);
+
+    let non_subgroup = non_subgroup_key();
+    let keys = [
+        (
+            "malformed infinity byte",
+            malformed_infinity_key(&FRESH_PK),
+            message::keccak256(&malformed_infinity_encoding(&FRESH_PK)),
+        ),
+        (
+            "outside the subgroup",
+            non_subgroup,
+            message::keccak256(&non_subgroup.to_bytes()),
+        ),
+    ];
+    for (nonce, (_, _, h)) in (101..).zip(&keys) {
+        route.deliver(&mut session, remote_router, nonce, *h, amount);
+    }
+    let pending_total = |session: &mut TestSession| {
+        session
+            .direct_call::<_, u64>(route.id(), "pending_total", &())
+            .unwrap()
+            .data
+    };
+    assert_eq!(pending_total(&mut session), 3 * amount);
+
+    for (name, key, h) in &keys {
+        assert_contract_panic(route.claim_for(&mut session, key), &invalid_message);
+        for escrowed in [*h, *FRESH_ID] {
+            assert_eq!(route.pending(&mut session, escrowed), amount, "{name}");
+            assert!(
+                !route_is_registered(&mut session, route.id(), escrowed),
+                "{name}"
+            );
+        }
+        assert_eq!(pending_total(&mut session), 3 * amount, "{name}");
+        for pk in [key, &*FRESH_PK] {
+            assert_eq!(route.paid_to(&mut session, pk), 0, "{name}");
+        }
+    }
+}
+
+#[test]
+fn test_warp_native_claim_for_undecodable_keys_changes_nothing() {
+    assert_claim_for_undecodable_keys_changes_nothing(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_claim_for_undecodable_keys_changes_nothing() {
+    assert_claim_for_undecodable_keys_changes_nothing(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_claim_for_undecodable_keys_changes_nothing() {
+    assert_claim_for_undecodable_keys_changes_nothing(Route::Collateral);
+}
+
+// =============================================================================
+// Self claims
+// =============================================================================
+
+/// `dusk-tx claim-pending`'s default gas limit when the signer claims its own
+/// escrow (`claim_pending`). A failed transaction pays its whole limit, so
+/// the limit stays near the cost of a claim.
+const SELF_CLAIM_GAS_LIMIT: u64 = 3_000_000;
+
+/// A recipient that claims its own escrow with `claim_pending` is registered,
+/// as one claimed for with `claim_pending_for` is, so its next transfer is
+/// paid out directly instead of waiting in escrow again. The claim succeeds
+/// with `dusk-tx claim-pending`'s default gas limit, and costs at most two
+/// thirds of it.
+fn assert_self_claim_registers_the_sender(route: Route) {
+    let amount = 300_000u64;
+    let (mut session, remote_router) = route.session(2 * amount);
+    route.deliver(&mut session, remote_router, 100, *OWNER_ID, amount);
+    assert!(!route_is_registered(&mut session, route.id(), *OWNER_ID));
+    let before = route.paid_to(&mut session, &OWNER_PK);
+
+    let claim = session
+        .call_public_with_gas_limit::<_, ()>(
+            &OWNER_SK,
+            route.id(),
+            "claim_pending",
+            &(),
+            SELF_CLAIM_GAS_LIMIT,
+        )
+        .unwrap_or_else(|e| panic!("{route:?}: a recipient claims its own escrow: {e}"));
+    assert!(
+        claim.gas_spent * 3 / 2 <= SELF_CLAIM_GAS_LIMIT,
+        "{route:?}: claim_pending took {} gas, too close to {SELF_CLAIM_GAS_LIMIT}",
+        claim.gas_spent
+    );
+    // A WarpNative claimer receives DUSK and pays its gas from the same
+    // balance, at 1 LUX.
+    let gas_paid = match route {
+        Route::Native => claim.gas_spent,
+        _ => 0,
+    };
+    assert_eq!(
+        route.paid_to(&mut session, &OWNER_PK) + gas_paid,
+        before + amount
+    );
+    assert_eq!(route.pending(&mut session, *OWNER_ID), 0);
+    assert!(route_is_registered(&mut session, route.id(), *OWNER_ID));
+
+    // The next transfer is paid out directly.
+    route.deliver(&mut session, remote_router, 101, *OWNER_ID, amount);
+    assert_eq!(
+        route.paid_to(&mut session, &OWNER_PK) + gas_paid,
+        before + 2 * amount
+    );
+    assert_eq!(route.pending(&mut session, *OWNER_ID), 0);
+    assert_eq!(
+        session
+            .direct_call::<_, u64>(route.id(), "pending_total", &())
+            .unwrap()
+            .data,
+        0
+    );
+}
+
+/// A self-claim with nothing in escrow for the sender reverts, and the
+/// revert takes the registration with it, so `claim_pending` can't register
+/// a key nobody sent anything to. Escrow for someone else stays.
+fn assert_self_claim_without_escrow_registers_nothing(route: Route) {
+    let amount = 300_000u64;
+    let (mut session, remote_router) = route.session(amount);
+    route.deliver(&mut session, remote_router, 100, *FRESH_ID, amount);
+
+    let claim = session.call_public::<_, ()>(&OWNER_SK, route.id(), "claim_pending", &());
+    assert_contract_panic(claim, &format!("{}: no pending transfers", route.name()));
+    assert!(!route_is_registered(&mut session, route.id(), *OWNER_ID));
+    assert_eq!(route.pending(&mut session, *FRESH_ID), amount);
+}
+
+#[test]
+fn test_warp_native_self_claim_registers_the_sender() {
+    assert_self_claim_registers_the_sender(Route::Native);
+    assert_self_claim_without_escrow_registers_nothing(Route::Native);
+}
+
+#[test]
+fn test_warp_drc20_self_claim_registers_the_sender() {
+    assert_self_claim_registers_the_sender(Route::Synthetic);
+    assert_self_claim_without_escrow_registers_nothing(Route::Synthetic);
+}
+
+#[test]
+fn test_warp_collateral_self_claim_registers_the_sender() {
+    for route in [Route::Collateral, Route::CanonicalCollateral] {
+        assert_self_claim_registers_the_sender(route);
+        assert_self_claim_without_escrow_registers_nothing(route);
+    }
+}
+
+// =============================================================================
+// Relayer gas limit
+// =============================================================================
+
+/// The relayer submits `process` with a fixed gas limit, and a failed Dusk
+/// transaction pays all of it, for example when someone else delivered the
+/// message first. So the limit is kept low: `DUSK_RELAYER_GAS_LIMIT`, 5M in
+/// `deploy/testnet.env.example` and `demo/gen-agent-configs.sh`. Below the
+/// real cost every delivery would run out of gas, which the relayer's
+/// simulation can't see. A relayed transfer must fit with 1.5x headroom at
+/// every threshold the demo runs (1 to 5), signed by the validators at the
+/// end of the list. It costs about 1.95M gas plus 0.22M per signature,
+/// the estimate `deploy/testnet.sh` checks the limit against.
+#[test]
+fn test_relayed_process_fits_the_relayer_gas_limit() {
+    const RELAYER_GAS_LIMIT: u64 = 5_000_000;
+    let signers = checkpoint_signer_set(5);
+    let validators: Vec<EthAddress> = signers.iter().map(|(address, _)| *address).collect();
+    let (mut session, remote_router) = session_with_warp_native_flow();
+    session
+        .deploy(
+            ISM_MULTISIG_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(*OWNER_ID, validators.clone(), 1u8))
+                .contract_id(ISM_MULTISIG_ID),
+        )
+        .expect("Deploying MessageIdMultisigISM should succeed");
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "set_default_ism",
+            &(ISM_MULTISIG_ID,),
+        )
+        .expect("the owner sets the default ISM");
+    let amount = 1_000u64;
+    fund_warp_native(&mut session, 20 * amount);
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
+        .expect("register_account should succeed");
+
+    let mut nonce = 0u32;
+    for threshold in 1u8..=5 {
+        session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                ISM_MULTISIG_ID,
+                "set_validators_and_threshold",
+                &(validators.clone(), threshold),
+            )
+            .expect("the owner sets the threshold");
+        let signing: Vec<&SecpSecretKey> = signers[signers.len() - usize::from(threshold)..]
+            .iter()
+            .map(|(_, key)| key)
+            .collect();
+        // A payout to a registered account and a new escrow entry.
+        for recipient in [*OWNER_ID, [0x70 + threshold; 32]] {
+            let inbound = inbound_transfer(WARP_NATIVE_ID, remote_router, nonce, recipient, amount);
+            nonce += 1;
+            let metadata = signed_checkpoint_metadata(&inbound, &signing);
+            let receipt = session
+                .call_public::<_, ()>(&RELAYER_SK, MAILBOX_ID, "process", &(metadata, inbound))
+                .expect("a relayed transfer should be delivered");
+            assert!(
+                receipt.gas_spent * 3 / 2 <= RELAYER_GAS_LIMIT,
+                "threshold {threshold}: process took {} gas, too close to {RELAYER_GAS_LIMIT}",
+                receipt.gas_spent
+            );
+        }
+    }
+}
+
+/// `deploy/testnet.sh` accepts a 5M relayer limit up to a threshold of 6,
+/// where it needs 4,905,000. At that threshold a relayed transfer must
+/// succeed in a transaction whose gas limit really is 5M, not just cost less
+/// than 5M under a bigger limit, on every route and both delivery paths: a
+/// payout (or mint) to a registered account and a new escrow entry. The
+/// costliest is a payout from the collateral route that locks the upstream
+/// DRC20, at about 3.27M gas.
+#[test]
+fn test_relayed_process_at_threshold_6_fits_a_5m_gas_limit() {
+    const RELAYER_GAS_LIMIT: u64 = 5_000_000;
+    const THRESHOLD: u8 = 6;
+    let amount = 1_000u64;
+    let signers = checkpoint_signer_set(THRESHOLD);
+    let validators: Vec<EthAddress> = signers.iter().map(|(address, _)| *address).collect();
+    let signing: Vec<&SecpSecretKey> = signers.iter().map(|(_, key)| key).collect();
+
+    for route in [
+        Route::Native,
+        Route::Synthetic,
+        Route::Collateral,
+        Route::CanonicalCollateral,
+    ] {
+        let (mut session, remote_router) = route.session(10 * amount);
+        session
+            .deploy(
+                ISM_MULTISIG_BYTECODE,
+                dusk_vm::ContractData::builder()
+                    .owner(DEPLOYER)
+                    .init_arg(&(*OWNER_ID, validators.clone(), THRESHOLD))
+                    .contract_id(ISM_MULTISIG_ID),
+            )
+            .expect("Deploying MessageIdMultisigISM should succeed");
+        session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                MAILBOX_ID,
+                "set_default_ism",
+                &(ISM_MULTISIG_ID,),
+            )
+            .expect("the owner sets the default ISM");
+        session
+            .call_public::<_, ()>(&OWNER_SK, route.id(), "register_account", &())
+            .expect("register_account should succeed");
+
+        let escrow = [0x7E; 32];
+        let paid_before = route.paid_to(&mut session, &OWNER_PK);
+        for (nonce, (path, recipient)) in
+            (0u32..).zip([("payout", *OWNER_ID), ("new escrow", escrow)])
+        {
+            let inbound = inbound_transfer(route.id(), remote_router, nonce, recipient, amount);
+            let metadata = signed_checkpoint_metadata(&inbound, &signing);
+            let receipt = session
+                .call_public_with_gas_limit::<_, ()>(
+                    &RELAYER_SK,
+                    MAILBOX_ID,
+                    "process",
+                    &(metadata, inbound.clone()),
+                    RELAYER_GAS_LIMIT,
+                )
+                .unwrap_or_else(|e| panic!("{route:?} {path}: process failed with 5M gas: {e}"));
+            assert!(
+                session
+                    .direct_call::<_, bool>(MAILBOX_ID, "delivered", &(message::id(&inbound),))
+                    .unwrap()
+                    .data,
+                "{route:?} {path}"
+            );
+            // The guard's 1.5x headroom holds at its highest threshold.
+            assert!(
+                receipt.gas_spent * 3 / 2 <= RELAYER_GAS_LIMIT,
+                "{route:?} {path}: process took {} gas, too close to {RELAYER_GAS_LIMIT}",
+                receipt.gas_spent
+            );
+        }
+        assert_eq!(
+            route.paid_to(&mut session, &OWNER_PK),
+            paid_before + amount,
+            "{route:?}"
+        );
+        assert_eq!(route.pending(&mut session, escrow), amount, "{route:?}");
+    }
+}
+
+/// A recipient without `interchain_security_module` gets the default ISM.
+/// The failed lookup costs at most its fixed allowance; an unbounded call
+/// would be charged most of the transaction's gas.
+#[test]
+fn test_process_recipient_without_ism_getter_uses_default_ism_cheaply() {
+    let mut s = HyperlaneSession::new();
+    s.session
+        .deploy(
+            PLAIN_RECIPIENT_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(PLAIN_RECIPIENT_ID),
+        )
+        .expect("Deploying PlainRecipient should succeed");
+
+    let sender = [0xABu8; 32];
+    let to_test_recipient = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        sender,
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        b"baseline",
+    );
+    let to_plain = message::encode(
+        VERSION,
+        1,
+        REMOTE_DOMAIN,
+        sender,
+        LOCAL_DOMAIN,
+        PLAIN_RECIPIENT_ID.to_bytes(),
+        b"baseline",
+    );
+    let baseline = s
+        .mailbox_process(Vec::new(), to_test_recipient)
+        .expect("delivery to TestRecipient should succeed");
+    let plain = s
+        .mailbox_process(Vec::new(), to_plain.clone())
+        .expect("delivery to a recipient without an ISM getter should succeed");
+
+    assert!(s.mailbox_delivered(message::id(&to_plain)));
+    assert_eq!(
+        rt_u32(&mut s.session, PLAIN_RECIPIENT_ID, "handled_count"),
+        1
+    );
+    assert_eq!(
+        s.mock_verify_count(),
+        2,
+        "both deliveries use the default ISM"
+    );
+    assert!(
+        plain.gas_spent <= baseline.gas_spent + 1_000_000,
+        "a missing ISM getter must cost at most its lookup allowance: {} vs baseline {}",
+        plain.gas_spent,
+        baseline.gas_spent
+    );
+}
+
+/// A recipient whose ISM getter runs out of its allowance does not fall back
+/// to the default ISM: otherwise the submitter's gas limit could choose which
+/// ISM verifies the message.
+#[test]
+fn test_process_rejects_message_when_recipient_ism_lookup_runs_out_of_gas() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    s.session
+        .direct_call::<_, ()>(REDTEAM_ID, "set_ism_burn", &(u64::MAX,))
+        .expect("attacker configuration should succeed");
+
+    let inbound = message::encode(
+        VERSION,
+        0,
+        REMOTE_DOMAIN,
+        [0xABu8; 32],
+        LOCAL_DOMAIN,
+        REDTEAM_ID.to_bytes(),
+        b"expensive getter",
+    );
+    let result =
+        s.session
+            .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound.clone()));
+    assert_contract_panic(result, "Mailbox: recipient ISM lookup ran out of gas");
+    assert!(!rt_delivered(&mut s.session, message::id(&inbound)));
+    assert_eq!(rt_counters(&mut s.session).0, 0);
+    assert_eq!(s.mock_verify_count(), 0);
+}
+
+#[test]
+fn test_mailbox_reports_memory_below_dispatch_limit() {
+    let mut s = HyperlaneSession::new();
+    s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xBBu8; 32], b"sized".to_vec())
+        .expect("dispatch should succeed");
+    let bytes = s
+        .session
+        .direct_call::<_, u64>(MAILBOX_ID, "memory_bytes", &())
+        .expect("memory_bytes should succeed")
+        .data;
+    assert!(
+        bytes > 0 && bytes % (64 * 1024) == 0,
+        "whole wasm pages: {bytes}"
+    );
+    assert!(bytes < 3 * 1024 * 1024 * 1024);
+}
+
+// =============================================================================
+// Storage layout (docs/storage.md)
+// =============================================================================
+
+/// Size of a wasm32 memory page.
+const WASM_PAGE: u64 = 64 * 1024;
+
+/// The Mailbox's `DISPATCH_MEMORY_LIMIT`.
+const DISPATCH_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+
+fn query<A, R>(session: &mut TestSession, contract: ContractId, fn_name: &str, args: &A) -> R
+where
+    A: for<'b> rkyv::Serialize<dusk_core::abi::StandardBufSerializer<'b>>,
+    A::Archived: for<'b> bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+    R: rkyv::Archive,
+    R::Archived: rkyv::Deserialize<R, rkyv::Infallible>
+        + for<'b> bytecheck::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    session
+        .direct_call::<A, R>(contract, fn_name, args)
+        .unwrap_or_else(|e| panic!("{fn_name} should succeed: {e}"))
+        .data
+}
+
+fn mailbox_memory(session: &mut TestSession) -> u64 {
+    query(session, MAILBOX_ID, "memory_bytes", &())
+}
+
+/// The IDs of the messages a receipt dispatched, in order, from its
+/// `DispatchId` events.
+fn dispatched_ids<R>(receipt: &CallReceipt<R>) -> Vec<MessageId> {
+    receipt
+        .events
+        .iter()
+        .filter(|e| e.source == MAILBOX_ID && e.topic == events::DispatchId::TOPIC && !e.reverted)
+        .map(|e| test_session::rkyv_deserialize::<events::DispatchId>(&e.data).message_id)
+        .collect()
+}
+
+/// Has the red-team contract make `actions` in one transaction; any failure
+/// fails them all.
+fn run_batch(
+    session: &mut TestSession,
+    actions: Vec<RtAction>,
+) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+    let args = rkyv::to_bytes::<_, 4096>(&(actions, true))
+        .expect("the batch should serialize")
+        .to_vec();
+    session.call_public_raw(&OWNER_SK, REDTEAM_ID, "run", args)
+}
+
+/// The red-team contract dispatches messages `first..first + count` in one
+/// transaction, each with its index as body; any failure fails them all.
+fn dispatch_batch(
+    session: &mut TestSession,
+    first: u32,
+    count: u32,
+) -> Result<Vec<MessageId>, ContractError> {
+    let actions: Vec<RtAction> = (first..first + count)
+        .map(|index| {
+            rt_action(
+                MAILBOX_ID,
+                "dispatch_default",
+                &(REMOTE_DOMAIN, [0xD1u8; 32], index.to_le_bytes().to_vec()),
+            )
+        })
+        .collect();
+    let receipt = run_batch(session, actions)?;
+    let ids = dispatched_ids(&receipt);
+    assert_eq!(ids.len(), count as usize);
+    Ok(ids)
+}
+
+/// The Mailbox and the Merkle hook keep message IDs in 64 KiB chunks of 2048
+/// and block heights once per block. Every index reads back across chunk and
+/// block boundaries, and the root a validator computes from the stored IDs is
+/// the hook's root each time.
+#[test]
+fn test_dispatch_logs_read_back_across_chunks_and_blocks() {
+    let mut s = HyperlaneSession::new();
+    rt_deploy(&mut s.session);
+    let mut ids = Vec::new();
+    let mut heights = Vec::new();
+    let mut tree = hyperlane_dusk_types::merkle::IncrementalMerkle::new();
+    // Nine blocks, three apart, of 256 messages each: 2304 messages, past the
+    // first chunk of 2048.
+    let first_height = s.session.block_height() + 1;
+    for block in 0..9u64 {
+        let height = first_height + 3 * block;
+        s.session.set_block_height(height);
+        let batch = dispatch_batch(&mut s.session, u32::try_from(ids.len()).unwrap(), 256)
+            .expect("the batch of dispatches should succeed");
+        for id in &batch {
+            tree.insert(*id);
+        }
+        heights.extend(core::iter::repeat_n(height, batch.len()));
+        ids.extend(batch);
+        // The root a validator computes for the last index so far: 255, 511,
+        // ..., 2047 (the end of the first chunk) and 2303.
+        assert_eq!(s.merkle_root(), tree.root(), "index {}", ids.len() - 1);
+    }
+
+    let count = u32::try_from(ids.len()).unwrap();
+    assert_eq!(s.mailbox_nonce(), count);
+    assert_eq!(s.merkle_count(), count);
+    for (index, (id, height)) in (0u32..).zip(ids.iter().zip(&heights)) {
+        let session = &mut s.session;
+        assert_eq!(
+            query::<_, MessageId>(session, MAILBOX_ID, "dispatched_id", &(index,)),
+            *id
+        );
+        assert_eq!(
+            query::<_, u64>(session, MAILBOX_ID, "dispatched_block_height", &(index,)),
+            *height
+        );
+        assert_eq!(
+            query::<_, H256>(session, MERKLE_TREE_HOOK_ID, "message_id_at", &(index,)),
+            *id
+        );
+        assert_eq!(
+            query::<_, u64>(
+                session,
+                MERKLE_TREE_HOOK_ID,
+                "inserted_block_height",
+                &(index,)
+            ),
+            *height
+        );
+    }
+    let mut paged = Vec::new();
+    for start in (0..count).step_by(256) {
+        paged.extend(query::<_, Vec<H256>>(
+            &mut s.session,
+            MERKLE_TREE_HOOK_ID,
+            "message_ids",
+            &(start, 256u32),
+        ));
+    }
+    assert_eq!(paged, ids);
+    // A page can start in one chunk and end in the next.
+    assert_eq!(
+        query::<_, Vec<H256>>(
+            &mut s.session,
+            MERKLE_TREE_HOOK_ID,
+            "message_ids",
+            &(2040u32, 16u32)
+        ),
+        ids[2040..2056]
+    );
+    assert!(query::<_, Vec<H256>>(
+        &mut s.session,
+        MERKLE_TREE_HOOK_ID,
+        "message_ids",
+        &(count, 256u32)
+    )
+    .is_empty());
+
+    for (contract, name, error) in [
+        (MAILBOX_ID, "dispatched_id", "Mailbox: nonce out of range"),
+        (
+            MAILBOX_ID,
+            "dispatched_block_height",
+            "Mailbox: nonce out of range",
+        ),
+        (
+            MERKLE_TREE_HOOK_ID,
+            "message_id_at",
+            "MerkleTreeHook: insertion index out of bounds",
+        ),
+        (
+            MERKLE_TREE_HOOK_ID,
+            "inserted_block_height",
+            "MerkleTreeHook: insertion index out of bounds",
+        ),
+    ] {
+        assert_contract_panic(
+            s.session.direct_call::<_, H256>(contract, name, &(count,)),
+            error,
+        );
+    }
+    assert_contract_panic(
+        s.session.direct_call::<_, Vec<H256>>(
+            MERKLE_TREE_HOOK_ID,
+            "message_ids",
+            &(count + 1, 1u32),
+        ),
+        "MerkleTreeHook: insertion index out of bounds",
+    );
+    assert_contract_panic(
+        s.session
+            .direct_call::<_, Vec<H256>>(MERKLE_TREE_HOOK_ID, "message_ids", &(0u32, 257u32)),
+        "MerkleTreeHook: page too large",
+    );
+}
+
+/// `wasm` with its memory's initial size set to `pages`. Piecrust gives a
+/// new contract the memory its module declares, so this is the deployed code
+/// in a memory that is as large as if it had grown that far.
+fn with_initial_memory_pages(wasm: &[u8], pages: u64) -> Vec<u8> {
+    fn read_leb(bytes: &[u8], position: &mut usize) -> u64 {
+        let mut value = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = bytes[*position];
+            *position += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return value;
+            }
+        }
+        panic!("LEB128 value too long");
+    }
+    fn write_leb(out: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0", "a wasm module");
+    let mut out = wasm[..8].to_vec();
+    let mut position = 8;
+    let mut patched = false;
+    while position < wasm.len() {
+        let id = wasm[position];
+        position += 1;
+        let size = usize::try_from(read_leb(wasm, &mut position)).unwrap();
+        let payload = &wasm[position..position + size];
+        position += size;
+        let payload = if id == 5 {
+            // The memory section: one 32-bit memory, its limits flag, its
+            // minimum and, if the flag says so, its maximum.
+            let mut at = 0;
+            assert_eq!(read_leb(payload, &mut at), 1, "one memory");
+            let flags = payload[at];
+            at += 1;
+            assert_eq!(flags & !1, 0, "a 32-bit, unshared memory");
+            read_leb(payload, &mut at);
+            let mut section = vec![1, flags];
+            write_leb(&mut section, pages);
+            section.extend_from_slice(&payload[at..]);
+            patched = true;
+            section
+        } else {
+            payload.to_vec()
+        };
+        out.push(id);
+        write_leb(&mut out, payload.len() as u64);
+        out.extend_from_slice(&payload);
+    }
+    assert!(patched, "the module defines its memory");
+    out
+}
+
+/// The most a dispatch of an `encoded`-byte message with `metadata` bytes of
+/// metadata can still grow the Mailbox's memory once it is quoted, the bound
+/// the Mailbox checks: each allocation it makes, plus dlmalloc's overhead,
+/// in whole pages. `ids` and `heights` mirror the Mailbox's logs. The chunk
+/// table is twice as large here as in wasm32, which the page rounding hides
+/// while it stays under 32 KiB.
+fn dispatch_memory_bound(
+    ids: &hyperlane_dusk_types::storage::ChunkedLog<MessageId>,
+    heights: &hyperlane_dusk_types::storage::BlockHeights,
+    height: u64,
+    encoded: usize,
+    metadata: usize,
+) -> u64 {
+    let [ids_chunk, ids_table] = ids.push_allocations();
+    let [heights_chunk, heights_table] = heights.push_allocations(height);
+    assert!(ids_table < 32 * 1024 && heights_table < 32 * 1024);
+    [
+        ids_chunk,
+        ids_table,
+        heights_chunk,
+        heights_table,
+        encoded,
+        metadata,
+        encoded,
+        "receive_payment".len(),
+        "receive_payment".len(),
+    ]
+    .into_iter()
+    .map(|bytes| {
+        if bytes == 0 {
+            0
+        } else {
+            (bytes as u64 + 64).next_multiple_of(WASM_PAGE)
+        }
+    })
+    .sum()
+}
+
+/// `dispatch` refuses a message unless everything it can still allocate fits
+/// under 3 GiB, so it never takes the Mailbox past that and the last GiB
+/// stays free for `process`. The Mailbox here starts 12 pages below the
+/// limit, as if it were nearly full. Every dispatch it admits leaves its
+/// memory at or below 3 GiB, and it admits exactly the dispatches whose
+/// allocations fit. Once it closes, deliveries go on until they have taken
+/// the memory past 3 GiB, and a fresh message is still reserved, handled
+/// and refused as a replay there.
+#[test]
+fn test_dispatch_never_takes_the_mailbox_past_3_gib() {
+    let limit_pages = DISPATCH_MEMORY_LIMIT / WASM_PAGE;
+    let mailbox = with_initial_memory_pages(MAILBOX_BYTECODE, limit_pages - 12);
+    let mut s = HyperlaneSession::with_mailbox(&mailbox);
+    rt_deploy(&mut s.session);
+    // Deploying takes a page for the allocator's first block.
+    let start = mailbox_memory(&mut s.session);
+    assert!(
+        (DISPATCH_MEMORY_LIMIT - 12 * WASM_PAGE..=DISPATCH_MEMORY_LIMIT - 10 * WASM_PAGE)
+            .contains(&start),
+        "starts at {start}"
+    );
+
+    let mut ids = hyperlane_dusk_types::storage::ChunkedLog::<MessageId>::new();
+    let mut heights = hyperlane_dusk_types::storage::BlockHeights::new();
+    let height = s.session.block_height();
+    // `dispatch_batch` sends 4-byte bodies and no metadata.
+    let encoded = message::MIN_MESSAGE_LENGTH + 4;
+    let per_chunk = hyperlane_dusk_types::storage::ChunkedLog::<MessageId>::PER_CHUNK;
+    let mut admitted_chunks = 0;
+    loop {
+        let nonce = s.mailbox_nonce();
+        assert_eq!(nonce, ids.len());
+        let memory = mailbox_memory(&mut s.session);
+        let bound = dispatch_memory_bound(&ids, &heights, height, encoded, 0);
+        let starts_chunk = ids.push_allocations()[0] > 0;
+        let fits = memory + bound <= DISPATCH_MEMORY_LIMIT;
+        // Up to the next chunk, dispatches keep nothing new beyond their
+        // IDs, so they go in batches; the rest go one at a time.
+        let count = if fits && !starts_chunk {
+            (per_chunk - nonce % per_chunk).min(256)
+        } else {
+            1
+        };
+        match dispatch_batch(&mut s.session, nonce, count) {
+            Ok(batch) => {
+                assert!(fits, "nonce {nonce}: admitted at {memory} + {bound}");
+                for id in batch {
+                    ids.push(id);
+                    heights.push(height);
+                }
+                admitted_chunks += u32::from(starts_chunk);
+                let after = mailbox_memory(&mut s.session);
+                assert!(
+                    after <= DISPATCH_MEMORY_LIMIT,
+                    "nonce {nonce}: dispatch took the Mailbox to {after} bytes"
+                );
+            }
+            Err(error) => {
+                assert!(
+                    !fits,
+                    "nonce {nonce}: refused at {memory} + {bound}: {error}"
+                );
+                assert_contract_panic_contains(
+                    Err::<CallReceipt<()>, _>(error),
+                    "Mailbox: storage full, dispatch is closed",
+                );
+                break;
+            }
+        }
+    }
+    // It ran until the next chunk no longer fit: with less room left than
+    // a dispatch here (no metadata, one block) can take when it starts a
+    // chunk and grows the chunk table, 7 pages.
+    assert!(admitted_chunks >= 2, "admitted {admitted_chunks} chunks");
+    let closed_at = mailbox_memory(&mut s.session);
+    assert!(DISPATCH_MEMORY_LIMIT - closed_at < 7 * WASM_PAGE);
+    assert_contract_panic_contains(
+        s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xD1u8; 32], b"late".to_vec()),
+        "Mailbox: storage full, dispatch is closed",
+    );
+
+    assert_deliveries_continue_past_the_dispatch_limit(&mut s, closed_at);
+}
+
+/// Delivers messages until the Mailbox's memory is past 3 GiB, the limit
+/// dispatch stops at, then delivers one more fresh message there. From
+/// where dispatch closes, 5 pages below the limit, that takes about 18,000
+/// deliveries at 22 to 26 bytes each; the red-team contract, a recipient
+/// that names itself as its ISM, takes them 256 to a transaction.
+fn assert_deliveries_continue_past_the_dispatch_limit(s: &mut HyperlaneSession, closed_at: u64) {
+    const PER_BATCH: u32 = 256;
+    // 7 pages at 26 bytes a delivery, with room for the allocator's free
+    // space; the loop stops at the first batch past the limit.
+    const MAX_DELIVERIES: u32 = 64 * 1024;
+    rt_set_returns(&mut s.session, 0, REDTEAM_ID);
+    let filler = |nonce: u32| {
+        message::encode(
+            VERSION,
+            nonce,
+            REMOTE_DOMAIN,
+            [0xABu8; 32],
+            LOCAL_DOMAIN,
+            REDTEAM_ID.to_bytes(),
+            b"",
+        )
+    };
+    let mut delivered = 0u32;
+    while mailbox_memory(&mut s.session) <= DISPATCH_MEMORY_LIMIT {
+        assert!(
+            delivered < MAX_DELIVERIES,
+            "{delivered} deliveries from {closed_at} bytes never passed the limit"
+        );
+        let actions = (delivered..delivered + PER_BATCH)
+            .map(|nonce| rt_action(MAILBOX_ID, "process", &(Vec::<u8>::new(), filler(nonce))))
+            .collect();
+        let receipt = run_batch(&mut s.session, actions)
+            .unwrap_or_else(|e| panic!("deliveries from nonce {delivered} failed: {e}"));
+        assert_eq!(delivered_ids(&receipt).len(), PER_BATCH as usize);
+        delivered += PER_BATCH;
+    }
+    let crossed = mailbox_memory(&mut s.session);
+    assert!(
+        crossed > DISPATCH_MEMORY_LIMIT,
+        "{delivered} deliveries took the Mailbox from {closed_at} to {crossed} bytes"
+    );
+    assert_eq!(rt_counters(&mut s.session).0, delivered);
+    assert_contract_panic_contains(
+        s.mailbox_dispatch_via_tx(&OWNER_SK, REMOTE_DOMAIN, [0xD1u8; 32], b"later".to_vec()),
+        "Mailbox: storage full, dispatch is closed",
+    );
+
+    // Past the limit, a relayed message is still reserved and handled, and
+    // its replay refused.
+    let body = b"delivered past 3 GiB".to_vec();
+    let fresh = message::encode(
+        VERSION,
+        delivered,
+        REMOTE_DOMAIN,
+        [0xCDu8; 32],
+        LOCAL_DOMAIN,
+        TEST_RECIPIENT_ID.to_bytes(),
+        &body,
+    );
+    let id = message::id(&fresh);
+    assert!(!s.mailbox_delivered(id));
+    let receipt = s
+        .mailbox_process_via_tx(Vec::new(), fresh.clone())
+        .expect("a fresh message is delivered past the dispatch limit");
+    assert_eq!(delivered_ids(&receipt), vec![id]);
+    assert!(s.mailbox_delivered(id));
+    assert_eq!(s.recipient_handled_count(), 1);
+    assert_eq!(s.recipient_last_origin(), REMOTE_DOMAIN);
+    assert_eq!(s.recipient_last_sender(), [0xCDu8; 32]);
+    assert_eq!(s.recipient_last_body(), body);
+    assert_contract_panic(
+        s.mailbox_process(Vec::new(), fresh),
+        "Mailbox: already delivered",
+    );
+    assert_eq!(s.recipient_handled_count(), 1);
+    assert!(mailbox_memory(&mut s.session) > DISPATCH_MEMORY_LIMIT);
+}
+
+/// The Mailbox records a delivered message by the first 16 bytes of its ID.
+/// The same message is refused a second time and distinct messages are
+/// delivered. An ID that shares only the last 16 bytes with a delivered one
+/// is not reported delivered; one that shares the first 16 is, which for a
+/// real message would take a second preimage of 128 bits of keccak256.
+#[test]
+fn test_delivered_set_keys_on_the_first_16_id_bytes() {
+    let mut s = HyperlaneSession::new();
+    let messages: Vec<Vec<u8>> = (0..300u32)
+        .map(|nonce| {
+            message::encode(
+                VERSION,
+                nonce,
+                REMOTE_DOMAIN,
+                [0xABu8; 32],
+                LOCAL_DOMAIN,
+                TEST_RECIPIENT_ID.to_bytes(),
+                b"same body, distinct nonces",
+            )
+        })
+        .collect();
+    for encoded in &messages {
+        assert!(!s.mailbox_delivered(message::id(encoded)));
+        s.mailbox_process(Vec::new(), encoded.clone())
+            .expect("a distinct message should be delivered");
+    }
+    assert_eq!(s.recipient_handled_count(), 300);
+    for encoded in &messages {
+        assert!(s.mailbox_delivered(message::id(encoded)));
+        assert_contract_panic(
+            s.mailbox_process(Vec::new(), encoded.clone()),
+            "Mailbox: already delivered",
+        );
+    }
+    assert_eq!(s.recipient_handled_count(), 300);
+
+    let id = message::id(&messages[0]);
+    let mut same_prefix = id;
+    same_prefix[31] ^= 0xff;
+    assert!(s.mailbox_delivered(same_prefix));
+    let mut other_prefix = id;
+    other_prefix[15] ^= 0xff;
+    assert!(!s.mailbox_delivered(other_prefix));
+}
+
+/// A read-only query has no caller, so `quote_dispatch`, which quotes for
+/// its caller, fails there. `quote_dispatch_for_sender` takes the sender
+/// instead, and quotes what `dispatch` then charges it, through the deployed
+/// hook set (MerkleTreeHook and ProtocolFee required, IGP by default).
+#[test]
+fn test_quote_dispatch_for_sender_works_without_a_signer() {
+    let mut session = session_with_hooks();
+    let sender = TEST_RECIPIENT_ID.to_bytes();
+    let recipient = [0xBBu8; 32];
+    let body = b"quoted without a signer".to_vec();
+    let no_hook = ContractId::from_bytes([0u8; 32]);
+
+    assert_contract_panic(
+        session.direct_call::<_, u64>(
+            MAILBOX_ID,
+            "quote_dispatch",
+            &(
+                REMOTE_DOMAIN,
+                recipient,
+                body.clone(),
+                Vec::<u8>::new(),
+                no_hook,
+            ),
+        ),
+        "Hyperlane: caller unavailable in query context",
+    );
+    let quote: u64 = query(
+        &mut session,
+        MAILBOX_ID,
+        "quote_dispatch_for_sender",
+        &(
+            sender,
+            REMOTE_DOMAIN,
+            recipient,
+            body.clone(),
+            Vec::<u8>::new(),
+            no_hook,
+        ),
+    );
+    assert!(
+        quote > 1000,
+        "the protocol fee and the IGP's quote: {quote}"
+    );
+
+    let credit_before: u64 = query(&mut session, MAILBOX_ID, "fee_credit", &(sender,));
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            TEST_RECIPIENT_ID,
+            "dispatch_message",
+            &(MAILBOX_ID, REMOTE_DOMAIN, recipient, body),
+        )
+        .expect("dispatch should succeed");
+    let credit_after: u64 = query(&mut session, MAILBOX_ID, "fee_credit", &(sender,));
+    assert_eq!(credit_before - credit_after, quote);
+}
+
+/// LOW-7: the Mailbox decodes a withdrawal's recipient key. A payer who names
+/// a forged twin of the recipient's key, which has the recipient's
+/// compressed encoding but other raw limbs, pays the recipient's real
+/// account, and the event names it. The routes' owner-only wrappers go
+/// through the same decoding (`assert_route_dispatch_credit_withdrawal`).
+#[test]
+fn test_withdrawal_to_a_forged_twin_pays_the_canonical_key() {
+    let mut s = HyperlaneSession::new();
+    let amount = 1_000_000u64;
+    s.session
+        .call_public_with_deposit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, 2 * amount),
+            2 * amount,
+        )
+        .expect("funding should succeed");
+
+    let mut paid = 0;
+    for (name, twin) in forged_twins(&FRESH_PK) {
+        let receipt = s
+            .session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                MAILBOX_ID,
+                "withdraw_dispatch_credit",
+                &(twin, amount),
+            )
+            .unwrap_or_else(|e| panic!("{name}: withdrawal should succeed: {e}"));
+        paid += amount;
+        assert_eq!(moonlight_balance(&mut s.session, &FRESH_PK), paid, "{name}");
+        assert_eq!(moonlight_balance(&mut s.session, &twin), 0, "{name}");
+        let event = receipt
+            .events
+            .iter()
+            .find(|e| e.source == MAILBOX_ID && e.topic == events::DispatchFeeWithdrawn::TOPIC)
+            .map(|e| test_session::rkyv_deserialize::<events::DispatchFeeWithdrawn>(&e.data))
+            .expect("the withdrawal event");
+        assert_eq!(
+            event,
+            events::DispatchFeeWithdrawn {
+                payer: *OWNER_ID,
+                recipient: *FRESH_ID,
+                amount,
+            },
+            "{name}"
+        );
+        assert!(
+            receipt.gas_spent < WITHDRAW_DEFAULT_GAS_LIMIT,
+            "{name}: withdrawal spent {} gas, over the CLI default {WITHDRAW_DEFAULT_GAS_LIMIT}",
+            receipt.gas_spent
+        );
+    }
+    assert_eq!(
+        query::<_, u64>(&mut s.session, MAILBOX_ID, "fee_credit", &(*OWNER_ID,)),
+        0
+    );
+}
+
+/// WarpDrc20 stores balances and allowances under `account_id`, a 32-byte
+/// hash of the principal, but takes and emits principals as before. A
+/// transfer to oneself changes no balance, and balances and allowances
+/// moved or set to zero read back as zero.
+#[test]
+fn test_warp_drc20_balances_and_allowances_use_account_ids() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    assert_eq!(state_version(&mut session, WARP_DRC20_ID), 7);
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
+        .expect("register_account should succeed");
+    let owner = Drc20Account::moonlight(&OWNER_PK);
+    let relayer = Drc20Account::moonlight(&RELAYER_PK);
+    let contract = Drc20Account::Contract(TEST_RECIPIENT_ID);
+    let inbound = inbound_transfer(WARP_DRC20_ID, remote_router, 0, *OWNER_ID, 1_000);
+    session
+        .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound))
+        .expect("the inbound transfer should mint");
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 1_000);
+
+    let transfer = |session: &mut TestSession, sk: &AccountSecretKey, to, amount| {
+        let receipt = session
+            .call_public::<_, ()>(
+                sk,
+                WARP_DRC20_ID,
+                "transfer",
+                &hyperlane_dusk_types::drc20::TransferCall { to, amount },
+            )
+            .expect("transfer should succeed");
+        receipt
+            .events
+            .iter()
+            .filter(|e| e.source == WARP_DRC20_ID && e.topic == events::Drc20Transfer::TOPIC)
+            .map(|e| test_session::rkyv_deserialize::<events::Drc20Transfer>(&e.data))
+            .collect::<Vec<_>>()
+    };
+
+    // To oneself: no balance changes, and the event names the principal.
+    assert_eq!(
+        transfer(&mut session, &OWNER_SK, owner, 400),
+        vec![events::Drc20Transfer {
+            from: owner,
+            to: owner,
+            amount: 400,
+        }]
+    );
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 1_000);
+
+    // The whole balance there and back.
+    transfer(&mut session, &OWNER_SK, relayer, 1_000);
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 0);
+    assert_eq!(warp_drc20_balance_of(&mut session, relayer), 1_000);
+    transfer(&mut session, &RELAYER_SK, owner, 1_000);
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 1_000);
+    assert_eq!(warp_drc20_balance_of(&mut session, relayer), 0);
+    assert_eq!(
+        query::<_, u64>(&mut session, WARP_DRC20_ID, "total_supply", &()),
+        1_000
+    );
+
+    let allowance = |session: &mut TestSession, owner, spender| {
+        query::<_, u64>(
+            session,
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance { owner, spender },
+        )
+    };
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender: relayer,
+                amount: 300,
+            },
+        )
+        .expect("approve should succeed");
+    assert_eq!(allowance(&mut session, owner, relayer), 300);
+    assert_eq!(allowance(&mut session, relayer, owner), 0);
+    session
+        .call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_ID,
+            "transfer_from",
+            &hyperlane_dusk_types::drc20::TransferFromCall {
+                owner,
+                to: contract,
+                amount: 100,
+            },
+        )
+        .expect("transfer_from should succeed");
+    assert_eq!(allowance(&mut session, owner, relayer), 200);
+    assert_eq!(warp_drc20_balance_of(&mut session, owner), 900);
+    assert_eq!(warp_drc20_balance_of(&mut session, contract), 100);
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender: relayer,
+                amount: 0,
+            },
+        )
+        .expect("approving zero should succeed");
+    assert_eq!(allowance(&mut session, owner, relayer), 0);
+    assert_contract_panic(
+        session.call_public::<_, ()>(
+            &RELAYER_SK,
+            WARP_DRC20_ID,
+            "transfer_from",
+            &hyperlane_dusk_types::drc20::TransferFromCall {
+                owner,
+                to: contract,
+                amount: 1,
+            },
+        ),
+        "WarpDrc20: allowance too low",
+    );
+}
+
+/// An allowance set to zero leaves no entry: after a contract approves 2048
+/// spenders and then zeroes every allowance, approving 2048 new spenders
+/// reuses the memory instead of growing it.
+#[test]
+fn test_warp_drc20_zeroed_allowances_free_their_entries() {
+    let (mut session, _) = session_with_warp_drc20_flow();
+    rt_deploy(&mut session);
+    let approve_all = |session: &mut TestSession, seed: u8, amount: u64| {
+        // 128 approvals fill most of a transaction's 64 KiB of arguments.
+        for batch in 0..16u32 {
+            let actions: Vec<RtAction> = (0..128u32)
+                .map(|index| {
+                    let mut key = [seed; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES];
+                    key[..4].copy_from_slice(&(batch * 128 + index).to_le_bytes());
+                    rt_action(
+                        WARP_DRC20_ID,
+                        "approve",
+                        &Drc20ApproveCall {
+                            spender: Drc20Account::Moonlight(key),
+                            amount,
+                        },
+                    )
+                })
+                .collect();
+            run_batch(session, actions).expect("the batch of approvals should succeed");
+        }
+    };
+    let before = session.memory_len(WARP_DRC20_ID);
+    approve_all(&mut session, 0x51, 1);
+    let approved = session.memory_len(WARP_DRC20_ID);
+    assert!(approved > before, "2048 allowances take memory");
+    approve_all(&mut session, 0x51, 0);
+    approve_all(&mut session, 0x52, 1);
+    assert_eq!(session.memory_len(WARP_DRC20_ID), approved);
+
+    let attacker = Drc20Account::Contract(REDTEAM_ID);
+    let mut key = [0x51; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES];
+    key[..4].copy_from_slice(&7u32.to_le_bytes());
+    assert_eq!(
+        query::<_, u64>(
+            &mut session,
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance {
+                owner: attacker,
+                spender: Drc20Account::Moonlight(key),
+            },
+        ),
+        0
+    );
+    let mut key = [0x52; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES];
+    key[..4].copy_from_slice(&7u32.to_le_bytes());
+    assert_eq!(
+        query::<_, u64>(
+            &mut session,
+            WARP_DRC20_ID,
+            "allowance",
+            &Drc20Allowance {
+                owner: attacker,
+                spender: Drc20Account::Moonlight(key),
+            },
+        ),
+        1
+    );
 }

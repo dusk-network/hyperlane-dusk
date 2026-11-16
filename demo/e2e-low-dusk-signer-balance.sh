@@ -13,6 +13,20 @@ umask 077
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/.env.bridge"
 
+# The agents run in AGENT_RUN_DIR, which holds Hyperlane's config/ directory,
+# from the binaries in AGENT_BIN_DIR: by default hyperlane-monorepo/rust/main
+# and its debug build, which this script builds first; with AGENT_BIN_DIR
+# set, the binaries there as they are. Each agent starts with only PATH,
+# HOME, DUSK_TX_BIN and its config, as deploy/local-agents.sh starts them:
+# Hyperlane applies every HYP_* variable over the config files, so one left
+# in the shell, such as HYP_CHAINS_DUSK_CUSTOMRPCURLS, would point the agent
+# at another node, and others (CONFIG_FILES, RUST_LOG, AWS_*) change what it
+# does.
+AGENT_RUN_DIR="${AGENT_RUN_DIR:-$SCRIPT_DIR/../../hyperlane-monorepo/rust/main}"
+BUILD_AGENTS=true
+[ -z "${AGENT_BIN_DIR:-}" ] || BUILD_AGENTS=false
+AGENT_BIN_DIR="${AGENT_BIN_DIR:-$AGENT_RUN_DIR/target/debug}"
+
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 info() { echo "[INFO] $*" >&2; }
 
@@ -91,8 +105,8 @@ start_relayer() {
     local cfg="$1"
     local log="$2"
 
-    (cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && \
-      exec env DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" ./target/debug/relayer \
+    (cd "$AGENT_RUN_DIR" && \
+      exec env -i PATH="$PATH" HOME="$HOME" DUSK_TX_BIN="$DUSK_TX" CONFIG_FILES="$cfg" "$AGENT_BIN_DIR/relayer" \
       >"$log" 2>&1) &
     CURRENT_RELAYER_PID="$!"
     sleep 2
@@ -207,7 +221,7 @@ jq \
   "$relayer_cfg" > "$funded_relayer_cfg"
 
 info "Building relayer binary..."
-(cd "$SCRIPT_DIR/../../hyperlane-monorepo/rust/main" && cargo build -p relayer >/dev/null)
+[ "$BUILD_AGENTS" = false ] || (cd "$AGENT_RUN_DIR" && cargo build -p relayer >/dev/null)
 
 state="$BRIDGE_STATE_FILE"
 evm_token="$(jq -r '.evm.token' "$state")"

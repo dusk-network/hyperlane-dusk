@@ -73,12 +73,15 @@ mod warp_native {
         /// Registry of external accounts: keccak256(pk) → pk.
         ///
         /// External Dusk accounts use 96-byte BLS public keys that don't
-        /// fit in a 32-byte H256. Users must call `register_account` once
-        /// so that inbound transfers can look up the full key.
+        /// fit in a 32-byte H256. An account is registered by
+        /// `register_account`, or when its escrow is claimed with
+        /// `claim_pending` or `claim_pending_for`, so that inbound transfers
+        /// can look up the full key. Every stored key is canonical (see
+        /// [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Pending transfers for recipients who haven't registered yet.
-        /// The recipient can call `claim_pending` after registering to
-        /// receive their DUSK.
+        /// `claim_pending` (the recipient) or `claim_pending_for` (anyone)
+        /// pays them out and registers the recipient.
         pending_transfers: BTreeMap<H256, u64>,
         /// Aggregate DUSK liability reserved for pending recipients.
         pending_total: u64,
@@ -144,17 +147,13 @@ mod warp_native {
         /// Register the caller's BLS public key so that inbound transfers
         /// can resolve the H256 recipient to a full account key.
         ///
-        /// Reads the sender from `abi::public_sender()` (Moonlight TX).
-        /// Stores `keccak256(pk.to_bytes()) → pk`.
+        /// Reads the sender from `abi::public_sender()` (Moonlight TX), which
+        /// the node decodes from the transaction's compressed encoding, so
+        /// it is already canonical. Stores `keccak256(pk.to_bytes()) → pk`.
         pub fn register_account(&mut self) {
             let pk =
                 abi::public_sender().expect("WarpNative: register_account requires Moonlight TX");
-            let h = message::keccak256(&pk.to_bytes());
-            self.registered_accounts.insert(h, pk);
-            abi::emit(
-                events::AccountRegistered::TOPIC,
-                events::AccountRegistered { account_hash: h },
-            );
+            self.register(pk);
         }
 
         /// Check whether an H256 has a registered account.
@@ -162,14 +161,37 @@ mod warp_native {
             self.registered_accounts.contains_key(&h)
         }
 
-        /// Claim pending DUSK that arrived before the caller registered.
+        /// Register the transaction's sender and pay it the DUSK escrowed for
+        /// its hash.
         ///
-        /// The caller must have previously called `register_account`.
-        /// Transfers any escrowed DUSK to the caller's account.
+        /// The sender is already canonical (see [`Self::register_account`]).
+        /// Registering it means later transfers to it are paid out directly,
+        /// as after [`Self::claim_pending_for`]. A call with nothing in
+        /// escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender().expect("WarpNative: claim_pending requires Moonlight TX");
-            let h = message::keccak256(&pk.to_bytes());
+            let h = self.register(pk);
+            self.claim_pending_to(h, pk);
+        }
 
+        /// Register `account` and pay it the DUSK escrowed for
+        /// `keccak256(account)`.
+        ///
+        /// Anyone can call this and pay its gas, so a recipient whose only
+        /// DUSK is in escrow can still receive it. `account` is decoded to
+        /// its canonical form first, and the escrow lookup, the registration
+        /// and the payment all use that key: the one its owner signs with,
+        /// whatever limbs the caller sends. A key that doesn't decode to a
+        /// valid public key reverts, and so does a call with nothing in
+        /// escrow, so this can't register a key nobody has sent DUSK to.
+        pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
+            let account = canonical_account(&account);
+            let h = self.register(account);
+            self.claim_pending_to(h, account);
+        }
+
+        /// Pay the DUSK escrowed for `h`, the hash of `pk`, to `pk`.
+        fn claim_pending_to(&mut self, h: H256, pk: AccountPublicKey) {
             let amount = self.pending_transfers.remove(&h).unwrap_or(0);
             assert!(amount > 0, "WarpNative: no pending transfers");
             self.pending_total = self
@@ -238,10 +260,12 @@ mod warp_native {
             self.pending_total
         }
 
-        /// Deployment compatibility version including dispatch-credit withdrawal.
+        /// Deployment compatibility version. Version 4: `claim_pending_for`
+        /// pays the decoded key, and `claim_pending` registers the sender.
+        /// Version 3 added `claim_pending_for`.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            2
+            4
         }
 
         // =================================================================
@@ -376,8 +400,8 @@ mod warp_native {
                 let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
                     .expect("WarpNative: contract_to_account failed");
             } else {
-                // Recipient not registered — hold funds in escrow.
-                // They can call `claim_pending` after registering.
+                // Recipient not registered — hold funds in escrow until
+                // `claim_pending` or `claim_pending_for` pays them out.
                 let pending = self.pending_transfers.entry(msg.recipient).or_insert(0);
                 *pending = pending
                     .checked_add(msg.amount)
@@ -472,7 +496,10 @@ mod warp_native {
         /// Withdraw this route's unused Mailbox dispatch-fee credit.
         ///
         /// Owner only. The Mailbox sees this route as the payer and sends the
-        /// withdrawn native DUSK to the explicit Moonlight recipient.
+        /// withdrawn native DUSK to the explicit Moonlight recipient. It
+        /// decodes the recipient's key first and pays the account that signs
+        /// with it, so a forged twin of the key can't divert the payout; the
+        /// decoding costs about 57M gas.
         pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
             self.only_owner();
             let _: () = abi::call(
@@ -504,6 +531,19 @@ mod warp_native {
         // =================================================================
         // Internal helpers
         // =================================================================
+
+        /// Map `keccak256(pk)` to `pk` and return the hash. `pk` must be
+        /// canonical: the transaction's public sender, or a key from
+        /// [`canonical_account`].
+        fn register(&mut self, pk: AccountPublicKey) -> H256 {
+            let h = message::keccak256(&pk.to_bytes());
+            self.registered_accounts.insert(h, pk);
+            abi::emit(
+                events::AccountRegistered::TOPIC,
+                events::AccountRegistered { account_hash: h },
+            );
+            h
+        }
 
         /// Query the route's current Mailbox credit.
         fn dispatch_credit(&self) -> u64 {
@@ -557,5 +597,29 @@ mod warp_native {
                 "WarpNative: insufficient unreserved DUSK"
             );
         }
+    }
+
+    /// Decode a caller-supplied account key to the key its owner signs with.
+    ///
+    /// The archive check accepts any limbs in a public key. A recipient hash
+    /// covers only the compressed encoding (`to_bytes`): x reduced mod p, the
+    /// infinity flag and the sign of y. The transfer contract pays the raw
+    /// limbs (`to_raw_bytes`). So a forged key can share a recipient's hash
+    /// and still be paid into an account nobody can sign for. Decoding the
+    /// compressed bytes gives the one canonical key with that hash.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the encoding isn't a valid public key, including the
+    /// identity, which nobody can sign for.
+    fn canonical_account(account: &AccountPublicKey) -> AccountPublicKey {
+        AccountPublicKey::from_bytes(&account.to_bytes())
+            .ok()
+            // `from_bytes` checks that the point is on the curve and in G2,
+            // so `is_valid` would only add the identity check, at the cost
+            // of a second subgroup check (about 22M gas). The default key is
+            // the identity.
+            .filter(|pk| *pk != AccountPublicKey::default())
+            .expect("WarpNative: invalid account public key")
     }
 }

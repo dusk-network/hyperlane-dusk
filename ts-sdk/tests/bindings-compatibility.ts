@@ -11,3 +11,8 @@ void gasConfig;
 // @ts-expect-error u64 gas fields require bigint, including values below 2^53.
 const lossyGasConfig: DomainGasConfig = { gasOverhead: 1, tokenExchangeRate: 10000000000n, gasPrice: 1n };
 void lossyGasConfig;
+
+import type { PayForGasCall } from "../src/types.js";
+// @ts-expect-error a deposit is a bigint: LUX amounts pass 2^53.
+const lossyCall: PayForGasCall = { contractId: new Uint8Array(32), fnName: "pay_for_gas", args: new Uint8Array(), deposit: 1 };
+void lossyCall;

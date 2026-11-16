@@ -43,12 +43,12 @@
 mod mailbox {
     extern crate alloc;
 
-    use alloc::collections::BTreeMap;
+    use alloc::collections::{BTreeMap, BTreeSet};
     use alloc::string::String;
     use alloc::vec::Vec;
 
     use dusk_bytes::Serializable;
-    use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
+    use dusk_core::abi::{self, ContractError, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::signatures::bls::PublicKey as AccountPublicKey;
     use dusk_core::transfer::{
         ContractToAccount, ContractToContract, ReceiveFromContract, TRANSFER_CONTRACT,
@@ -57,7 +57,8 @@ mod mailbox {
     use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
-    use hyperlane_dusk_types::{DeliveryRecord, MessageId, H256, VERSION};
+    use hyperlane_dusk_types::storage::{BlockHeights, ChunkedLog};
+    use hyperlane_dusk_types::{MessageId, H256, VERSION};
 
     // =====================================================================
     // Constants
@@ -65,6 +66,25 @@ mod mailbox {
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
+
+    /// Gas allowed for a recipient's `interchain_security_module` getter.
+    const RECIPIENT_ISM_LOOKUP_GAS: u64 = 1_000_000;
+
+    /// Size of a wasm32 memory page.
+    const WASM_PAGE_BYTES: u64 = 64 * 1024;
+
+    /// Memory `dispatch` never grows this contract past: 3 GiB of the 4 GiB
+    /// a wasm32 contract can address. Memory never shrinks, so the last GiB
+    /// stays free for `process`, which keeps working, and for withdrawals.
+    const DISPATCH_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+
+    /// Bytes dlmalloc adds to a request before growing memory for it: the
+    /// chunk header and alignment, and the segment footer it keeps at the top
+    /// (at most 63 bytes on wasm32 in dlmalloc 0.2).
+    const ALLOCATOR_OVERHEAD: u64 = 64;
+
+    /// The hook function the transfer contract calls with a hook's payment.
+    const RECEIVE_PAYMENT: &str = "receive_payment";
 
     // =====================================================================
     // State
@@ -86,20 +106,37 @@ mod mailbox {
         default_hook: ContractId,
         /// The required post-dispatch hook (called on ALL dispatches).
         required_hook: ContractId,
-        /// Map of message ID -> delivery record for processed messages.
-        delivered: BTreeMap<MessageId, DeliveryRecord>,
+        /// The first 16 bytes of every delivered message's ID (see
+        /// [`delivery_key`]).
+        delivered: BTreeSet<DeliveryKey>,
         /// Owner identity (Moonlight account hash or contract ID).
         owner: Option<H256>,
         /// Native DUSK fee credits keyed by encoded message sender identity.
         fee_credits: BTreeMap<H256, u64>,
-        /// Encoded messages indexed by nonce (for off-chain agent indexing).
-        dispatched_messages: Vec<Vec<u8>>,
-        /// Dispatch block heights indexed by nonce (for off-chain agent indexing).
-        dispatched_block_heights: Vec<u64>,
-        /// Message IDs in delivery order (for off-chain agent indexing).
-        processed_ids: Vec<MessageId>,
-        /// Delivery block heights in delivery order (for off-chain agent indexing).
-        processed_block_heights: Vec<u64>,
+        /// Message IDs indexed by nonce, for agents. The message itself is
+        /// only in the `Dispatch` event: storing every message would let
+        /// anyone fill this contract's memory cheaply.
+        dispatched_ids: ChunkedLog<MessageId>,
+        /// The block height of each dispatch, indexed by nonce.
+        dispatched_heights: BlockHeights,
+    }
+
+    /// What `delivered` stores of a message ID: its first 16 bytes.
+    type DeliveryKey = [u8; 16];
+
+    /// The key a delivered message is recorded under.
+    ///
+    /// The same message always has the same ID, so a replay always finds its
+    /// key. A different message is refused as already delivered only if its
+    /// ID starts with the same 16 bytes as a delivered one's: by accident with
+    /// probability about n^2 / 2^129 over n deliveries. Doing that to someone
+    /// else's message takes a second preimage for 128 bits of keccak256; two
+    /// messages of one's own can collide after about 2^64 hashes, which only
+    /// blocks one's own message. See docs/storage.md.
+    fn delivery_key(id: &MessageId) -> DeliveryKey {
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&id[..16]);
+        key
     }
 
     impl Mailbox {
@@ -117,13 +154,11 @@ mod mailbox {
                 default_ism: ZERO_CONTRACT,
                 default_hook: ZERO_CONTRACT,
                 required_hook: ZERO_CONTRACT,
-                delivered: BTreeMap::new(),
+                delivered: BTreeSet::new(),
                 owner: None,
                 fee_credits: BTreeMap::new(),
-                dispatched_messages: Vec::new(),
-                dispatched_block_heights: Vec::new(),
-                processed_ids: Vec::new(),
-                processed_block_heights: Vec::new(),
+                dispatched_ids: ChunkedLog::new(),
+                dispatched_heights: BlockHeights::new(),
             }
         }
 
@@ -225,12 +260,14 @@ mod mailbox {
         /// withdraws that account's credit, while an inter-contract call
         /// withdraws the calling contract's credit. The payer may direct the
         /// funds to any explicit Moonlight account.
+        ///
+        /// `recipient` is decoded to its canonical form first, and the
+        /// payout and the event use that key: the one its owner signs with,
+        /// whatever limbs the caller sends (see [`canonical_recipient`]).
+        /// Decoding costs about 57M gas.
         pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
             assert!(amount > 0, "Mailbox: withdrawal amount is zero");
-            assert!(
-                recipient.is_valid(),
-                "Mailbox: invalid withdrawal recipient"
-            );
+            let recipient = canonical_recipient(&recipient);
 
             let payer = Self::resolve_sender();
             let credit = self.fee_credits.get(&payer).copied().unwrap_or(0);
@@ -365,10 +402,20 @@ mod mailbox {
                 }
             }
 
+            // Refuse the message unless everything the rest of this call
+            // can allocate fits under the limit, so dispatch never takes the
+            // memory reserved for `process`.
+            let block_height = abi::block_height();
+            let growth = self.dispatch_memory_growth(block_height, &metadata, &encoded);
+            assert!(
+                Self::memory_bytes_used() + growth <= DISPATCH_MEMORY_LIMIT,
+                "Mailbox: storage full, dispatch is closed"
+            );
+
             // Effects
             self.latest_dispatched_id = id;
-            self.dispatched_messages.push(encoded.clone());
-            self.dispatched_block_heights.push(abi::block_height());
+            self.dispatched_ids.push(id);
+            self.dispatched_heights.push(block_height);
             self.nonce = self.nonce.checked_add(1).expect("Mailbox: nonce overflow");
 
             // Emit events
@@ -449,21 +496,14 @@ mod mailbox {
                 "Mailbox: unexpected destination"
             );
 
+            // Mark as delivered BEFORE external calls (checks-effects-interactions).
             let id = message::id(&encoded_message);
             assert!(
-                !self.delivered.contains_key(&id),
+                self.delivered.insert(delivery_key(&id)),
                 "Mailbox: already delivered"
             );
 
-            // Track delivery order for off-chain indexing.
-            let block_height = abi::block_height();
-            self.processed_ids.push(id);
-            self.processed_block_heights.push(block_height);
-
-            // Mark as delivered BEFORE external calls (checks-effects-interactions).
-            self.delivered.insert(id, DeliveryRecord { block_height });
-
-            // Emit events
+            // Emit events. Agents index deliveries from these.
             abi::emit(
                 events::Process::TOPIC,
                 events::Process {
@@ -513,48 +553,38 @@ mod mailbox {
         }
 
         /// Returns whether a message has been delivered.
-        pub fn delivered(&self, id: MessageId) -> bool {
-            self.delivered.contains_key(&id)
-        }
-
-        /// Returns the block height at which a message was delivered.
         ///
-        /// Returns 0 if the message hasn't been delivered.
-        pub fn delivered_at(&self, id: MessageId) -> u64 {
-            self.delivered.get(&id).map_or(0, |d| d.block_height)
+        /// Only the first 16 bytes of each delivered ID are stored, so this
+        /// is also true for a message whose ID shares them with a delivered
+        /// one (see [`delivery_key`]).
+        pub fn delivered(&self, id: MessageId) -> bool {
+            self.delivered.contains(&delivery_key(&id))
         }
 
-        /// Returns the encoded dispatched message at the given nonce.
+        /// Returns the ID of the message dispatched at `nonce`. The message
+        /// itself is in that block's `Dispatch` event.
         ///
         /// Panics if the nonce is out of range.
-        pub fn dispatched_message(&self, nonce: u32) -> Vec<u8> {
-            self.dispatched_messages[nonce as usize].clone()
+        pub fn dispatched_id(&self, nonce: u32) -> MessageId {
+            self.dispatched_ids
+                .get(nonce)
+                .expect("Mailbox: nonce out of range")
+        }
+
+        /// Returns the size of this contract's memory in bytes. It only
+        /// grows; `dispatch` never takes it past [`DISPATCH_MEMORY_LIMIT`].
+        #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
+        pub fn memory_bytes(&self) -> u64 {
+            Self::memory_bytes_used()
         }
 
         /// Returns the block height at which the message at `nonce` was dispatched.
         ///
         /// Panics if the nonce is out of range.
         pub fn dispatched_block_height(&self, nonce: u32) -> u64 {
-            self.dispatched_block_heights[nonce as usize]
-        }
-
-        /// Returns the message ID of the N-th processed (delivered) message.
-        ///
-        /// Panics if the index is out of range.
-        pub fn processed_at_index(&self, index: u32) -> MessageId {
-            self.processed_ids[index as usize]
-        }
-
-        /// Returns the block height at which the N-th message was processed (delivered).
-        ///
-        /// Panics if the index is out of range.
-        pub fn processed_block_height_at_index(&self, index: u32) -> u64 {
-            self.processed_block_heights[index as usize]
-        }
-
-        /// Returns the number of messages that have been processed (delivered).
-        pub fn processed_count(&self) -> u32 {
-            u32::try_from(self.processed_ids.len()).expect("Mailbox: processed count overflow")
+            self.dispatched_heights
+                .get(nonce)
+                .expect("Mailbox: nonce out of range")
         }
 
         /// Returns the default ISM contract ID.
@@ -584,16 +614,25 @@ mod mailbox {
 
         /// Returns the deployment compatibility version expected by tooling.
         ///
-        /// Version 3 combines the dispatch reentrancy guard with the
-        /// dispatch-credit withdrawal ABI.
+        /// Version 5 keeps only the first 16 bytes of delivered message IDs,
+        /// drops the processed-message log (`processed_count`,
+        /// `processed_at_index`, `processed_block_height_at_index`) and
+        /// `delivered_at`, stores dispatched IDs in chunks and their block
+        /// heights once per block, pays withdrawals to the decoded recipient
+        /// key, and adds `quote_dispatch_for_sender`. Version 4 stored
+        /// message IDs instead of messages and bounded the recipient ISM
+        /// lookup.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            3
+            5
         }
 
-        /// Compute a quote for dispatching a message.
+        /// Compute a quote for dispatching a message from the caller.
         ///
         /// Returns the total fee required (required_hook quote + hook quote).
+        /// The sender is resolved as `dispatch` resolves it, so this works
+        /// only inside a transaction; a read-only query has no caller. Use
+        /// [`Self::quote_dispatch_for_sender`] there.
         pub fn quote_dispatch(
             &self,
             destination: u32,
@@ -640,8 +679,15 @@ mod mailbox {
             )
         }
 
-        /// Compute a quote for a resolved sender.
-        fn quote_dispatch_for_sender(
+        /// Compute a dispatch quote for an explicit `sender`.
+        ///
+        /// Returns what [`Self::dispatch`] would charge `sender` for this
+        /// message right now: the required hook's quote plus the selected
+        /// hook's (zero selects the default hook). A read-only query can call
+        /// it, since it doesn't resolve a caller. Quotes depend on the
+        /// current nonce and hook configuration, which can change before a
+        /// dispatch.
+        pub fn quote_dispatch_for_sender(
             &self,
             sender: H256,
             destination: u32,
@@ -814,27 +860,74 @@ mod mailbox {
             let transfer = ContractToContract {
                 contract: hook,
                 value: fee,
-                fn_name: String::from("receive_payment"),
+                fn_name: String::from(RECEIVE_PAYMENT),
                 data: Vec::new(),
             };
             let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_contract", &transfer)
                 .expect(payment_error);
         }
 
+        /// Current size of the contract's linear memory.
+        fn memory_bytes_used() -> u64 {
+            core::arch::wasm32::memory_size(0) as u64 * WASM_PAGE_BYTES
+        }
+
+        /// The most the rest of `dispatch` can grow this contract's memory,
+        /// once the message is encoded and quoted: the log chunks that store
+        /// it may start, and the `Dispatch` event and the hook calls take
+        /// copies of the message and metadata.
+        fn dispatch_memory_growth(
+            &self,
+            block_height: u64,
+            metadata: &[u8],
+            encoded: &[u8],
+        ) -> u64 {
+            let [ids_chunk, ids_table] = self.dispatched_ids.push_allocations();
+            let [heights_chunk, heights_table] =
+                self.dispatched_heights.push_allocations(block_height);
+            [
+                ids_chunk,
+                ids_table,
+                heights_chunk,
+                heights_table,
+                // The `Dispatch` event's copy of the message.
+                encoded.len(),
+                // The required hook's copies; the selected hook gets the
+                // originals.
+                metadata.len(),
+                encoded.len(),
+                // The function name of a payment to each hook.
+                RECEIVE_PAYMENT.len(),
+                RECEIVE_PAYMENT.len(),
+            ]
+            .into_iter()
+            .map(memory_growth)
+            .sum()
+        }
+
         /// Resolve the ISM for a recipient.
+        ///
+        /// The lookup runs with a fixed gas allowance. A failed inter-contract
+        /// call is charged its whole allowance, so an unbounded lookup on a
+        /// recipient without `interchain_security_module` would burn most of
+        /// the transaction's gas. A recipient that doesn't export the getter,
+        /// or whose getter panics, gets the default ISM, as in Solidity. One
+        /// that runs out of gas does not: falling back then would let the
+        /// submitter's gas limit choose the ISM.
         fn resolve_recipient_ism(&self, recipient: ContractId) -> ContractId {
-            // Try to query the recipient for its ISM.
-            let result: Result<ContractId, _> =
-                abi::call(recipient, "interchain_security_module", &());
-
-            if let Ok(ism) = result {
-                if ism != ZERO_CONTRACT {
-                    return ism;
+            let result: Result<ContractId, ContractError> = abi::call_with_limit(
+                recipient,
+                "interchain_security_module",
+                &(),
+                RECIPIENT_ISM_LOOKUP_GAS,
+            );
+            match result {
+                Ok(ism) if ism != ZERO_CONTRACT => ism,
+                Err(ContractError::OutOfGas) => {
+                    panic!("Mailbox: recipient ISM lookup ran out of gas")
                 }
+                _ => self.default_ism,
             }
-
-            // Fall back to default ISM.
-            self.default_ism
         }
 
         /// Panics if the caller is not the owner.
@@ -845,5 +938,40 @@ mod mailbox {
                 "Mailbox: caller is not the owner"
             );
         }
+    }
+
+    /// The most an allocation of `bytes` can grow memory by. When no free
+    /// block fits, dlmalloc asks for whole pages: enough for the request and
+    /// its own overhead.
+    fn memory_growth(bytes: usize) -> u64 {
+        if bytes == 0 {
+            return 0;
+        }
+        (bytes as u64 + ALLOCATOR_OVERHEAD).next_multiple_of(WASM_PAGE_BYTES)
+    }
+
+    /// Decode a withdrawal recipient to the key its owner signs with, as the
+    /// warp routes decode a sponsored claim's key.
+    ///
+    /// The archive check accepts any limbs in a public key. Its compressed
+    /// encoding (`to_bytes`), which the event's recipient hash covers,
+    /// depends only on x reduced mod p, the infinity flag and the sign of y,
+    /// but the transfer contract pays the raw limbs (`to_raw_bytes`). A twin
+    /// of the recipient's key would be debited and named in the event, and
+    /// paid to an account nobody can spend from. Decoding the compressed
+    /// bytes gives the one canonical key with that encoding.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the encoding isn't a valid public key, including the
+    /// identity, which nobody can sign for.
+    fn canonical_recipient(recipient: &AccountPublicKey) -> AccountPublicKey {
+        AccountPublicKey::from_bytes(&recipient.to_bytes())
+            .ok()
+            // `from_bytes` checks that the point is on the curve and in G2,
+            // so `is_valid` would only add the identity check, at the cost
+            // of a second subgroup check. The default key is the identity.
+            .filter(|pk| *pk != AccountPublicKey::default())
+            .expect("Mailbox: invalid withdrawal recipient")
     }
 }

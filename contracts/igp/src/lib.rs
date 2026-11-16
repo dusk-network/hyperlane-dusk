@@ -7,7 +7,8 @@
 //! This is the Dusk equivalent of `InterchainGasPaymaster.sol`. It stores
 //! per-domain gas oracle data and computes the DUSK cost of relaying
 //! a message to a remote chain based on the gas limit, remote gas price,
-//! and token exchange rate.
+//! and token exchange rate. A message pays when it is dispatched, and anyone
+//! can pay for more gas for it later with `pay_for_gas`.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -40,9 +41,10 @@ mod igp {
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message;
     use hyperlane_dusk_types::metadata;
+    use hyperlane_dusk_types::storage::ChunkedLog;
     use hyperlane_dusk_types::DomainGasConfig;
     use hyperlane_dusk_types::GasPaymentRecord;
-    use hyperlane_dusk_types::H256;
+    use hyperlane_dusk_types::{MessageId, H256};
 
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -51,6 +53,21 @@ mod igp {
     const TOKEN_EXCHANGE_RATE_SCALE: u128 = 10_000_000_000;
     /// Maximum destination gas limit accepted by this u64-priced route.
     const MAX_GAS_LIMIT: u64 = 1_000_000_000;
+    /// Most records one `gas_payments` query returns.
+    const MAX_PAGE_SIZE: u32 = 256;
+
+    /// Size of a wasm32 memory page.
+    const WASM_PAGE_BYTES: u64 = 64 * 1024;
+    /// Memory `pay_for_gas` never grows this contract past: 3 GiB of the
+    /// 4 GiB a wasm32 contract can address. Memory never shrinks, so the
+    /// last GiB stays for the payments dispatches make: top-ups, which cost
+    /// a transaction each but no fee beyond the gas they buy, can't fill the
+    /// log both write to and make dispatches through the IGP revert.
+    const TOP_UP_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+    /// Bytes dlmalloc adds to a request before growing memory for it: the
+    /// chunk header and alignment, and the segment footer it keeps at the top
+    /// (at most 63 bytes on wasm32 in dlmalloc 0.2), as in the Mailbox.
+    const ALLOCATOR_OVERHEAD: u64 = 64;
 
     /// InterchainGasPaymaster contract state.
     pub struct InterchainGasPaymaster {
@@ -64,8 +81,10 @@ mod igp {
         domain_gas_configs: BTreeMap<u32, DomainGasConfig>,
         /// Total gas payments recorded (accounting).
         total_gas_payments: u64,
-        /// Stored gas payment records (for off-chain indexing).
-        gas_payments: Vec<GasPaymentRecord>,
+        /// Gas payment records in payment order, for agents: dispatches'
+        /// payments and top-ups alike. A record takes 64 bytes, 1024 to a
+        /// chunk.
+        gas_payments: ChunkedLog<GasPaymentRecord>,
         /// Native DUSK collected and not yet claimed by the beneficiary.
         claimable_fees: u64,
         /// Payment prepared by Mailbox and awaiting its authenticated native
@@ -82,7 +101,7 @@ mod igp {
                 beneficiary: [0u8; 32],
                 domain_gas_configs: BTreeMap::new(),
                 total_gas_payments: 0,
-                gas_payments: Vec::new(),
+                gas_payments: ChunkedLog::new(),
                 claimable_fees: 0,
                 pending_payment: None,
             }
@@ -177,31 +196,111 @@ mod igp {
                 "IGP: unauthenticated payment"
             );
             assert!(transfer.data.is_empty(), "IGP: unexpected payment data");
-            let mut record = self
+            let record = self
                 .pending_payment
                 .take()
                 .expect("IGP: no payment pending");
             assert!(transfer.value == record.payment, "IGP: incorrect payment");
+            self.record_payment(record);
+        }
 
-            self.total_gas_payments = self
-                .total_gas_payments
-                .checked_add(transfer.value)
-                .expect("IGP: total gas payment overflow");
-            self.claimable_fees = self
-                .claimable_fees
-                .checked_add(transfer.value)
-                .expect("IGP: claimable fee overflow");
-            record.block_height = abi::block_height();
-            self.gas_payments.push(record);
-
-            abi::emit(
-                events::GasPayment::TOPIC,
-                events::GasPayment {
-                    message_id: record.message_id,
-                    gas_limit: record.gas_limit,
-                    payment: record.payment,
-                },
+        /// Pay for `gas_amount` more gas on `destination` for the message
+        /// `message_id`, as `payForGas` does on EVM: anyone may pay for any
+        /// message, and the relayer adds up all the payments for a message
+        /// ID and destination. A message whose dispatch paid for too little
+        /// gas, or whose delivery got more expensive, is relayed once enough
+        /// is paid for it.
+        ///
+        /// The payment is the native DUSK the calling Moonlight transaction
+        /// deposits, so this must be the transaction's own call. `deposit` is
+        /// that deposit: the most the payer pays. The IGP takes all of it,
+        /// keeps what [`Self::quote_pay_for_gas`] charges at this moment and
+        /// sends the rest back to the account that signed the transaction,
+        /// so a deposit with some margin survives a price update between
+        /// quoting and inclusion. The gas bought is `gas_amount`, with no
+        /// overhead added: the message's dispatch paid for that.
+        ///
+        /// As on EVM, the message isn't looked up: a payment for an ID the
+        /// Mailbox never dispatched, or for another destination than the
+        /// message's, is recorded like any other and only costs its payer.
+        ///
+        /// Records the payment, with its destination, and emits the same
+        /// `GasPayment` event a dispatch's payment does. Refuses once the
+        /// contract's memory would pass 3 GiB, leaving the rest to the
+        /// payments dispatches make.
+        pub fn pay_for_gas(
+            &mut self,
+            message_id: MessageId,
+            destination: u32,
+            gas_amount: u64,
+            deposit: u64,
+        ) {
+            // Only the transaction's own call can take its deposit, and the
+            // refund then goes back to the account the deposit came from.
+            assert!(
+                abi::callstack().len() == 1 && abi::caller() == Some(TRANSFER_CONTRACT),
+                "IGP: payer must call directly"
             );
+            let payer = abi::public_sender().expect("IGP: payer must be Moonlight");
+            let payment = self.quote_pay_for_gas(destination, gas_amount);
+            assert!(
+                deposit >= payment,
+                "IGP: insufficient interchain gas payment"
+            );
+            assert!(
+                memory_bytes_used() + self.top_up_memory_growth() <= TOP_UP_MEMORY_LIMIT,
+                "IGP: storage full, top-ups are closed"
+            );
+
+            // The transfer contract moves the transaction's deposit to this
+            // contract once, and only if it is exactly `deposit`. Nothing is
+            // recorded unless it did.
+            let _: () =
+                abi::call(TRANSFER_CONTRACT, "deposit", &deposit).expect("IGP: deposit failed");
+            self.record_payment(GasPaymentRecord {
+                message_id,
+                destination,
+                gas_limit: gas_amount,
+                payment,
+                block_height: 0,
+            });
+
+            let refund = deposit - payment;
+            if refund > 0 {
+                let transfer = ContractToAccount {
+                    account: payer,
+                    value: refund,
+                };
+                let _: () = abi::call(TRANSFER_CONTRACT, "contract_to_account", &transfer)
+                    .expect("IGP: refund failed");
+            }
+        }
+
+        /// What [`Self::pay_for_gas`] charges for `gas_amount` gas on
+        /// `destination`, in LUX:
+        /// `gas_amount * gas_price * exchange_rate / 1e10`, with no overhead.
+        /// [`Self::quote_gas_payment`] adds the overhead, as a dispatch does.
+        pub fn quote_pay_for_gas(&self, destination: u32, gas_amount: u64) -> u64 {
+            assert!(gas_amount > 0, "IGP: gas amount cannot be zero");
+            assert!(
+                gas_amount <= MAX_GAS_LIMIT,
+                "IGP: gas amount exceeds supported maximum"
+            );
+            let config = self
+                .domain_gas_configs
+                .get(&destination)
+                .expect("IGP: destination is not configured");
+            // `validate_domain_gas_config` showed that the largest dispatch
+            // quote, which adds the overhead to MAX_GAS_LIMIT, fits.
+            let cost = u128::from(gas_amount)
+                .checked_mul(u128::from(config.gas_price))
+                .expect("IGP: gas price overflow")
+                .checked_mul(u128::from(config.token_exchange_rate))
+                .expect("IGP: exchange rate overflow")
+                / TOKEN_EXCHANGE_RATE_SCALE;
+            let payment = u64::try_from(cost).expect("IGP: fee exceeds u64");
+            assert!(payment > 0, "IGP: payment rounds to zero");
+            payment
         }
 
         /// Returns the fee required for this hook.
@@ -218,9 +317,13 @@ mod igp {
         }
 
         /// Returns the persisted state layout version expected by deployment tooling.
+        ///
+        /// Version 3 stores payment records in chunks. Version 4 adds
+        /// `pay_for_gas` and `quote_pay_for_gas`; the state, the other calls
+        /// and the events are unchanged.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            2
+            4
         }
 
         // =================================================================
@@ -291,28 +394,26 @@ mod igp {
 
         /// Returns the number of gas payment records stored.
         pub fn gas_payment_count(&self) -> u32 {
-            u32::try_from(self.gas_payments.len()).expect("IGP: gas payment count overflow")
+            self.gas_payments.len()
         }
 
         /// Returns the Nth gas payment record.
         ///
         /// Panics if the index is out of range.
         pub fn gas_payment_at(&self, index: u32) -> GasPaymentRecord {
-            self.gas_payments[index as usize]
+            self.gas_payments
+                .get(index)
+                .expect("IGP: gas payment index out of bounds")
         }
 
         /// Returns a bounded consecutive page of gas-payment records.
         pub fn gas_payments(&self, start: u32, limit: u32) -> Vec<GasPaymentRecord> {
-            const MAX_PAGE_SIZE: usize = 256;
-            let start = start as usize;
             assert!(
                 start <= self.gas_payments.len(),
                 "IGP: gas payment index out of bounds"
             );
-            let limit = usize::try_from(limit).expect("IGP: page size overflow");
             assert!(limit <= MAX_PAGE_SIZE, "IGP: page too large");
-            let end = start.saturating_add(limit).min(self.gas_payments.len());
-            self.gas_payments[start..end].to_vec()
+            self.gas_payments.page(start, limit)
         }
 
         /// Returns collected native DUSK not yet claimed by the beneficiary.
@@ -409,6 +510,44 @@ mod igp {
             );
         }
 
+        /// Account for a payment whose DUSK this contract holds, append its
+        /// record at the current height and emit its `GasPayment` event:
+        /// alike for a dispatch's payment and a top-up, so agents read both
+        /// the same way.
+        fn record_payment(&mut self, mut record: GasPaymentRecord) {
+            self.total_gas_payments = self
+                .total_gas_payments
+                .checked_add(record.payment)
+                .expect("IGP: total gas payment overflow");
+            self.claimable_fees = self
+                .claimable_fees
+                .checked_add(record.payment)
+                .expect("IGP: claimable fee overflow");
+            record.block_height = abi::block_height();
+            self.gas_payments.push(record);
+
+            abi::emit(
+                events::GasPayment::TOPIC,
+                events::GasPayment {
+                    message_id: record.message_id,
+                    gas_limit: record.gas_limit,
+                    payment: record.payment,
+                },
+            );
+        }
+
+        /// The most a top-up can still grow this contract's memory: the
+        /// chunk of records its record may start and the larger chunk table
+        /// that may need, each in whole pages with dlmalloc's overhead.
+        /// Nothing else it does allocates.
+        fn top_up_memory_growth(&self) -> u64 {
+            self.gas_payments
+                .push_allocations()
+                .into_iter()
+                .map(memory_growth)
+                .sum()
+        }
+
         fn validate_domain_gas_config(config: DomainGasConfig) {
             assert!(
                 config.gas_overhead.checked_add(MAX_GAS_LIMIT).is_some(),
@@ -440,5 +579,20 @@ mod igp {
                 "IGP: configured quote exceeds u64"
             );
         }
+    }
+
+    /// Current size of the contract's linear memory.
+    fn memory_bytes_used() -> u64 {
+        core::arch::wasm32::memory_size(0) as u64 * WASM_PAGE_BYTES
+    }
+
+    /// The most an allocation of `bytes` can grow memory by. When no free
+    /// block fits, dlmalloc asks for whole pages: enough for the request and
+    /// its own overhead.
+    fn memory_growth(bytes: usize) -> u64 {
+        if bytes == 0 {
+            return 0;
+        }
+        (bytes as u64 + ALLOCATOR_OVERHEAD).next_multiple_of(WASM_PAGE_BYTES)
     }
 }

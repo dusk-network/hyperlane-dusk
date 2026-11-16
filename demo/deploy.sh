@@ -58,9 +58,23 @@ MULTISIG_VALIDATORS="${MULTISIG_VALIDATORS:-$ANVIL_DEPLOYER}"
 MULTISIG_THRESHOLD="${MULTISIG_THRESHOLD:-1}"
 # Minimum ready balance per route. Permissionless sponsorship may exceed it.
 DUSK_DISPATCH_FEE_CREDIT="${DUSK_DISPATCH_FEE_CREDIT:-1000000000}"
-DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-50000}"
+# The relayer the demo's agent configs set up relays a message only once it
+# paid this deployment's IGP for enough gas (docs/costs.md#fee-coverage),
+# as the testnet relayer does. The demo prices that gas at token amounts: the
+# Dusk IGP charges 1 LUX per EVM gas, and the EVM IGP charges nothing, so the
+# demo's EVM transfers need no value, but each still leaves the payment
+# record the relayer requires. The overheads cover delivery: 200,000 EVM gas
+# plus the 50,000 of a message without hook metadata from Dusk, and a relayed
+# `process` at MULTISIG_THRESHOLD signatures into Dusk.
+DUSK_IGP_GAS_OVERHEAD="${DUSK_IGP_GAS_OVERHEAD:-200000}"
 DUSK_IGP_TOKEN_EXCHANGE_RATE="${DUSK_IGP_TOKEN_EXCHANGE_RATE:-10000000000}"
 DUSK_IGP_GAS_PRICE="${DUSK_IGP_GAS_PRICE:-1}"
+# The Dusk chain to sign for: the local devnet's, 0, unless the operator
+# sets another (.env.bridge or the environment).
+DUSK_EXPECTED_CHAIN_ID="${DUSK_EXPECTED_CHAIN_ID:-0}"
+[[ "$DUSK_EXPECTED_CHAIN_ID" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$DUSK_EXPECTED_CHAIN_ID))" -le 255 ] \
+    || fail "DUSK_EXPECTED_CHAIN_ID must be a Dusk chain ID from 0 to 255, not '$DUSK_EXPECTED_CHAIN_ID'"
+DUSK_EXPECTED_CHAIN_ID=$((10#$DUSK_EXPECTED_CHAIN_ID))
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -140,7 +154,13 @@ DUSK_CHAIN_ID=$(curl -s -X POST \
     "${DUSK_RUES_URL}on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id" \
     --max-time 5 2>/dev/null | xxd -p 2>/dev/null) || true
 [ -n "$DUSK_CHAIN_ID" ] || fail "Cannot connect to Dusk RUES at $DUSK_RUES_URL"
-ok "Dusk RUES reachable"
+[[ "$DUSK_CHAIN_ID" =~ ^[0-9a-f]{2}$ ]] || fail "Dusk RUES at $DUSK_RUES_URL returned no chain ID"
+# Every Dusk transaction below is signed for DUSK_EXPECTED_CHAIN_ID only
+# (dusk-tx --expected-chain-id), which the node must report. Its answer
+# never takes the setting's place.
+[ "$((16#$DUSK_CHAIN_ID))" -eq "$DUSK_EXPECTED_CHAIN_ID" ] \
+    || fail "Dusk RUES at $DUSK_RUES_URL is on chain ID $((16#$DUSK_CHAIN_ID)), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID (the local devnet's is 0). Nothing was signed. Point DUSK_RUES_URL at the devnet, or set DUSK_EXPECTED_CHAIN_ID to the chain you mean."
+ok "Dusk RUES reachable, on chain ID $DUSK_EXPECTED_CHAIN_ID"
 
 validate_evm_contract() {
     local address="$1"
@@ -226,6 +246,8 @@ validate_dusk_state_version() {
         || fail "Saved $label predates state version $expected_version; redeploy"
     version=$(jq -er '.value | tonumber' <<<"$response") \
         || fail "Saved $label returned a malformed state version; redeploy"
+    [ "$version" -ge "$expected_version" ] \
+        || fail "Saved $label is at state version $version, older than these contracts ($expected_version); redeploy"
     [ "$version" = "$expected_version" ] \
         || fail "Saved $label has unsupported state version $version; expected $expected_version"
 }
@@ -410,6 +432,7 @@ ensure_dispatch_credit() {
         --mailbox "$mailbox" \
         --payer "$route" \
         --amount "$deficit" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to fund $label dispatch fee deficit"
     response=$("$DUSK_TX" query \
         --rues-url "$DUSK_RUES_URL" \
@@ -437,7 +460,7 @@ validate_saved_deployment() {
     local saved_igp_config saved_igp_domain live_igp_config
     local saved_multisig_policy live_multisig_policy
     local live_evm_value route expected_router
-    local saved_account_h256 expected_children
+    local saved_account_h256 expected_children evm_gas_oracle saved_overhead
 
     jq -e 'type == "object" and (.evm | type == "object") and (.dusk | type == "object")' \
         "$BRIDGE_STATE_FILE" >/dev/null \
@@ -555,8 +578,20 @@ validate_saved_deployment() {
         [ "$live_evm_value" = "${ANVIL_DEPLOYER,,}" ] \
             || fail "Running EVM IGP $method differs from the deployment policy; redeploy"
     done
+    # The demo's relayer requires every EVM-origin message to have paid the
+    # IGP for the saved overhead.
+    evm_gas_oracle="$(jq -er '.evm.gas_oracle | strings | select(length > 0)' "$BRIDGE_STATE_FILE")" \
+        && saved_overhead="$(jq -er '.evm.igp_dusk_gas_overhead | numbers' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the EVM IGP's pricing for Dusk; redeploy"
+    [ "$evm_hook" = "$evm_igp" ] \
+        || fail "Saved deployment's EVM hook is not its IGP, so its messages pay nothing; redeploy"
+    live_evm_value="$(cast call "$evm_igp" "destinationGasConfigs(uint32)(address,uint96)" "$DUSK_DOMAIN" \
+        --rpc-url "$ANVIL_RPC" 2>/dev/null | awk '{print $1}' | paste -sd' ' | tr '[:upper:]' '[:lower:]')" \
+        || fail "Saved EVM IGP's pricing for Dusk is not queryable on the running chain"
+    [ "$live_evm_value" = "${evm_gas_oracle,,} $saved_overhead" ] \
+        || fail "Running EVM IGP's pricing for Dusk differs from the saved deployment; redeploy"
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
-    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 3
+    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 5
     [ "$(query_dusk_u32 "$dusk_mailbox" local_domain "Dusk Mailbox local domain")" = "$DUSK_DOMAIN" ] \
         || fail "Running Dusk Mailbox local domain differs from the saved deployment; redeploy"
     validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"
@@ -598,12 +633,12 @@ validate_saved_deployment() {
     live_route_value="$(query_dusk_option_bytes32 "$dusk_mailbox" owner "Dusk Mailbox owner")"
     [ "$live_route_value" = "$saved_account_h256" ] \
         || fail "Running Dusk Mailbox owner differs from the saved deployment owner; redeploy"
-    validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook"
-    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 4
-    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 2
-    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 3
-    validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce"
-    validate_dusk_state_version "$dusk_igp" "Dusk IGP" 2
+    validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook" 2
+    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 7
+    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 4
+    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 6
+    validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce" 2
+    validate_dusk_state_version "$dusk_igp" "Dusk IGP" 4
     validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"
     validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"
     validate_dusk_state_version "$dusk_test_recipient" "Dusk test recipient"
@@ -681,6 +716,13 @@ validate_saved_deployment() {
     expected_children="$(jq -cn --arg merkle "${dusk_merkle,,}" --arg fee "${dusk_protocol_fee,,}" '[$merkle, $fee]')"
     [ "$(query_dusk_contract_id_list "$dusk_aggregation_hook" hooks "Dusk aggregation hook children")" = "$expected_children" ] \
         || fail "Running Dusk aggregation hook children differ from the saved topology; redeploy"
+    # Multicall for Dusk, when the deployment has one: the agents batch their
+    # reads through it.
+    dusk_multicall="$(jq -r '.dusk.multicall // ""' "$BRIDGE_STATE_FILE")"
+    if [ -n "$dusk_multicall" ]; then
+        [ "$(query_dusk_u32 "$dusk_multicall" version "Multicall for Dusk version")" = "1" ] \
+            || fail "Running Multicall for Dusk at $dusk_multicall doesn't answer version 1; redeploy"
+    fi
 }
 
 # ── Check for existing deployment ────────────────────────────────────────────
@@ -758,12 +800,6 @@ cd "$SOLIDITY_DIR"
         ok "TestIsm: $EVM_ISM"
     fi
 
-    step "Deploying TestPostDispatchHook..."
-    EVM_HOOK=$(forge_deploy contracts/test/TestPostDispatchHook.sol:TestPostDispatchHook \
-        --rpc-url "$ANVIL_RPC" \
-        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy Hook"
-    ok "TestPostDispatchHook: $EVM_HOOK"
-
     step "Deploying Mailbox (domain=$EVM_DOMAIN)..."
     EVM_MAILBOX=$(forge_deploy contracts/Mailbox.sol:Mailbox \
         --rpc-url "$ANVIL_RPC" \
@@ -799,6 +835,25 @@ cd "$SOLIDITY_DIR"
         --private-key "$ANVIL_PRIVATE_KEY" \
         &>/dev/null || fail "Failed to initialize InterchainGasPaymaster"
     ok "InterchainGasPaymaster initialized"
+
+    # The IGP is the hook of the Mailbox and of every route: the required
+    # MerkleTreeHook inserts their messages, and the IGP records their
+    # payment, at a price of zero (a rate and gas price of 1 round any gas
+    # below 1e10 down to nothing).
+    EVM_IGP_DUSK_GAS_OVERHEAD=$((1950000 + 220000 * MULTISIG_THRESHOLD))
+    step "Deploying StorageGasOracle..."
+    EVM_GAS_ORACLE=$(forge_deploy contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle \
+        --rpc-url "$ANVIL_RPC" \
+        --private-key "$ANVIL_PRIVATE_KEY") || fail "Failed to deploy StorageGasOracle"
+    cast send "$EVM_GAS_ORACLE" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])" \
+        "[($DUSK_DOMAIN,1,1)]" --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to price Dusk in the StorageGasOracle"
+    cast send "$EVM_IGP" "setDestinationGasConfigs((uint32,(address,uint96))[])" \
+        "[($DUSK_DOMAIN,($EVM_GAS_ORACLE,$EVM_IGP_DUSK_GAS_OVERHEAD))]" \
+        --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" \
+        &>/dev/null || fail "Failed to configure the IGP for Dusk"
+    EVM_HOOK="$EVM_IGP"
+    ok "IGP prices Dusk at zero through $EVM_GAS_ORACLE, overhead $EVM_IGP_DUSK_GAS_OVERHEAD gas"
 
     step "Initializing Mailbox..."
     cast send "$EVM_MAILBOX" \
@@ -864,6 +919,8 @@ cd "$SOLIDITY_DIR"
     "merkle_tree_hook": "$EVM_MERKLE_TREE_HOOK",
     "validator_announce": "$EVM_VALIDATOR_ANNOUNCE",
     "igp": "$EVM_IGP",
+    "gas_oracle": "$EVM_GAS_ORACLE",
+    "igp_dusk_gas_overhead": $EVM_IGP_DUSK_GAS_OVERHEAD,
     "mailbox": "$EVM_MAILBOX",
     "recipient": "$EVM_RECIPIENT",
     "token": "$EVM_TOKEN",
@@ -893,6 +950,7 @@ DUSK_DEPLOY_CMD=(
         --warp-decimals "$TOKEN_DECIMALS"
         --default-ism "$DUSK_DEFAULT_ISM"
         --igp-domain-config "$EVM_DOMAIN:$DUSK_IGP_GAS_OVERHEAD:$DUSK_IGP_TOKEN_EXCHANGE_RATE:$DUSK_IGP_GAS_PRICE"
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID"
 )
 if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
     DUSK_DEPLOY_CMD+=(
@@ -907,6 +965,30 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "${DUSK_DEPLOY_CMD[@]}" > "$DUSK_D
         fail "Dusk deployment failed${err:+: $err}"
     }
 ok "Dusk contracts deployed"
+
+# Multicall for Dusk, which the local genesis lacks, at the ID it has on
+# testnet and mainnet: its v0.1.0 Wasm, deploy nonce 0 and its published
+# owner give that ID on any chain, and dusk-tx checks they do before it sends
+# anything. A contract already at the ID is taken only once its owner and its
+# answers check out (--check-multicall). Without DUSK_MULTICALL_WASM the
+# agents make single queries.
+DUSK_MULTICALL=""
+if [ -n "${DUSK_MULTICALL_WASM:-}" ]; then
+    step "Deploying Multicall for Dusk..."
+    [ "$(sha256sum "$DUSK_MULTICALL_WASM" 2>/dev/null | awk '{print $1}')" \
+        = 65f77a27c5bf6c7bf78797071dadca102ca3a67e5112c42af0242660e03693d9 ] \
+        || fail "DUSK_MULTICALL_WASM ($DUSK_MULTICALL_WASM) isn't Multicall for Dusk v0.1.0"
+    MULTICALL_OUT="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" deploy-wasm \
+        --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --wasm "$DUSK_MULTICALL_WASM" \
+        --owner r2h82mj2ehNhYPphK3GHVpG98MhSsZNCAF9sdSS4nwQJKqVBwihZn7bZXb9VoWVSqtu6onZ8Tkm11zdnavdCfuCD1kS2We4VPxvLeDf73a1sGiG25HUFvCwQJm3Ud8q6KLW \
+        --deploy-nonce 0 --expected-id 93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4 \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" --check-multicall)" \
+        || fail "Multicall for Dusk deployment failed: $(jq -r '.error // empty' <<<"$MULTICALL_OUT" 2>/dev/null)"
+    DUSK_MULTICALL="$(jq -r '.contract_id' <<<"$MULTICALL_OUT")"
+    ok "Multicall for Dusk at $DUSK_MULTICALL"
+else
+    info "DUSK_MULTICALL_WASM is not set: no Multicall for Dusk, so the agents make single contract queries"
+fi
 
 # Parse deployment output
 DUSK_MAILBOX=$(jq -r '.contracts.mailbox' "$DUSK_DEPLOY_FILE")
@@ -977,7 +1059,8 @@ ENROLL_OUT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-rou
     --keys "$CONSENSUS_KEYS" \
     --warp-contract "$DUSK_WARP" \
     --domain "$EVM_DOMAIN" \
-    --router "$(pad_evm_address "$EVM_TOKEN")" 2>&1) || {
+    --router "$(pad_evm_address "$EVM_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>&1) || {
         err=$(echo "$ENROLL_OUT" | jq -r '.error // empty' 2>/dev/null || true)
         fail "Failed to enroll remote router on Dusk${err:+: $err}"
     }
@@ -996,6 +1079,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
     --warp-contract "$DUSK_WARP_NATIVE" --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_NATIVE_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     >/dev/null || fail "Failed to enroll EVM native token on Dusk"
 ok "Dusk native router enrolled"
 
@@ -1012,6 +1096,7 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" \
     --warp-contract "$DUSK_WARP_COLLATERAL" --domain "$EVM_DOMAIN" \
     --router "$(pad_evm_address "$EVM_COLLATERAL_TOKEN")" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
     >/dev/null || fail "Failed to enroll EVM collateral token on Dusk"
 ok "Dusk collateral router enrolled"
 
@@ -1023,7 +1108,8 @@ step "Registering deployer's BLS key on WarpDrc20..."
 REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
     --rues-url "$DUSK_RUES_URL" \
     --keys "$CONSENSUS_KEYS" \
-    --warp-contract "$DUSK_WARP") || {
+    --warp-contract "$DUSK_WARP" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID") || {
         echo "$REGISTER_RESULT" >&2
         fail "Failed to register account on WarpDrc20"
     }
@@ -1037,6 +1123,7 @@ if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
         --warp-contract "$DUSK_WARP_COLLATERAL" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to register on WarpDrc20Collateral"
     ok "WarpDrc20Collateral account registered"
 fi
@@ -1048,6 +1135,7 @@ if [ -n "$DUSK_WARP_NATIVE" ] && [ "$DUSK_WARP_NATIVE" != "null" ]; then
         --rues-url "$DUSK_RUES_URL" \
         --keys "$CONSENSUS_KEYS" \
         --warp-contract "$DUSK_WARP_NATIVE" \
+        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
         >/dev/null || fail "Failed to register on WarpNative"
     ok "WarpNative account registered"
 fi
@@ -1068,6 +1156,8 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         "merkle_tree_hook": "${EVM_MERKLE_TREE_HOOK:-}",
         "validator_announce": "${EVM_VALIDATOR_ANNOUNCE:-}",
         "igp": "${EVM_IGP:-}",
+        "gas_oracle": "$EVM_GAS_ORACLE",
+        "igp_dusk_gas_overhead": $EVM_IGP_DUSK_GAS_OVERHEAD,
         "recipient": "$EVM_RECIPIENT"
     },
     "dusk": {
@@ -1090,7 +1180,8 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         },
         "protocol_fee": "$DUSK_PROTOCOL_FEE",
         "aggregation_hook": "$DUSK_AGGREGATION_HOOK",
-        "test_recipient": "$DUSK_TEST_RECIPIENT"
+        "test_recipient": "$DUSK_TEST_RECIPIENT",
+        "multicall": "$DUSK_MULTICALL"
     },
     "account_h256": "$DUSK_ACCOUNT_H256",
     "evm_domain": $EVM_DOMAIN,

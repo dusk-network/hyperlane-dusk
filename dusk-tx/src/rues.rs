@@ -12,17 +12,60 @@ const TRANSFER_CONTRACT: &str = "01000000000000000000000000000000000000000000000
 const MAX_TRANSACTION_STATUS_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CONTRACT_QUERY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+/// A contract's owner as Rusk reports it: the bytes its deploy named, 96 for
+/// a Moonlight account.
+const MAX_CONTRACT_OWNER_RESPONSE_BYTES: usize = 64 * 1024;
+/// How Rusk's preverify refuses a Moonlight transaction whose nonce is
+/// ahead of the account's next one (`TxAcceptanceError::MissingIntermediateNonce`
+/// in rusk-private's node/src/mempool.rs). Propagate queues such a
+/// transaction instead.
+const MISSING_INTERMEDIATE_NONCE: &str = "Missing intermediate nonce";
 
 pub struct RuesClient {
     client: reqwest::Client,
     base_url: reqwest::Url,
 }
 
+/// What the ledger says about a transaction hash. `tx(hash)` only proves
+/// inclusion: a block that isn't final yet can still be reverted, which
+/// drops its transactions or puts them back in the mempool to run again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionStatus {
     NotFound,
-    Executed,
-    Failed(String),
+    Executed(Inclusion),
+    Failed { error: String, inclusion: Inclusion },
+}
+
+/// Where a transaction was included, and the gas it used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inclusion {
+    pub block_height: u64,
+    pub gas_spent: u64,
+}
+
+impl TransactionStatus {
+    /// The block the transaction is in, if it is in one.
+    pub fn inclusion(&self) -> Option<Inclusion> {
+        match self {
+            Self::NotFound => None,
+            Self::Executed(inclusion) | Self::Failed { inclusion, .. } => Some(*inclusion),
+        }
+    }
+}
+
+/// The block at a height, as `block(height)` reports it: its hash and its
+/// consensus label (Accepted, Attested, Confirmed or Final).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockStatus {
+    pub hash: String,
+    pub label: String,
+}
+
+impl BlockStatus {
+    /// A final block can't be reverted.
+    pub fn is_final(&self) -> bool {
+        self.label == "Final"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,7 +169,16 @@ impl RuesClient {
     }
 
     /// Preverify then propagate a serialized transaction.
-    pub async fn propagate_tx(&self, tx_bytes: &[u8]) -> Result<(), String> {
+    ///
+    /// With `queue_future_nonce`, preverify refusing the transaction only
+    /// because its nonce is ahead of the account's next one doesn't stop it:
+    /// propagate holds such a transaction until the transactions with the
+    /// nonces before it arrive, and checks it then.
+    pub async fn propagate_tx(
+        &self,
+        tx_bytes: &[u8],
+        queue_future_nonce: bool,
+    ) -> Result<(), String> {
         // Preverify first
         let url = self.endpoint("/on/transactions/preverify");
         let response = self
@@ -143,10 +195,12 @@ impl RuesClient {
             let body = read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "preverify")
                 .await
                 .map_err(|error| format!("Preverify failed before propagation: {error}"))?;
-            return Err(format!(
-                "Preverify rejected before propagation ({status}): {}",
-                String::from_utf8_lossy(&body)
-            ));
+            let body = String::from_utf8_lossy(&body);
+            if !(queue_future_nonce && body.contains(MISSING_INTERMEDIATE_NONCE)) {
+                return Err(format!(
+                    "Preverify rejected before propagation ({status}): {body}"
+                ));
+            }
         }
 
         // Propagate
@@ -214,10 +268,90 @@ impl RuesClient {
         parse_transaction_status_response(&body).map_err(TransactionStatusQueryError::Terminal)
     }
 
+    /// The hash and label of the block the node has at `height`, or `None`
+    /// if it has none there (yet, or after a revert).
+    pub async fn query_block_status(
+        &self,
+        height: u64,
+    ) -> Result<Option<BlockStatus>, TransactionStatusQueryError> {
+        let url = self.endpoint("/graphql");
+        let response = self
+            .client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({ "query": block_status_query(height) }))
+                    .expect("GraphQL request serialization should not fail"),
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                TransactionStatusQueryError::Retryable(format!("HTTP error: {}", e.without_url()))
+            })?;
+        let status = response.status();
+        let body = read_response_body(
+            response,
+            MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
+            "block status",
+        )
+        .await
+        .map_err(ResponseBodyError::into_transaction_status_error)?;
+        if !status.is_success() {
+            let error = format!(
+                "Block status query failed ({status}): {}",
+                String::from_utf8_lossy(&body)
+            );
+            if status.is_server_error() || status.as_u16() == 429 {
+                return Err(TransactionStatusQueryError::Retryable(error));
+            }
+            return Err(TransactionStatusQueryError::Terminal(error));
+        }
+        parse_block_status_response(&body)
+    }
+
+    /// Contract events emitted in the block at `height`, from the node's
+    /// archive. Each item has `source` (contract ID hex), `topic`, `data`
+    /// (hex) and `reverted`.
+    pub async fn block_events(&self, height: u64) -> Result<Vec<Value>, String> {
+        let url = self.endpoint("/graphql");
+        let query = format!("query {{ contractEvents(height: {height}) {{ json }} }}");
+        let response = self
+            .client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({ "query": query }))
+                    .expect("GraphQL request serialization should not fail"),
+            )
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {}", e.without_url()))?;
+        let status = response.status();
+        let body = read_response_body(response, MAX_CONTRACT_QUERY_RESPONSE_BYTES, "block events")
+            .await
+            .map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!(
+                "Block events query failed ({status}): {}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        parse_block_events_response(&body)
+    }
+
     /// Returns whether a contract exists on-chain, using VM metadata.
     ///
     /// This does **not** invoke contract code.
     pub async fn contract_exists(&self, contract_hex: &str) -> Result<bool, String> {
+        Ok(self.contract_owner(contract_hex).await?.is_some())
+    }
+
+    /// The owner Rusk recorded for a contract, the bytes the deploy that
+    /// created it named, or `None` when no contract has the ID. Read from
+    /// VM metadata; this does **not** invoke contract code.
+    pub async fn contract_owner(&self, contract_hex: &str) -> Result<Option<Vec<u8>>, String> {
         // RUES requires a non-empty topic; "owner" is conventional here.
         let url = self.endpoint(&format!("/on/contract_owner:{contract_hex}/owner"));
         let response = self
@@ -231,7 +365,15 @@ impl RuesClient {
 
         let status = response.status();
         if status.is_success() {
-            return Ok(true);
+            // A binary request gets the owner's raw bytes back.
+            let owner = read_response_body(
+                response,
+                MAX_CONTRACT_OWNER_RESPONSE_BYTES,
+                "contract owner",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            return Ok(Some(owner));
         }
 
         let body = read_response_body(response, MAX_ERROR_RESPONSE_BYTES, "contract existence")
@@ -247,7 +389,7 @@ impl RuesClient {
                 || body_lc.contains("contract does not exist")
                 || body_lc.contains("contract owner not found"))
         {
-            return Ok(false);
+            return Ok(None);
         }
 
         Err(format!(
@@ -341,8 +483,31 @@ fn append_bounded_chunk(
     body.extend_from_slice(chunk);
     Ok(())
 }
+fn parse_block_events_response(body: &[u8]) -> Result<Vec<Value>, String> {
+    let payload: Value =
+        serde_json::from_slice(body).map_err(|e| format!("Invalid block events response: {e}"))?;
+    if let Some(errors) = payload.get("errors").filter(|e| !e.is_null()) {
+        return Err(format!(
+            "Block events query returned errors (the node needs the archive): {errors}"
+        ));
+    }
+    let json = payload
+        .pointer("/data/contractEvents/json")
+        .ok_or_else(|| "Block events response is missing data.contractEvents.json".to_string())?;
+    let events = json.get("events").unwrap_or(json);
+    match events {
+        Value::Array(items) => Ok(items.clone()),
+        Value::Null => Ok(Vec::new()),
+        _ => Err("Block events response is not a list".into()),
+    }
+}
+
 fn transaction_status_query(tx_id: &str) -> String {
-    format!(r#"query {{ tx(hash: "{tx_id}") {{ err }} }}"#)
+    format!(r#"query {{ tx(hash: "{tx_id}") {{ err gasSpent blockHeight }} }}"#)
+}
+
+fn block_status_query(height: u64) -> String {
+    format!("query {{ block(height: {height}) {{ header {{ hash }} status }} }}")
 }
 
 fn parse_transaction_status_response(body: &[u8]) -> Result<TransactionStatus, String> {
@@ -370,14 +535,78 @@ fn parse_transaction_status_response(body: &[u8]) -> Result<TransactionStatus, S
         return Ok(TransactionStatus::NotFound);
     }
 
-    match transaction.get("err") {
-        Some(Value::Null) => Ok(TransactionStatus::Executed),
-        Some(Value::String(error)) => Ok(TransactionStatus::Failed(error.clone())),
-        Some(other) => Err(format!(
-            "Transaction status response has invalid data.tx.err: {other}"
-        )),
-        None => Err("Transaction status response is missing data.tx.err".into()),
+    let number = |field: &str| {
+        transaction
+            .get(field)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("Transaction status response has no numeric data.tx.{field}"))
+    };
+    let error = match transaction.get("err") {
+        Some(Value::Null) => None,
+        Some(Value::String(error)) => Some(error.clone()),
+        Some(other) => {
+            return Err(format!(
+                "Transaction status response has invalid data.tx.err: {other}"
+            ))
+        }
+        None => return Err("Transaction status response is missing data.tx.err".into()),
+    };
+    let inclusion = Inclusion {
+        block_height: number("blockHeight")?,
+        gas_spent: number("gasSpent")?,
+    };
+    Ok(match error {
+        None => TransactionStatus::Executed(inclusion),
+        Some(error) => TransactionStatus::Failed { error, inclusion },
+    })
+}
+
+/// GraphQL errors count as retryable: the node resolves the block and its
+/// label separately, and a block reverted in between fails the label.
+fn parse_block_status_response(
+    body: &[u8],
+) -> Result<Option<BlockStatus>, TransactionStatusQueryError> {
+    let terminal = TransactionStatusQueryError::Terminal;
+    let payload: Value = serde_json::from_slice(body)
+        .map_err(|e| terminal(format!("Invalid block status response: {e}")))?;
+    if let Some(errors) = payload.get("errors") {
+        let contains_errors = match errors {
+            Value::Null => false,
+            Value::Array(items) => !items.is_empty(),
+            _ => true,
+        };
+        if contains_errors {
+            return Err(TransactionStatusQueryError::Retryable(format!(
+                "Block status query returned errors: {errors}"
+            )));
+        }
     }
+    let block = payload
+        .pointer("/data/block")
+        .ok_or_else(|| terminal("Block status response is missing data.block".into()))?;
+    if block.is_null() {
+        return Ok(None);
+    }
+    let hash = block
+        .pointer("/header/hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| terminal("Block status response has no data.block.header.hash".into()))?;
+    // The label is serialized as {"Final": n}, or a bare string.
+    let label = match block.get("status") {
+        Some(Value::String(label)) => label.clone(),
+        Some(Value::Object(label)) if label.len() == 1 => {
+            label.keys().next().cloned().unwrap_or_default()
+        }
+        _ => {
+            return Err(terminal(
+                "Block status response has no valid data.block.status".into(),
+            ))
+        }
+    };
+    Ok(Some(BlockStatus {
+        hash: hash.to_owned(),
+        label,
+    }))
 }
 
 pub fn rkyv_serialize<T>(value: &T) -> Vec<u8>
@@ -422,7 +651,8 @@ mod tests {
                 let mut paths = Vec::new();
                 for body in [
                     vec![7],
-                    br#"{"data":{"tx":{"err":null}}}"#.to_vec(),
+                    br#"{"data":{"tx":{"err":null,"gasSpent":21,"blockHeight":9}}}"#.to_vec(),
+                    br#"{"data":{"block":{"header":{"hash":"ab"},"status":{"Final":1}}}}"#.to_vec(),
                     vec![],
                     vec![],
                     vec![],
@@ -467,10 +697,19 @@ mod tests {
                     .query_transaction_status(&"ab".repeat(32))
                     .await
                     .unwrap(),
-                super::TransactionStatus::Executed
+                super::TransactionStatus::Executed(super::Inclusion {
+                    block_height: 9,
+                    gas_spent: 21
+                })
             );
+            assert!(client
+                .query_block_status(9)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_final());
             assert!(client.contract_exists(&"02".repeat(32)).await.unwrap());
-            client.propagate_tx(&[1]).await.unwrap();
+            client.propagate_tx(&[1], false).await.unwrap();
             let query = if suffix.contains('?') {
                 "?token=fixture%2Fvalue"
             } else {
@@ -478,6 +717,7 @@ mod tests {
             };
             assert_eq!(worker.join().unwrap(), vec![
                 format!("/rpc/on/contracts:0100000000000000000000000000000000000000000000000000000000000000/chain_id{query}"),
+                format!("/rpc/graphql{query}"),
                 format!("/rpc/graphql{query}"),
                 format!("/rpc/on/contract_owner:{}/owner{query}", "02".repeat(32)),
                 format!("/rpc/on/transactions/preverify{query}"),
@@ -487,8 +727,9 @@ mod tests {
     }
 
     use super::{
-        append_bounded_chunk, parse_transaction_status_response, propagation_status_error,
-        transaction_status_query, ResponseBodyError, TransactionStatus,
+        append_bounded_chunk, block_status_query, parse_block_status_response,
+        parse_transaction_status_response, propagation_status_error, transaction_status_query,
+        BlockStatus, Inclusion, ResponseBodyError, TransactionStatus, TransactionStatusQueryError,
         MAX_TRANSACTION_STATUS_RESPONSE_BYTES,
     };
 
@@ -504,12 +745,13 @@ mod tests {
         let errors = [
             client.query_chain_id().await.unwrap_err(),
             client.contract_exists(&"02".repeat(32)).await.unwrap_err(),
-            client.propagate_tx(&[0]).await.unwrap_err(),
+            client.propagate_tx(&[0], false).await.unwrap_err(),
             client
                 .query_transaction_status(&"ab".repeat(32))
                 .await
                 .unwrap_err()
                 .to_string(),
+            client.query_block_status(9).await.unwrap_err().to_string(),
         ];
         for error in errors {
             for secret in [
@@ -545,22 +787,36 @@ mod tests {
     fn transaction_status_query_targets_the_exact_hash() {
         assert_eq!(
             transaction_status_query("aabbcc"),
-            r#"query { tx(hash: "aabbcc") { err } }"#
+            r#"query { tx(hash: "aabbcc") { err gasSpent blockHeight } }"#
+        );
+        assert_eq!(
+            block_status_query(1234),
+            "query { block(height: 1234) { header { hash } status } }"
         );
     }
 
     #[test]
     fn transaction_status_distinguishes_success_failure_and_pending() {
+        let inclusion = Inclusion {
+            block_height: 1234,
+            gas_spent: 2_140_000,
+        };
         assert_eq!(
-            parse_transaction_status_response(br#"{"data":{"tx":{"err":null}}}"#).unwrap(),
-            TransactionStatus::Executed
+            parse_transaction_status_response(
+                br#"{"data":{"tx":{"err":null,"gasSpent":2140000,"blockHeight":1234}}}"#
+            )
+            .unwrap(),
+            TransactionStatus::Executed(inclusion)
         );
         assert_eq!(
             parse_transaction_status_response(
-                br#"{"data":{"tx":{"err":"Mailbox: insufficient fee credit"}}}"#,
+                br#"{"data":{"tx":{"err":"Mailbox: insufficient fee credit","gasSpent":2140000,"blockHeight":1234}}}"#,
             )
             .unwrap(),
-            TransactionStatus::Failed("Mailbox: insufficient fee credit".into())
+            TransactionStatus::Failed {
+                error: "Mailbox: insufficient fee credit".into(),
+                inclusion
+            }
         );
         assert_eq!(
             parse_transaction_status_response(br#"{"data":{"tx":null}}"#).unwrap(),
@@ -578,7 +834,78 @@ mod tests {
         assert!(parse_transaction_status_response(br#"{"data":{}}"#).is_err());
         assert!(parse_transaction_status_response(br#"{"data":{"tx":{}}}"#).is_err());
         assert!(parse_transaction_status_response(br#"{"data":{"tx":{"err":7}}}"#).is_err());
+        // Inclusion without a block height can't be checked for finality.
+        assert!(
+            parse_transaction_status_response(br#"{"data":{"tx":{"err":null}}}"#)
+                .unwrap_err()
+                .contains("blockHeight")
+        );
+        assert!(parse_transaction_status_response(
+            br#"{"data":{"tx":{"err":null,"gasSpent":1,"blockHeight":-1}}}"#
+        )
+        .is_err());
         assert!(parse_transaction_status_response(b"not json").is_err());
+    }
+
+    #[test]
+    fn block_status_reads_the_label_rusk_serializes() {
+        let block = |label: &str| {
+            parse_block_status_response(
+                format!(
+                    r#"{{"data":{{"block":{{"header":{{"hash":"ab"}},"status":{{"{label}":2}}}}}}}}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(
+            block("Final"),
+            BlockStatus {
+                hash: "ab".into(),
+                label: "Final".into()
+            }
+        );
+        assert!(block("Final").is_final());
+        for label in ["Accepted", "Attested", "Confirmed"] {
+            assert!(!block(label).is_final(), "{label}");
+        }
+        assert!(parse_block_status_response(
+            br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Final"}}}"#
+        )
+        .unwrap()
+        .unwrap()
+        .is_final());
+        assert_eq!(
+            parse_block_status_response(br#"{"data":{"block":null}}"#).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn block_status_retries_graphql_errors_and_rejects_malformed_responses() {
+        assert!(matches!(
+            parse_block_status_response(
+                br#"{"errors":[{"message":"Label not found"}],"data":{"block":null}}"#
+            ),
+            Err(TransactionStatusQueryError::Retryable(_))
+        ));
+        for body in [
+            &b"not json"[..],
+            br#"{"data":{}}"#,
+            br#"{"data":{"block":{"status":{"Final":1}}}}"#,
+            br#"{"data":{"block":{"header":{"hash":"ab"}}}}"#,
+            br#"{"data":{"block":{"header":{"hash":"ab"},"status":{"Final":1,"Accepted":1}}}}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_block_status_response(body),
+                    Err(TransactionStatusQueryError::Terminal(_))
+                ),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
     }
 
     #[test]

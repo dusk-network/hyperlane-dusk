@@ -76,16 +76,22 @@ mod warp_drc20_collateral {
         /// Registry of external accounts: keccak256(pk.to_bytes()) → pk.
         ///
         /// External Dusk accounts use 96-byte BLS public keys that don't
-        /// fit in a 32-byte H256. Users must call `register_account` once
-        /// so that inbound transfers can resolve to External accounts.
+        /// fit in a 32-byte H256. An account is registered by
+        /// `register_account`, or when its escrow is claimed with
+        /// `claim_pending` or `claim_pending_for`, so that inbound transfers
+        /// can resolve to its External account. Every stored key is
+        /// canonical (see [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Pending transfers for recipients who haven't registered yet.
         ///
-        /// The recipient can call `claim_pending` after registering to
-        /// receive their wrapped DRC20 tokens.
+        /// `claim_pending` (the recipient) or `claim_pending_for` (anyone)
+        /// pays out the wrapped DRC20 tokens and registers the recipient.
         pending_transfers: BTreeMap<H256, u64>,
         /// Aggregate pending liability reserved against wrapped-token custody.
         pending_total: u64,
+        /// Held while `transfer_remote`, `handle`, a claim or
+        /// `withdraw_dispatch_credit` runs (see [`Self::enter`]).
+        entered: bool,
     }
 
     impl WarpDrc20Collateral {
@@ -101,6 +107,7 @@ mod warp_drc20_collateral {
                 registered_accounts: BTreeMap::new(),
                 pending_transfers: BTreeMap::new(),
                 pending_total: 0,
+                entered: false,
             }
         }
 
@@ -155,17 +162,13 @@ mod warp_drc20_collateral {
         /// Register the caller's BLS public key so that inbound transfers
         /// can resolve the H256 recipient to an External DRC20 account.
         ///
-        /// Reads the sender from `abi::public_sender()` (Moonlight TX).
-        /// Stores `keccak256(pk.to_bytes()) → pk`.
+        /// Reads the sender from `abi::public_sender()` (Moonlight TX), which
+        /// the node decodes from the transaction's compressed encoding, so
+        /// it is already canonical. Stores `keccak256(pk.to_bytes()) → pk`.
         pub fn register_account(&mut self) {
             let pk = abi::public_sender()
                 .expect("WarpCollateral: register_account requires Moonlight TX");
-            let h = message::keccak256(&pk.to_bytes());
-            self.registered_accounts.insert(h, pk);
-            abi::emit(
-                events::AccountRegistered::TOPIC,
-                events::AccountRegistered { account_hash: h },
-            );
+            self.register(pk);
         }
 
         /// Check whether an H256 has a registered account.
@@ -173,15 +176,38 @@ mod warp_drc20_collateral {
             self.registered_accounts.contains_key(&h)
         }
 
-        /// Claim pending wrapped DRC20 tokens that arrived before the caller
-        /// registered.
+        /// Register the transaction's sender and pay it the wrapped DRC20
+        /// tokens escrowed for its hash.
         ///
-        /// The caller must have previously called `register_account`.
+        /// The sender is already canonical (see [`Self::register_account`]).
+        /// Registering it means later transfers to it are paid out directly,
+        /// as after [`Self::claim_pending_for`]. A call with nothing in
+        /// escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
+            self.enter();
             let pk =
                 abi::public_sender().expect("WarpCollateral: claim_pending requires Moonlight TX");
-            let h = message::keccak256(&pk.to_bytes());
+            let h = self.register(pk);
             self.claim_pending_to(h, Account::moonlight(&pk));
+            self.exit();
+        }
+
+        /// Register `account` and pay it the tokens escrowed for
+        /// `keccak256(account)`.
+        ///
+        /// Anyone can call this and pay its gas, so a recipient that holds no
+        /// DUSK can still receive. `account` is decoded to its canonical form
+        /// first, and the escrow lookup, the registration and the payment all
+        /// use that key: the one its owner signs with, whatever limbs the
+        /// caller sends. A key that doesn't decode to a valid public key
+        /// reverts, and so does a call with nothing in escrow, so this can't
+        /// register a key nobody has sent tokens to.
+        pub fn claim_pending_for(&mut self, account: AccountPublicKey) {
+            self.enter();
+            let account = canonical_account(&account);
+            let h = self.register(account);
+            self.claim_pending_to(h, Account::moonlight(&account));
+            self.exit();
         }
 
         /// Claim pending wrapped DRC20 tokens for the calling contract.
@@ -190,12 +216,14 @@ mod warp_drc20_collateral {
         /// bytes. The Moonlight transfer contract is rejected as a root
         /// caller so it cannot be confused with the intended recipient.
         pub fn claim_pending_contract(&mut self) {
+            self.enter();
             let contract = abi::caller().expect("WarpCollateral: contract caller unavailable");
             assert!(
                 contract != TRANSFER_CONTRACT,
                 "WarpCollateral: claim_pending_contract requires contract caller"
             );
             self.claim_pending_to(contract.to_bytes(), Account::Contract(contract));
+            self.exit();
         }
 
         /// Returns the pending (escrowed) balance for an H256 recipient.
@@ -208,10 +236,14 @@ mod warp_drc20_collateral {
             self.pending_total
         }
 
-        /// Deployment compatibility version including dispatch-credit withdrawal.
+        /// Deployment compatibility version. Version 6: `transfer_remote`,
+        /// `handle`, the claims and `withdraw_dispatch_credit` can't be
+        /// re-entered. Version 5: `claim_pending_for` pays the decoded key,
+        /// and `claim_pending` registers the sender. Version 4 added
+        /// `claim_pending_for`.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            3
+            6
         }
 
         // =================================================================
@@ -228,6 +260,7 @@ mod warp_drc20_collateral {
             recipient: H256,
             amount: u64,
         ) -> MessageId {
+            self.enter();
             assert!(amount > 0, "WarpCollateral: amount must be > 0");
             assert!(
                 recipient != [0u8; 32],
@@ -289,6 +322,7 @@ mod warp_drc20_collateral {
                 },
             );
 
+            self.exit();
             message_id
         }
 
@@ -319,6 +353,7 @@ mod warp_drc20_collateral {
         /// Called by the Mailbox when a message is delivered. Unlocks
         /// wrapped DRC20 tokens to the recipient.
         pub fn handle(&mut self, origin: u32, sender: H256, body: Vec<u8>) {
+            self.enter();
             // Verify caller is the Mailbox
             let caller = abi::caller().expect("WarpCollateral: cannot determine caller");
             assert!(
@@ -370,6 +405,7 @@ mod warp_drc20_collateral {
                     amount: msg.amount,
                 },
             );
+            self.exit();
         }
 
         /// Returns the ISM override for this contract.
@@ -451,8 +487,12 @@ mod warp_drc20_collateral {
         /// Withdraw this route's unused Mailbox dispatch-fee credit.
         ///
         /// Owner only. The Mailbox sees this route as the payer and sends the
-        /// withdrawn native DUSK to the explicit Moonlight recipient.
+        /// withdrawn native DUSK to the explicit Moonlight recipient. It
+        /// decodes the recipient's key first and pays the account that signs
+        /// with it, so a forged twin of the key can't divert the payout; the
+        /// decoding costs about 57M gas.
         pub fn withdraw_dispatch_credit(&mut self, recipient: AccountPublicKey, amount: u64) {
+            self.enter();
             self.only_owner();
             let _: () = abi::call(
                 self.mailbox,
@@ -460,6 +500,7 @@ mod warp_drc20_collateral {
                 &(recipient, amount),
             )
             .expect("WarpCollateral: dispatch credit withdrawal failed");
+            self.exit();
         }
 
         /// Transfer ownership. Owner only.
@@ -483,6 +524,47 @@ mod warp_drc20_collateral {
         // =================================================================
         // Internal helpers
         // =================================================================
+
+        /// Take the route's reentrancy guard, or panic if it's held.
+        ///
+        /// The wrapped token, the Mailbox and anything they call can call
+        /// back into the route before the call that reached them returns.
+        /// `transfer_remote` measures custody before and after
+        /// `transfer_from`, so the deposit of a nested `transfer_remote`
+        /// that lands in between counts toward both checks: with a token
+        /// that takes a fee on transfers, 100 locked tokens could back 110
+        /// remote mints. Every entry point that calls another contract and
+        /// changes state takes the guard before its first call:
+        /// `transfer_remote`, `handle`, the three claims and
+        /// `withdraw_dispatch_credit`. A call that panics is reverted, the
+        /// guard with it.
+        fn enter(&mut self) {
+            // The VM tests build a copy of the route with
+            // `--cfg hyperlane_dusk_unguarded_test` to show the attack this
+            // check stops (`make warp-drc20-collateral-unguarded`). That copy
+            // is never deployed.
+            #[cfg(not(hyperlane_dusk_unguarded_test))]
+            assert!(!self.entered, "WarpCollateral: reentrant call");
+            self.entered = true;
+        }
+
+        /// Release the guard taken by [`Self::enter`].
+        fn exit(&mut self) {
+            self.entered = false;
+        }
+
+        /// Map `keccak256(pk)` to `pk` and return the hash. `pk` must be
+        /// canonical: the transaction's public sender, or a key from
+        /// [`canonical_account`].
+        fn register(&mut self, pk: AccountPublicKey) -> H256 {
+            let h = message::keccak256(&pk.to_bytes());
+            self.registered_accounts.insert(h, pk);
+            abi::emit(
+                events::AccountRegistered::TOPIC,
+                events::AccountRegistered { account_hash: h },
+            );
+            h
+        }
 
         /// Query the route's current Mailbox credit.
         fn dispatch_credit(&self) -> u64 {
@@ -590,5 +672,29 @@ mod warp_drc20_collateral {
             abi::call(self.wrapped_token, "balance_of", &BalanceOf { account })
                 .expect("WarpCollateral: balance query failed")
         }
+    }
+
+    /// Decode a caller-supplied account key to the key its owner signs with.
+    ///
+    /// The archive check accepts any limbs in a public key. A recipient hash
+    /// covers only the compressed encoding (`to_bytes`): x reduced mod p, the
+    /// infinity flag and the sign of y. A Moonlight principal holds the raw
+    /// limbs (`to_raw_bytes`). So a forged key can share a recipient's hash
+    /// and still be paid to a principal nobody can sign for. Decoding the
+    /// compressed bytes gives the one canonical key with that hash.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the encoding isn't a valid public key, including the
+    /// identity, which nobody can sign for.
+    fn canonical_account(account: &AccountPublicKey) -> AccountPublicKey {
+        AccountPublicKey::from_bytes(&account.to_bytes())
+            .ok()
+            // `from_bytes` checks that the point is on the curve and in G2,
+            // so `is_valid` would only add the identity check, at the cost
+            // of a second subgroup check (about 22M gas). The default key is
+            // the identity.
+            .filter(|pk| *pk != AccountPublicKey::default())
+            .expect("WarpCollateral: invalid account public key")
     }
 }

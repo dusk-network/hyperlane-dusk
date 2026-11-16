@@ -52,7 +52,7 @@ mod ism_multisig {
     use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message::{self, keccak256};
-    use hyperlane_dusk_types::{EthAddress, H256};
+    use hyperlane_dusk_types::{signature, EthAddress, H256};
 
     /// Structural upper bound implied by the u8 threshold ABI.
     const MAX_VALIDATORS: usize = u8::MAX as usize;
@@ -358,6 +358,12 @@ mod ism_multisig {
 
         let mut sig_arr = [0u8; 65];
         sig_arr.copy_from_slice(sig);
+        // Accept exactly what OpenZeppelin's ECDSA.recover accepts: the host
+        // query would also take v of 0/1 and high-s twins.
+        assert!(
+            signature::is_canonical(&sig_arr),
+            "MultisigISM: non-canonical signature"
+        );
 
         // Recover the uncompressed public key (65 bytes: 0x04 || x || y).
         let pubkey =

@@ -155,16 +155,46 @@ if [ "${AGENT_CONFIG_VALIDATE_ONLY:-0}" = "1" ]; then
     exit 0
 fi
 
-# Gas settings for Dusk tx submission (passed through to dusk-tx).
+# Gas settings for Dusk tx submission (passed through to dusk-tx). Calls
+# only need a gas price above zero; 2000 is the minimum for deploys only.
+# The relayer's `process` costs about 1.95M gas plus 0.22M per validator
+# signature, so 5M covers the e2e thresholds (up to 5). A failed transaction
+# pays its whole limit, for example when a message was already delivered, so
+# the relayer's limit stays low. The validators' covers their announcement.
+DUSK_RELAYER_GAS_LIMIT="${DUSK_RELAYER_GAS_LIMIT:-5000000}"
 DUSK_GAS_LIMIT="${DUSK_GAS_LIMIT:-30000000}"
-DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-2000}"
+DUSK_GAS_PRICE="${DUSK_GAS_PRICE:-1}"
+# The relayer delivers to Dusk one at a time, as deploy/testnet.sh's
+# configs do: its Dusk chain has no pipelineDeliveries or maxBatchSize
+# (docs/operations.md, Deliveries to Dusk).
+
+# The relayer relays any message once it is paid for, with the policies
+# deploy/testnet.sh writes (docs/costs.md#fee-coverage): a Dusk-origin
+# message's payment to the Dusk IGP must cover 2/3 of the EVM gas the relayer
+# estimates for it (the default 50% margin), and an EVM-origin message must
+# have paid the EVM IGP for the overhead demo/deploy.sh configured, as a
+# fraction of the relayer's gas limit, which is hyperlane-dusk's estimate.
+EVM_IGP_DUSK_GAS_OVERHEAD="$(jq -er '.evm.igp_dusk_gas_overhead | numbers' "$STATE_FILE")" \
+    || fail "Deployment state lacks the EVM IGP's pricing for Dusk; redeploy"
+[ "$EVM_IGP_DUSK_GAS_OVERHEAD" -le "$DUSK_RELAYER_GAS_LIMIT" ] \
+    || fail "The EVM IGP's overhead for Dusk ($EVM_IGP_DUSK_GAS_OVERHEAD) is above DUSK_RELAYER_GAS_LIMIT"
+DUSK_ORIGIN_GAS_FRACTION="2/3"
+EVM_ORIGIN_GAS_FRACTION="$EVM_IGP_DUSK_GAS_OVERHEAD/$DUSK_RELAYER_GAS_LIMIT"
 
 # Keep the EVM relayer submitter and validator identities independently
 # configurable. Existing callers remain compatible, while the live E2E can
 # isolate them from the operator account and from each other to avoid nonce
 # races between concurrently running processes.
+#
+# ANVIL_VALIDATOR_PRIVATE_KEYS (comma-separated) runs a validator set: one
+# validator per key for each origin chain. It defaults to the single
+# ANVIL_VALIDATOR_PRIVATE_KEY.
 ANVIL_RELAYER_PRIVATE_KEY="${ANVIL_RELAYER_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
 ANVIL_VALIDATOR_PRIVATE_KEY="${ANVIL_VALIDATOR_PRIVATE_KEY:-$ANVIL_PRIVATE_KEY}"
+ANVIL_VALIDATOR_PRIVATE_KEYS="${ANVIL_VALIDATOR_PRIVATE_KEYS:-$ANVIL_VALIDATOR_PRIVATE_KEY}"
+IFS=',' read -r -a VALIDATOR_KEYS <<<"$ANVIL_VALIDATOR_PRIVATE_KEYS"
+[ "${#VALIDATOR_KEYS[@]}" -ge 1 ] && [ "${#VALIDATOR_KEYS[@]}" -le 8 ] \
+    || fail "ANVIL_VALIDATOR_PRIVATE_KEYS must list 1 to 8 keys"
 if [ "$ISM" = "messageIdMultisig" ]; then
     DUSK_MULTISIG_POLICY="$(jq -ce '.dusk.multisig_policy | {
         validators: ([.validators[] | ascii_downcase] | sort),
@@ -172,46 +202,40 @@ if [ "$ISM" = "messageIdMultisig" ]; then
     }' "$STATE_FILE")" \
         || fail "Deployment state lacks the validated Dusk multisig policy"
     DUSK_MULTISIG_THRESHOLD="$(jq -er '.threshold' <<<"$DUSK_MULTISIG_POLICY")"
-    [ "$DUSK_MULTISIG_THRESHOLD" -eq 1 ] \
-        || fail "The generated single-validator demo requires Dusk multisig threshold 1 (live threshold: $DUSK_MULTISIG_THRESHOLD)"
-    GENERATED_VALIDATOR_ADDRESS="$(cast wallet address --private-key "$ANVIL_VALIDATOR_PRIVATE_KEY" | tr '[:upper:]' '[:lower:]')" \
-        || fail "Cannot derive the configured validator address"
-    jq -e --arg validator "$GENERATED_VALIDATOR_ADDRESS" \
-        '.validators | index($validator) != null' <<<"$DUSK_MULTISIG_POLICY" >/dev/null \
-        || fail "Configured validator $GENERATED_VALIDATOR_ADDRESS is not authorized by the live Dusk multisig policy"
+    [ "${#VALIDATOR_KEYS[@]}" -ge "$DUSK_MULTISIG_THRESHOLD" ] \
+        || fail "Configured ${#VALIDATOR_KEYS[@]} validator key(s), fewer than the live Dusk multisig threshold $DUSK_MULTISIG_THRESHOLD"
+    for key in "${VALIDATOR_KEYS[@]}"; do
+        GENERATED_VALIDATOR_ADDRESS="$(cast wallet address --private-key "$key" | tr '[:upper:]' '[:lower:]')" \
+            || fail "Cannot derive a configured validator address"
+        jq -e --arg validator "$GENERATED_VALIDATOR_ADDRESS" \
+            '.validators | index($validator) != null' <<<"$DUSK_MULTISIG_POLICY" >/dev/null \
+            || fail "Configured validator $GENERATED_VALIDATOR_ADDRESS is not authorized by the live Dusk multisig policy"
+    done
 fi
 
-# ── Decrypt Dusk Deployer Key (consensus.keys) ──────────────────────────────
-
-if [ ! -f "$CONSENSUS_KEYS" ]; then
-    fail "Consensus keys not found at $CONSENSUS_KEYS"
+# Multicall for Dusk, through which the agents batch their contract reads
+# (batchContractAddress): the one demo/deploy.sh recorded, or the ID it has
+# on every chain. Included only when it answers `version` with 1 on this
+# chain, as deploy/testnet.sh checks it; otherwise the agents make single
+# queries. DUSK_MULTICALL= leaves it out.
+DUSK_MULTICALL="${DUSK_MULTICALL-$(jq -r '.dusk.multicall // "93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4"' "$STATE_FILE")}"
+DUSK_MULTICALL_JSON=""
+MULTICALL_ID="$(printf '%s' "${DUSK_MULTICALL#0x}" | tr '[:upper:]' '[:lower:]')"
+if [ -n "$MULTICALL_ID" ]; then
+    [[ "$MULTICALL_ID" =~ ^[0-9a-f]{64}$ ]] || fail "DUSK_MULTICALL must be a contract ID of 64 hex characters"
+    MULTICALL_VERSION="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$MULTICALL_ID" \
+        --method version --return-type u32 2>/dev/null | jq -r '.value // empty' 2>/dev/null)" || true
+    if [ "$MULTICALL_VERSION" = 1 ]; then
+        DUSK_MULTICALL_JSON="\"batchContractAddress\": \"0x${MULTICALL_ID}\","
+    else
+        echo "[WARN] Multicall for Dusk doesn't answer version 1 at $MULTICALL_ID on this chain: the agent configs leave batchContractAddress out, and the agents make single contract queries" >&2
+    fi
 fi
 
-DUSK_SECRET_KEY_HEX="$(
-python3 - <<PY
-import base64, json
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+# ── Dusk Deployer Key (consensus.keys) ──────────────────────────────────────
 
-path = ${CONSENSUS_KEYS@Q}
-password = ${CONSENSUS_PASSWORD@Q}
-
-enc = json.load(open(path, "r", encoding="utf-8"))
-salt = base64.b64decode(enc["salt"])
-iv = base64.b64decode(enc["iv"])
-key_pair = bytes(enc["key_pair"])
-
-kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=10000)
-aes_key = kdf.derive(password.encode("utf-8"))
-pt = AESGCM(aes_key).decrypt(iv, key_pair, None)
-kp = json.loads(pt)
-sk = base64.b64decode(kp["secret_key_bls"])
-if len(sk) != 32:
-    raise SystemExit(f"Expected 32-byte BLS secret key, got {len(sk)} bytes")
-print(sk.hex())
-PY
-)"
+[ -f "$CONSENSUS_KEYS" ] || fail "Consensus keys not found at $CONSENSUS_KEYS"
+[ -x "$DUSK_TX" ] || fail "dusk-tx not found at $DUSK_TX (run: make dusk-tx)"
 
 # ── Output Paths ────────────────────────────────────────────────────────────
 
@@ -228,7 +252,13 @@ VALIDATOR_CONFIG="$RUN_DIR/validator-anvil.json"
 VALIDATOR_DUSK_CONFIG="$RUN_DIR/validator-dusk.json"
 DUSK_SIGNER_KEY_FILE="$RUN_DIR/dusk-signer.key"
 
-printf '0x%s\n' "$DUSK_SECRET_KEY_HEX" > "$DUSK_SIGNER_KEY_FILE"
+# dusk-tx decrypts the consensus keys and writes the agents' key file (mode
+# 0600, never over an existing file), as deploy/local-agents.sh does. The
+# password reaches it as data in its environment, as in the other demo
+# scripts, never as code or an argument.
+export_result="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" \
+    "$DUSK_TX" export-signer-key --keys "$CONSENSUS_KEYS" --out "$DUSK_SIGNER_KEY_FILE")" \
+    || fail "Cannot export the Dusk signer key from $CONSENSUS_KEYS: $(jq -r '.error // "dusk-tx failed"' <<<"$export_result" 2>/dev/null)"
 
 # ── Write Relayer Config ────────────────────────────────────────────────────
 
@@ -239,8 +269,11 @@ cat > "$RELAYER_CONFIG" <<JSON
   "db": "${RELAYER_DB}",
   "relayChains": "anvil,dusk",
   "allowLocalCheckpointSyncers": true,
-  "txIdIndexingEnabled": false,
-  "igpIndexingEnabled": false,
+  "igpIndexingEnabled": true,
+  "gasPaymentEnforcement": [
+    { "type": "onChainFeeQuoting", "gasFraction": "${DUSK_ORIGIN_GAS_FRACTION}", "matchingList": [{ "originDomain": ${DUSK_DOMAIN} }] },
+    { "type": "onChainFeeQuoting", "gasFraction": "${EVM_ORIGIN_GAS_FRACTION}", "matchingList": [{ "originDomain": ${EVM_DOMAIN} }] }
+  ],
   "chains": {
     "anvil": {
       "name": "anvil",
@@ -263,8 +296,9 @@ cat > "$RELAYER_CONFIG" <<JSON
       "eventCursorDir": "${DUSK_RELAYER_EVENT_CURSOR_DIR}",
       "protocol": "dusk",
       "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
-      "gasLimit": ${DUSK_GAS_LIMIT},
+      "gasLimit": ${DUSK_RELAYER_GAS_LIMIT},
       "gasPrice": ${DUSK_GAS_PRICE},
+      ${DUSK_MULTICALL_JSON}
       "mailbox": "0x${DUSK_MAILBOX}",
       "interchainGasPaymaster": "0x${DUSK_IGP}",
       "validatorAnnounce": "0x${DUSK_VALIDATOR_ANNOUNCE}",
@@ -276,19 +310,39 @@ cat > "$RELAYER_CONFIG" <<JSON
 }
 JSON
 
-# ── Write Validator Config (only for MessageIdMultisig) ─────────────────────
+# ── Write Validator Configs (only for MessageIdMultisig) ────────────────────
+#
+# One validator per key and origin chain. Validator 0 keeps the historical
+# file names; validator i > 0 gets an "-<i>" suffix and its own database,
+# checkpoint directory, event cursors and metrics port.
+
+VALIDATOR_CONFIGS=()
+VALIDATOR_DUSK_CONFIGS=()
 
 if [ "$ISM" = "messageIdMultisig" ]; then
-    mkdir -p "$CHECKPOINT_DIR" "$CHECKPOINT_DUSK_DIR"
+    for i in "${!VALIDATOR_KEYS[@]}"; do
+        key="${VALIDATOR_KEYS[$i]}"
+        sfx=""
+        [ "$i" -eq 0 ] || sfx="-$i"
+        anvil_db="$VALIDATOR_DB$sfx"
+        dusk_db="$VALIDATOR_DUSK_DB$sfx"
+        anvil_ckpt="$CHECKPOINT_DIR$sfx"
+        dusk_ckpt="$CHECKPOINT_DUSK_DIR$sfx"
+        dusk_cursors="$DUSK_VALIDATOR_EVENT_CURSOR_DIR$sfx"
+        anvil_cfg="$RUN_DIR/validator-anvil$sfx.json"
+        dusk_cfg="$RUN_DIR/validator-dusk$sfx.json"
+        anvil_port=$((19093 + 2 * i))
+        dusk_port=$((19094 + 2 * i))
+        mkdir -p "$anvil_ckpt" "$dusk_ckpt"
 
-    cat > "$VALIDATOR_CONFIG" <<JSON
+        cat > "$anvil_cfg" <<JSON
 {
-  "metricsPort": 19093,
+  "metricsPort": ${anvil_port},
   "log": { "level": "debug", "format": "pretty" },
-  "db": "${VALIDATOR_DB}",
+  "db": "${anvil_db}",
   "originChainName": "anvil",
-  "validator": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" },
-  "checkpointSyncer": { "type": "localStorage", "path": "${CHECKPOINT_DIR}" },
+  "validator": { "type": "hexKey", "key": "${key}" },
+  "checkpointSyncer": { "type": "localStorage", "path": "${anvil_ckpt}" },
   "interval": 2,
   "chains": {
     "anvil": {
@@ -303,31 +357,32 @@ if [ "$ISM" = "messageIdMultisig" ]; then
       "validatorAnnounce": "${EVM_VALIDATOR_ANNOUNCE}",
       "merkleTreeHook": "${EVM_MERKLE_TREE_HOOK}",
       "submitter": "Classic",
-      "signer": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" }
+      "signer": { "type": "hexKey", "key": "${key}" }
     }
   }
 }
 JSON
 
-    cat > "$VALIDATOR_DUSK_CONFIG" <<JSON
+        cat > "$dusk_cfg" <<JSON
 {
-  "metricsPort": 19094,
+  "metricsPort": ${dusk_port},
   "log": { "level": "debug", "format": "pretty" },
-  "db": "${VALIDATOR_DUSK_DB}",
+  "db": "${dusk_db}",
   "originChainName": "dusk",
-  "validator": { "type": "hexKey", "key": "${ANVIL_VALIDATOR_PRIVATE_KEY}" },
-  "checkpointSyncer": { "type": "localStorage", "path": "${CHECKPOINT_DUSK_DIR}" },
+  "validator": { "type": "hexKey", "key": "${key}" },
+  "checkpointSyncer": { "type": "localStorage", "path": "${dusk_ckpt}" },
   "interval": 2,
   "chains": {
     "dusk": {
       "name": "dusk",
       "domainId": ${DUSK_DOMAIN},
       "chainId": ${DUSK_CHAIN_ID},
-      "eventCursorDir": "${DUSK_VALIDATOR_EVENT_CURSOR_DIR}",
+      "eventCursorDir": "${dusk_cursors}",
       "protocol": "dusk",
       "rpcUrls": [{ "http": "${DUSK_RUES_URL}" }],
       "gasLimit": ${DUSK_GAS_LIMIT},
       "gasPrice": ${DUSK_GAS_PRICE},
+      ${DUSK_MULTICALL_JSON}
       "mailbox": "0x${DUSK_MAILBOX}",
       "interchainGasPaymaster": "0x${DUSK_IGP}",
       "validatorAnnounce": "0x${DUSK_VALIDATOR_ANNOUNCE}",
@@ -338,6 +393,9 @@ JSON
   }
 }
 JSON
+        VALIDATOR_CONFIGS+=("$anvil_cfg")
+        VALIDATOR_DUSK_CONFIGS+=("$dusk_cfg")
+    done
 fi
 
 # ── Print Paths as JSON ─────────────────────────────────────────────────────
@@ -351,7 +409,9 @@ if [ "$ISM" = "messageIdMultisig" ]; then
       --arg run_dir "$RUN_DIR" \
       --arg deployment_snapshot "$STATE_SNAPSHOT" \
       --arg run_id "$RUN_ID" \
-      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, validator: $validator, duskValidator: $dusk_validator, duskSignerKeyFile: $dusk_signer_key_file}')"
+      --argjson validators "$(printf '%s\n' "${VALIDATOR_CONFIGS[@]}" | jq -R . | jq -s .)" \
+      --argjson dusk_validators "$(printf '%s\n' "${VALIDATOR_DUSK_CONFIGS[@]}" | jq -R . | jq -s .)" \
+      '{runId: $run_id, runDir: $run_dir, deploymentSnapshot: $deployment_snapshot, relayer: $relayer, validator: $validator, duskValidator: $dusk_validator, validators: $validators, duskValidators: $dusk_validators, duskSignerKeyFile: $dusk_signer_key_file}')"
 else
     output_json="$(jq -n \
       --arg relayer "$RELAYER_CONFIG" \

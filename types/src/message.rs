@@ -213,6 +213,23 @@ pub fn keccak256(data: &[u8]) -> [u8; 32] {
     }
 }
 
+/// [`keccak256`] of a buffer the caller is done with. On chain the buffer
+/// goes to the host as it is, without the copy [`keccak256`] makes.
+#[must_use]
+// Only the host call consumes the buffer.
+#[cfg_attr(not(feature = "abi"), allow(clippy::needless_pass_by_value))]
+pub fn keccak256_vec(data: Vec<u8>) -> [u8; 32] {
+    #[cfg(feature = "abi")]
+    {
+        dusk_core::abi::keccak256(data)
+    }
+
+    #[cfg(not(feature = "abi"))]
+    {
+        keccak256_software(&data)
+    }
+}
+
 /// Software keccak256 implementation for off-chain / testing use.
 ///
 /// This is a minimal implementation of the Keccak-256 sponge function

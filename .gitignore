@@ -18,3 +18,7 @@ e2e/consensus.keys
 
 .DS_Store
 Thumbs.db
+
+deploy/testnet.env
+deploy/local.env
+deploy/out/

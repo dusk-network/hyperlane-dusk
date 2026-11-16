@@ -5,10 +5,16 @@
 //! Registry for validator storage locations.
 //!
 //! Validators use this contract to announce where their signed checkpoints
-//! can be found (e.g., an S3 bucket URL). The relayer queries this contract
-//! to discover validator checkpoint storage.
+//! can be found (e.g., an S3 bucket URL). The relayer looks up a validator's
+//! storage locations here.
 //!
-//! This is the Dusk equivalent of `ValidatorAnnounce.sol`.
+//! This is the Dusk equivalent of `ValidatorAnnounce.sol`, with one
+//! difference: the contract keeps the keccak256 hash of each location, not
+//! the location. The location itself is in the `ValidatorAnnouncement` event
+//! that announced it. An agent reads a validator's locations from those
+//! events and checks each against
+//! `get_announced_storage_location_hashes(validator)`, which lists the hashes
+//! in announcement order.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -27,7 +33,7 @@
 mod validator_announce {
     extern crate alloc;
 
-    use alloc::collections::BTreeMap;
+    use alloc::collections::btree_map::{BTreeMap, Entry};
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -35,19 +41,20 @@ mod validator_announce {
 
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message::keccak256;
-    use hyperlane_dusk_types::EthAddress;
+    use hyperlane_dusk_types::storage::ChunkedLog;
+    use hyperlane_dusk_types::{signature, EthAddress, H256};
 
     /// Zero contract ID.
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
 
     /// Ethereum Signed Message prefix for 32-byte messages.
     const ETH_SIGNED_MESSAGE_PREFIX: &[u8] = b"\x19Ethereum Signed Message:\n32";
-    /// Bound one location so a validator cannot exhaust query return memory.
+    /// Longest storage location accepted, in bytes.
     const MAX_LOCATION_BYTES: usize = 1_024;
-    /// Bound historical locations retained for one validator.
+    /// Most locations one validator can announce.
     const MAX_LOCATIONS_PER_VALIDATOR: usize = 16;
-    /// Discovery pages and legacy batch reads are deliberately small.
-    const MAX_QUERY_VALIDATORS: usize = 2;
+    /// Most validators one `get_announced_validators` page returns.
+    const MAX_VALIDATOR_PAGE: u32 = 256;
 
     /// ValidatorAnnounce contract state.
     pub struct ValidatorAnnounce {
@@ -55,12 +62,13 @@ mod validator_announce {
         local_domain: u32,
         /// The Mailbox contract ID.
         mailbox: ContractId,
-        /// Set of validators that have announced.
-        validators: Vec<EthAddress>,
-        /// Storage locations per validator.
-        storage_locations: BTreeMap<[u8; 20], Vec<String>>,
-        /// Replay protection: tracks already-announced (validator, location) pairs.
-        replay_protection: BTreeMap<[u8; 32], bool>,
+        /// Validators in the order of their first announcement.
+        validators: ChunkedLog<EthAddress>,
+        /// `keccak256(location)` of each location a validator announced,
+        /// oldest first, at most [`MAX_LOCATIONS_PER_VALIDATOR`]. A
+        /// validator announces a location once, so this is also the replay
+        /// protection.
+        location_hashes: BTreeMap<[u8; 20], Vec<H256>>,
     }
 
     impl ValidatorAnnounce {
@@ -69,9 +77,8 @@ mod validator_announce {
             Self {
                 local_domain: 0,
                 mailbox: ZERO_CONTRACT,
-                validators: Vec::new(),
-                storage_locations: BTreeMap::new(),
-                replay_protection: BTreeMap::new(),
+                validators: ChunkedLog::new(),
+                location_hashes: BTreeMap::new(),
             }
         }
 
@@ -101,7 +108,9 @@ mod validator_announce {
         /// Announce a validator's storage location.
         ///
         /// The signature must be a valid ECDSA signature by the validator
-        /// over the announcement digest.
+        /// over the announcement digest. The contract stores
+        /// `keccak256(storage_location)`; the location itself is in the
+        /// `ValidatorAnnouncement` event.
         pub fn announce(
             &mut self,
             validator: EthAddress,
@@ -117,12 +126,12 @@ mod validator_announce {
                 "ValidatorAnnounce: storage location too long"
             );
             // Replay protection
-            let replay_id = Self::compute_replay_id(&validator, &storage_location);
+            let location_hash = keccak256(storage_location.as_bytes());
+            let announced = self.location_hashes.get(&validator.0);
             assert!(
-                !self.replay_protection.contains_key(&replay_id),
+                !announced.is_some_and(|hashes| hashes.contains(&location_hash)),
                 "ValidatorAnnounce: replay"
             );
-            self.replay_protection.insert(replay_id, true);
 
             // Verify signature
             let digest = self.announcement_digest(&storage_location);
@@ -132,18 +141,24 @@ mod validator_announce {
                 "ValidatorAnnounce: invalid signature"
             );
 
-            // Register validator if first announcement.
-            if !self.storage_locations.contains_key(&validator.0) {
-                self.validators.push(validator);
+            // Store the location's hash, and the validator on its first
+            // announcement. Each list grows one entry at a time: most
+            // validators announce once.
+            match self.location_hashes.entry(validator.0) {
+                Entry::Vacant(entry) => {
+                    entry.insert(alloc::vec![location_hash]);
+                    self.validators.push(validator);
+                }
+                Entry::Occupied(entry) => {
+                    let hashes = entry.into_mut();
+                    assert!(
+                        hashes.len() < MAX_LOCATIONS_PER_VALIDATOR,
+                        "ValidatorAnnounce: location limit reached"
+                    );
+                    hashes.reserve_exact(1);
+                    hashes.push(location_hash);
+                }
             }
-
-            // Store location.
-            let locations = self.storage_locations.entry(validator.0).or_default();
-            assert!(
-                locations.len() < MAX_LOCATIONS_PER_VALIDATOR,
-                "ValidatorAnnounce: location limit reached"
-            );
-            locations.push(storage_location.clone());
 
             abi::emit(
                 events::ValidatorAnnouncement::TOPIC,
@@ -160,62 +175,36 @@ mod validator_announce {
         // Queries
         // =================================================================
 
-        /// Returns the storage locations for a set of validators.
-        pub fn get_announced_storage_locations(
-            &self,
-            validators: Vec<EthAddress>,
-        ) -> Vec<Vec<String>> {
-            assert!(
-                validators.len() <= MAX_QUERY_VALIDATORS,
-                "ValidatorAnnounce: query batch too large"
-            );
-            validators
-                .iter()
-                .map(|v| {
-                    self.storage_locations
-                        .get(&v.0)
-                        .cloned()
-                        .unwrap_or_default()
-                })
-                .collect()
-        }
-
-        /// Return one validator's bounded location history.
-        pub fn get_announced_storage_locations_for_validator(
-            &self,
-            validator: EthAddress,
-        ) -> Vec<String> {
-            self.storage_locations
+        /// Returns `keccak256` of each storage location `validator` has
+        /// announced, oldest first: at most 16, and none if it never
+        /// announced.
+        ///
+        /// The locations are in the `ValidatorAnnouncement` events that
+        /// announced them. A location from an event is the validator's if its
+        /// hash is in this list, and the last hash is its latest location.
+        pub fn get_announced_storage_location_hashes(&self, validator: EthAddress) -> Vec<H256> {
+            self.location_hashes
                 .get(&validator.0)
                 .cloned()
                 .unwrap_or_default()
         }
 
-        /// Returns a bounded page of validators that have announced.
-        ///
-        /// A page-based ABI avoids an unbounded query response without creating
-        /// a globally exhaustible validator-enrollment cap. `start` is a
-        /// zero-based index and an index at or beyond the current count returns
-        /// an empty page.
+        /// Returns a page of the validators that have announced, in the order
+        /// of their first announcement: at most `limit` (1 to 256), starting
+        /// at index `start`. A `start` at or past the count returns an empty
+        /// page.
         pub fn get_announced_validators(&self, start: u32, limit: u32) -> Vec<EthAddress> {
             assert!(limit > 0, "ValidatorAnnounce: query limit is zero");
-            let limit = usize::try_from(limit).expect("ValidatorAnnounce: invalid query limit");
             assert!(
-                limit <= MAX_QUERY_VALIDATORS,
+                limit <= MAX_VALIDATOR_PAGE,
                 "ValidatorAnnounce: query batch too large"
             );
-            let start = usize::try_from(start).expect("ValidatorAnnounce: invalid query start");
-            if start >= self.validators.len() {
-                return Vec::new();
-            }
-            let end = start.saturating_add(limit).min(self.validators.len());
-            self.validators[start..end].to_vec()
+            self.validators.page(start, limit)
         }
 
-        /// Returns the number of validators available through paginated discovery.
+        /// Returns the number of validators that have announced.
         pub fn announced_validator_count(&self) -> u32 {
-            u32::try_from(self.validators.len())
-                .expect("ValidatorAnnounce: validator count exceeds ABI range")
+            self.validators.len()
         }
 
         /// Returns the Mailbox contract ID.
@@ -229,9 +218,15 @@ mod validator_announce {
         }
 
         /// Returns the persisted state layout version expected by deployment tooling.
+        ///
+        /// Version 2 stores location hashes instead of locations: it replaces
+        /// `get_announced_storage_locations` and
+        /// `get_announced_storage_locations_for_validator` with
+        /// `get_announced_storage_location_hashes`, and pages of
+        /// `get_announced_validators` hold up to 256 validators.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            1
+            2
         }
 
         // =================================================================
@@ -263,14 +258,6 @@ mod validator_announce {
             eth_preimage.extend_from_slice(&inner_hash);
             keccak256(&eth_preimage)
         }
-
-        /// Compute replay ID for a (validator, location) pair.
-        fn compute_replay_id(validator: &EthAddress, storage_location: &str) -> [u8; 32] {
-            let mut preimage = Vec::with_capacity(20 + storage_location.len());
-            preimage.extend_from_slice(&validator.0);
-            preimage.extend_from_slice(storage_location.as_bytes());
-            keccak256(&preimage)
-        }
     }
 
     /// Recover the 20-byte Ethereum address from an ECDSA signature.
@@ -279,6 +266,12 @@ mod validator_announce {
 
         let mut sig_arr = [0u8; 65];
         sig_arr.copy_from_slice(sig);
+        // Accept exactly what OpenZeppelin's ECDSA.recover accepts: the host
+        // query would also take v of 0/1 and high-s twins.
+        assert!(
+            signature::is_canonical(&sig_arr),
+            "ValidatorAnnounce: non-canonical signature"
+        );
 
         let pubkey =
             abi::secp256k1_recover(*digest, sig_arr).expect("ValidatorAnnounce: ecrecover failed");

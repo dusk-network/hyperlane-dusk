@@ -480,14 +480,16 @@ impl ProtocolFeePaid {
 // IGP events
 // =========================================================================
 
-/// Emitted when an interchain gas payment is recorded.
+/// Emitted when an interchain gas payment is recorded: a dispatch's, or a
+/// top-up's (`pay_for_gas`). The payment's record holds the destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[archive_attr(derive(CheckBytes))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GasPayment {
     /// The message ID for which gas was paid.
     pub message_id: MessageId,
-    /// The destination gas amount paid for, including configured overhead.
+    /// The destination gas amount paid for: a dispatch's gas limit plus the
+    /// configured overhead, or the gas a top-up bought.
     pub gas_limit: u64,
     /// The computed payment amount (in LUX).
     pub payment: u64,

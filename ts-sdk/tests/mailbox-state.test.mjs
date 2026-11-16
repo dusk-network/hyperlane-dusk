@@ -6,15 +6,6 @@ import { DuskMailbox, RuesClient } from '../dist/index.js';
 
 const wasm = createRequire(import.meta.url)('../../wasm-bindings/pkg/hyperlane_dusk_wasm_bindings.js');
 const address = new Uint8Array(32).fill(0x11);
-function archiveBytes(bytes) {
-  const root = (bytes.length + 3) & ~3;
-  const archive = Buffer.alloc(root + 8);
-  archive.set(bytes);
-  archive.writeInt32LE(-root, root);
-  archive.writeUInt32LE(bytes.length, root + 4);
-  return archive;
-}
-
 for (const initialNonce of [0, 1]) {
   test(`mailbox view keeps the nonce/ID pair coherent across dispatch at nonce ${initialNonce}`, async () => {
     const messages = [0, 1].map(nonce => wasm.encode_message(3, nonce, 4242, address, 42, address, Uint8Array.of(nonce)));
@@ -33,9 +24,9 @@ for (const initialNonce of [0, 1]) {
       } else if (method === 'latest_dispatched_id') {
         await nonceRead;
         response.end(wasm.message_id(messages[initialNonce]));
-      } else if (method === 'dispatched_message') {
+      } else if (method === 'dispatched_id') {
         assert.equal(args.readUInt32LE(), initialNonce - 1);
-        response.end(archiveBytes(messages[initialNonce - 1]));
+        response.end(wasm.message_id(messages[initialNonce - 1]));
       } else response.end(address);
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

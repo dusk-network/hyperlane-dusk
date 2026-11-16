@@ -8,6 +8,11 @@
 //! message's ID is inserted into a depth-32 keccak256 Merkle tree. Validators
 //! then attest to the tree root, enabling message verification on the
 //! destination chain.
+//!
+//! The hook stores every inserted message ID and the block it was inserted
+//! in, but not the root after each insertion: computing one costs 32 keccak
+//! calls, about 247k gas a dispatch. A validator computes the root at any
+//! index from the stored IDs instead (see `message_ids`).
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -30,21 +35,23 @@ mod merkle_tree_hook {
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::merkle::IncrementalMerkle;
     use hyperlane_dusk_types::message;
+    use hyperlane_dusk_types::storage::{BlockHeights, ChunkedLog};
     use hyperlane_dusk_types::H256;
 
     /// Zero contract ID.
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
 
+    /// Most message IDs one `message_ids` query returns.
+    const MAX_PAGE_SIZE: u32 = 256;
+
     /// MerkleTreeHook contract state.
     pub struct MerkleTreeHook {
         /// The incremental Merkle tree.
         tree: IncrementalMerkle,
-        /// Message IDs in insertion order, used by finalized indexers.
-        inserted_message_ids: Vec<H256>,
-        /// Block height for each insertion, parallel to `inserted_message_ids`.
-        inserted_block_heights: Vec<u64>,
-        /// Merkle root after each insertion, parallel to `inserted_message_ids`.
-        inserted_roots: Vec<H256>,
+        /// Message IDs in insertion order: leaf `i` is entry `i`.
+        inserted_message_ids: ChunkedLog<H256>,
+        /// The block height of each insertion, by leaf index.
+        inserted_block_heights: BlockHeights,
         /// The Mailbox contract that is allowed to trigger post_dispatch.
         mailbox: ContractId,
     }
@@ -54,9 +61,8 @@ mod merkle_tree_hook {
         pub const fn new() -> Self {
             Self {
                 tree: IncrementalMerkle::new(),
-                inserted_message_ids: Vec::new(),
-                inserted_block_heights: Vec::new(),
-                inserted_roots: Vec::new(),
+                inserted_message_ids: ChunkedLog::new(),
+                inserted_block_heights: BlockHeights::new(),
                 mailbox: ZERO_CONTRACT,
             }
         }
@@ -100,7 +106,6 @@ mod merkle_tree_hook {
             self.tree.insert(id);
             self.inserted_message_ids.push(id);
             self.inserted_block_heights.push(abi::block_height());
-            self.inserted_roots.push(self.tree.root());
 
             abi::emit(
                 events::InsertedIntoTree::TOPIC,
@@ -138,48 +143,40 @@ mod merkle_tree_hook {
         }
 
         /// Storage/agent ABI version for deployment compatibility checks.
+        ///
+        /// Version 2 drops the root after each insertion (`root_at`) and
+        /// stores message IDs in chunks and block heights once per block.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            1
+            2
         }
 
         /// Returns the message ID inserted at `index`.
         pub fn message_id_at(&self, index: u32) -> H256 {
             self.inserted_message_ids
-                .get(index as usize)
-                .copied()
+                .get(index)
                 .expect("MerkleTreeHook: insertion index out of bounds")
         }
 
-        /// Returns a bounded consecutive page of inserted message IDs.
+        /// Returns the message IDs inserted at `start` and after, at most
+        /// `limit` (up to 256) of them.
+        ///
+        /// The root at index `i` is the root of a depth-32 incremental tree
+        /// into which the IDs at 0 to `i` are inserted in order. It equals
+        /// [`Self::root`] when `count` is `i + 1`.
         pub fn message_ids(&self, start: u32, limit: u32) -> Vec<H256> {
-            const MAX_PAGE_SIZE: usize = 256;
-            let start = start as usize;
             assert!(
                 start <= self.inserted_message_ids.len(),
                 "MerkleTreeHook: insertion index out of bounds"
             );
-            let limit = usize::try_from(limit).expect("MerkleTreeHook: page size overflow");
             assert!(limit <= MAX_PAGE_SIZE, "MerkleTreeHook: page too large");
-            let end = start
-                .saturating_add(limit)
-                .min(self.inserted_message_ids.len());
-            self.inserted_message_ids[start..end].to_vec()
+            self.inserted_message_ids.page(start, limit)
         }
 
         /// Returns the block height at which `index` was inserted.
         pub fn inserted_block_height(&self, index: u32) -> u64 {
             self.inserted_block_heights
-                .get(index as usize)
-                .copied()
-                .expect("MerkleTreeHook: insertion index out of bounds")
-        }
-
-        /// Returns the Merkle root immediately after insertion `index`.
-        pub fn root_at(&self, index: u32) -> H256 {
-            self.inserted_roots
-                .get(index as usize)
-                .copied()
+                .get(index)
                 .expect("MerkleTreeHook: insertion index out of bounds")
         }
 

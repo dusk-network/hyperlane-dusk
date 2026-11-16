@@ -10,9 +10,11 @@ Full local setup with Rusk (Dusk node), Anvil (EVM), and block explorers.
 ### Prerequisites
 
 - **Rusk** (Dusk node) built from the `rusk-private` checkout the contracts
-  build against (`../../rusk-private` from this repository)
-- **A Dusk consensus key** (`consensus.keys` plus its password) for a Moonlight
-  account funded in the local genesis state, at `e2e/consensus.keys` by default
+  build against (`../../rusk-private` from this repository, at the commit in
+  `RUSK_VERSION`)
+- **A Dusk consensus key** for a Moonlight account funded in the local genesis
+  state. The default is Rusk's `examples/consensus.keys` (password
+  `password`), which `examples/genesis.toml` funds
 - **Foundry** (anvil, forge, cast): `curl -L https://foundry.paradigm.xyz | bash && foundryup`
 - **Docker**: for Otterscan (EVM explorer)
 - **Node.js/npm**: for Dusk Explorer
@@ -21,14 +23,17 @@ Full local setup with Rusk (Dusk node), Anvil (EVM), and block explorers.
 ### One-Time Setup
 
 ```bash
-# 0. Create the local environment file, then set CONSENSUS_PASSWORD and
-#    ANVIL_PRIVATE_KEY in it
+# 0. Create the local environment file (the defaults work as they are)
 cp demo/bridge.env.example demo/.env.bridge
 
-# 1. Build Rusk
+# 1. Build Rusk at the RUSK_VERSION commit. The profile and genesis state go
+#    next to the rusk-private checkout, so ~/.dusk is left alone (Rusk's own
+#    `make prepare-dev` overwrites ~/.dusk/rusk/consensus.keys).
 cd ../../rusk-private
-make prepare-dev        # Generates circuit keys + genesis state (~10 min)
+export RUSK_PROFILE_PATH="$PWD/../.rusk-profile"
+make keys                                              # circuit keys (~10 min)
 cargo build --release -p dusk-rusk --features archive
+./target/release/rusk recovery state --init examples/genesis.toml -o ../example.state
 
 # 2. Build Hyperlane contracts + CLI
 cd -                    # back to this repository
@@ -84,6 +89,13 @@ Notes:
   chains and runs both an Anvil-origin validator and a Dusk-origin validator.
   Dusk -> EVM delivery therefore requires a checkpoint produced from Dusk
   finalized events; it is not accepted by an EVM test ISM.
+- The relayer relays a message only once it paid the origin chain's IGP for
+  enough gas, as the testnet relayer does
+  ([docs/costs.md](../docs/costs.md#fee-coverage)). The demo prices that gas
+  at token amounts: the Dusk IGP charges 1 LUX per EVM gas, and the EVM IGP,
+  which is the hook of the Anvil Mailbox and of every route, charges nothing,
+  so EVM transfers need no value but still leave the payment record the
+  relayer requires.
 - Every Dusk agent config has its own persistent `eventCursorDir`. Restarted
   agents resume contract-scoped finalized-event cursors and provenance without
   sharing mutable cursor state with another agent.
@@ -263,6 +275,8 @@ Key overrides:
 | `ANVIL_PORT` | `8545` | Anvil RPC port |
 | `DUSK_EXPLORER_PORT` | `5173` | Dusk Explorer port |
 | `EVM_EXPLORER_PORT` | `5100` | Otterscan port |
+| `DUSK_EXPECTED_CHAIN_ID` | `0` | The Dusk chain the scripts sign for. The node `start-env.sh` starts reports 0. `start-env.sh`, `deploy.sh`, `demo.sh` and the local rehearsal's scripts stop before signing anything when the node at the RUES URL reports another chain; the node's answer never replaces this |
+| `DUSK_MULTICALL_WASM` | empty | Multicall for Dusk's v0.1.0 Wasm. `deploy.sh` then deploys it at the ID it has on testnet and mainnet, and the agent configs name it, so the agents batch their contract reads |
 
 ### Secret Handling
 
@@ -295,8 +309,9 @@ handling.
 
 ### Troubleshooting
 
-**Rusk won't start**: Check `/tmp/rusk-dev.log`. Ensure genesis state exists at
-`/tmp/example.state` (run `make prepare-dev` in the Rusk repo).
+**Rusk won't start**: Check `/tmp/rusk-dev.log`. Ensure the genesis state
+exists at `RUSK_STATE` and the circuit keys at `RUSK_PROFILE_PATH` (see
+One-Time Setup).
 
 **Port conflict**: Change ports in `.env.bridge`. Note: if you change
 `RUSK_HTTP_PORT` from 8080, also update the Vite proxy target in
@@ -306,8 +321,8 @@ handling.
 which should work on WSL2. If not, replace with your WSL2 IP.
 
 **Deploy fails on Dusk**: Ensure the deployer account has sufficient balance (LUX).
-The consensus keys at `dusk/e2e/consensus.keys` must match a funded account on
-the local Rusk node.
+`CONSENSUS_KEYS` must belong to an account funded in the genesis state the
+node started from.
 
 **Redeploy fails with "Refusing to deploy"**: You are re-running `dusk-tx
 deploy-hyperlane` against a non-reset chain. Restart the demo environment
@@ -319,7 +334,9 @@ deployer key so the deterministic contract IDs change.
 ## Standalone Demo (demo.sh)
 
 Self-contained demo that deploys and bridges in one script. Expects a running
-`rusk-duskevm` Docker container (RUES on port 18090).
+`rusk-duskevm` Docker container (RUES on port 18090). It signs for
+`DUSK_EXPECTED_CHAIN_ID`, 0 unless set, and stops before deploying anything
+when the node reports another chain.
 
 ```bash
 # Build everything
@@ -341,11 +358,12 @@ bash demo/demo.sh --skip-deploy
 ```
    EVM (Anvil, domain=31338)              Dusk (domain=4242)
   +-------------------------+           +-------------------------+
-  |  Mailbox + ISM/hooks    |           |  Mailbox + selected ISM |
-  |                         |           |  +- AggregationHook     |
-  |  HypERC20 routes       |<--------->|  |  +- MerkleTreeHook   |
-  |  +- synthetic DRC20    |  enrolled  |  |  +- ProtocolFee     |
-  |  +- native DUSK token  |  routers   |  +- IGP                |
+  |  Mailbox + ISM          |           |  Mailbox + selected ISM |
+  |  +- MerkleTreeHook      |           |  +- AggregationHook     |
+  |  +- IGP (zero price)    |           |  |  +- MerkleTreeHook   |
+  |  HypERC20 routes       |<--------->|  |  +- ProtocolFee     |
+  |  +- synthetic DRC20    |  enrolled  |  +- IGP                |
+  |  +- native DUSK token  |  routers   |                         |
   |  +- collateral token   |            |                         |
   |                         |           |  Warp routes            |
   |  TestRecipient          |           |  +- WarpDrc20          |
@@ -362,11 +380,13 @@ bash demo/demo.sh --skip-deploy
 ```bash
 # Deploy the full local route matrix on Dusk
 dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc20 \
-    --igp-domain-config 31338:50000:10000000000:1 \
-    --deploy-warp-native --warp-collateral-token warp-drc20
+    --igp-domain-config 31338:200000:10000000000:1 \
+    --deploy-warp-native --warp-collateral-token warp-drc20 --expected-chain-id <u8>
 
-# Pre-fund value-backed Mailbox dispatch fees for a route
-dusk-tx fund-dispatch --mailbox <hex> --payer <route-hex> --amount <lux>
+# Pre-fund Mailbox dispatch credit for a direct dispatcher (warp routes
+# charge each transfer's fee to its sender instead)
+dusk-tx fund-dispatch --mailbox <hex> --payer <sender-hex> --amount <lux> \
+    --expected-chain-id <u8>
 
 # Withdraw a Moonlight account's own unused credit to the signing account
 dusk-tx withdraw-dispatch --target <mailbox-hex> --amount <lux> \
@@ -391,34 +411,36 @@ dusk-tx query --contract <validator-announce-hex> \
     --arg-u32-pair 0,2
 
 # Enroll a remote router
-dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex>
+dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex> \
+    --expected-chain-id <u8>
 
 # Register BLS key for receiving bridged tokens
-dusk-tx register-account --warp-contract <hex>
+dusk-tx register-account --warp-contract <hex> --expected-chain-id <u8>
 
 # Approve collateral custody and inspect DRC20 balances
-dusk-tx drc20-approve --token <hex> --spender <collateral-route-hex> --amount <amount>
+dusk-tx drc20-approve --token <hex> --spender <collateral-route-hex> --amount <amount> \
+    --expected-chain-id <u8>
 dusk-tx drc20-balance --token <hex>
 dusk-tx drc20-balance --token <hex> --account-contract <hex>
 
 # Send tokens to a remote chain
 dusk-tx transfer-remote --warp-contract <hex> --destination 31338 \
-    --recipient <hex> --amount 1000000000000000000
+    --recipient <hex> --amount 1000000000000000000 --expected-chain-id <u8>
 
 # Native DUSK sends attach an exact Moonlight deposit
 dusk-tx transfer-remote --warp-contract <native-route-hex> --destination 31338 \
-    --recipient <hex> --amount 100000000 --native
+    --recipient <hex> --amount 100000000 --native --expected-chain-id <u8>
 
 # Encode a Hyperlane message (no TX)
 dusk-tx encode-message --nonce 0 --origin 31338 --sender <hex> \
     --destination 4242 --recipient <hex> --body <hex>
 
 # Process an inbound message (multisig deployments require relayer metadata)
-dusk-tx process --mailbox <hex> --message <hex> --metadata <hex>
+dusk-tx process --mailbox <hex> --message <hex> --metadata <hex> --expected-chain-id <u8>
 
 # Dispatch a message via TestRecipient
 dusk-tx dispatch --mailbox <hex> --test-recipient <hex> \
-    --destination 31338 --recipient <hex> --body "Hello!"
+    --destination 31338 --recipient <hex> --body "Hello!" --expected-chain-id <u8>
 ```
 
 `--metadata` may be omitted only when the selected ISM accepts empty metadata,
@@ -435,12 +457,21 @@ runs binary RUES, address validation, and exact u64 amount regressions.
 Run `E2E_SDK_CHECK=true bash demo/e2e-agents.sh` after that build to exercise
 all SDK query methods against the completed live three-route deployment in
 both ISM modes. This checks short and long rkyv strings, one-byte decimals,
-message IDs and delivery heights, route wiring, and exact token supply.
+dispatched message IDs and the `delivered` check, the dispatch quote, route
+wiring, and exact token supply.
 
-The SDK returns `bigint` for `totalSupply()` and `deliveredAt()`. The WASM
-JSON token decoder returns the amount as a decimal string; convert it with
-`BigInt` when doing arithmetic. Address encoders require exactly 32 bytes and
-reject shorter or longer inputs instead of changing the address silently.
+The Mailbox stores no delivery heights and no list of deliveries, so the SDK
+has no query for them. To find when a message was delivered, index the
+Mailbox's `process_id` events (`ProcessId { message_id }`) from finalized
+blocks, skipping any the receipt flags as reverted: the event's block is the
+delivery height. `delivered(id)` checks a single message
+([docs/storage.md](../docs/storage.md#mailbox)).
+
+The SDK returns `bigint` for `totalSupply()` and `quoteDispatchForSender()`.
+The WASM JSON token decoder returns the amount as a decimal string; convert
+it with `BigInt` when doing arithmetic. Address encoders require exactly 32
+bytes and reject shorter or longer inputs instead of changing the address
+silently.
 Numeric encoders reject negative, fractional, or out-of-range values before
 WASM conversion; u64 inputs must be `bigint`, and u8/u32 inputs must be integer
 JavaScript numbers.

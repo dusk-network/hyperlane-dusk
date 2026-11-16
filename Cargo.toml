@@ -8,8 +8,11 @@ members = [
     "contracts/ism-multisig",
     "contracts/validator-announce",
     "contracts/test-recipient",
+    "contracts/plain-recipient",
     "contracts/test-mock",
     "contracts/reentrant-hook",
+    "contracts/redteam-attacker",
+    "contracts/callback-fee-token",
     "contracts/protocol-fee",
     "contracts/igp",
     "contracts/warp-drc20",
@@ -21,6 +24,9 @@ members = [
     "e2e",
     "dusk-tx",
 ]
+# `rusk` links to the rusk-private checkout (../../rusk-private) and isn't a
+# member. See [workspace.dependencies].
+exclude = ["rusk"]
 
 [workspace.package]
 edition = "2021"
@@ -31,10 +37,15 @@ license = "MIT OR Apache-2.0"
 hyperlane-dusk-types = { path = "./types" }
 
 # Dusk
-# Use the current Dusk private stack for contract ABI, VM tests, and host functions.
-dusk-core = { path = "../../rusk-private/core" }
+# Contract ABI, VM tests and host functions come from a rusk-private checkout
+# at the release in RUSK_VERSION, which is what testnet and mainnet run.
+# They're reached through the `rusk` link, inside this workspace: Cargo hashes
+# a path dependency outside the workspace by its absolute path into every
+# symbol name, which reorders the contract WASMs, so the build would depend on
+# where rusk-private is checked out. Inside, it hashes the relative path.
+dusk-core = { path = "rusk/core" }
 dusk-forge = { git = "https://github.com/dusk-network/forge", rev = "d1e39a16ad5e2cd0675c7aafa6e2c459310bcb1a" }
-dusk-data-driver = { path = "../../rusk-private/data-drivers/data-driver" }
+dusk-data-driver = { path = "rusk/data-drivers/data-driver" }
 
 # Serialization
 bytecheck = { version = "0.6.12", default-features = false }
@@ -49,10 +60,10 @@ serde = { version = "1", default-features = false, features = [
 serde_json = { version = "1", default-features = false }
 
 # Testing
-dusk-vm = { path = "../../rusk-private/vm", default-features = false }
+dusk-vm = { path = "rusk/vm", default-features = false }
 rand = "0.8"
 ff = { version = "0.13", default-features = false }
-rusk-prover = { path = "../../rusk-private/rusk-prover" }
+rusk-prover = { path = "rusk/rusk-prover" }
 wasmtime = "36"
 
 # Pin to avoid edition2024 issues
@@ -66,9 +77,12 @@ time-core = "=0.1.6"
 overflow-checks = true
 
 [patch.crates-io]
-# Keep consumers of the current Rusk workspace on the same compatibility
-# revisions used by Rusk itself. Workspace patches do not propagate through
-# path dependencies.
+# Mirror the [patch.crates-io] section of the pinned Rusk release (see
+# RUSK_VERSION) so contracts and VM tests run the same VM the network runs.
+# Workspace patches do not propagate through path dependencies.
+cranelift-codegen = { git = "https://github.com/dusk-network/dusk-wasmtime-private.git", rev = "dd04ee067813e0a2bb84f4fadf5eb1ad218a6f4e" }
+piecrust = { git = "https://github.com/dusk-network/piecrust-private.git", rev = "9dee46aadc6f8eeca5b5e48731f93f3791905721" }
+crumbles = { git = "https://github.com/dusk-network/piecrust-private.git", rev = "9dee46aadc6f8eeca5b5e48731f93f3791905721" }
 dusk-plonk = { git = "https://github.com/dusk-network/plonk-private.git", rev = "f63cfb0c4a5e5f485361c83ae15584257d3339ab" }
 phoenix-core = { git = "https://github.com/dusk-network/phoenix-private.git", rev = "68d48a1d6ad124bfd17b6d4770f6308778422d02" }
 phoenix-circuits = { git = "https://github.com/dusk-network/phoenix-private.git", rev = "68d48a1d6ad124bfd17b6d4770f6308778422d02" }

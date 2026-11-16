@@ -3,7 +3,7 @@
 // Mailbox contract interface for TypeScript.
 
 import type { RuesClient } from "./rues-client.js";
-import type { DecodedMessage, HexBytes32, MailboxState } from "./types.js";
+import type { HexBytes32, MailboxState } from "./types.js";
 
 /**
  * Provides a TypeScript interface to query the Hyperlane Mailbox contract
@@ -63,12 +63,31 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_bool(result);
   }
 
-  /** Get the block height at which a message was delivered. Returns 0n if not delivered. */
-  async deliveredAt(messageId: Uint8Array): Promise<bigint> {
-    const args = this.wasm.rkyv_serialize_bytes32(messageId);
+  /**
+   * Quote the native DUSK fee, in LUX, that `dispatch` charges `sender` for
+   * a message. A read-only query: the sender is explicit, not the caller.
+   * A `hook` of 32 zero bytes, the default, selects the Mailbox's default
+   * hook. The quote can change with the nonce and the hook configuration.
+   */
+  async quoteDispatchForSender(
+    sender: Uint8Array,
+    destination: number,
+    recipient: Uint8Array,
+    body: Uint8Array,
+    metadata: Uint8Array = new Uint8Array(),
+    hook: Uint8Array = new Uint8Array(32)
+  ): Promise<bigint> {
+    const args = this.wasm.rkyv_serialize_quote_dispatch_for_sender(
+      sender,
+      destination,
+      recipient,
+      body,
+      metadata,
+      hook
+    );
     const result = await this.rues.contractQuery(
       this.contractId,
-      "delivered_at",
+      "quote_dispatch_for_sender",
       args
     );
     return this.wasm.rkyv_deserialize_u64(result);
@@ -107,26 +126,18 @@ export class DuskMailbox {
     return this.wasm.rkyv_deserialize_bytes32(result);
   }
 
-  /** Get the encoded dispatched message at a given nonce. */
-  async dispatchedMessage(nonce: number): Promise<Uint8Array> {
+  /**
+   * Get the ID of the message dispatched at a given nonce. The Mailbox
+   * stores only the ID; the message is in that block's `Dispatch` event.
+   */
+  async dispatchedId(nonce: number): Promise<HexBytes32> {
     const args = this.wasm.rkyv_serialize_u32(nonce);
     const result = await this.rues.contractQuery(
       this.contractId,
-      "dispatched_message",
+      "dispatched_id",
       args
     );
-    return new Uint8Array(this.wasm.rkyv_deserialize_bytes(result));
-  }
-
-  /** Get the number of processed (delivered) messages. */
-  async processedCount(): Promise<number> {
-    const args = this.wasm.rkyv_serialize_unit();
-    const result = await this.rues.contractQuery(
-      this.contractId,
-      "processed_count",
-      args
-    );
-    return this.wasm.rkyv_deserialize_u32(result);
+    return this.wasm.rkyv_deserialize_bytes32(result);
   }
 
   /**
@@ -142,24 +153,10 @@ export class DuskMailbox {
         this.defaultHook(),
         this.requiredHook(),
       ]);
-    // Dispatched messages are immutable. Derive the ID at the observed nonce
-    // so a concurrent dispatch cannot pair an old nonce with a newer ID.
-    let latestId = "00".repeat(32);
-    if (nonce > 0) {
-      const message = await this.dispatchedMessage(nonce - 1);
-      const decoded = this.wasm.decode_message(message);
-      if (decoded === undefined) {
-        throw new Error("Invalid dispatched message");
-      }
-      const { nonce: messageNonce, origin } = JSON.parse(decoded) as DecodedMessage;
-      if (messageNonce !== nonce - 1 || origin !== localDomain) {
-        throw new Error("Dispatched message does not match mailbox state");
-      }
-      latestId = Array.from(
-        this.wasm.message_id(message),
-        byte => byte.toString(16).padStart(2, "0")
-      ).join("");
-    }
+    // Dispatched IDs are immutable. Read the ID at the observed nonce so a
+    // concurrent dispatch cannot pair an old nonce with a newer ID.
+    const latestId =
+      nonce > 0 ? await this.dispatchedId(nonce - 1) : "00".repeat(32);
     return {
       localDomain,
       nonce,
@@ -181,6 +178,24 @@ export interface WasmBindings {
   rkyv_serialize_u64(value: bigint): Uint8Array;
   rkyv_serialize_bool(value: boolean): Uint8Array;
   rkyv_serialize_bytes32(data: Uint8Array): Uint8Array;
+  rkyv_serialize_quote_dispatch_for_sender(
+    sender: Uint8Array,
+    destination: number,
+    recipient: Uint8Array,
+    body: Uint8Array,
+    metadata: Uint8Array,
+    hook: Uint8Array
+  ): Uint8Array;
+  rkyv_serialize_pay_for_gas(
+    messageId: Uint8Array,
+    destination: number,
+    gasAmount: bigint,
+    deposit: bigint
+  ): Uint8Array;
+  rkyv_serialize_quote_pay_for_gas(
+    destination: number,
+    gasAmount: bigint
+  ): Uint8Array;
   rkyv_deserialize_string(data: Uint8Array): string;
   rkyv_deserialize_u8(data: Uint8Array): number;
   rkyv_deserialize_u32(data: Uint8Array): number;

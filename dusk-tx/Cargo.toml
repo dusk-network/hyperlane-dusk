@@ -33,6 +33,7 @@ base64 = "0.22"
 reqwest = { version = "0.12", features = ["rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
 hex = "0.4"
+bs58 = "0.5"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
