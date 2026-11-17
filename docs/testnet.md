@@ -61,8 +61,8 @@ behaviour the script can't tell, and `deploy` stops.
 - Checkouts laid out as in the [README](../README.md#building), with
   `rusk-private` at the commit in [`RUSK_VERSION`](../RUSK_VERSION). Then
   `make all dusk-tx`.
-- Foundry (`forge`, `cast`), `jq`, `curl`, `python3`. `forge build` must work
-  in `hyperlane-monorepo/solidity`.
+- Foundry (`forge`, `cast`), `jq`, `curl`, `python3`, `flock` (util-linux).
+  `forge build` must work in `hyperlane-monorepo/solidity`.
 - A **Dusk domain ID**. The default `1146442572` is free in the Hyperlane
   registry; `1146442571` ("DUSK") is kept for mainnet.
 - **Funded keys:**
@@ -249,14 +249,19 @@ transfer pays for. `fees` prints what they come to.
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
 skips steps already recorded there. If it stops halfway, fix the cause and run
-it again. Router enrollment is re-checked on chain each time: on either
-side, `deploy` enrolls a router only where there is none, reading it right
-before each write, and refuses another rather than replace it, since that
-router's holders would be cut off from what backs their tokens. If the recorded
-contracts aren't on chain, for example after a testnet reset, or a recorded
-contract reports another `state_version` than this checkout's (Mailbox 6,
-MerkleTreeHook 2, IGP 4, ValidatorAnnounce 3, native route 5), `deploy`
-stops; move the directory aside and deploy again. Older routes may pay
+it again. Every command but `fees` takes a lock on that directory
+(`flock` on its `.lock`) and holds it until it exits, and reads the record
+once: one command at a time runs on a deployment, and what a command
+checked is what it records and what the configs it writes name. A command
+started while another holds the lock stops at once; run it again when the
+other has finished. Router enrollment is re-checked on chain each time: on
+either side, `deploy` enrolls a router only where there is none, reading it
+right before each write, and refuses another rather than replace it, since
+that router's holders would be cut off from what backs their tokens. If the
+recorded contracts aren't on chain, for example after a testnet reset, or a
+recorded contract reports another `state_version` than this checkout's
+(Mailbox 6, MerkleTreeHook 2, IGP 4, ValidatorAnnounce 3, native route 5),
+`deploy` stops; move the directory aside and deploy again. Older routes may pay
 sponsored escrow claims to forged keys
 ([security notes](security.md#issues-found-and-fixed), CRITICAL-1) and
 register any key that asks (MEDIUM-10), older core contracts keep storage

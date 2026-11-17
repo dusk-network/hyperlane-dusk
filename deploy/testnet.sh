@@ -27,6 +27,8 @@
 #
 # State goes to deploy/out/<DEPLOY_NAME>/deployment.json. Re-running `deploy`
 # skips every step the state file records as done and re-checks it on chain.
+# Every command but fees reads the state once, holding the lock on that
+# directory's .lock until it exits: one command at a time on a deployment.
 # Once the Dusk contracts are deployed, every command checks that the ISM the
 # route uses on chain is a MessageIdMultisig ISM with EVM_ORIGIN_VALIDATORS and
 # EVM_ORIGIN_THRESHOLD, and that both IGPs charge what the settings say. See
@@ -112,13 +114,35 @@ require() {
 pad32() { local a="${1#0x}"; printf '000000000000000000000000%s' "${a,,}"; }
 lower() { printf '%s' "${1,,}"; }
 
-state_get() { [ -f "$STATE" ] && jq -r "$1 // empty" "$STATE" || true; }
+# The deployment record, as this command holds it. lock_deployment reads
+# $STATE once, under the deployment's lock: every check, what deploy records
+# and the agent configs come from this copy, and state_set writes it back.
+STATE_JSON=""
+state_get() { [ -n "$STATE_JSON" ] && jq -r "$1 // empty" <<<"$STATE_JSON" || true; }
+# The record as JSON, {} when there is none.
+state_json() { if [ -n "$STATE_JSON" ]; then printf '%s\n' "$STATE_JSON"; else echo '{}'; fi; }
 state_set() {
-    local tmp
+    local new tmp
+    new="$(state_json | jq "$@")" || fail "Can't update $STATE"
     mkdir -p "$OUT_DIR"
-    [ -f "$STATE" ] || echo '{}' > "$STATE"
     tmp="$(mktemp "$OUT_DIR/.state.XXXXXX")"
-    jq "$@" "$STATE" > "$tmp" && mv "$tmp" "$STATE"
+    printf '%s\n' "$new" > "$tmp" && mv "$tmp" "$STATE"
+    STATE_JSON="$new"
+}
+
+# One command at a time on a deployment. Every command but fees takes the
+# lock on deploy/out/<DEPLOY_NAME>/.lock before it reads the record, and
+# holds it until it exits, so no other command records or replaces anything
+# between what this one checks and what it records or configures.
+lock_deployment() {
+    command -v flock >/dev/null || fail "flock is required (util-linux)"
+    mkdir -p "$OUT_DIR"
+    exec 9>>"$OUT_DIR/.lock"
+    flock -n 9 \
+        || fail "Another deploy/testnet.sh command is running on $OUT_DIR. Wait for it to finish, then run this one again."
+    [ -f "$STATE" ] || return 0
+    STATE_JSON="$(<"$STATE")"
+    jq -e 'type == "object"' <<<"$STATE_JSON" >/dev/null 2>&1 || fail "$STATE isn't a JSON object"
 }
 
 rues_post() { curl -sf -m 30 -X POST "${DUSK_RUES_URL%/}$1" ${2:+--data "$2"}; }
@@ -707,23 +731,32 @@ check_dusk_deployment() {
 
 # The recorded Dusk deployment: the fee contracts' bindings, then the
 # read-back of every contract against the owner deploy recorded. A command
-# reads the contracts back once: DUSK_READ_BACK is set once they have read
-# back in this run, to `keys` when their owner was DUSK_KEYS's.
-DUSK_READ_BACK=""
+# reads the same contracts back once: dusk_read_back records which contracts
+# and owner read back (DUSK_READ_BACK_OF), and whether that owner was
+# DUSK_KEYS's (DUSK_READ_BACK is `keys`) or only the recorded one (`owner`).
+# A record that names other contracts or another owner is read back again.
+DUSK_READ_BACK="" DUSK_READ_BACK_OF=""
+dusk_read_back() {
+    DUSK_READ_BACK="$1"
+    DUSK_READ_BACK_OF="$(jq -cnS --argjson d "$2" --arg o "$3" '{dusk: $d, owner: $o}')"
+}
 check_recorded_dusk_contracts() {
-    local mailbox name contract owner
+    local mailbox name contract owner contracts record
     mailbox="$(state_get '.dusk.mailbox')"
     for name in igp protocol_fee; do
         contract="$(state_get ".dusk.$name")"
         [ -n "$contract" ] || continue
         check_dusk_hook_binding "$name" "$contract" "$mailbox"
     done
-    if [ "$DUSK_READ_BACK" = keys ] || { [ -n "$DUSK_READ_BACK" ] && [ "${1:-}" != keys ]; }; then
+    contracts="$(state_json | jq -c '.dusk')"
+    record="$(jq -cnS --argjson d "$contracts" --arg o "$(state_get '.dusk_owner')" '{dusk: $d, owner: $o}')"
+    if [ "$DUSK_READ_BACK_OF" = "$record" ] \
+        && { [ "$DUSK_READ_BACK" = keys ] || [ "${1:-}" != keys ]; }; then
         return 0
     fi
     owner="$(recorded_dusk_owner "${1:-}")" || exit 1
-    check_dusk_contracts "$(jq -c '.dusk' "$STATE")" "$owner" recorded
-    DUSK_READ_BACK="${1:-owner}"
+    check_dusk_contracts "$contracts" "$owner" recorded
+    dusk_read_back "${1:-owner}" "$contracts" "$owner"
 }
 
 # The account hash of DUSK_KEYS: the owner dusk-tx deploy-hyperlane gives
@@ -1383,7 +1416,7 @@ check_evm_igp_quote_history() {
     [[ "$EVM_REORG_PERIOD" =~ ^[0-9]+$ ]] || fail "EVM_REORG_PERIOD must be a whole number of blocks, not '$EVM_REORG_PERIOD'"
     created="$(evm_block_number "$(cast receipt "$tx" blockNumber --rpc-url "$EVM_RPC")")" \
         || fail "Can't read the block of $tx, which created the EVM IGP $igp"
-    scanned="$(jq -r --arg igp "$igp" '.evm.igp_quote_signers_scanned // {} | select(.igp == $igp) | .to // empty' "$STATE")"
+    scanned="$(state_json | jq -r --arg igp "$igp" '.evm.igp_quote_signers_scanned // {} | select(.igp == $igp) | .to // empty')"
     from="$created"
     if [[ "$scanned" =~ ^[0-9]+$ ]] && [ "$scanned" -ge "$created" ]; then from=$((scanned + 1)); else scanned=""; fi
     head="$(cast block-number --rpc-url "$EVM_RPC")" && [[ "$head" =~ ^[0-9]+$ ]] \
@@ -1476,19 +1509,18 @@ cmd_preflight() {
 # settings (check_dusk_contracts), and records the owner it read with them.
 # When deploy-hyperlane finished but this script stopped before recording
 # its contracts, deploying again would find their IDs taken: the contracts
-# deploy-hyperlane reported are read back instead.
+# deploy-hyperlane reported are read back instead. Its report is read once:
+# the contracts read back are the ones recorded.
 deploy_dusk() {
-    local out="$OUT_DIR/dusk-deploy.json" owner
+    local out="$OUT_DIR/dusk-deploy.json" owner report="" contracts
     if [ -n "$(state_get '.dusk.mailbox')" ]; then
         ok "Dusk contracts already deployed (Mailbox $(state_get '.dusk.mailbox'))"
         return
     fi
     owner="$(deployer_account)" || exit 1
     mkdir -p "$OUT_DIR"
-    if jq -e '.success == true and (.contracts | type) == "object"' "$out" >/dev/null 2>&1; then
-        jq -e --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --argjson domain "$DUSK_DOMAIN" \
-            '.chain_id == $chain and .domain == $domain' "$out" >/dev/null \
-            || fail "$out records a Dusk deployment on chain $(jq -r .chain_id "$out") at domain $(jq -r .domain "$out"), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID at DUSK_DOMAIN $DUSK_DOMAIN. Move $OUT_DIR aside."
+    [ ! -f "$out" ] || report="$(<"$out")"
+    if jq -e '.success == true and (.contracts | type) == "object"' <<<"$report" >/dev/null 2>&1; then
         info "Reading back the Dusk contracts in $out, which deploy-hyperlane deployed before this script stopped..."
     else
         info "Deploying the Dusk contracts (this takes a few minutes)..."
@@ -1503,11 +1535,18 @@ deploy_dusk() {
             --igp-domain-config "$(fee '.dusk_igp.config')" \
             --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
             > "$out" || fail "Dusk deployment failed: $(jq -r '.error // empty' "$out" 2>/dev/null)"
+        report="$(<"$out")"
+        jq -e '.success == true and (.contracts | type) == "object"' <<<"$report" >/dev/null 2>&1 \
+            || fail "deploy-hyperlane reported no contracts in $out"
     fi
-    check_dusk_contracts "$(jq -c '.contracts' "$out")" "$owner" fresh
-    DUSK_READ_BACK=keys
-    state_set --slurpfile d "$out" --arg domain "$DUSK_DOMAIN" --arg owner "$owner" \
-        '.dusk = $d[0].contracts | .dusk_domain = ($domain | tonumber) | .dusk_owner = $owner'
+    jq -e --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --argjson domain "$DUSK_DOMAIN" \
+        '.chain_id == $chain and .domain == $domain' <<<"$report" >/dev/null \
+        || fail "$out records a Dusk deployment on chain $(jq -r .chain_id <<<"$report") at domain $(jq -r .domain <<<"$report"), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID at DUSK_DOMAIN $DUSK_DOMAIN. Move $OUT_DIR aside."
+    contracts="$(jq -c '.contracts' <<<"$report")"
+    check_dusk_contracts "$contracts" "$owner" fresh
+    state_set --argjson d "$contracts" --arg domain "$DUSK_DOMAIN" --arg owner "$owner" \
+        '.dusk = $d | .dusk_domain = ($domain | tonumber) | .dusk_owner = $owner'
+    dusk_read_back keys "$contracts" "$owner"
     ok "Dusk Mailbox $(state_get '.dusk.mailbox'), WarpNative $(state_get '.dusk.warp_native'): every contract reads back as deployed, owned by DUSK_KEYS"
 }
 
@@ -1737,7 +1776,7 @@ dusk_route_router() {
 # older than this checkout's would reuse contracts with known bugs.
 check_state_matches_chain() {
     local mailbox name contract domain
-    [ -f "$STATE" ] || return 0
+    [ -n "$STATE_JSON" ] || return 0
     [ "$(lower "$(state_get '.evm.mailbox')")" = "" ] || [ "$(lower "$(state_get '.evm.mailbox')")" = "$(lower "$EVM_MAILBOX")" ] \
         || fail "$STATE was made for EVM Mailbox $(state_get '.evm.mailbox'), not $EVM_MAILBOX. Use another DEPLOY_NAME or move it aside."
     mailbox="$(state_get '.dusk.mailbox')"
@@ -1918,7 +1957,7 @@ cmd_evm_igp() {
 # What the fee contracts hold for their beneficiaries.
 cmd_revenue() {
     local name contract claimable beneficiary igp balance
-    [ -f "$STATE" ] || fail "Run deploy first"
+    [ -n "$STATE_JSON" ] || fail "Run deploy first"
     igp="$(state_get '.evm.igp')"
     [ -z "$igp" ] || [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_chain
     check_dusk_chain
@@ -1946,7 +1985,7 @@ cmd_revenue() {
 # the recorded contracts are checked before anything is sent on either.
 cmd_claim() {
     local name contract claimable beneficiary signer out igp balance
-    [ -f "$STATE" ] || fail "Run deploy first"
+    [ -n "$STATE_JSON" ] || fail "Run deploy first"
     igp="$(state_get '.evm.igp')"
     [ -z "$igp" ] || [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_deployment
     check_dusk_deployment
@@ -1997,21 +2036,21 @@ dusk_chain_json() {
         --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --arg cursors "$cursor_dir" \
         --argjson gl "$gas_limit" --argjson gp "$DUSK_AGENT_GAS_PRICE" \
         --arg multicall "$DUSK_MULTICALL_ID" \
-        --arg key_file "$DUSK_SIGNER_KEY_FILE" --slurpfile s "$STATE" '{
+        --arg key_file "$DUSK_SIGNER_KEY_FILE" --argjson s "$(state_json)" '{
           name: "dusk", protocol: "dusk", domainId: $domain, chainId: $chain,
           rpcUrls: [{http: $url}], eventCursorDir: $cursors,
           gasLimit: $gl, gasPrice: $gp,
-          mailbox: ("0x" + $s[0].dusk.mailbox),
-          interchainGasPaymaster: ("0x" + $s[0].dusk.igp),
-          validatorAnnounce: ("0x" + $s[0].dusk.validator_announce),
-          merkleTreeHook: ("0x" + $s[0].dusk.merkle_tree_hook),
+          mailbox: ("0x" + $s.dusk.mailbox),
+          interchainGasPaymaster: ("0x" + $s.dusk.igp),
+          validatorAnnounce: ("0x" + $s.dusk.validator_announce),
+          merkleTreeHook: ("0x" + $s.dusk.merkle_tree_hook),
           submitter: "Classic",
           signer: {type: "duskKey", keyFile: $key_file}
         } + (if $multicall == "" then {} else {batchContractAddress: ("0x" + $multicall)} end)'
 }
 
 cmd_agent_configs() {
-    [ -f "$STATE" ] && [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
+    [ -n "$(state_get '.evm.token')" ] || fail "Run deploy first"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
     load_fees
     check_agent_settings
@@ -2030,15 +2069,15 @@ cmd_agent_configs() {
     evm_chain="$(jq -n --arg name "$EVM_CHAIN_NAME" --argjson domain "$EVM_DOMAIN" \
         --argjson chain "$EVM_CHAIN_ID" --arg rpc "$EVM_RPC" \
         --argjson reorg "$EVM_REORG_PERIOD" --argjson bt "$EVM_BLOCK_TIME" \
-        --slurpfile s "$STATE" '{
+        --argjson s "$(state_json)" '{
           name: $name, protocol: "ethereum", domainId: $domain, chainId: $chain,
           rpcUrls: [{http: $rpc}],
           blocks: {reorgPeriod: $reorg, estimateBlockTime: $bt},
-          index: {from: $s[0].evm.index_from, chunk: 1999},
-          mailbox: $s[0].evm.mailbox,
-          interchainGasPaymaster: $s[0].evm.igp,
-          validatorAnnounce: $s[0].evm.validator_announce,
-          merkleTreeHook: $s[0].evm.merkle_tree_hook
+          index: {from: $s.evm.index_from, chunk: 1999},
+          mailbox: $s.evm.mailbox,
+          interchainGasPaymaster: $s.evm.igp,
+          validatorAnnounce: $s.evm.validator_announce,
+          merkleTreeHook: $s.evm.merkle_tree_hook
         }')"
 
     # The relayer relays any message between the two chains (no whitelist),
@@ -2092,6 +2131,9 @@ dusk-tx. See docs/testnet.md.
 EOF
 }
 
+case "${1:-}" in
+    preflight|deploy|agent-configs|dusk-igp|evm-igp|revenue|claim) lock_deployment ;;
+esac
 case "${1:-}" in
     preflight) cmd_preflight ;;
     deploy) cmd_deploy ;;

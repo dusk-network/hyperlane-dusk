@@ -12,6 +12,7 @@ Foundry and the Solidity sources (HYPERLANE_SOLIDITY_DIR, by default
 ../hyperlane-monorepo/solidity).
 """
 import base64
+import fcntl
 from fractions import Fraction
 import hashlib
 import json
@@ -112,7 +113,9 @@ def quote_signer_history(evm, igp, signer, block):
 # a missing entry, or one with "error", fails as dusk-tx does. FIXTURE_CHAIN's
 # "interleave", {"key": key, "after_reads": n, "value": v}, makes another
 # process's change to that answer once it has been read n times, before the
-# next read; "reads" counts the reads.
+# next read; "reads" counts the reads. Its "on_read", {"key": key, "path":
+# path, "content": text}, writes the file at path the first time that key
+# is read, as a process that doesn't take the deployment's lock could.
 DUSK_TX_STUB = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -154,6 +157,12 @@ if args[0] == "query":
         plan["reads"] = plan.get("reads", 0) + 1
         if plan["reads"] == plan["after_reads"] + 1:
             queries[key] = {"value": plan["value"]}
+        save()
+    write = chain.get("on_read")
+    if write and write["key"] == key and not write.get("written"):
+        with open(write["path"], "w") as f:
+            f.write(write["content"])
+        write["written"] = True
         save()
     if opt("--method") == "quote_gas_payment":
         config = queries.get(f"{opt('--contract')}/domain_gas_config/{opt('--arg-u32')}", {}).get("value")
@@ -801,8 +810,10 @@ class TestnetScript(unittest.TestCase):
         self.evm = sepolia()
         # Extra environment for the script and its stubs.
         self.extra_env = {}
-        # The dusk-tx stub's "interleave", and what became of it.
+        # The dusk-tx stub's "interleave" and "on_read", and what became of
+        # them.
         self.dusk_interleave = None
+        self.dusk_on_read = None
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -824,7 +835,8 @@ class TestnetScript(unittest.TestCase):
         env_file.write_text('source "$DUSK_DIR/deploy/testnet.env.example"\n'
                             + "".join(f"{key}={shlex.quote(str(value))}\n" for key, value in values.items()))
         self.chain.write_text(json.dumps({"queries": self.queries, "deployer_h256": DEPLOYER_H256,
-                                          "deploy": DUSK_CONTRACTS, "interleave": self.dusk_interleave}))
+                                          "deploy": DUSK_CONTRACTS, "interleave": self.dusk_interleave,
+                                          "on_read": self.dusk_on_read}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
             self.relayer_config.unlink()
@@ -845,6 +857,7 @@ class TestnetScript(unittest.TestCase):
         # What the run left on the fake chains, for the next run and the asserts.
         chain = json.loads(self.chain.read_text())
         self.queries, self.dusk_interleave = chain["queries"], chain.get("interleave")
+        self.dusk_on_read = chain.get("on_read")
         self.evm = json.loads(self.evm_file.read_text())
         return result
 
@@ -2308,6 +2321,67 @@ class TestnetRecordedDuskReadBack(DeployedTestnet):
         self.assert_refused(f"records the Dusk contracts as owned by the account with hash {ATTACKER_H256}, "
                             f"not DUSK_KEYS's ({DEPLOYER_H256})", commands=[["preflight"], ["deploy"]])
 
+
+
+class TestnetDeploymentRecord(DeployedTestnet):
+    """Every command but fees holds the deployment's lock while it runs, so
+    commands on one deployment run one at a time, and reads the record
+    once: what a command checked is what it records, and what the agent
+    configs it writes name, whatever happens to the files meanwhile."""
+
+    COMMANDS = [["preflight"], ["deploy"], ["agent-configs"], ["dusk-igp"], ["evm-igp"], ["revenue"],
+                ["claim"]]
+
+    def test_commands_on_a_deployment_run_one_at_a_time(self):
+        state = self.state()
+        with open(self.out / ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            for command in self.COMMANDS:
+                with self.subTest(command=command):
+                    self.assert_fails(self.run_script(*command), "Another deploy/testnet.sh command is running on")
+                    self.assertEqual(self.trace.read_text(), "")
+                    self.assertEqual(self.state(), state)
+            # fees reads no record.
+            self.assert_ok(self.run_script("fees"))
+        self.assert_ok(self.run_script("preflight"))
+
+    def test_deploy_records_the_report_it_read_back(self):
+        # deploy read the contracts in deploy-hyperlane's report back, then
+        # read the report again to record them: a report replaced in
+        # between was recorded unchecked, with the owner the first one read
+        # back, and no later read-back in that run checked it.
+        self.forget_deployment()
+        other = {**DUSK_CONTRACTS, "warp_native": OTHER_ID}
+        self.dusk_on_read = {"key": f"{MAILBOX}/state_version", "path": str(self.out / "dusk-deploy.json"),
+                             "content": json.dumps({"success": True, "domain": DUSK_DOMAIN, "chain_id": 2,
+                                                    "contracts": other})}
+        result = self.run_script("deploy")
+        self.assertTrue(self.dusk_on_read["written"], "the report changed during the read-back")
+        self.assertEqual(self.state()["dusk"], DUSK_CONTRACTS)
+        self.assert_ok(result)
+
+    def test_agent_configs_name_the_contracts_they_checked(self):
+        # agent-configs checked the recorded contracts, then read the record
+        # again to write the configs: a record replaced in between put
+        # contracts nothing checked in the relayer's and validator's configs.
+        # A first run records how far it read the EVM IGP's events, so the
+        # second records nothing.
+        self.assert_ok(self.run_script("agent-configs"))
+        state = self.state()
+        other = {**DUSK_CONTRACTS, **{name: OTHER_ID for name in
+                                      ("mailbox", "igp", "validator_announce", "merkle_tree_hook")}}
+        self.dusk_on_read = {"key": f"{IGP}/domain_gas_config/{EVM_DOMAIN}",
+                             "path": str(self.out / "deployment.json"),
+                             "content": json.dumps({**state, "dusk": other})}
+        self.assert_ok(self.run_script("agent-configs"))
+        self.assertTrue(self.dusk_on_read["written"], "the record changed before the configs were written")
+        expected = {"mailbox": MAILBOX, "interchainGasPaymaster": IGP, "validatorAnnounce": VALIDATOR_ANNOUNCE,
+                    "merkleTreeHook": MERKLE_TREE_HOOK}
+        for config in ("relayer.json", "validator-dusk.json"):
+            with self.subTest(config=config):
+                chain = json.loads((self.out / config).read_text())["chains"]["dusk"]
+                self.assertEqual({key: chain[key] for key in expected},
+                                 {key: "0x" + value for key, value in expected.items()})
 
 class StateVersions(unittest.TestCase):
     """The state versions the tooling expects are the contracts' own."""
