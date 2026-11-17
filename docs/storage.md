@@ -325,14 +325,20 @@ reverts the insertion with everything else.
 
 - **No message is delivered twice.** The same message always has the same
   ID, so a replay always finds its key.
-- **An honest message can only be blocked by a second preimage.** Another
-  message is refused as delivered only if its ID shares the first 16 bytes
-  of a delivered one. To block a message someone else sent, an attacker has
-  to deliver a different message whose ID has the same 128-bit prefix: a
-  second preimage on 128 bits of keccak256, about 2^128 hashes. Finding two
-  messages of its own with the same prefix takes about 2^64, but blocks only
-  the attacker's own message, since an honest message's bytes, including its
-  origin nonce and sender, aren't the attacker's to choose.
+- **Blocking a message takes a second preimage, unless the attacker
+  chooses part of it.** Another message is refused as delivered only if its
+  ID shares the first 16 bytes of a delivered one. To block a message whose
+  bytes it doesn't choose, an attacker has to deliver a different message
+  whose ID has the same 128-bit prefix: a second preimage on 128 bits of
+  keccak256, about 2^128 hashes. A message it chooses at least 64 bits of,
+  and can predict the rest of, is cheaper to block: for example a payment
+  someone sends to a recipient the attacker names. A search over versions
+  of that message and of one of its own, about 2^64 to 2^65 hashes, finds a
+  pair whose IDs share the prefix. The attacker delivers its own message
+  first, and the other is then refused as delivered: it is never
+  delivered, and what it carries stays where it is, burned or locked on its
+  origin. Two messages of the attacker's own take about 2^64 hashes too,
+  and block only its own.
 - **Accidental collisions don't happen.** Over n deliveries the chance that
   any two IDs share a prefix is about n^2 / 2^129: 2^-74 at the 163M
   deliveries that fill the memory, 2^-65 at 2^32.
@@ -340,7 +346,9 @@ reverts the insertion with everything else.
 A collision would make the relayer's `delivered` check skip the message and
 `process` refuse it, so the cost of one is a stuck message, not a double
 delivery. Storing 16 bytes instead of 32 lets the set hold about 163M
-deliveries instead of 86M.
+deliveries instead of 86M. Storing 20 to 24 bytes would put the 2^64 search
+out of reach; the length is decided before mainnet, as it changes the
+Mailbox's layout.
 
 ## Costs per operation
 
