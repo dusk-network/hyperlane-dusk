@@ -778,8 +778,9 @@ mod tests {
         );
     }
 
-    /// Routes no longer export `register_account_for`; only a claim
-    /// registers a key on someone else's behalf.
+    /// Routes no longer export `register_account` or `register_account_for`;
+    /// only a claim of escrow registers a key, the claimant's own or someone
+    /// else's.
     #[test]
     fn sponsored_claim_input_round_trips_and_registration_for_is_gone() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(0x434c_4149);
@@ -800,6 +801,9 @@ mod tests {
             .is_err());
         assert!(HyperlaneDataDriver
             .decode_input_fn("register_account_for", &bytes)
+            .is_err());
+        assert!(HyperlaneDataDriver
+            .encode_input_fn("register_account", "null")
             .is_err());
     }
 

@@ -85,9 +85,12 @@ const PAY_FOR_GAS_GAS_LIMIT: u64 = 3_000_000;
 /// The first IGP `state_version` with `pay_for_gas` and `quote_pay_for_gas`.
 const IGP_TOP_UP_STATE_VERSION: u32 = 4;
 /// WarpNative's `state_version` in this checkout. Its DRC20 routes report
-/// others (WarpDrc20 7, WarpDrc20Collateral 6), so `transfer-remote
+/// others (WarpDrc20 8, WarpDrc20Collateral 7), so `transfer-remote
 /// --native` tells a native route by it.
-const WARP_NATIVE_STATE_VERSION: u32 = 4;
+const WARP_NATIVE_STATE_VERSION: u32 = 5;
+/// The least dispatch credit the Mailbox takes for a payer with none, 0.01
+/// DUSK (the Mailbox's `MIN_NEW_PAYER_CREDIT`).
+const MIN_NEW_PAYER_CREDIT: u64 = 10_000_000;
 /// The hook types the fee contracts report (Hyperlane's HookType).
 const IGP_HOOK_TYPE: u8 = 4;
 const PROTOCOL_FEE_HOOK_TYPE: u8 = 6;
@@ -565,36 +568,9 @@ enum Command {
         #[arg(long, default_value = "1")]
         gas_price: u64,
     },
-    /// Register the caller's BLS key on a warp route contract.
-    RegisterAccount {
-        #[arg(long, default_value = "http://localhost:8080/")]
-        rues_url: String,
-        #[arg(long)]
-        keys: Option<PathBuf>,
-        /// Password for consensus.keys. Takes precedence over
-        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
-        #[arg(long)]
-        password: Option<String>,
-        #[arg(long)]
-        secret_key: Option<String>,
-        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
-        #[arg(long)]
-        secret_key_stdin: bool,
-        /// Warp route contract ID (64 hex chars).
-        #[arg(long, name = "warp-contract")]
-        warp_contract: String,
-        /// Expected native Dusk chain ID. The endpoint must report it before
-        /// the signer is read or a transaction is constructed.
-        #[arg(long)]
-        expected_chain_id: u8,
-        #[arg(long, default_value = "30000000")]
-        gas_limit: u64,
-        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
-        #[arg(long, default_value = "1")]
-        gas_price: u64,
-    },
-    /// Claim tokens held in escrow on a warp route because they arrived before
-    /// the recipient registered.
+    /// Claim tokens held in escrow on a warp route. A transfer to an account
+    /// the route hasn't paid before waits there, and the claim also
+    /// registers the account, so later transfers arrive directly.
     ClaimPending {
         #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
@@ -1293,30 +1269,6 @@ async fn run(command: Command) -> Result<(), String> {
             )
             .await
         }
-        Command::RegisterAccount {
-            rues_url,
-            keys,
-            password,
-            secret_key,
-            warp_contract,
-            secret_key_stdin,
-            expected_chain_id,
-            gas_limit,
-            gas_price,
-        } => {
-            cmd_register_account(
-                &rues_url,
-                keys,
-                password.as_deref().unwrap_or_default(),
-                secret_key,
-                secret_key_stdin,
-                &warp_contract,
-                expected_chain_id,
-                gas_limit,
-                gas_price,
-            )
-            .await
-        }
         Command::ClaimPending {
             rues_url,
             keys,
@@ -1811,8 +1763,8 @@ mod tests {
         );
     }
 
-    /// Routes register an account for someone else only by claiming its
-    /// escrow, so only `claim-pending` takes another account.
+    /// Routes register an account only by claiming its escrow, so there's
+    /// no `register-account`, and `claim-pending` takes another account.
     #[test]
     fn only_claim_pending_takes_another_account() {
         let route = "11".repeat(32);
@@ -1825,8 +1777,7 @@ mod tests {
             "--expected-chain-id",
             "2",
         ];
-        assert!(Cli::try_parse_from(register).is_ok());
-        assert!(Cli::try_parse_from(register.into_iter().chain(["--for", &account])).is_err());
+        assert!(Cli::try_parse_from(register).is_err());
         assert!(Cli::try_parse_from([
             "dusk-tx",
             "claim-pending",
@@ -2950,7 +2901,6 @@ mod tests {
                 "--router",
                 &id,
             ],
-            vec!["register-account", "--warp-contract", &id],
             vec!["claim-pending", "--warp-contract", &id],
             vec![
                 "set-igp-config",
@@ -3131,7 +3081,7 @@ mod tests {
         let (url, server) = mock_rues(vec![
             ("/chain_id", 200, vec![2]),
             ("/enrolled_router", 200, vec![0x11; 32]),
-            ("/state_version", 200, super::rkyv_serialize(&4u32)),
+            ("/state_version", 200, super::rkyv_serialize(&5u32)),
             (
                 "/quote_transfer_remote",
                 200,
@@ -3156,7 +3106,7 @@ mod tests {
             "{paths:?}"
         );
 
-        for version in [7u32, 6] {
+        for version in [8u32, 7] {
             let (url, server) = mock_rues(vec![
                 ("/chain_id", 200, vec![2]),
                 ("/enrolled_router", 200, vec![0x11; 32]),
@@ -3166,6 +3116,59 @@ mod tests {
             assert!(error.contains("drop --native"), "{error}");
             assert_eq!(server.join().unwrap().len(), 3);
         }
+    }
+
+    /// The Mailbox takes at least 0.01 DUSK for a payer with no credit.
+    /// `fund-dispatch` of less reads the payer's credit and stops before the
+    /// key is read when it has none, since a failed transaction pays its
+    /// whole gas limit. A payer with credit, or an amount at the minimum,
+    /// goes on (here as far as the key, which doesn't exist).
+    #[tokio::test]
+    async fn fund_dispatch_refuses_less_than_the_minimum_for_a_new_payer() {
+        let fund = |url: &str, amount: u64| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "fund-dispatch",
+                "--rues-url",
+                url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--mailbox",
+                &"33".repeat(32),
+                "--payer",
+                &"44".repeat(32),
+                "--amount",
+                &amount.to_string(),
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+        ]);
+        let error = super::run(fund(&url, super::MIN_NEW_PAYER_CREDIT - 1))
+            .await
+            .unwrap_err();
+        assert!(error.contains("takes at least 10000000 LUX"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 2);
+
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&1u64)),
+        ]);
+        let error = super::run(fund(&url, 1)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 2);
+
+        let (url, server) = mock_rues(vec![("/chain_id", 200, vec![2])]);
+        let error = super::run(fund(&url, super::MIN_NEW_PAYER_CREDIT))
+            .await
+            .unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 1);
     }
 
     /// Multicall for Dusk's published owner, and the IDs a test Wasm gives
@@ -4157,11 +4160,27 @@ async fn cmd_fund_dispatch(
     if amount == 0 {
         return Err("Funding amount must be greater than zero".into());
     }
-    let mailbox = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
+    let mailbox_bytes = parse_bytes32(mailbox_hex)?;
+    let mailbox = ContractId::from_bytes(mailbox_bytes);
     let payer = parse_bytes32(payer_hex)?;
     let args = rkyv_serialize(&(payer, amount));
     let client = RuesClient::new(rues_url)?;
     let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    // A failed transaction pays its whole gas limit, so check what the
+    // Mailbox would refuse first.
+    if amount < MIN_NEW_PAYER_CREDIT {
+        let credit: u64 = client
+            .contract_query(&mailbox_bytes, "fee_credit", &(payer,))
+            .await
+            .map_err(|e| format!("Can't read the payer's dispatch credit: {e}"))?;
+        if credit == 0 {
+            return Err(format!(
+                "The payer has no dispatch credit, and the Mailbox takes at least \
+                 {MIN_NEW_PAYER_CREDIT} LUX (0.01 DUSK) to fund a payer with none; \
+                 {amount} LUX is less"
+            ));
+        }
+    }
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call_with_deposit(
@@ -6546,64 +6565,6 @@ async fn cmd_enroll_router(
     Ok(())
 }
 
-// ── cmd_register_account ──────────────────────────────────────────────────
-
-async fn cmd_register_account(
-    rues_url: &str,
-    keys_path: Option<PathBuf>,
-    password: &str,
-    secret_key_hex: Option<String>,
-    secret_key_stdin: bool,
-    warp_contract_hex: &str,
-    expected_chain_id: u8,
-    gas_limit: u64,
-    gas_price: u64,
-) -> Result<(), String> {
-    let warp_bytes = parse_bytes32(warp_contract_hex)?;
-    let warp_id = ContractId::from_bytes(warp_bytes);
-
-    // The route registers the transaction signer. Only a claim registers an
-    // account for someone else (claim-pending --for).
-    let client = RuesClient::new(rues_url)?;
-    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let (nonce, _balance) = client.query_account(&pk).await?;
-
-    let tx = moonlight_call(
-        &sk,
-        warp_id,
-        "register_account",
-        Vec::new(),
-        gas_limit,
-        gas_price,
-        next_moonlight_nonce(nonce)?,
-        chain_id,
-    )?;
-
-    let tx_id = hex::encode(tx.hash().to_bytes());
-    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-
-    let h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
-    let pending: u64 = client
-        .contract_query(&warp_bytes, "pending_balance", &(h256,))
-        .await
-        .unwrap_or(0);
-
-    let mut output = account_identity(&pk);
-    output["success"] = json!(true);
-    output["fn_name"] = json!("register_account");
-    output["warp_contract"] = json!(warp_contract_hex);
-    output["pending"] = json!(pending.to_string());
-    output["tx_id"] = json!(tx_id);
-    confirmation.record(&mut output);
-    if pending > 0 {
-        output["next"] =
-            json!("Tokens are waiting in escrow for this account: run dusk-tx claim-pending");
-    }
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    Ok(())
-}
-
 // ── cmd_claim_pending ─────────────────────────────────────────────────────
 
 /// The route call a claim makes.
@@ -7510,8 +7471,8 @@ fn format_dusk(lux: u64) -> String {
 }
 
 /// The account's address and the recipient hash warp routes deliver to:
-/// `keccak256` of the 96-byte public key, which `register_account` maps back
-/// to the account.
+/// `keccak256` of the 96-byte public key, which a route maps back to the
+/// account once the account claims its first transfer there.
 fn account_identity(pk: &BlsPublicKey) -> serde_json::Value {
     let pk_bytes = pk.to_bytes();
     json!({
