@@ -42,6 +42,7 @@ AGGREGATION_HOOK = "a6" * 32
 MULTISIG = "b1" * 32
 OTHER_MULTISIG = "b2" * 32
 TEST_MOCK = "c1" * 32
+TEST_RECIPIENT = "c2" * 32
 DEPLOYER_H256 = "d0" * 32
 # Multicall for Dusk, at the ID it has on every chain.
 MULTICALL = "93de287b7d349d678a0038fe7772e8960e1a84a1b5da2d0b1f62f532616ce1d4"
@@ -167,7 +168,8 @@ if args[0] == "deploy-hyperlane":
     contracts = chain["deploy"]
     set_pricing(contracts["igp"], opt("--igp-domain-config"))
     save()
-    out({"success": True, "contracts": contracts})
+    out({"success": True, "domain": int(opt("--domain")), "chain_id": int(opt("--expected-chain-id")),
+         "contracts": contracts})
 if args[0] == "deploy-wasm":
     contract = opt("--expected-id")
     queries[f"{contract}/version"] = {"value": 1}
@@ -691,8 +693,13 @@ def dusk_queries():
     example settings say. The hooks are wired as dusk-tx deploy-hyperlane
     wires them: the IGP is the Mailbox's default hook, and its required hook
     is an aggregation hook that calls the Merkle tree hook and the
-    ProtocolFee, which take their calls from it, not from the Mailbox."""
+    ProtocolFee, which take their calls from it, not from the Mailbox. The
+    deployer owns every contract that has an owner, and is the fee
+    contracts' beneficiary."""
+    owned = {f"{contract}/owner": {"value": DEPLOYER_H256}
+             for contract in (MAILBOX, MULTISIG, PROTOCOL_FEE, IGP, ROUTE)}
     return {
+        **owned,
         f"{MAILBOX}/local_domain": {"value": DUSK_DOMAIN},
         f"{MAILBOX}/default_ism": {"value": MULTISIG},
         f"{MAILBOX}/state_version": {"value": 6},
@@ -711,13 +718,25 @@ def dusk_queries():
         f"{IGP}/beneficiary": {"value": DEPLOYER_H256},
         f"{PROTOCOL_FEE}/claimable_fees": {"value": 0},
         f"{PROTOCOL_FEE}/beneficiary": {"value": DEPLOYER_H256},
+        f"{PROTOCOL_FEE}/protocol_fee": {"value": 1000000},
+        f"{PROTOCOL_FEE}/max_protocol_fee": {"value": 100000000},
+        f"{AGGREGATION_HOOK}/state_version": {"value": 1},
+        f"{PROTOCOL_FEE}/state_version": {"value": 1},
         f"{VALIDATOR_ANNOUNCE}/state_version": {"value": 3},
+        f"{VALIDATOR_ANNOUNCE}/mailbox": {"value": MAILBOX},
+        f"{VALIDATOR_ANNOUNCE}/local_domain": {"value": DUSK_DOMAIN},
         f"{ROUTE}/state_version": {"value": 5},
+        f"{ROUTE}/mailbox": {"value": MAILBOX},
+        f"{ROUTE}/hook": {"value": ZERO},
         f"{ROUTE}/interchain_security_module": {"value": ZERO},
+        f"{MULTISIG}/state_version": {"value": 1},
         f"{MULTISIG}/module_type": {"value": 5},
         f"{MULTISIG}/validators_and_threshold": {"value": {"validators": [VALIDATOR], "threshold": 1}},
         f"{MULTISIG}/threshold": {"value": 1},
+        f"{TEST_MOCK}/state_version": {"value": 1},
         f"{TEST_MOCK}/module_type": {"value": 6},
+        f"{TEST_RECIPIENT}/state_version": {"value": 1},
+        f"{TEST_RECIPIENT}/interchain_security_module": {"value": ZERO},
         f"{MULTICALL}/version": {"value": 1},
     }
 
@@ -726,6 +745,7 @@ DUSK_CONTRACTS = {
     "mailbox": MAILBOX, "igp": IGP, "validator_announce": VALIDATOR_ANNOUNCE,
     "merkle_tree_hook": MERKLE_TREE_HOOK, "protocol_fee": PROTOCOL_FEE, "warp_native": ROUTE,
     "aggregation_hook": AGGREGATION_HOOK, "ism_multisig": MULTISIG, "test_mock": TEST_MOCK,
+    "test_recipient": TEST_RECIPIENT,
 }
 
 
@@ -775,6 +795,14 @@ class TestnetScript(unittest.TestCase):
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
+
+    def forget_deployment(self):
+        """Start over: no state, no deploy-hyperlane report, and, as the
+        stub deploys at the same IDs every time, the Dusk contracts as
+        deploy-hyperlane leaves them."""
+        (self.out / "deployment.json").unlink(missing_ok=True)
+        (self.out / "dusk-deploy.json").unlink(missing_ok=True)
+        self.queries = dusk_queries()
 
     def state(self):
         return json.loads((self.out / "deployment.json").read_text())
@@ -861,6 +889,7 @@ class DeployedTestnet(TestnetScript):
                     "owner": DEPLOYER, "index_from": 1},
             "dusk": DUSK_CONTRACTS,
             "dusk_domain": DUSK_DOMAIN,
+            "dusk_owner": DEPLOYER_H256,
         })
 
 
@@ -1041,8 +1070,7 @@ class TestnetRouteHookPlan(TestnetScript):
         ):
             with self.subTest(routing=routing["type"]):
                 self.evm = sepolia()
-                if (self.out / "deployment.json").exists():
-                    (self.out / "deployment.json").unlink()
+                self.forget_deployment()
                 self.require(self.ROUTING, **{
                     self.ROUTING: routing,
                     self.NESTED: {"type": "aggregation", "hook_type": 2, "hooks": [EVM_PROTOCOL_FEE, EVM_MERKLE]},
@@ -1785,18 +1813,20 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assert_fails(self.run_script("evm-igp", "--apply"), f"was made for EVM Mailbox 0x{'12' * 20}")
         self.assertEqual(self.traced("cast send"), [])
 
-    def test_fee_contracts_may_take_their_calls_from_a_hook_of_the_mailbox(self):
+    def test_fee_contracts_take_their_calls_as_deploy_hyperlane_wires_them(self):
         # As dusk-tx deploy-hyperlane wires it (dusk_queries), the ProtocolFee
         # takes its calls from the aggregation hook that is the Mailbox's
-        # required hook. A deployment may also bind it to the Mailbox itself,
-        # as the required hook.
-        for caller, required in ((AGGREGATION_HOOK, AGGREGATION_HOOK), (MAILBOX, PROTOCOL_FEE)):
-            with self.subTest(caller=caller):
-                self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 5}
-                self.queries[f"{PROTOCOL_FEE}/mailbox"] = {"value": caller}
-                self.queries[f"{MAILBOX}/required_hook"] = {"value": required}
-                self.assert_ok(self.run_script("claim"))
-                self.assertIn(f"--contract {PROTOCOL_FEE}", " ".join(self.traced("dusk-tx claim-fees")))
+        # required hook. A ProtocolFee bound to the Mailbox itself, as its
+        # required hook, passed the binding check, but deploy-hyperlane never
+        # deploys one, and the read-back refuses it.
+        self.queries[f"{PROTOCOL_FEE}/claimable_fees"] = {"value": 5}
+        self.assert_ok(self.run_script("claim"))
+        self.assertIn(f"--contract {PROTOCOL_FEE}", " ".join(self.traced("dusk-tx claim-fees")))
+        self.queries[f"{PROTOCOL_FEE}/mailbox"] = {"value": MAILBOX}
+        self.queries[f"{MAILBOX}/required_hook"] = {"value": PROTOCOL_FEE}
+        self.assert_fails(self.run_script("claim"),
+                          f"The Dusk protocol_fee {PROTOCOL_FEE}'s mailbox is {MAILBOX}, not {AGGREGATION_HOOK}")
+        self.assertEqual(self.traced("dusk-tx claim-fees"), [])
 
     def test_a_fee_contract_the_mailbox_doesnt_call_is_refused(self):
         # Bound to the Mailbox, but neither its required nor its default
@@ -1965,9 +1995,7 @@ class TestnetDeploy(TestnetScript):
         for mode in ("owner", "beneficiary"):
             with self.subTest(igp=mode):
                 self.evm = sepolia()
-                self.queries = dusk_queries()
-                if (self.out / "deployment.json").exists():
-                    (self.out / "deployment.json").unlink()
+                self.forget_deployment()
                 self.evm["front_run"] = {"attacker": ATTACKER, "igp": mode, "token": "owner"}
                 result = self.run_script("deploy")
                 self.assert_ok(result)
@@ -2033,6 +2061,189 @@ class TestnetDeploy(TestnetScript):
                 self.assertEqual(self.traced("cast send"), [])
                 self.assertEqual(self.traced("forge"), [])
 
+ATTACKER_H256 = "ee" * 32
+OTHER_ID = "a9" * 32
+
+
+class TestnetDuskReadBack(TestnetScript):
+    """deploy records the Dusk contracts only once each reads back as
+    dusk-tx deploy-hyperlane deploys it: its owner, the bindings its init
+    set, its state version, and what only its owner can change later, as
+    init left it. A deploy or a contract's init can be front-run, and the
+    contract then has whoever came first as owner, and their bindings."""
+
+    FRESH = [
+        ({f"{MAILBOX}/owner": {"value": ATTACKER_H256}},
+         f"The Dusk mailbox {MAILBOX}'s owner is {ATTACKER_H256}, not the deployer's account {DEPLOYER_H256}"),
+        ({f"{ROUTE}/owner": {"value": None}},
+         f"The Dusk warp_native {ROUTE}'s owner is nobody, not the deployer's account"),
+        ({f"{MULTISIG}/owner": {"error": "Query failed (500): busy"}},
+         f"Can't read the owner of the Dusk ism_multisig {MULTISIG}: Query failed (500): busy"),
+        ({f"{PROTOCOL_FEE}/beneficiary": {"value": ATTACKER_H256}},
+         f"The Dusk protocol_fee {PROTOCOL_FEE}'s beneficiary is {ATTACKER_H256}, not {DEPLOYER_H256}"),
+        ({f"{IGP}/beneficiary": {"value": ATTACKER_H256}},
+         f"The Dusk igp {IGP}'s beneficiary is {ATTACKER_H256}, not {DEPLOYER_H256}"),
+        ({f"{PROTOCOL_FEE}/protocol_fee": {"value": 100000000}},
+         f"The Dusk protocol_fee {PROTOCOL_FEE}'s protocol_fee is 100000000, not 1000000"),
+        ({f"{MULTISIG}/validators_and_threshold": {"value": {"validators": ["0x" + "77" * 20], "threshold": 1}}},
+         f"The Dusk ISM {MULTISIG} needs 1 of [0x{'77' * 20}], not 1 of [{VALIDATOR}]"),
+        ({f"{MAILBOX}/default_ism": {"value": TEST_MOCK}},
+         f"The Dusk mailbox {MAILBOX}'s default_ism is {TEST_MOCK}, not {MULTISIG}"),
+        ({f"{MAILBOX}/required_hook": {"value": OTHER_ID}},
+         f"The Dusk mailbox {MAILBOX}'s required_hook is {OTHER_ID}, not {AGGREGATION_HOOK}"),
+        ({f"{MERKLE_TREE_HOOK}/mailbox": {"value": MAILBOX}},
+         f"The Dusk merkle_tree_hook {MERKLE_TREE_HOOK}'s mailbox is {MAILBOX}, not {AGGREGATION_HOOK}"),
+        ({f"{AGGREGATION_HOOK}/hooks": {"value": [PROTOCOL_FEE, MERKLE_TREE_HOOK]}},
+         f"The Dusk aggregation_hook {AGGREGATION_HOOK}'s hooks is"),
+        ({f"{VALIDATOR_ANNOUNCE}/mailbox": {"value": OTHER_ID}},
+         f"The Dusk validator_announce {VALIDATOR_ANNOUNCE}'s mailbox is {OTHER_ID}, not {MAILBOX}"),
+        ({f"{ROUTE}/mailbox": {"value": OTHER_ID}},
+         f"The Dusk warp_native {ROUTE}'s mailbox is {OTHER_ID}, not {MAILBOX}"),
+        ({f"{ROUTE}/hook": {"value": OTHER_ID}},
+         f"The Dusk warp_native {ROUTE}'s hook is {OTHER_ID}, not {ZERO}"),
+        ({f"{ROUTE}/interchain_security_module": {"value": OTHER_MULTISIG}},
+         f"The Dusk warp_native {ROUTE}'s interchain_security_module is {OTHER_MULTISIG}, not {ZERO}"),
+        ({f"{ROUTE}/enrolled_router/{EVM_DOMAIN}": {"value": ATTACKER_H256}},
+         f"The Dusk route {ROUTE} is enrolled with the router {ATTACKER_H256} for sepolia "
+         f"(domain {EVM_DOMAIN}), not none: deploy-hyperlane enrolls none"),
+        ({f"{ROUTE}/enrolled_router/{DUSK_DOMAIN}": {"value": ATTACKER_H256}},
+         f"The Dusk warp_native {ROUTE}'s enrolled_router is {ATTACKER_H256}, not {ZERO}"),
+        ({f"{TEST_RECIPIENT}/interchain_security_module": {"value": TEST_MOCK}},
+         f"The Dusk test_recipient {TEST_RECIPIENT}'s interchain_security_module is {TEST_MOCK}, not {ZERO}"),
+        ({f"{AGGREGATION_HOOK}/state_version": {"value": 2}},
+         f"The Dusk aggregation_hook {AGGREGATION_HOOK}'s state_version is 2, not 1"),
+    ]
+
+    def assert_nothing_recorded_or_sent(self):
+        self.assertNotIn("dusk", self.state())
+        self.assertNotIn("dusk_owner", self.state())
+        self.assertEqual(self.traced("cast send") + self.traced("forge") + self.traced("dusk-tx enroll-router")
+                         + self.traced("dusk-tx set-beneficiary"), [])
+
+    def test_deploy_records_the_contracts_and_their_owner_once_they_read_back(self):
+        self.assert_ok(self.run_script("deploy"))
+        state = self.state()
+        self.assertEqual(state["dusk"], DUSK_CONTRACTS)
+        self.assertEqual(state["dusk_owner"], DEPLOYER_H256)
+        self.assertEqual(len(self.traced("dusk-tx deploy-hyperlane")), 1)
+
+    def test_deploy_records_nothing_that_doesnt_read_back_as_deployed(self):
+        for change, expected in self.FRESH:
+            with self.subTest(change=change):
+                self.forget_deployment()
+                self.queries.update(change)
+                result = self.run_script("deploy")
+                self.assert_fails(result, expected)
+                self.assertIn("Nothing was recorded", result.stderr)
+                self.assert_nothing_recorded_or_sent()
+
+    def test_deploy_reads_back_what_deploy_hyperlane_reported_before_it_stopped(self):
+        # deploy-hyperlane finished, and deploy stopped before recording what
+        # it deployed: deploying again would find the IDs taken.
+        report = {"success": True, "domain": DUSK_DOMAIN, "chain_id": 2, "contracts": DUSK_CONTRACTS}
+        (self.out / "dusk-deploy.json").write_text(json.dumps(report))
+        self.queries[f"{MAILBOX}/owner"] = {"value": ATTACKER_H256}
+        self.assert_fails(self.run_script("deploy"), f"The Dusk mailbox {MAILBOX}'s owner is {ATTACKER_H256}")
+        self.assert_nothing_recorded_or_sent()
+        self.assertEqual(self.traced("dusk-tx deploy-hyperlane"), [])
+        self.queries[f"{MAILBOX}/owner"] = {"value": DEPLOYER_H256}
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.traced("dusk-tx deploy-hyperlane"), [])
+        self.assertEqual((self.state()["dusk"], self.state()["dusk_owner"]), (DUSK_CONTRACTS, DEPLOYER_H256))
+        # The stub deploys at the same IDs every time: the next deployment's
+        # route has no router yet.
+        self.queries.pop(f"{ROUTE}/enrolled_router/{EVM_DOMAIN}")
+        # A report from another chain is not read back.
+        (self.out / "deployment.json").unlink()
+        (self.out / "dusk-deploy.json").write_text(json.dumps({**report, "chain_id": 0}))
+        self.assert_fails(self.run_script("deploy"), "records a Dusk deployment on chain 0")
+        self.assertNotIn("dusk", self.state())
+        # One that failed is not a deployment to read back: deploy deploys.
+        (self.out / "dusk-deploy.json").write_text(json.dumps({"success": False, "error": "busy"}))
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(len(self.traced("dusk-tx deploy-hyperlane")), 1)
+
+
+class TestnetRecordedDuskReadBack(DeployedTestnet):
+    """Every command that uses the recorded Dusk deployment reads it back
+    first: each contract's owner is the one deploy recorded, and the
+    bindings nobody can change, or that only the owner can and
+    deploy/testnet.sh never does, are as deploy left them."""
+
+    COMMANDS = [["preflight"], ["deploy"], ["agent-configs"], ["dusk-igp", "--apply"], ["claim"]]
+
+    def assert_refused(self, expected, commands=None, **settings):
+        # Something to send, so that "nothing was sent" means something: the
+        # read-back comes before the checks these would fail.
+        pricing = self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"] = {"value": {**pricing, "token_exchange_rate": 1}}
+        self.queries[f"{IGP}/claimable_fees"] = {"value": 5}
+        for command in commands or self.COMMANDS:
+            with self.subTest(command=command):
+                result = self.run_script(*command, **settings)
+                self.assert_fails(result, expected)
+                self.assertEqual(self.traced("dusk-tx set-igp-config") + self.traced("dusk-tx claim-fees")
+                                 + self.traced("dusk-tx set-beneficiary") + self.traced("dusk-tx enroll-router")
+                                 + self.traced("cast send") + self.traced("forge"), [])
+                self.assertFalse(self.relayer_config.exists())
+
+    def test_the_recorded_deployment_reads_back(self):
+        for command in self.COMMANDS:
+            with self.subTest(command=command):
+                self.assert_ok(self.run_script(*command))
+
+    def test_a_contract_that_differs_from_what_deploy_left_is_refused(self):
+        # Every command refuses a Mailbox someone else owns.
+        self.queries[f"{MAILBOX}/owner"] = {"value": ATTACKER_H256}
+        self.assert_refused(f"The Dusk mailbox {MAILBOX}'s owner is {ATTACKER_H256}, "
+                            f"not the deployer's account {DEPLOYER_H256}")
+        self.queries[f"{MAILBOX}/owner"] = {"value": DEPLOYER_H256}
+        # And each other difference, where DUSK_KEYS is read (preflight) and
+        # where it isn't (claim).
+        for change, expected in [
+            ({f"{IGP}/owner": {"value": None}}, f"The Dusk igp {IGP}'s owner is nobody"),
+            ({f"{MERKLE_TREE_HOOK}/mailbox": {"value": OTHER_ID}},
+             f"The Dusk merkle_tree_hook {MERKLE_TREE_HOOK}'s mailbox is {OTHER_ID}, not {AGGREGATION_HOOK}"),
+            ({f"{VALIDATOR_ANNOUNCE}/local_domain": {"value": 7}},
+             f"The Dusk validator_announce {VALIDATOR_ANNOUNCE}'s local_domain is 7, not {DUSK_DOMAIN}"),
+            ({f"{ROUTE}/hook": {"value": OTHER_ID}},
+             f"The Dusk warp_native {ROUTE}'s hook is {OTHER_ID}, not {ZERO}"),
+            ({f"{TEST_RECIPIENT}/interchain_security_module": {"value": TEST_MOCK}},
+             f"The Dusk test_recipient {TEST_RECIPIENT}'s interchain_security_module is {TEST_MOCK}"),
+            ({f"{PROTOCOL_FEE}/state_version": {"value": 2}},
+             f"The Dusk protocol_fee {PROTOCOL_FEE}'s state_version is 2, not 1"),
+            # The route is enrolled with another token than the recorded one.
+            ({f"{ROUTE}/enrolled_router/{EVM_DOMAIN}": {"value": "00" * 12 + "22" * 20}},
+             f"The Dusk route {ROUTE} is enrolled with the router {'00' * 12 + '22' * 20} for sepolia "
+             f"(domain {EVM_DOMAIN}), not none or the EVM DUSK token {self.token} recorded in"),
+        ]:
+            with self.subTest(change=change):
+                saved = {key: self.queries[key] for key in change}
+                self.queries.update(change)
+                try:
+                    self.assert_refused(expected, commands=[["preflight"], ["claim"]])
+                finally:
+                    self.queries.update(saved)
+
+    def test_a_deployment_recorded_without_its_owner_is_refused(self):
+        # An older deploy/testnet.sh recorded the Dusk contracts without
+        # reading them back.
+        state = self.state()
+        del state["dusk_owner"]
+        self.write_state(state)
+        self.assert_refused("records Dusk contracts but not the owner deploy read back from them")
+
+    def test_a_deployment_owned_by_another_deployer_is_refused_where_dusk_keys_is_read(self):
+        # Another deployer's deployment, consistently recorded: preflight and
+        # deploy, which read DUSK_KEYS, refuse it.
+        state = self.state()
+        self.write_state({**state, "dusk_owner": ATTACKER_H256})
+        for key in [key for key in self.queries if key.endswith("/owner")]:
+            self.queries[key] = {"value": ATTACKER_H256}
+        self.assert_refused(f"records the Dusk contracts as owned by the account with hash {ATTACKER_H256}, "
+                            f"not DUSK_KEYS's ({DEPLOYER_H256})", commands=[["preflight"], ["deploy"]])
+
+
 class StateVersions(unittest.TestCase):
     """The state versions the tooling expects are the contracts' own."""
 
@@ -2048,12 +2259,21 @@ class StateVersions(unittest.TestCase):
     def test_the_tooling_expects_the_contracts_versions(self):
         script = TESTNET_SH.read_text()
         expected = {}
-        for name in ("CORE_STATE_VERSIONS", "ROUTE_STATE_VERSIONS"):
+        for name in ("CORE_STATE_VERSIONS", "ROUTE_STATE_VERSIONS", "OTHER_STATE_VERSIONS"):
             [entries] = re.findall(rf'^{name}="([^"]*)"', script, re.M)
             expected.update(entry.split("=") for entry in entries.split())
-        self.assertEqual(sorted(expected), sorted(self.CRATES))
-        for key, crate in self.CRATES.items():
+        crates = {**self.CRATES, "aggregation_hook": "aggregation-hook", "ism_multisig": "ism-multisig",
+                  "protocol_fee": "protocol-fee", "test_mock": "test-mock", "test_recipient": "test-recipient"}
+        self.assertEqual(sorted(expected), sorted(crates))
+        for key, crate in crates.items():
             self.assertEqual(int(expected[key]), self.contract_version(crate), key)
+        # deploy-hyperlane reads every contract it deploys back at these.
+        deployment = (ROOT / "dusk-tx" / "src" / "deployment.rs").read_text()
+        [table] = re.findall(r"pub const STATE_VERSIONS: \[\(&str, u32\); \d+\] = \[(.*?)\];", deployment, re.S)
+        read_back = dict(re.findall(r'\("([a-z0-9-]+)", (\d+)\)', table))
+        self.assertEqual(sorted(read_back), sorted(crates.values()))
+        for crate, version in read_back.items():
+            self.assertEqual(int(version), self.contract_version(crate), crate)
         # transfer-remote --native tells a native route by its version, which
         # no DRC20 route of this checkout reports.
         dusk_tx = (ROOT / "dusk-tx" / "src" / "main.rs").read_text()

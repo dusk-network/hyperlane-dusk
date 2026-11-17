@@ -135,13 +135,15 @@ dusk_query() { "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" "$@"; }
 # object). Stops the script if the query fails or returns nothing: a check
 # that can't read the chain must not pass. `fail` in a command substitution
 # only ends the substitution, so call it as `x="$(dusk_value ...)" || exit 1`.
+# DUSK_READ_HINT, when set, says what to do after a failed read.
+DUSK_READ_HINT=""
 dusk_value() {
     local label="$1" out value
     shift
     out="$(dusk_query "$@" 2>/dev/null)" \
-        || fail "Can't read $label: $(jq -r '.error // "the query failed"' <<<"$out" 2>/dev/null)"
+        || fail "Can't read $label: $(jq -r '.error // "the query failed"' <<<"$out" 2>/dev/null)${DUSK_READ_HINT:+. $DUSK_READ_HINT}"
     value="$(jq -er '.value | select(. != null) | tostring' <<<"$out" 2>/dev/null)" \
-        || fail "Can't read $label: the query returned no value"
+        || fail "Can't read $label: the query returned no value${DUSK_READ_HINT:+. $DUSK_READ_HINT}"
     printf '%s' "$value"
 }
 dusk_tx() { DUSK_CONSENSUS_PASSWORD="$DUSK_CONSENSUS_PASSWORD" "$DUSK_TX" "$@"; }
@@ -684,10 +686,12 @@ check_dusk_hook_binding() {
 
 # The Dusk contracts the fee commands use must be this deployment's: the
 # recorded Mailbox on the expected chain at DUSK_DOMAIN, the contracts at
-# this checkout's state versions, and the IGP and ProtocolFee taking their
-# calls from that Mailbox or its hooks (check_dusk_hook_binding).
+# this checkout's state versions, the IGP and ProtocolFee taking their
+# calls from that Mailbox or its hooks (check_dusk_hook_binding), and every
+# contract reading back as deploy left it (check_recorded_dusk_contracts).
+# With `keys`, their owner must also be DUSK_KEYS's account.
 check_dusk_deployment() {
-    local mailbox domain name contract
+    local mailbox domain
     check_dusk_chain
     mailbox="$(state_get '.dusk.mailbox')"
     [ -n "$mailbox" ] || fail "No Dusk deployment recorded in $STATE; run deploy first"
@@ -698,11 +702,209 @@ check_dusk_deployment() {
     [ "$domain" = "$DUSK_DOMAIN" ] \
         || fail "The Dusk Mailbox $mailbox recorded in $STATE has domain $domain, not DUSK_DOMAIN $DUSK_DOMAIN"
     check_state_versions
+    check_recorded_dusk_contracts "${1:-}"
+}
+
+# The recorded Dusk deployment: the fee contracts' bindings, then the
+# read-back of every contract against the owner deploy recorded. A command
+# reads the contracts back once: DUSK_READ_BACK is set once they have read
+# back in this run, to `keys` when their owner was DUSK_KEYS's.
+DUSK_READ_BACK=""
+check_recorded_dusk_contracts() {
+    local mailbox name contract owner
+    mailbox="$(state_get '.dusk.mailbox')"
     for name in igp protocol_fee; do
         contract="$(state_get ".dusk.$name")"
         [ -n "$contract" ] || continue
         check_dusk_hook_binding "$name" "$contract" "$mailbox"
     done
+    if [ "$DUSK_READ_BACK" = keys ] || { [ -n "$DUSK_READ_BACK" ] && [ "${1:-}" != keys ]; }; then
+        return 0
+    fi
+    owner="$(recorded_dusk_owner "${1:-}")" || exit 1
+    check_dusk_contracts "$(jq -c '.dusk' "$STATE")" "$owner" recorded
+    DUSK_READ_BACK="${1:-owner}"
+}
+
+# The account hash of DUSK_KEYS: the owner dusk-tx deploy-hyperlane gives
+# every Dusk contract it deploys, and the fee contracts' first beneficiary.
+deployer_account() {
+    local out hash
+    out="$(dusk_tx account --offline --keys "$DUSK_KEYS" 2>/dev/null)" \
+        && hash="$(jq -er '.account_h256' <<<"$out" 2>/dev/null)" && [[ "$hash" =~ ^[0-9a-f]{64}$ ]] \
+        || { echo "[FAIL] Can't read the account of DUSK_KEYS $DUSK_KEYS: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)" >&2; return 1; }
+    printf '%s' "$hash"
+}
+
+# The owner the recorded Dusk contracts must have: the account deploy read
+# back as every contract's owner when it recorded them (.dusk_owner). An
+# older deploy/testnet.sh recorded contracts without reading them back, so a
+# deployment recorded without it is refused. With `keys`, it must also be
+# DUSK_KEYS's account.
+recorded_dusk_owner() {
+    local recorded keys
+    recorded="$(state_get '.dusk_owner')"
+    [[ "$recorded" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "[FAIL] $STATE records Dusk contracts but not the owner deploy read back from them: an older deploy/testnet.sh recorded them without reading back what it deployed, and whoever deployed or initialized one of them first chose its owner and bindings. Move $OUT_DIR aside and deploy again." >&2
+        return 1
+    }
+    if [ "${1:-}" = keys ]; then
+        keys="$(deployer_account)" || return 1
+        [ "$keys" = "$recorded" ] || {
+            echo "[FAIL] $STATE records the Dusk contracts as owned by the account with hash $recorded, not DUSK_KEYS's ($keys): it is another deployer's deployment. Use that deployer's DUSK_KEYS, or another DEPLOY_NAME." >&2
+            return 1
+        }
+    fi
+    printf '%s' "$recorded"
+}
+
+# The state_version of each Dusk contract deploy-hyperlane deploys besides
+# the core contracts and routes above; none has had another.
+OTHER_STATE_VERSIONS="aggregation_hook=1 ism_multisig=1 protocol_fee=1 test_mock=1 test_recipient=1"
+# The ProtocolFee deploy-hyperlane deploys: 0.001 DUSK a dispatch, which its
+# owner can raise to at most 0.1 DUSK.
+DUSK_PROTOCOL_FEE=1000000
+DUSK_MAX_PROTOCOL_FEE=100000000
+
+# Read back the Dusk contracts in `contracts`, a JSON object of IDs by name
+# as dusk-tx deploy-hyperlane prints them and $STATE records them, against
+# what deploy-hyperlane deploys. Someone can deploy at the IDs first, or
+# front-run a contract's init, and choose its owner and bindings
+# (docs/testnet.md, Before mainnet). So every contract's owner must be
+# `owner`, an account hash, and each binding its init set must hold: the
+# Mailbox's domain and hooks, the aggregation hook's Mailbox and hooks, the
+# Merkle hook's, the fee contracts' and ValidatorAnnounce's callers, the
+# route's Mailbox and hook, TestRecipient's ISM, and every contract's state
+# version. The route has no router for Dusk, and for EVM_DOMAIN none or the
+# recorded token.
+#
+# `fresh`, right after deploy-hyperlane, also reads what init set and only
+# the owner can change later: the Mailbox's default ISM, the ISM's
+# validators and threshold, the fee contracts' beneficiary, the ProtocolFee's
+# fee, the IGP's pricing and the route's own ISM, and the route has no
+# router yet. `recorded` leaves those to the checks that hold them to the
+# settings (check_deployed_ism, check_dusk_igp_pricing), since the owner can
+# change them on purpose, and the core contracts' and routes' state
+# versions and the Mailbox's domain to its callers, which read them first
+# (check_state_versions).
+#
+# Routes have no view that lists their routers, so only the domains above
+# are read; dusk-tx deploy-hyperlane reads the same, for each domain it
+# prices. Each failed read stops the script, as a check that can't read the
+# chain must not pass.
+check_dusk_contracts() {
+    local contracts="$1" owner="$2" mode="$3" name id entry value expected token hint versions
+    local -A c=()
+    if [ "$mode" = fresh ]; then
+        hint="These aren't the contracts deploy-hyperlane sent: a deploy or a contract's init may have been front-run, and whoever came first chose its owner and bindings. Nothing was recorded. Don't use them: move $OUT_DIR aside and deploy again with another DUSK_KEYS."
+        DUSK_READ_HINT="Nothing was recorded: run deploy again to read the contracts back again"
+    else
+        hint="$STATE records a Dusk deployment that isn't as deploy left it: it is another deployment's, or its owner changed it, which deploy/testnet.sh never does. Nothing was sent. Find out which; to start over, move $OUT_DIR aside and deploy again."
+    fi
+    for name in mailbox merkle_tree_hook aggregation_hook protocol_fee igp validator_announce \
+        ism_multisig test_mock test_recipient warp_native; do
+        id="$(jq -r --arg n "$name" '.[$n] // empty' <<<"$contracts")"
+        [[ "$id" =~ ^[0-9a-f]{64}$ ]] || fail "The Dusk deployment names no $name ('$id'). $hint"
+        c[$name]="$id"
+    done
+
+    versions="$OTHER_STATE_VERSIONS"
+    [ "$mode" = recorded ] || versions="$CORE_STATE_VERSIONS $ROUTE_STATE_VERSIONS $versions"
+    for entry in $versions; do
+        name="${entry%%=*}" expected="${entry#*=}"
+        [ -n "${c[$name]:-}" ] || continue
+        dusk_expect "$name" "${c[$name]}" state_version u32 "$expected" "this checkout's" "$hint"
+    done
+    for name in mailbox ism_multisig protocol_fee igp warp_native; do
+        value="$(dusk_owner_of "$name" "${c[$name]}")" || exit 1
+        [ "$value" = "$owner" ] \
+            || fail "The Dusk $name ${c[$name]}'s owner is $value, not the deployer's account $owner. $hint"
+    done
+    # Bindings nobody can change after init.
+    [ "$mode" = recorded ] \
+        || dusk_expect mailbox "${c[mailbox]}" local_domain u32 "$DUSK_DOMAIN" "DUSK_DOMAIN" "$hint"
+    dusk_expect merkle_tree_hook "${c[merkle_tree_hook]}" mailbox bytes32 "${c[aggregation_hook]}" \
+        "the aggregation hook, which calls it" "$hint"
+    dusk_expect aggregation_hook "${c[aggregation_hook]}" mailbox bytes32 "${c[mailbox]}" "the Mailbox" "$hint"
+    dusk_expect aggregation_hook "${c[aggregation_hook]}" hooks contract-id-list \
+        "[\"${c[merkle_tree_hook]}\",\"${c[protocol_fee]}\"]" "the Merkle hook, then the ProtocolFee" "$hint"
+    dusk_expect protocol_fee "${c[protocol_fee]}" mailbox bytes32 "${c[aggregation_hook]}" \
+        "the aggregation hook, which calls it" "$hint"
+    dusk_expect protocol_fee "${c[protocol_fee]}" max_protocol_fee u64 "$DUSK_MAX_PROTOCOL_FEE" \
+        "the most deploy-hyperlane lets its owner charge" "$hint"
+    dusk_expect igp "${c[igp]}" mailbox bytes32 "${c[mailbox]}" "the Mailbox" "$hint"
+    dusk_expect validator_announce "${c[validator_announce]}" mailbox bytes32 "${c[mailbox]}" "the Mailbox" "$hint"
+    dusk_expect validator_announce "${c[validator_announce]}" local_domain u32 "$DUSK_DOMAIN" "DUSK_DOMAIN" "$hint"
+    dusk_expect warp_native "${c[warp_native]}" mailbox bytes32 "${c[mailbox]}" "the Mailbox" "$hint"
+    dusk_expect test_mock "${c[test_mock]}" module_type u8 "$TEST_MOCK_ISM" "TestMock's" "$hint"
+    dusk_expect test_recipient "${c[test_recipient]}" interchain_security_module bytes32 "$ZERO_ID" \
+        "none: the Mailbox's default ISM" "$hint"
+    # Bindings only the owner can change, which deploy/testnet.sh never does.
+    dusk_expect mailbox "${c[mailbox]}" required_hook bytes32 "${c[aggregation_hook]}" "the aggregation hook" "$hint"
+    dusk_expect mailbox "${c[mailbox]}" default_hook bytes32 "${c[igp]}" "the IGP" "$hint"
+    dusk_expect warp_native "${c[warp_native]}" hook bytes32 "$ZERO_ID" "none: the Mailbox's default hook, the IGP" "$hint"
+    dusk_expect warp_native "${c[warp_native]}" enrolled_router bytes32 "$ZERO_ID" "none" "$hint" \
+        --arg-u32 "$DUSK_DOMAIN"
+    value="$(dusk_value "the router of the Dusk route ${c[warp_native]} for $EVM_CHAIN_NAME" \
+        --contract "${c[warp_native]}" --method enrolled_router --return-type bytes32 --arg-u32 "$EVM_DOMAIN")" || exit 1
+    token="$(state_get '.evm.token')"
+    if [ "$mode" = fresh ]; then
+        expected="none: deploy-hyperlane enrolls none"
+    elif [ -n "$token" ]; then
+        expected="none or the EVM DUSK token $token recorded in $STATE"
+        [ "$value" != "$(pad32 "$token")" ] || value="$ZERO_ID"
+    else
+        expected="none: $STATE records no EVM DUSK token"
+    fi
+    [ "$value" = "$ZERO_ID" ] \
+        || fail "The Dusk route ${c[warp_native]} is enrolled with the router $value for $EVM_CHAIN_NAME (domain $EVM_DOMAIN), not $expected. $hint"
+    [ "$mode" = fresh ] || return 0
+
+    # What init set and only the owner can change later.
+    dusk_expect mailbox "${c[mailbox]}" default_ism bytes32 "${c[ism_multisig]}" "the ISM deploy-hyperlane deployed" "$hint"
+    dusk_expect ism_multisig "${c[ism_multisig]}" module_type u8 "$MESSAGE_ID_MULTISIG_ISM" "a MessageIdMultisig ISM's" "$hint"
+    value="$(dusk_value "the validators and threshold of the Dusk ISM ${c[ism_multisig]}" \
+        --contract "${c[ism_multisig]}" --method validators_and_threshold --return-type validators-and-threshold)" || exit 1
+    value="$(jq -er '"\(.threshold) of [\(.validators | map(ascii_downcase) | join(","))]"' <<<"$value")" \
+        || fail "The Dusk ISM ${c[ism_multisig]} returned a malformed validator set"
+    expected="$EVM_ORIGIN_THRESHOLD of [$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")]"
+    [ "$value" = "$expected" ] \
+        || fail "The Dusk ISM ${c[ism_multisig]} needs $value, not $expected (EVM_ORIGIN_THRESHOLD of EVM_ORIGIN_VALIDATORS). $hint"
+    dusk_expect protocol_fee "${c[protocol_fee]}" beneficiary bytes32 "$owner" "the deployer's account" "$hint"
+    dusk_expect protocol_fee "${c[protocol_fee]}" protocol_fee u64 "$DUSK_PROTOCOL_FEE" "deploy-hyperlane's" "$hint"
+    dusk_expect igp "${c[igp]}" beneficiary bytes32 "$owner" "the deployer's account" "$hint"
+    value="$(dusk_value "the Dusk IGP's pricing for domain $EVM_DOMAIN" --contract "${c[igp]}" \
+        --method domain_gas_config --return-type domain-gas-config --arg-u32 "$EVM_DOMAIN")" || exit 1
+    value="$(jq -cS '{gas_overhead, token_exchange_rate, gas_price} | map_values(tostring)' <<<"$value")"
+    expected="$(fee '.dusk_igp | {gas_overhead, token_exchange_rate, gas_price}' | jq -cS .)"
+    [ "$value" = "$expected" ] \
+        || fail "The Dusk IGP ${c[igp]} prices domain $EVM_DOMAIN at $value, not the settings' $expected. $hint"
+    dusk_expect warp_native "${c[warp_native]}" interchain_security_module bytes32 "$ZERO_ID" \
+        "none: the Mailbox's default ISM" "$hint"
+    DUSK_READ_HINT=""
+}
+
+# Fail unless the view `method` of the Dusk contract `name` at `id` returns
+# `expected` (as dusk_value prints it); `what` says what that is, and
+# `hint` what to do. Arguments after those go to the query.
+dusk_expect() {
+    local name="$1" id="$2" method="$3" type="$4" expected="$5" what="$6" hint="$7" value
+    shift 7
+    value="$(dusk_value "the $method of the Dusk $name $id" \
+        --contract "$id" --method "$method" --return-type "$type" "$@")" || exit 1
+    [ "$value" = "$expected" ] || fail "The Dusk $name $id's $method is $value, not $expected ($what). $hint"
+}
+
+# A Dusk contract's owner(): an account hash, or "nobody" once ownership is
+# renounced.
+dusk_owner_of() {
+    local out value
+    out="$(dusk_query --contract "$2" --method owner --return-type option-bytes32 2>/dev/null)" \
+        && value="$(jq -er 'if has("value") then (.value // "nobody") else error("no value") end' <<<"$out" 2>/dev/null)" \
+        || { echo "[FAIL] Can't read the owner of the Dusk $1 $2: $(jq -r '.error // "the query returned no value"' <<<"$out" 2>/dev/null)${DUSK_READ_HINT:+. $DUSK_READ_HINT}" >&2; return 1; }
+    [ "$value" = nobody ] || [[ "$value" =~ ^[0-9a-f]{64}$ ]] \
+        || { echo "[FAIL] The Dusk $1 $2 returned a malformed owner ($value)" >&2; return 1; }
+    printf '%s' "$value"
 }
 
 # The same on the EVM side: the RPC on EVM_CHAIN_ID, the recorded Mailbox
@@ -1268,28 +1470,45 @@ cmd_preflight() {
 
 # ── Deploy steps ─────────────────────────────────────────────────────────────
 
+# Deploy the Dusk contracts, read them back, and only then record them.
+# dusk-tx deploy-hyperlane reads every contract back before it reports it
+# deployed (dusk-tx/src/deployment.rs); this reads them again against the
+# settings (check_dusk_contracts), and records the owner it read with them.
+# When deploy-hyperlane finished but this script stopped before recording
+# its contracts, deploying again would find their IDs taken: the contracts
+# deploy-hyperlane reported are read back instead.
 deploy_dusk() {
+    local out="$OUT_DIR/dusk-deploy.json" owner
     if [ -n "$(state_get '.dusk.mailbox')" ]; then
         ok "Dusk contracts already deployed (Mailbox $(state_get '.dusk.mailbox'))"
         return
     fi
-    info "Deploying the Dusk contracts (this takes a few minutes)..."
-    local out="$OUT_DIR/dusk-deploy.json"
+    owner="$(deployer_account)" || exit 1
     mkdir -p "$OUT_DIR"
-    dusk_tx deploy-hyperlane \
-        --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-        --domain "$DUSK_DOMAIN" --wasm-dir "$WASM_DIR" \
-        --gas-limit "$DUSK_GAS_LIMIT" --gas-price "$DUSK_GAS_PRICE" \
-        --deploy-warp-native \
-        --default-ism messageIdMultisig \
-        --multisig-validators "$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")" \
-        --multisig-threshold "$EVM_ORIGIN_THRESHOLD" \
-        --igp-domain-config "$(fee '.dusk_igp.config')" \
-        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
-        > "$out" || fail "Dusk deployment failed: $(jq -r '.error // empty' "$out" 2>/dev/null)"
-    state_set --slurpfile d "$out" --arg domain "$DUSK_DOMAIN" \
-        '.dusk = $d[0].contracts | .dusk_domain = ($domain | tonumber)'
-    ok "Dusk Mailbox $(state_get '.dusk.mailbox'), WarpNative $(state_get '.dusk.warp_native')"
+    if jq -e '.success == true and (.contracts | type) == "object"' "$out" >/dev/null 2>&1; then
+        jq -e --argjson chain "$DUSK_EXPECTED_CHAIN_ID" --argjson domain "$DUSK_DOMAIN" \
+            '.chain_id == $chain and .domain == $domain' "$out" >/dev/null \
+            || fail "$out records a Dusk deployment on chain $(jq -r .chain_id "$out") at domain $(jq -r .domain "$out"), not DUSK_EXPECTED_CHAIN_ID $DUSK_EXPECTED_CHAIN_ID at DUSK_DOMAIN $DUSK_DOMAIN. Move $OUT_DIR aside."
+        info "Reading back the Dusk contracts in $out, which deploy-hyperlane deployed before this script stopped..."
+    else
+        info "Deploying the Dusk contracts (this takes a few minutes)..."
+        dusk_tx deploy-hyperlane \
+            --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
+            --domain "$DUSK_DOMAIN" --wasm-dir "$WASM_DIR" \
+            --gas-limit "$DUSK_GAS_LIMIT" --gas-price "$DUSK_GAS_PRICE" \
+            --deploy-warp-native \
+            --default-ism messageIdMultisig \
+            --multisig-validators "$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")" \
+            --multisig-threshold "$EVM_ORIGIN_THRESHOLD" \
+            --igp-domain-config "$(fee '.dusk_igp.config')" \
+            --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
+            > "$out" || fail "Dusk deployment failed: $(jq -r '.error // empty' "$out" 2>/dev/null)"
+    fi
+    check_dusk_contracts "$(jq -c '.contracts' "$out")" "$owner" fresh
+    DUSK_READ_BACK=keys
+    state_set --slurpfile d "$out" --arg domain "$DUSK_DOMAIN" --arg owner "$owner" \
+        '.dusk = $d[0].contracts | .dusk_domain = ($domain | tonumber) | .dusk_owner = $owner'
+    ok "Dusk Mailbox $(state_get '.dusk.mailbox'), WarpNative $(state_get '.dusk.warp_native'): every contract reads back as deployed, owned by DUSK_KEYS"
 }
 
 # Who can claim the fees on Dusk: DUSK_FEE_BENEFICIARY, or the deployer that
@@ -1521,6 +1740,7 @@ check_state_matches_chain() {
             || fail "$STATE records EVM igp $contract, but there is no contract there; move the state aside and redeploy."
     fi
     check_evm_creations
+    [ -z "$mailbox" ] || check_recorded_dusk_contracts keys
 }
 
 # Refuse a deployment whose core contracts or warp routes report another
@@ -1563,7 +1783,7 @@ cmd_deploy() {
     # The fee contracts are this deployment's, called by its Mailbox, before
     # configure_dusk_beneficiary changes who can claim their fees: restored
     # state can name a detached one the same key owns.
-    check_dusk_deployment
+    check_dusk_deployment keys
     configure_dusk_beneficiary
     check_dusk_igp_pricing
     deploy_evm_ism
