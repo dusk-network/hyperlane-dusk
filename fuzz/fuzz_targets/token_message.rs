@@ -58,6 +58,8 @@ fuzz_target!(|data: &[u8]| {
         4 => 1 << 63,
         _ => reader.u64(),
     };
+    // The bits set below in each high byte of the uint256: never none.
+    let high_bits = reader.u8().max(1);
     let metadata = reader.rest();
     let plain = encode(recipient, amount);
     assert_eq!(plain.len(), 64);
@@ -72,12 +74,13 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(decoded.amount, amount);
     assert_eq!(decoded.metadata, metadata);
 
-    // Amounts of 2^64 and above, at every byte of the uint256, are refused
-    // rather than truncated.
-    let byte = usize::from(reader.u8()) % 24;
-    let mut too_big = plain.clone();
-    too_big[32 + byte] |= 1 + (data.first().copied().unwrap_or(0) & 0x7f);
-    assert!(decode(&too_big).is_none());
+    // Amounts of 2^64 and above are refused rather than truncated, with a
+    // bit set in any of the uint256's 24 high bytes, from 2^64 (byte 23) up.
+    for byte in 0..24 {
+        let mut too_big = plain.clone();
+        too_big[32 + byte] |= high_bits;
+        assert!(decode(&too_big).is_none(), "high byte {byte} set to {high_bits:#04x}");
+    }
 
     // Hook metadata: the first 8 bytes, little endian, or the default.
     let expected = if data.len() >= 8 {
