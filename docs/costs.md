@@ -411,15 +411,15 @@ which run the same code and leave the same memory behind.
 
 | Path | Contract | Bytes per entry | Gas per entry |
 |---|---|---:|---:|
-| Dispatch through the deployed hooks | Mailbox | 32 | 179,389 marginal |
+| Dispatch through the deployed hooks | Mailbox | 32 | 179,412 marginal |
 |  | MerkleTreeHook | 32 |  |
 |  | IGP | 64 |  |
 | | ProtocolFee, AggregationHook | 0 | |
 | Delivery to a recipient that is its own ISM | Mailbox | 26 | 1,844,727 per tx |
 | New validator, 1-byte location | ValidatorAnnounce | 108 | 2,061,782 per tx |
 | New validator, 1 KiB location | ValidatorAnnounce | 110 | 2,258,814 per tx |
-| WarpDrc20 transfer to a new holder | WarpDrc20 | 62 | 56,161 marginal |
-| WarpDrc20 approval of a new spender, 64 per owner | WarpDrc20 | 62 | 1,877,820 per tx |
+| WarpDrc20 transfer to a new holder | WarpDrc20 | 62 | 56,203 marginal |
+| WarpDrc20 approval of a new spender, 64 per owner | WarpDrc20 | 62 | 1,877,829 per tx |
 | WarpNative escrow for a new recipient | WarpNative | 72 | 2,130,676 per tx |
 |  | Mailbox | 26 |  |
 | WarpDrc20 escrow for a new recipient | WarpDrc20 | 72 | 2,131,031 per tx |
@@ -629,13 +629,13 @@ dispatch through the IGP to the EVM chain pays 6.001 DUSK.
 |---|---|---:|---|---|---:|
 | Delivery to a recipient that is its own ISM | Mailbox | 26 | 1,845,867, a transaction | none | 74.4 |
 | Dispatch with a free hook of the sender's | Mailbox | 32 | 154,582, batched | the protocol fee, 0.001 DUSK | 37.8 |
-| Dispatch through the IGP | IGP | 64 | 179,389, batched | 0.001025 DUSK; 6.001 at the testnet pricing | 19.7; 98,323 at the testnet pricing |
+| Dispatch through the IGP | IGP | 64 | 179,412, batched | 0.001025 DUSK; 6.001 at the testnet pricing | 19.7; 98,323 at the testnet pricing |
 | | MerkleTreeHook | 32 | | | not reachable, see below |
 | Credit for a new payer | Mailbox | 64, and 32 for its dispatch | 1,831,142, a transaction, and a dispatch of about 2.0M | the protocol fee; the 0.01 DUSK minimum comes back | 52.8 to 72.8 |
 | Top-up for any message ID | IGP | 64 | 1,832,296, a transaction | at least one gas's price, 37,500 LUX at the testnet pricing | 30.6 |
 | New validator, 1-byte location | ValidatorAnnounce | 108 | 2,061,782, a transaction | none | 20.0 |
-| Transfer to a new holder | WarpDrc20 | 62 | 56,161, batched | a token unit | 0.9 |
-| Approval of a new spender | WarpDrc20 | 62 | 1,877,820, a transaction, and a funding transfer per 64 | none | 32.2 |
+| Transfer to a new holder | WarpDrc20 | 62 | 56,203, batched | a token unit | 1.0 |
+| Approval of a new spender | WarpDrc20 | 62 | 1,877,829, a transaction, and a funding transfer per 64 | none | 32.2 |
 | Escrow for a new recipient | a route | 72 | 2,130,676, the relayer's `process` | an EVM transfer and its IGP fee | 31.0 |
 | Registration of a new account | a route | 352 | 2,130,676 for the escrow's delivery, 1,875,811 for the claim, and a funding transfer, about 1.83M | an EVM transfer and its IGP fee | 11.9 to 17.4 |
 
