@@ -257,12 +257,16 @@ started while another holds the lock stops at once; run it again when the
 other has finished. Router enrollment is re-checked on chain each time: on
 either side, `deploy` enrolls a router only where there is none, reading it
 right before each write, and refuses another rather than replace it, since
-that router's holders would be cut off from what backs their tokens. If the
-recorded contracts aren't on chain, for example after a testnet reset, or a
-recorded contract reports another `state_version` than this checkout's
-(Mailbox 6, MerkleTreeHook 2, IGP 4, ValidatorAnnounce 3, native route 5),
-`deploy` stops; move the directory aside and deploy again. Older routes may pay
-sponsored escrow claims to forged keys
+that router's holders would be cut off from what backs their tokens. The
+lock keeps out only this script's commands: a router the owner enrolls
+another way between that last read and the enrollment is replaced by it,
+since enrolling a router replaces whatever is there. Don't use the owner
+keys elsewhere while `deploy` runs ([Before mainnet](#before-mainnet)). If
+the recorded contracts aren't on chain, for example after a testnet reset,
+or a recorded contract reports another `state_version` than this
+checkout's (Mailbox 6, MerkleTreeHook 2, IGP 4, ValidatorAnnounce 3, native
+route 5), `deploy` stops; move the directory aside and deploy again. Older
+routes may pay sponsored escrow claims to forged keys
 ([security notes](security.md#issues-found-and-fixed), CRITICAL-1) and
 register any key that asks (MEDIUM-10), older core contracts keep storage
 anyone can fill cheaply ([storage.md](storage.md)), and an older IGP can't
@@ -663,6 +667,13 @@ Testnet runs on trust choices and tooling that mainnet can't:
   or `init` someone else front-ran
   ([Reading back the Dusk contracts](#reading-back-the-dusk-contracts)), but
   their IDs are taken by then.
+- **Router enrollment.** `deploy` reads a route's router right before it
+  enrolls one, and enrolls only where there is none, but a route's
+  `enroll_remote_router` replaces whatever router is there: a router the
+  owner enrolls another way between the read and the enrollment is
+  replaced, and its holders cut off from what backs their tokens. The Dusk
+  routes should take the router they expect to replace, none for a first
+  enrollment, and refuse any other.
 - **Validator set.** Sepolia → Dusk trusts one Abacus Works validator. Mainnet
   needs a deliberately chosen set for both directions.
 - **Gas payments.** Both IGPs are priced and the relayer enforces payment

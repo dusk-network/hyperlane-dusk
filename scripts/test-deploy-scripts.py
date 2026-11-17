@@ -1266,8 +1266,9 @@ class TestnetTokenBinding(DeployedTestnet):
     def deploy_changed_after_preflight(self, change):
         """Run deploy on the token as a deploy that stopped after creating
         it leaves it, no route and no tokens, with `change` made to it once
-        preflight has read its router: as another deploy with the same key
-        could, enrolling its own route or minting its tokens."""
+        preflight has read its router: as its owner could from elsewhere,
+        enrolling another route or minting tokens, since the deployment's
+        lock keeps out only this script's commands."""
         self.evm["contracts"][self.token].update(routers={}, supply=0)
         self.evm["interleave"] = {"token": self.token, "after_reads": 1, "change": change}
         self.queries.pop(f"{ROUTE}/enrolled_router/{EVM_DOMAIN}", None)
@@ -1311,12 +1312,14 @@ class TestnetTokenBinding(DeployedTestnet):
         # route's router for the EVM chain wasn't that token, replacing any
         # other, where the EVM side refuses to: run again after the token
         # record changed, it cut the old token's holders off from the DUSK
-        # behind their tokens. A router that appears after the read-back, as
-        # another deploy with the same key could enroll, is read right
-        # before each write and refused: before the write to the token, and
-        # right before the write to the route. deploy reads the route's
-        # router once in preflight's read-back, then in enroll_routers
-        # before each write.
+        # behind their tokens. A router that appears after the read-back,
+        # which the owner can enroll from elsewhere (the deployment's lock
+        # keeps out only this script's commands), is read right before each
+        # write and refused: before the write to the token, and right before
+        # the write to the route. deploy reads the route's router once in
+        # preflight's read-back, then in enroll_routers before each write.
+        # One enrolled between that last read and the write is replaced
+        # (docs/security.md, LOW-20): only the reads are tested here.
         key, other = f"{ROUTE}/enrolled_router/{EVM_DOMAIN}", "00" * 12 + "22" * 20
         # The token already has the hook deploy sets, so deploy's only
         # writes to it are enrollments.

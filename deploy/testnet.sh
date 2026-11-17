@@ -1721,10 +1721,13 @@ set_evm_route_hook() {
 
 # Enroll this deployment's route on the token, and the token on the route.
 # Preflight checked both routers, but their owners can enroll others in
-# between, as another deploy with the same key could. So each side is read
-# again right before each write, and enrolled only where it has no router:
-# another one is refused, never replaced, on the EVM side
-# (check_evm_token_router) as on Dusk (dusk_route_router).
+# between from elsewhere: the deployment's lock keeps out only this
+# script's commands. So each side is read again right before each write,
+# and enrolled only where it has no router: another one is refused on the
+# EVM side (check_evm_token_router) as on Dusk (dusk_route_router). One
+# enrolled between that read and the write is replaced, since enrolling
+# replaces whatever is there; an on-chain check waits for the mainnet
+# contracts (docs/testnet.md, Before mainnet).
 enroll_routers() {
     local token route router
     token="$(state_get '.evm.token')"
