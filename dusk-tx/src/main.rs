@@ -40,7 +40,8 @@ use dusk_core::transfer::data::{ContractBytecode, ContractCall, ContractDeploy};
 use dusk_core::transfer::moonlight::Transaction as MoonlightTransaction;
 use dusk_core::transfer::Transaction;
 use hyperlane_dusk_types::drc20::{
-    Account as Drc20Account, ApproveCall as Drc20ApproveCall, BalanceOf as Drc20BalanceOf,
+    Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
+    BalanceOf as Drc20BalanceOf,
 };
 use hyperlane_dusk_types::{DomainGasConfig, EthAddress, GasPaymentRecord};
 use rkyv::ser::serializers::AllocSerializer;
@@ -91,6 +92,28 @@ const WARP_NATIVE_STATE_VERSION: u32 = 5;
 /// The least dispatch credit the Mailbox takes for a payer with none, 0.01
 /// DUSK (the Mailbox's `MIN_NEW_PAYER_CREDIT`).
 const MIN_NEW_PAYER_CREDIT: u64 = 10_000_000;
+/// The memory the Mailbox takes no new payer past, and a WarpDrc20 no new
+/// holder or spender: 3 GiB. Each refuses a new entry unless the most it can
+/// allocate still fits under it.
+const NEW_ENTRY_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+/// A wasm32 memory page.
+const WASM_PAGE_BYTES: u64 = 64 * 1024;
+/// The most a new Mailbox credit entry or WarpDrc20 holder can allocate.
+const NEW_ENTRY_MEMORY_BOUND: u64 = 13 * WASM_PAGE_BYTES;
+/// The most a WarpDrc20 allowance for a new spender can allocate.
+const NEW_ALLOWANCE_MEMORY_BOUND: u64 = 14 * WASM_PAGE_BYTES;
+/// The most allowances a WarpDrc20 owner holds at once.
+const MAX_ALLOWANCES_PER_OWNER: u32 = 64;
+/// `--warp-collateral-token` value that deploys the pinned canonical DRC20.
+const CANONICAL_DRC20: &str = "canonical-drc20";
+/// The pinned canonical DRC20's Wasm in the WASM directory, built by `make
+/// canonical-drc20-fixture`.
+const CANONICAL_DRC20_WASM: &str = "canonical_drc20_roles_pausable.wasm";
+/// Why a collateral route doesn't wrap a WarpDrc20.
+const WARP_DRC20_COLLATERAL_REFUSED: &str = "a collateral route pays out with its token's \
+     `transfer`, and a WarpDrc20 refuses transfers to new holders once its memory nears its 3 GiB \
+     reserve, so the route would stop paying new accounts (docs/security.md). Wrap a plain DRC20, \
+     such as the pinned canonical one (`--warp-collateral-token canonical-drc20`)";
 /// The hook types the fee contracts report (Hyperlane's HookType).
 const IGP_HOOK_TYPE: u8 = 4;
 const PROTOCOL_FEE_HOOK_TYPE: u8 = 6;
@@ -234,10 +257,21 @@ enum Command {
         /// Also deploy the native DUSK collateral warp route.
         #[arg(long)]
         deploy_warp_native: bool,
-        /// Deploy a collateral route wrapping a DRC20 ID, or `warp-drc20`
-        /// to wrap the synthetic route deployed by this command.
+        /// Deploy a collateral route wrapping a DRC20: its contract ID (64
+        /// hex chars), or `canonical-drc20` to deploy the pinned canonical
+        /// DRC20 (`canonical_drc20_roles_pausable.wasm` in the WASM
+        /// directory, `make canonical-drc20-fixture`) with the deployer as
+        /// its admin and holder of --collateral-token-supply. A WarpDrc20
+        /// can't be wrapped: a collateral route pays out with its token's
+        /// `transfer`, which a WarpDrc20 refuses to new holders past its
+        /// 3 GiB reserve.
         #[arg(long)]
         warp_collateral_token: Option<String>,
+        /// What the canonical DRC20 of `--warp-collateral-token
+        /// canonical-drc20` mints to the deployer, in its smallest unit; it
+        /// has --warp-decimals.
+        #[arg(long, default_value = "10000000000000000000")]
+        collateral_token_supply: u64,
         /// Token name for WarpDrc20.
         #[arg(long, default_value = "Wrapped Ether")]
         warp_name: String,
@@ -1019,6 +1053,7 @@ async fn run(command: Command) -> Result<(), String> {
             deploy_warp_drc20,
             deploy_warp_native,
             warp_collateral_token,
+            collateral_token_supply,
             warp_name,
             warp_symbol,
             warp_decimals,
@@ -1041,6 +1076,7 @@ async fn run(command: Command) -> Result<(), String> {
                 deploy_warp_drc20,
                 deploy_warp_native,
                 warp_collateral_token.as_deref(),
+                collateral_token_supply,
                 &warp_name,
                 &warp_symbol,
                 warp_decimals,
@@ -3087,6 +3123,9 @@ mod tests {
                 200,
                 super::rkyv_serialize(&6_000_000_000u64),
             ),
+            ("/mailbox", 200, vec![0x44; 32]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+            ("/memory_bytes", 200, super::rkyv_serialize(&(1u64 << 20))),
         ]);
         // It gets as far as the key, which doesn't exist (or its password,
         // which a test of the password's sources may hold at the time).
@@ -3098,7 +3137,7 @@ mod tests {
             .into_iter()
             .map(|(path, _)| path)
             .collect();
-        assert_eq!(paths.len(), 4, "{paths:?}");
+        assert_eq!(paths.len(), 7, "{paths:?}");
         assert!(
             !paths
                 .iter()
@@ -3163,12 +3202,279 @@ mod tests {
         assert!(error.to_lowercase().contains("consensus"), "{error}");
         assert_eq!(server.join().unwrap().len(), 2);
 
-        let (url, server) = mock_rues(vec![("/chain_id", 200, vec![2])]);
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+            ("/memory_bytes", 200, super::rkyv_serialize(&(1u64 << 20))),
+        ]);
         let error = super::run(fund(&url, super::MIN_NEW_PAYER_CREDIT))
             .await
             .unwrap_err();
         assert!(error.to_lowercase().contains("consensus"), "{error}");
-        assert_eq!(server.join().unwrap().len(), 1);
+        assert_eq!(server.join().unwrap().len(), 3);
+    }
+
+    /// The Mailbox takes no new payer once a credit entry, 13 pages at
+    /// most, could take its memory past 3 GiB. `fund-dispatch` for a payer
+    /// with no credit, and `transfer-remote`, whose route is a new payer
+    /// unless it has standing credit, read the Mailbox's memory and stop
+    /// before the key is read when there is no room. A payer with credit
+    /// adds no entry and goes on.
+    #[tokio::test]
+    async fn new_payers_are_checked_for_room_in_the_mailbox() {
+        let limit = super::NEW_ENTRY_MEMORY_LIMIT;
+        let page = super::WASM_PAGE_BYTES;
+        let fund = |url: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "fund-dispatch",
+                "--rues-url",
+                url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--mailbox",
+                &"33".repeat(32),
+                "--payer",
+                &"44".repeat(32),
+                "--amount",
+                &super::MIN_NEW_PAYER_CREDIT.to_string(),
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let transfer = |url: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "transfer-remote",
+                "--native",
+                "--rues-url",
+                url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--warp-contract",
+                &"22".repeat(32),
+                "--destination",
+                "11155111",
+                "--recipient",
+                &"33".repeat(20),
+                "--amount",
+                "1000000000",
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let route_replies = |credit: u64, memory: Option<u64>| {
+            let mut replies = vec![
+                ("/chain_id", 200, vec![2]),
+                ("/enrolled_router", 200, vec![0x11; 32]),
+                ("/state_version", 200, super::rkyv_serialize(&5u32)),
+                (
+                    "/quote_transfer_remote",
+                    200,
+                    super::rkyv_serialize(&6_000_000_000u64),
+                ),
+                ("/mailbox", 200, vec![0x44; 32]),
+                ("/fee_credit", 200, super::rkyv_serialize(&credit)),
+            ];
+            if let Some(memory) = memory {
+                replies.push(("/memory_bytes", 200, super::rkyv_serialize(&memory)));
+            }
+            replies
+        };
+
+        // At 12 pages below the limit a new payer's 13 don't fit.
+        for (command, replies) in [
+            (
+                fund as fn(&str) -> super::Command,
+                vec![
+                    ("/chain_id", 200, vec![2]),
+                    ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+                    (
+                        "/memory_bytes",
+                        200,
+                        super::rkyv_serialize(&(limit - 12 * page)),
+                    ),
+                ],
+            ),
+            (
+                transfer as fn(&str) -> super::Command,
+                route_replies(0, Some(limit - 12 * page)),
+            ),
+        ] {
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let error = super::run(command(&url)).await.unwrap_err();
+            assert!(error.contains("within 13 pages of 3 GiB"), "{error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        }
+
+        // At 13 pages below, they do: it goes on to the key.
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+            (
+                "/memory_bytes",
+                200,
+                super::rkyv_serialize(&(limit - 13 * page)),
+            ),
+        ]);
+        let error = super::run(fund(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 3);
+
+        // A payer, or a route, with credit isn't checked.
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&1u64)),
+        ]);
+        let error = super::run(fund(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 2);
+        let (url, server) = mock_rues(route_replies(5, None));
+        let error = super::run(transfer(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 6);
+    }
+
+    /// A WarpDrc20 holds an owner to 64 allowances and takes no allowance
+    /// for a new spender once one, 14 pages at most, could take its memory
+    /// past 3 GiB. `drc20-approve` of a new spender checks both before it
+    /// signs; an existing spender, or a token that doesn't count
+    /// allowances, isn't checked.
+    #[tokio::test]
+    async fn drc20_approve_checks_the_cap_and_room_for_a_new_spender() {
+        let limit = super::NEW_ENTRY_MEMORY_LIMIT;
+        let page = super::WASM_PAGE_BYTES;
+        let approve = |url: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "drc20-approve",
+                "--rues-url",
+                url,
+                "--secret-key",
+                &"11".repeat(32),
+                "--token",
+                &"22".repeat(32),
+                "--spender",
+                &"33".repeat(32),
+                "--amount",
+                "5",
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let replies = |allowance: u64, count: Option<u32>, memory: Option<u64>| {
+            let mut replies = vec![
+                ("/chain_id", 200, vec![2]),
+                ("/allowance", 200, super::rkyv_serialize(&allowance)),
+            ];
+            match count {
+                Some(count) => {
+                    replies.push(("/allowance_count", 200, super::rkyv_serialize(&count)))
+                }
+                None if allowance == 0 => replies.push(("/allowance_count", 500, Vec::new())),
+                None => {}
+            }
+            if let Some(memory) = memory {
+                replies.push(("/memory_bytes", 200, super::rkyv_serialize(&memory)));
+            }
+            replies
+        };
+        let refused = |replies: Vec<(&'static str, u16, Vec<u8>)>, why: &'static str| async move {
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let error = super::run(approve(&url)).await.unwrap_err();
+            assert!(error.contains(why), "{error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        };
+        // Past the cap, and without room.
+        refused(replies(0, Some(64), None), "already holds 64 allowances").await;
+        refused(
+            replies(0, Some(3), Some(limit - 13 * page)),
+            "within 14 pages of 3 GiB",
+        )
+        .await;
+
+        // Room, an existing spender, or a token without the count: it goes
+        // on to read the signer's account, which the mock doesn't answer.
+        for replies in [
+            replies(0, Some(63), Some(limit - 14 * page)),
+            replies(1, None, None),
+            replies(0, None, None),
+        ] {
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let error = super::run(approve(&url)).await.unwrap_err();
+            assert!(
+                !error.contains("allowances") && !error.contains("3 GiB"),
+                "{error}"
+            );
+            assert_eq!(server.join().unwrap().len(), count);
+        }
+    }
+
+    /// A collateral route pays out with its token's `transfer`, and a
+    /// WarpDrc20 refuses that to new holders past its 3 GiB reserve, so
+    /// `deploy-hyperlane` won't wrap one: not `warp-drc20`, refused before
+    /// anything is asked of the node, and not a token ID that turns out to
+    /// be a warp route.
+    #[tokio::test]
+    async fn collateral_routes_dont_wrap_a_warp_drc20() {
+        let deploy = |url: &str, token: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "deploy-hyperlane",
+                "--rues-url",
+                url,
+                "--default-ism",
+                "testMock",
+                "--igp-domain-config",
+                "1:0:10000000000:1",
+                "--deploy-warp-drc20",
+                "--warp-collateral-token",
+                token,
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let (url, server) = mock_rues(Vec::new());
+        let error = super::run(deploy(&url, "warp-drc20")).await.unwrap_err();
+        assert!(error.contains("warp-drc20 is refused"), "{error}");
+        assert!(error.contains("3 GiB"), "{error}");
+        assert!(server.join().unwrap().is_empty());
+
+        let token = super::ContractId::from_bytes([0x55; 32]);
+        let deployer = super::Drc20Account::Moonlight(
+            [0x66; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES],
+        );
+        let checked = |mailbox_status: u16| {
+            mock_rues(vec![
+                ("/owner", 200, vec![0x77; 32]),
+                ("/balance_of", 200, super::rkyv_serialize(&0u64)),
+                ("/mailbox", mailbox_status, vec![0x44; 32]),
+            ])
+        };
+        let (url, server) = checked(200);
+        let client = crate::rues::RuesClient::new(&url).unwrap();
+        let error = super::check_explicit_collateral_token(&client, token, deployer)
+            .await
+            .unwrap_err();
+        assert!(error.contains("is a warp route"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 3);
+        let (url, server) = checked(500);
+        let client = crate::rues::RuesClient::new(&url).unwrap();
+        super::check_explicit_collateral_token(&client, token, deployer)
+            .await
+            .expect("a plain DRC20 is wrapped");
+        assert_eq!(server.join().unwrap().len(), 3);
     }
 
     /// Multicall for Dusk's published owner, and the IDs a test Wasm gives
@@ -4167,19 +4473,22 @@ async fn cmd_fund_dispatch(
     let client = RuesClient::new(rues_url)?;
     let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     // A failed transaction pays its whole gas limit, so check what the
-    // Mailbox would refuse first.
-    if amount < MIN_NEW_PAYER_CREDIT {
-        let credit: u64 = client
-            .contract_query(&mailbox_bytes, "fee_credit", &(payer,))
-            .await
-            .map_err(|e| format!("Can't read the payer's dispatch credit: {e}"))?;
-        if credit == 0 {
+    // Mailbox would refuse first: a payer with no credit is a new entry,
+    // which takes the minimum and room under the Mailbox's 3 GiB.
+    let credit: u64 = client
+        .contract_query(&mailbox_bytes, "fee_credit", &(payer,))
+        .await
+        .map_err(|e| format!("Can't read the payer's dispatch credit: {e}"))?;
+    if credit == 0 {
+        if amount < MIN_NEW_PAYER_CREDIT {
             return Err(format!(
                 "The payer has no dispatch credit, and the Mailbox takes at least \
                  {MIN_NEW_PAYER_CREDIT} LUX (0.01 DUSK) to fund a payer with none; \
                  {amount} LUX is less"
             ));
         }
+        check_room_for_new_payer(&client, &mailbox_bytes, "The payer has no dispatch credit")
+            .await?;
     }
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
@@ -4205,6 +4514,29 @@ async fn cmd_fund_dispatch(
     });
     confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// Refuse when the Mailbox at `mailbox` has no room for a new payer: its
+/// memory plus what a new credit entry can allocate would pass 3 GiB, where
+/// it takes no new payers (its dispatch is closing). `why` says why the call
+/// adds a payer.
+async fn check_room_for_new_payer(
+    client: &RuesClient,
+    mailbox: &[u8; 32],
+    why: &str,
+) -> Result<(), String> {
+    let memory: u64 = client
+        .contract_query(mailbox, "memory_bytes", &())
+        .await
+        .map_err(|e| format!("Can't read the Mailbox's memory: {e}"))?;
+    if memory.saturating_add(NEW_ENTRY_MEMORY_BOUND) > NEW_ENTRY_MEMORY_LIMIT {
+        return Err(format!(
+            "{why}, and the Mailbox's memory, {memory} bytes, is within 13 pages of 3 GiB: \
+             it takes no new payers there (its dispatch is closing), so the transaction \
+             would fail"
+        ));
+    }
     Ok(())
 }
 
@@ -4282,6 +4614,32 @@ fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
         return Err("Invalid recipient public key: identity or invalid curve point".into());
     }
     Ok(recipient)
+}
+
+/// The pinned canonical DRC20's init argument: `drc20-roles-pausable` from
+/// dusk-network/contracts at the revision
+/// `scripts/build-canonical-drc20-fixture.sh` pins.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+struct CanonicalDrc20Init {
+    admin: Drc20Account,
+    token: CanonicalDrc20Token,
+    cap: u64,
+}
+
+/// The canonical DRC20's token settings.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+struct CanonicalDrc20Token {
+    name: String,
+    symbol: String,
+    decimals: u8,
+    initial_balances: Vec<CanonicalDrc20Balance>,
+}
+
+/// One balance the canonical DRC20 mints at its init.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+struct CanonicalDrc20Balance {
+    account: Drc20Account,
+    amount: u64,
 }
 
 fn rkyv_serialize<T>(value: &T) -> Vec<u8>
@@ -4616,6 +4974,45 @@ fn confirmation_error_with_hash(tx_id: &str, error: &str) -> String {
 
 // ── cmd_deploy_hyperlane ────────────────────────────────────────────────────
 
+/// Check a DRC20 named by ID for a collateral route: it exists, answers the
+/// DRC20 `balance_of`, and isn't a warp route. A WarpDrc20 is one, and every
+/// route answers `mailbox`; see [`WARP_DRC20_COLLATERAL_REFUSED`].
+async fn check_explicit_collateral_token(
+    client: &RuesClient,
+    token: ContractId,
+    deployer: Drc20Account,
+) -> Result<(), String> {
+    let token_hex = hex::encode(token.to_bytes());
+    if !client.contract_exists(&token_hex).await? {
+        return Err(format!(
+            "Explicit collateral token does not exist on-chain: {token_hex}"
+        ));
+    }
+    client
+        .contract_query::<_, u64>(
+            &token.to_bytes(),
+            "balance_of",
+            &Drc20BalanceOf { account: deployer },
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "Explicit collateral token {token_hex} does not expose the required DRC20 balance_of ABI: {error}"
+            )
+        })?;
+    if client
+        .contract_query::<_, [u8; 32]>(&token.to_bytes(), "mailbox", &())
+        .await
+        .is_ok()
+    {
+        return Err(format!(
+            "Explicit collateral token {token_hex} is a warp route, so a WarpDrc20: \
+             {WARP_DRC20_COLLATERAL_REFUSED}"
+        ));
+    }
+    Ok(())
+}
+
 async fn cmd_deploy_hyperlane(
     rues_url: &str,
     keys_path: Option<PathBuf>,
@@ -4629,6 +5026,7 @@ async fn cmd_deploy_hyperlane(
     deploy_warp_drc20: bool,
     deploy_warp_native: bool,
     warp_collateral_token: Option<&str>,
+    collateral_token_supply: u64,
     warp_name: &str,
     warp_symbol: &str,
     warp_decimals: u8,
@@ -4638,6 +5036,11 @@ async fn cmd_deploy_hyperlane(
     multisig_threshold: u8,
     expected_chain_id: u8,
 ) -> Result<(), String> {
+    if warp_collateral_token == Some("warp-drc20") {
+        return Err(format!(
+            "--warp-collateral-token warp-drc20 is refused: {WARP_DRC20_COLLATERAL_REFUSED}"
+        ));
+    }
     let igp_domain_configs = parse_igp_domain_configs(igp_domain_config_args)?;
     let default_ism = parse_default_ism(default_ism)?;
     let (multisig_validators, multisig_threshold) = match default_ism {
@@ -4717,37 +5120,26 @@ async fn cmd_deploy_hyperlane(
     let warp_native_bytes = deploy_warp_native
         .then(|| load_wasm("warp_native"))
         .transpose()?;
-    let wraps_deployed_warp = warp_collateral_token == Some("warp-drc20");
-    if wraps_deployed_warp && !deploy_warp_drc20 {
-        return Err("--warp-collateral-token warp-drc20 requires --deploy-warp-drc20".into());
-    }
+    let deploys_canonical_token = warp_collateral_token == Some(CANONICAL_DRC20);
     let explicit_collateral_token = warp_collateral_token
-        .filter(|token| *token != "warp-drc20")
+        .filter(|token| *token != CANONICAL_DRC20)
         .map(parse_bytes32)
         .transpose()?
         .map(ContractId::from_bytes);
     if let Some(token) = explicit_collateral_token {
-        let token_hex = hex::encode(token.to_bytes());
-        if !client.contract_exists(&token_hex).await? {
-            return Err(format!(
-                "Explicit collateral token does not exist on-chain: {token_hex}"
-            ));
-        }
-        client
-            .contract_query::<_, u64>(
-                &token.to_bytes(),
-                "balance_of",
-                &Drc20BalanceOf {
-                    account: Drc20Account::moonlight(&pk),
-                },
-            )
-            .await
-            .map_err(|error| {
-                format!(
-                    "Explicit collateral token {token_hex} does not expose the required DRC20 balance_of ABI: {error}"
-                )
-            })?;
+        check_explicit_collateral_token(&client, token, Drc20Account::moonlight(&pk)).await?;
     }
+    let canonical_token_bytes = deploys_canonical_token
+        .then(|| {
+            let path = wasm_dir.join(CANONICAL_DRC20_WASM);
+            std::fs::read(&path).map_err(|e| {
+                format!(
+                    "Failed to read {} (make canonical-drc20-fixture builds it): {e}",
+                    path.display()
+                )
+            })
+        })
+        .transpose()?;
     let warp_collateral_bytes = warp_collateral_token
         .is_some()
         .then(|| load_wasm("warp_drc20_collateral"))
@@ -4792,16 +5184,20 @@ async fn cmd_deploy_hyperlane(
         nonce_counter += 1;
         (id, warp_bytes)
     });
-    let collateral_token = if wraps_deployed_warp {
-        warp_drc20_id.as_ref().map(|(id, _)| *id)
-    } else {
-        explicit_collateral_token
-    };
     let warp_native_id = warp_native_bytes.map(|warp_bytes| {
         let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
         nonce_counter += 1;
         (id, warp_bytes)
     });
+    let canonical_token_id = canonical_token_bytes.map(|token_bytes| {
+        let id = gen_contract_id(&token_bytes, nonce_counter, &pk_bytes);
+        nonce_counter += 1;
+        (id, token_bytes)
+    });
+    let collateral_token = canonical_token_id
+        .as_ref()
+        .map(|(id, _)| *id)
+        .or(explicit_collateral_token);
     let warp_collateral_id = warp_collateral_bytes.map(|warp_bytes| {
         let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
         (id, warp_bytes)
@@ -4842,6 +5238,9 @@ async fn cmd_deploy_hyperlane(
     }
     if let Some((ref id, _)) = warp_native_id {
         eprintln!("    WarpNative:      {}", hex::encode(id.to_bytes()));
+    }
+    if let Some((ref id, _)) = canonical_token_id {
+        eprintln!("    CollateralToken: {}", hex::encode(id.to_bytes()));
     }
     if let Some((ref id, _)) = warp_collateral_id {
         eprintln!("    WarpCollateral:  {}", hex::encode(id.to_bytes()));
@@ -4899,6 +5298,12 @@ async fn cmd_deploy_hyperlane(
         let warp_hex = hex::encode(warp_id.to_bytes());
         if client.contract_exists(&warp_hex).await? {
             existing.push(("WarpNative".into(), warp_hex));
+        }
+    }
+    if let Some((ref token_id, _)) = canonical_token_id {
+        let token_hex = hex::encode(token_id.to_bytes());
+        if client.contract_exists(&token_hex).await? {
+            existing.push(("CollateralToken".into(), token_hex));
         }
     }
     if let Some((ref warp_id, _)) = warp_collateral_id {
@@ -5167,7 +5572,41 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         None
     };
 
-    // 12. Optional: existing DRC20 collateral route.
+    // 12. Optional: the pinned canonical DRC20 the collateral route wraps,
+    // its whole supply minted to the deployer.
+    if let Some((_, token_bytes)) = canonical_token_id {
+        let deployer = Drc20Account::moonlight(&pk);
+        let token_init = rkyv_serialize(&CanonicalDrc20Init {
+            admin: deployer,
+            token: CanonicalDrc20Token {
+                name: String::from("Canonical DRC20"),
+                symbol: String::from("CDRC20"),
+                decimals: warp_decimals,
+                initial_balances: vec![CanonicalDrc20Balance {
+                    account: deployer,
+                    amount: collateral_token_supply,
+                }],
+            },
+            cap: 0,
+        });
+        deploy_one(
+            &client,
+            &sk,
+            &pk,
+            token_bytes,
+            token_init,
+            &mut mn,
+            &mut dn,
+            &mut deployed,
+            gas_limit,
+            gas_price,
+            chain_id,
+            "CollateralToken",
+        )
+        .await?;
+    }
+
+    // 13. Optional: the DRC20 collateral route.
     let deployed_warp_collateral = if let Some((warp_id, warp_bytes)) = warp_collateral_id {
         let wrapped_token = collateral_token.expect("collateral token missing");
         let warp_init = rkyv_serialize(&(
@@ -5223,6 +5662,9 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     }
     if let Some(warp_id) = deployed_warp_collateral {
         contracts["warp_drc20_collateral"] = json!(hex::encode(warp_id.to_bytes()));
+        if let Some(token) = collateral_token {
+            contracts["collateral_token"] = json!(hex::encode(token.to_bytes()));
+        }
     }
 
     let output = json!({
@@ -7209,6 +7651,15 @@ async fn cmd_drc20_approve(
     let client = RuesClient::new(rues_url)?;
     let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    if amount > 0 {
+        check_room_for_new_spender(
+            &client,
+            &token.to_bytes(),
+            Drc20Account::moonlight(&pk),
+            Drc20Account::Contract(spender),
+        )
+        .await?;
+    }
     let (nonce, _) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
@@ -7231,6 +7682,48 @@ async fn cmd_drc20_approve(
     });
     confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// Refuse an approval a WarpDrc20 would refuse: an allowance for a new
+/// spender when the owner already holds 64, or when the token's memory plus
+/// what the allowance can allocate would pass 3 GiB. A token that doesn't
+/// answer `allowance_count` isn't a WarpDrc20 and has neither limit.
+async fn check_room_for_new_spender(
+    client: &RuesClient,
+    token: &[u8; 32],
+    owner: Drc20Account,
+    spender: Drc20Account,
+) -> Result<(), String> {
+    let allowance: u64 = client
+        .contract_query(token, "allowance", &Drc20Allowance { owner, spender })
+        .await
+        .map_err(|e| format!("Can't read the current allowance: {e}"))?;
+    if allowance > 0 {
+        return Ok(());
+    }
+    let Ok(count) = client
+        .contract_query::<_, u32>(token, "allowance_count", &owner)
+        .await
+    else {
+        return Ok(());
+    };
+    if count >= MAX_ALLOWANCES_PER_OWNER {
+        return Err(format!(
+            "The signer already holds {count} allowances on this WarpDrc20, the most an owner \
+             holds: approve 0 for one of them first"
+        ));
+    }
+    let memory: u64 = client
+        .contract_query(token, "memory_bytes", &())
+        .await
+        .map_err(|e| format!("Can't read the token's memory: {e}"))?;
+    if memory.saturating_add(NEW_ALLOWANCE_MEMORY_BOUND) > NEW_ENTRY_MEMORY_LIMIT {
+        return Err(format!(
+            "The WarpDrc20's memory, {memory} bytes, is within 14 pages of 3 GiB, where it \
+             takes no allowances for new spenders, so the approval would fail"
+        ));
+    }
     Ok(())
 }
 
@@ -7358,6 +7851,25 @@ async fn cmd_transfer_remote(
     } else {
         dispatch_fee
     };
+    // The route funds its dispatch credit for each transfer, and its credit
+    // is spent to zero, which leaves no entry: so it is a new payer each time
+    // unless someone gave it standing credit.
+    let mailbox: [u8; 32] = client
+        .contract_query(&warp_bytes, "mailbox", &())
+        .await
+        .map_err(|e| format!("Can't read the route's Mailbox: {e}"))?;
+    let route_credit: u64 = client
+        .contract_query(&mailbox, "fee_credit", &(warp_bytes,))
+        .await
+        .map_err(|e| format!("Can't read the route's dispatch credit: {e}"))?;
+    if route_credit == 0 {
+        check_room_for_new_payer(
+            &client,
+            &mailbox,
+            "The route funds new dispatch credit for each transfer",
+        )
+        .await?;
+    }
 
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
