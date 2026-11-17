@@ -10456,7 +10456,7 @@ fn test_credit_for_new_payers_stops_at_3_gib() {
     let second_attacker = ContractId::from_bytes([44; 32]);
     rt_deploy_at(&mut s.session, second_attacker, Vec::new())
         .expect("a second red-team contract deploys");
-    let refused = "Mailbox: storage full, credit for new payers is closed";
+    let refused = "Mailbox: storage full, dispatch is closing to new payers";
     let payer = |index: u32| {
         let mut id = [0x9Au8; 32];
         id[..4].copy_from_slice(&index.to_le_bytes());

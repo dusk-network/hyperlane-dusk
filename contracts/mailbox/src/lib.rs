@@ -943,7 +943,7 @@ mod mailbox {
                     assert!(
                         Self::memory_bytes_used() + NEW_CREDIT_MEMORY_BOUND
                             <= DISPATCH_MEMORY_LIMIT,
-                        "Mailbox: storage full, credit for new payers is closed"
+                        "Mailbox: storage full, dispatch is closing to new payers"
                     );
                     credit.insert(amount);
                 }
