@@ -3228,7 +3228,8 @@ mod tests {
     /// with no credit, and `transfer-remote`, whose route is a new payer
     /// unless it has standing credit, read the Mailbox's memory and stop
     /// before the key is read when there is no room. A payer with credit
-    /// adds no entry and goes on.
+    /// adds no entry and goes on, and so does a transfer that pays no
+    /// dispatch fee, which funds no credit.
     #[tokio::test]
     async fn new_payers_are_checked_for_room_in_the_mailbox() {
         let limit = super::NEW_ENTRY_MEMORY_LIMIT;
@@ -3347,6 +3348,17 @@ mod tests {
         let error = super::run(transfer(&url)).await.unwrap_err();
         assert!(error.to_lowercase().contains("consensus"), "{error}");
         assert_eq!(server.join().unwrap().len(), 6);
+
+        // Nor is a route whose transfer pays no dispatch fee: it funds no
+        // credit and adds no entry, so whatever the route's credit and the
+        // Mailbox's memory, it goes on to the key without reading them.
+        let mut free = route_replies(0, None);
+        free.truncate(3);
+        free.push(("/quote_transfer_remote", 200, super::rkyv_serialize(&0u64)));
+        let (url, server) = mock_rues(free);
+        let error = super::run(transfer(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 4);
     }
 
     /// A WarpDrc20 holds an owner to 64 allowances and takes no allowance
@@ -8112,24 +8124,27 @@ async fn cmd_transfer_remote(
     } else {
         dispatch_fee
     };
-    // The route funds its dispatch credit for each transfer, and its credit
-    // is spent to zero, which leaves no entry: so it is a new payer each time
-    // unless someone gave it standing credit.
-    let mailbox: [u8; 32] = client
-        .contract_query(&warp_bytes, "mailbox", &())
-        .await
-        .map_err(|e| format!("Can't read the route's Mailbox: {e}"))?;
-    let route_credit: u64 = client
-        .contract_query(&mailbox, "fee_credit", &(warp_bytes,))
-        .await
-        .map_err(|e| format!("Can't read the route's dispatch credit: {e}"))?;
-    if route_credit == 0 {
-        check_room_for_new_payer(
-            &client,
-            &mailbox,
-            "The route funds new dispatch credit for each transfer",
-        )
-        .await?;
+    // The route funds its dispatch credit for each transfer that pays a fee,
+    // and its credit is spent to zero, which leaves no entry: so it is a new
+    // payer each time unless someone gave it standing credit. A free
+    // dispatch funds nothing and adds no entry.
+    if dispatch_fee > 0 {
+        let mailbox: [u8; 32] = client
+            .contract_query(&warp_bytes, "mailbox", &())
+            .await
+            .map_err(|e| format!("Can't read the route's Mailbox: {e}"))?;
+        let route_credit: u64 = client
+            .contract_query(&mailbox, "fee_credit", &(warp_bytes,))
+            .await
+            .map_err(|e| format!("Can't read the route's dispatch credit: {e}"))?;
+        if route_credit == 0 {
+            check_room_for_new_payer(
+                &client,
+                &mailbox,
+                "The route funds new dispatch credit for each transfer",
+            )
+            .await?;
+        }
     }
 
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;

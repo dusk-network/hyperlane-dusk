@@ -93,9 +93,11 @@ dispatch itself closes.
 failed transaction pays its whole gas limit: `fund-dispatch` reads the
 payer's credit and refuses less than the minimum for a payer with none, or
 any amount when the Mailbox has no room for a new payer, and
-`transfer-remote` refuses a transfer when the route has no credit and the
-Mailbox no room. `drc20-approve` checks a WarpDrc20's limits the same way
-for a new spender: at most 64 allowances per owner, and room under 3 GiB.
+`transfer-remote` refuses a transfer that pays a dispatch fee when the
+route has no credit and the Mailbox no room (a free dispatch funds no
+credit, so it adds no payer). `drc20-approve` checks a WarpDrc20's limits
+the same way for a new spender: at most 64 allowances per owner, and room
+under 3 GiB.
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)
