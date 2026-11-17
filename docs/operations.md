@@ -472,7 +472,14 @@ the private Rusk repository.
 
 `.github/workflows/manual-repro-check.yml` runs the full build and test suite
 (`make repro-check-agent`) on demand against exact commits of this repository,
-`rusk-private` and `hyperlane-monorepo`. It needs:
+`rusk-private` and `hyperlane-monorepo`. Besides the contracts, the VM tests,
+the `dusk-tx` tests and a check that the agents build, it runs the agent's
+one test against the real `dusk-tx`,
+`a_dusk_tx_build_sends_only_on_the_agents_word`: the agent drives `dusk-tx`
+through its output, the `Prepared TX` line, the go-ahead to send and the
+error prefixes that decide whether a delivery may have been sent, and the
+agents' public CI can only test that against a stand-in, as it can't build
+`dusk-tx` without `rusk-private`. It needs:
 
 - A self-hosted Linux runner labelled `dusk-hyperlane` and
   `dusk-hyperlane-ephemeral`, with `cargo`, `git`, `make`, `rg` and `rustup`.
@@ -485,3 +492,18 @@ the private Rusk repository.
 gh workflow run manual-repro-check.yml \
   -f dusk_ref=<40-char sha> -f rusk_ref=<40-char sha> -f monorepo_ref=<40-char sha>
 ```
+
+### Release gate
+
+Before a release of this repository or of the agents, and whenever
+`dusk-tx` changes, check both against each other where `rusk-private` is
+at hand:
+
+- `make repro-check-agent` (or the workflow above) at the commits to
+  release: the full build and tests here, and the agent's test against
+  this `dusk-tx`.
+- In the monorepo fork,
+  `bash rust/main/chains/hyperlane-dusk/scripts/dusk-tx-interop-check.sh`:
+  the same test against `dusk-tx` built at the commit of this repository the
+  agents pin (`DUSK_REF` in `.github/workflows/dusk-agent-gate.yml`). Its
+  README says how to point it at another commit.

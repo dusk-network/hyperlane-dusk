@@ -315,7 +315,9 @@ owners can reprice dispatches paid from credit
 `StandardHookMetadata` ([Deviations](#deviations-from-solidity-hyperlane));
 amounts that scaling rounds away, removing a router, and the synthetic
 decimals rule ([Known limitations](#known-limitations)); and the password
-order, what `revenue` checks and the EVM owner's fee powers.
+order, what `revenue` checks and the EVM owner's fee powers. The one test
+of the agent against a real `dusk-tx`, which ran nowhere, is part of the
+release gate now ([operations.md](operations.md#release-gate)).
 
 ## Owner powers
 

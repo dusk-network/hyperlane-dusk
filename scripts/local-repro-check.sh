@@ -38,7 +38,10 @@ Runs the local reproducibility checks that do not require a live E2E network:
   - make secret-hygiene
 
 Options:
-  --agent-check        Also run the Hyperlane Rust agent cargo check.
+  --agent-check        Also run the Hyperlane Rust agent cargo check, and the
+                       agent's test against this checkout's dusk-tx
+                       (a_dusk_tx_build_sends_only_on_the_agents_word), which
+                       the agents' public CI can't build.
   --rusk-dir DIR       Rusk checkout to use for private path dependencies.
                        Default: $RUSK_DIR
   --monorepo-dir DIR   Hyperlane monorepo checkout for --agent-check.
@@ -203,6 +206,26 @@ if [ "$RUN_AGENT_CHECK" -eq 1 ]; then
         cd "$MONOREPO_DIR/rust/main"
         cargo check -p hyperlane-dusk -p hyperlane-base -p validator -p relayer -p scraper -p lander
     )
+
+    # The agent drives dusk-tx through its output: the Prepared TX line, the
+    # go-ahead to send and the error prefixes that decide whether a delivery
+    # may have been sent. The agents' public CI tests that against a shell
+    # stand-in, as it can't build dusk-tx; here the real one is at hand.
+    interop_test=a_dusk_tx_build_sends_only_on_the_agents_word
+    info "Building dusk-tx and running the agent's $interop_test against it"
+    cargo build -p dusk-tx --release --locked
+    interop_log="$(mktemp)"
+    (
+        cd "$MONOREPO_DIR/rust/main"
+        DUSK_TX_REAL_BIN="$ROOT/target/release/dusk-tx" cargo test -p hyperlane-dusk \
+            --test delivery_submission -- --ignored --exact "$interop_test"
+    ) 2>&1 | tee "$interop_log" || true
+    # The test passed, and it ran: a filter that matched no test would pass
+    # with none run.
+    grep -q "^test $interop_test \.\.\. ok$" "$interop_log" \
+        && grep -q "test result: ok\. 1 passed" "$interop_log" \
+        || { rm -f "$interop_log"; fail "the agent's $interop_test didn't pass against $ROOT/target/release/dusk-tx"; }
+    rm -f "$interop_log"
 fi
 
 info "Local repro checks passed"
