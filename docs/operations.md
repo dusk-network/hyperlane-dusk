@@ -292,8 +292,13 @@ cast send <evm igp> "payForGas(bytes32,uint32,uint256,address)" <message id> <du
 ```
 
 A message to Dusk must have paid for `EVM_IGP_GAS_OVERHEAD` Dusk gas
-(2,170,000 by default). `bash deploy/local-fees-check.sh` tops up a message
-both ways in the local rehearsal.
+(2,170,000 by default). Paying for more than the relayer's limit,
+`DUSK_RELAYER_GAS_LIMIT` (5M), doesn't help: the relayer sends every
+delivery to Dusk with at most that limit, so a message that needs more
+fails on chain however much it paid
+([costs.md](costs.md#what-stays-uncovered)).
+`bash deploy/local-fees-check.sh` tops up a message both ways in the local
+rehearsal.
 
 ### Collecting the fees
 

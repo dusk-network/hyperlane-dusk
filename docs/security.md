@@ -446,11 +446,17 @@ Accepted:
   them too high, nobody can afford a transfer. It counts gas, not money, so
   a message priced at an IGP's old rate still passes. Anyone can pay for
   any message, on the Sepolia IGP with `payForGas` and on the Dusk IGP with
-  `pay_for_gas`, and payments for one message add up. A message that paid
-  for more gas is sent with that much as its limit, so a sender can buy the
-  gas an expensive `handle` needs. A Sepolia-origin message sent through the
-  Mailbox's default hook pays no IGP for Dusk (it falls back to the Merkle
-  tree alone), so it isn't relayed until someone pays our IGP for it.
+  `pay_for_gas`, and payments for one message add up. A message to Sepolia
+  that paid for more gas is sent with that much as its limit, so a sender
+  can buy the gas an expensive `handle` needs. A message to Dusk is sent
+  with at most the relayer's limit, `DUSK_RELAYER_GAS_LIMIT` (5M), whatever
+  it paid for. One whose delivery needs more passes the relayer's
+  simulation, which runs with the block's gas, and fails on chain at the
+  whole limit each time it is tried; paying more doesn't change that
+  ([costs.md](costs.md#what-stays-uncovered)). A Sepolia-origin message
+  sent through the Mailbox's default hook pays no IGP for Dusk (it falls
+  back to the Merkle tree alone), so it isn't relayed until someone pays our
+  IGP for it.
 - **Recipients must not read `public_sender()`.** A recipient's `handle`,
   its `interchain_security_module` getter and any ISM it uses run inside the
   relayer's simulation, where `public_sender()` panics. If `handle` or an

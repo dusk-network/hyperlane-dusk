@@ -582,10 +582,14 @@ the IGP's price to make that gas worth what it costs:
   `DUSK_RELAYER_GAS_LIMIT`, `217/500`, so a message must have paid for the
   overhead, 2,170,000 Dusk gas, as a warp transfer does.
 
-A message that passes is sent with the larger of the estimate and the gas
-it paid for as its gas limit. Anyone can pay more for a message at any
-time, on either side: on the EVM IGP with `payForGas`, and on the Dusk IGP
-with `pay_for_gas`, for the message's ID and destination
+A message that passes is sent to the EVM chain with the larger of the
+estimate and the gas it paid for as its gas limit. A message to Dusk is
+sent with at most the relayer's `gasLimit` for Dusk,
+`DUSK_RELAYER_GAS_LIMIT` (5M), whatever it paid for: `hyperlane-dusk` caps
+every delivery there, since a failed Dusk transaction pays its whole limit.
+Anyone can pay more for a message at any time, on either side: on the EVM
+IGP with `payForGas`, and on the Dusk IGP with `pay_for_gas`, for the
+message's ID and destination
 ([operations.md](operations.md#topping-up-a-message)). Payments for one
 message add up, and the relayer checks a message that hasn't paid enough
 again later, less often the longer it waits.
@@ -608,6 +612,12 @@ relayer pay for before.
   than the 2.17M gas it paid for is still delivered, with the relayer's 5M
   limit. It costs the relayer up to 0.005 DUSK, of which the payment covers
   0.0033 at the default margin.
+- **Dusk-bound messages that need more than 5M gas.** These can't be
+  delivered. The relayer's simulation is a query, which runs with the
+  block's gas limit, so it passes; the transaction then runs out of gas at
+  the relayer's 5M limit and fails, paying all of it. Paying for more gas
+  doesn't raise the limit: it only lets the relayer try again, and fail
+  again. A large body or a costly `handle` can take a message there.
 - **Deliveries that fail.** One that passes the simulation and then fails
   (a recipient that tells the simulation from the transaction, or someone
   delivering first) pays the whole 5M limit, 0.005 DUSK, against the

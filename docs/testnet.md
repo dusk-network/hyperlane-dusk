@@ -415,6 +415,14 @@ without paying for it. The tokens stay where they are: burned on Sepolia,
 or locked in the Dusk route. Add such messages to the relayer's denylist to
 stop the retries.
 
+A message to Dusk whose delivery needs more gas than the relayer's limit,
+`DUSK_RELAYER_GAS_LIMIT` (5M), can't be delivered either, and it costs the
+relayer each time: the simulation runs with the block's gas, so it passes,
+and the transaction fails on chain, paying the whole 5M. The relayer sends
+every delivery to Dusk with at most that limit, whatever the message paid
+for, and tries it again only once more is paid
+([costs.md](costs.md#what-stays-uncovered)). Denylist such a message too.
+
 **Fees.** `bash deploy/testnet.sh revenue` shows what the IGPs and the
 ProtocolFee hold, and `claim` collects it
 ([operations.md](operations.md#collecting-the-fees)). A message that didn't
