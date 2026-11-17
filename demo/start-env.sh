@@ -146,6 +146,13 @@ ok "dusk-tx binary: $DUSK_TX"
 info "Ensuring contract WASMs are current..."
 (cd "$DUSK_DIR" && make all) || fail "Failed to build WASMs"
 ok "Contract WASMs: $WASM_DIR"
+# The demo's collateral route wraps the pinned canonical DRC20, built once:
+# its source is pinned by revision (scripts/build-canonical-drc20-fixture.sh).
+if [ ! -s "$WASM_DIR/canonical_drc20_roles_pausable.wasm" ]; then
+    info "Building the pinned canonical DRC20..."
+    (cd "$DUSK_DIR" && make canonical-drc20-fixture) || fail "Failed to build the canonical DRC20"
+fi
+ok "Canonical DRC20: $WASM_DIR/canonical_drc20_roles_pausable.wasm"
 
 # Data-driver WASM (for explorer integration). Decide whether the explorer is
 # usable before building its artifact, and always let Cargo repair a warm

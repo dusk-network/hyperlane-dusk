@@ -453,7 +453,7 @@ validate_saved_deployment() {
     local evm_mailbox evm_token evm_native_token evm_collateral_token evm_ism evm_hook
     local evm_merkle evm_validator_announce evm_igp evm_recipient
     local dusk_mailbox dusk_test_mock dusk_ism_multisig dusk_default_ism
-    local dusk_merkle dusk_warp dusk_warp_native dusk_warp_collateral
+    local dusk_merkle dusk_warp dusk_warp_native dusk_warp_collateral dusk_collateral_token
     local dusk_validator_announce dusk_igp dusk_protocol_fee dusk_aggregation_hook
     local dusk_test_recipient expected_default_ism live_default_ism
     local live_default_hook live_required_hook live_route_value
@@ -497,6 +497,8 @@ validate_saved_deployment() {
     dusk_warp="$(jq -er '.dusk.warp_drc20' "$BRIDGE_STATE_FILE")"
     dusk_warp_native="$(jq -er '.dusk.warp_native' "$BRIDGE_STATE_FILE")"
     dusk_warp_collateral="$(jq -er '.dusk.warp_drc20_collateral' "$BRIDGE_STATE_FILE")"
+    dusk_collateral_token="$(jq -er '.dusk.collateral_token' "$BRIDGE_STATE_FILE")" \
+        || fail "Saved deployment lacks the Dusk collateral route's token; redeploy"
     dusk_validator_announce="$(jq -er '.dusk.validator_announce' "$BRIDGE_STATE_FILE")"
     dusk_igp="$(jq -er '.dusk.igp' "$BRIDGE_STATE_FILE")"
     dusk_protocol_fee="$(jq -er '.dusk.protocol_fee' "$BRIDGE_STATE_FILE")"
@@ -678,7 +680,7 @@ validate_saved_deployment() {
     [ "$live_route_value" = "$(pad_evm_address "$evm_collateral_token")" ] \
         || fail "Running Dusk collateral route has the wrong EVM router; redeploy"
     live_route_value="$(query_dusk_bytes32 "$dusk_warp_collateral" wrapped_token "Dusk collateral wrapped token")"
-    [ "$live_route_value" = "${dusk_warp,,}" ] \
+    [ "$live_route_value" = "${dusk_collateral_token,,}" ] \
         || fail "Running Dusk collateral route wraps a different token; redeploy"
     for route in "$dusk_warp" "$dusk_warp_native" "$dusk_warp_collateral"; do
         live_route_value="$(query_dusk_option_bytes32 "$route" owner "Dusk warp route owner")"
@@ -944,7 +946,7 @@ DUSK_DEPLOY_CMD=(
         --wasm-dir "$WASM_DIR"
         --deploy-warp-drc20
         --deploy-warp-native
-        --warp-collateral-token warp-drc20
+        --warp-collateral-token canonical-drc20
         --warp-name "$TOKEN_NAME"
         --warp-symbol "$TOKEN_SYMBOL"
         --warp-decimals "$TOKEN_DECIMALS"
@@ -1002,6 +1004,7 @@ DUSK_AGGREGATION_HOOK=$(jq -r '.contracts.aggregation_hook' "$DUSK_DEPLOY_FILE")
 DUSK_WARP=$(jq -r '.contracts.warp_drc20' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_NATIVE=$(jq -r '.contracts.warp_native' "$DUSK_DEPLOY_FILE")
 DUSK_WARP_COLLATERAL=$(jq -r '.contracts.warp_drc20_collateral' "$DUSK_DEPLOY_FILE")
+DUSK_COLLATERAL_TOKEN=$(jq -r '.contracts.collateral_token' "$DUSK_DEPLOY_FILE")
 if [ "$DUSK_DEFAULT_ISM" = "messageIdMultisig" ]; then
     DUSK_MULTISIG_POLICY_JSON="$(query_dusk_validator_policy "$DUSK_ISM_MULTISIG")"
 else
@@ -1026,7 +1029,7 @@ info "  ProtocolFee:    $DUSK_PROTOCOL_FEE"
 info "  AggregationHook: $DUSK_AGGREGATION_HOOK"
 info "  WarpDrc20:      $DUSK_WARP"
 info "  WarpNative:     $DUSK_WARP_NATIVE"
-info "  WarpCollateral: $DUSK_WARP_COLLATERAL"
+info "  WarpCollateral: $DUSK_WARP_COLLATERAL (wraps the canonical DRC20 $DUSK_COLLATERAL_TOKEN)"
 info "  TestRecipient:  $DUSK_TEST_RECIPIENT"
 
 # ── Fund Dispatch Fees ───────────────────────────────────────────────────────
@@ -1146,6 +1149,7 @@ cat > "$BRIDGE_STATE_FILE" <<STATEJSON
         "warp_drc20": "$DUSK_WARP",
         "warp_native": "$DUSK_WARP_NATIVE",
         "warp_drc20_collateral": "$DUSK_WARP_COLLATERAL",
+        "collateral_token": "$DUSK_COLLATERAL_TOKEN",
         "merkle_tree_hook": "$DUSK_MERKLE",
         "validator_announce": "$DUSK_VALIDATOR_ANNOUNCE",
         "igp": "$DUSK_IGP",

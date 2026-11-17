@@ -84,7 +84,13 @@ Notes:
 - Each ISM case runs synthetic DRC20, native DUSK, and DRC20-collateral routes
   in both directions. It checks exact native and token custody, DRC20 allowance
   consumption, and one value-backed ProtocolFee collection per outbound Dusk
-  dispatch.
+  dispatch. The collateral route wraps the pinned canonical DRC20
+  (`make canonical-drc20-fixture`, which `start-env.sh` runs once), not the
+  WarpDrc20: a collateral route pays out with its token's `transfer`, which a
+  WarpDrc20 refuses to new holders past its 3 GiB reserve
+  ([docs/security.md](../docs/security.md#state-growth-stage-1)). The fixture
+  builds from Cargo's git cache when it holds the pinned revision, or from
+  `CANONICAL_DRC20_REPOSITORY`, so no network is needed once it's there.
 - The `messageIdMultisig` case deploys a real MessageIdMultisig ISM on both
   chains and runs both an Anvil-origin validator and a Dusk-origin validator.
   Dusk -> EVM delivery therefore requires a checkpoint produced from Dusk
@@ -373,6 +379,7 @@ bash demo/demo.sh --skip-deploy
   |  TestRecipient          |           |  +- WarpDrc20          |
   |                         |           |  +- WarpNative         |
   |                         |           |  +- Drc20Collateral    |
+  |                         |           |     (canonical DRC20)   |
   +-------------------------+           +-------------------------+
 
   EVM -> Dusk: HypERC20.transferRemote -> relay -> Dusk route handle
@@ -385,7 +392,7 @@ bash demo/demo.sh --skip-deploy
 # Deploy the full local route matrix on Dusk
 dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc20 \
     --igp-domain-config 31338:200000:10000000000:1 \
-    --deploy-warp-native --warp-collateral-token warp-drc20 --expected-chain-id <u8>
+    --deploy-warp-native --warp-collateral-token canonical-drc20 --expected-chain-id <u8>
 
 # Pre-fund Mailbox dispatch credit for a direct dispatcher (warp routes
 # charge each transfer's fee to its sender instead)
