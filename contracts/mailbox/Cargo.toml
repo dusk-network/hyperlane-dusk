@@ -17,3 +17,8 @@ data-driver = []
 
 [lib]
 crate-type = ["cdylib"]
+
+[lints.rust]
+# `make mailbox-ungated` builds a test-only copy without the caller check in
+# `process`; see there in src/lib.rs.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(hyperlane_dusk_ungated_test)"] }

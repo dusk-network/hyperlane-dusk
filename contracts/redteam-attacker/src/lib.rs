@@ -7,8 +7,10 @@
 //! recipient of native escrow and holder of a token that calls its sender
 //! back (`callback-fee-token`). At each callback point it replays a
 //! configured list of raw calls, records whether each succeeded, and can
-//! panic afterwards so the caller observes a failed callback. It can also
-//! make calls from its `init`, while it is deployed.
+//! panic afterwards so the caller observes a failed callback. Each failed
+//! call also emits a `call_failed` event with the function and the error,
+//! which stays in the receipt, flagged, when the callback's state rolls
+//! back. It can also make calls from its `init`, while it is deployed.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -24,10 +26,11 @@ mod redteam_attacker {
     extern crate alloc;
 
     use alloc::collections::BTreeMap;
+    use alloc::format;
     use alloc::string::String;
     use alloc::vec::Vec;
 
-    use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
+    use dusk_core::abi::{self, ContractError, ContractId, CONTRACT_ID_BYTES};
     use dusk_core::transfer::ReceiveFromContract;
 
     use hyperlane_dusk_types::drc20::Account;
@@ -55,6 +58,22 @@ mod redteam_attacker {
 
     /// One raw call: target, function name, rkyv-serialized argument.
     type Action = (ContractId, String, Vec<u8>);
+
+    /// Topic of the event a failed call emits, with `(function, error)`.
+    const CALL_FAILED: &str = "call_failed";
+
+    /// Emits [`CALL_FAILED`] for a call that failed, with a panic's own
+    /// message, which is cheap enough for callbacks run on a gas allowance.
+    fn report(fn_name: &str, result: &Result<Vec<u8>, ContractError>) {
+        if let Err(error) = result {
+            let error = match error {
+                ContractError::Panic(message) => message.clone(),
+                other => format!("{other:?}"),
+            };
+            let failure: (String, String) = (String::from(fn_name), error);
+            abi::emit(CALL_FAILED, failure);
+        }
+    }
 
     /// Attacker state.
     pub struct RedteamAttacker {
@@ -127,6 +146,7 @@ mod redteam_attacker {
         pub fn run(&mut self, actions: Vec<Action>, strict: bool) {
             for (target, fn_name, args) in actions {
                 let result = abi::call_raw(target, &fn_name, &args);
+                report(&fn_name, &result);
                 if strict {
                     if let Err(err) = &result {
                         panic!("RedteamAttacker: {fn_name} failed: {err:?}");
@@ -144,8 +164,9 @@ mod redteam_attacker {
             self.fired.insert(point, true);
             let actions = self.actions.get(&point).cloned().unwrap_or_default();
             for (target, fn_name, args) in actions {
-                let ok = abi::call_raw(target, &fn_name, &args).is_ok();
-                self.results.push(ok);
+                let result = abi::call_raw(target, &fn_name, &args);
+                report(&fn_name, &result);
+                self.results.push(result.is_ok());
             }
             assert!(
                 !self.panic_after.get(&point).copied().unwrap_or(false),

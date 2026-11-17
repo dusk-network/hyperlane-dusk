@@ -47,7 +47,7 @@ PRODUCTION_CLIPPY_PACKAGES := \
 # as one codegen unit with LTO, which is smaller and doesn't depend on how
 # the build is scheduled.
 .PHONY: all
-all: $(CONTRACTS) warp-drc20-collateral-unguarded
+all: $(CONTRACTS) warp-drc20-collateral-unguarded mailbox-ungated
 
 # Refuse to build against a rusk-private checkout other than RUSK_VERSION.
 .PHONY: rusk-version
@@ -92,6 +92,30 @@ warp-drc20-collateral-unguarded: rusk-version
 	@cp $(UNGUARDED_TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_warp_drc20_collateral.wasm \
 		$(TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_warp_drc20_collateral_unguarded.wasm
 	@echo "  -> $(TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_warp_drc20_collateral_unguarded.wasm"
+
+# Test only: the Mailbox without the caller check in `process`, so the VM
+# tests can show that the delivery reservation alone refuses a replay from
+# inside a delivery (docs/security.md, HIGH-6). Built with the same flags in
+# its own target directory. Never deploy it.
+UNGATED_TARGET_DIR := target/contract-ungated
+.PHONY: mailbox-ungated
+mailbox-ungated: rusk-version
+	@echo "Building $@ (test only)..."
+	@CARGO_TARGET_DIR=$(UNGATED_TARGET_DIR) \
+		CARGO_PROFILE_RELEASE_STRIP=symbols \
+		CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+		CARGO_PROFILE_RELEASE_LTO=true \
+		RUSTFLAGS="$(RUSTFLAGS) -C link-args=-zstack-size=$(STACK_SIZE) $(WASM_REMAP) --cfg hyperlane_dusk_ungated_test" \
+		cargo build -Z build-std=core,alloc \
+			--locked \
+			--release \
+			--features $(CONTRACT_FEATURE) \
+			--target $(WASM_TARGET) \
+			-p hyperlane-dusk-mailbox
+	@mkdir -p $(TARGET_DIR)/$(WASM_TARGET)/release
+	@cp $(UNGATED_TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_mailbox.wasm \
+		$(TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_mailbox_ungated.wasm
+	@echo "  -> $(TARGET_DIR)/$(WASM_TARGET)/release/hyperlane_dusk_mailbox_ungated.wasm"
 
 # Check all contracts compile
 .PHONY: check
@@ -169,7 +193,7 @@ demo: all dusk-tx
 .PHONY: clean
 clean:
 	cargo clean
-	rm -rf $(TARGET_DIR) $(UNGUARDED_TARGET_DIR) target/data-driver
+	rm -rf $(TARGET_DIR) $(UNGUARDED_TARGET_DIR) $(UNGATED_TARGET_DIR) target/data-driver
 
 .PHONY: help
 help:

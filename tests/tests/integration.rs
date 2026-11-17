@@ -67,6 +67,11 @@ fn assert_contract_panic_contains<R>(
 const MAILBOX_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_mailbox.wasm"
 );
+/// Test only: the Mailbox without the caller check in `process`
+/// (`make mailbox-ungated`), to pin the delivery reservation on its own.
+const MAILBOX_UNGATED_BYTECODE: &[u8] = include_bytes!(
+    "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_mailbox_ungated.wasm"
+);
 const MERKLE_TREE_HOOK_BYTECODE: &[u8] = include_bytes!(
     "../../target/contract/wasm32-unknown-unknown/release/hyperlane_dusk_merkle_tree_hook.wasm"
 );
@@ -689,9 +694,17 @@ fn test_process_delivers_message() {
     assert!(!process_events.is_empty(), "process should emit events");
 }
 
-#[test]
-fn test_process_rejects_replay_during_recipient_ism_resolution() {
-    let mut s = HyperlaneSession::new();
+/// The refusal a contract's `process` gets from the production Mailbox.
+const CONTRACT_PROCESS_REFUSED: &str = "Mailbox: process must be a transaction's own call";
+/// The refusal a replay gets once the delivery is reserved.
+const REPLAY_REFUSED: &str = "Mailbox: already delivered";
+
+/// A recipient replays its own message while the Mailbox asks for its ISM.
+/// By then the Mailbox has reserved the delivery: the recipient sees the
+/// message recorded delivered, the replay fails with `refusal`, and the
+/// message is handled once.
+fn assert_replay_during_recipient_ism_resolution_refused(mailbox: &[u8], refusal: &str) {
+    let mut s = HyperlaneSession::with_mailbox(mailbox);
     s.session
         .deploy(
             REENTRANT_HOOK_BYTECODE,
@@ -716,12 +729,24 @@ fn test_process_rejects_replay_during_recipient_ism_resolution() {
     let receipt = s
         .mailbox_process_via_tx(Vec::new(), encoded.clone())
         .unwrap();
-    assert!(
+    let hook_bool = |s: &mut HyperlaneSession, name: &str| -> bool {
         s.session
-            .direct_call::<_, bool>(REENTRANT_HOOK_ID, "attempted", &())
+            .direct_call::<_, bool>(REENTRANT_HOOK_ID, name, &())
             .unwrap()
             .data
+    };
+    assert!(hook_bool(&mut s, "attempted"));
+    assert!(
+        hook_bool(&mut s, "delivered_at_ism_lookup"),
+        "the delivery is reserved before the recipient's ISM is looked up"
     );
+    assert!(!hook_bool(&mut s, "nested_succeeded"));
+    let error = s
+        .session
+        .direct_call::<_, String>(REENTRANT_HOOK_ID, "nested_error", &())
+        .unwrap()
+        .data;
+    assert!(error.contains(refusal), "the replay failed with {error}");
     assert_eq!(
         s.session
             .direct_call::<_, u32>(REENTRANT_HOOK_ID, "handled_count", &())
@@ -729,12 +754,6 @@ fn test_process_rejects_replay_during_recipient_ism_resolution() {
             .data,
         1,
         "recipient ISM resolution must not permit a second delivery of the same message"
-    );
-    assert!(
-        !s.session
-            .direct_call::<_, bool>(REENTRANT_HOOK_ID, "nested_succeeded", &())
-            .unwrap()
-            .data
     );
     assert!(s.mailbox_delivered(message::id(&encoded)));
     assert_eq!(delivered_ids(&receipt), vec![message::id(&encoded)]);
@@ -746,6 +765,23 @@ fn test_process_rejects_replay_during_recipient_ism_resolution() {
             .count(),
         1
     );
+}
+
+/// On the production Mailbox the caller check refuses the replay first.
+#[test]
+fn test_process_rejects_replay_during_recipient_ism_resolution() {
+    assert_replay_during_recipient_ism_resolution_refused(
+        MAILBOX_BYTECODE,
+        CONTRACT_PROCESS_REFUSED,
+    );
+}
+
+/// Without the caller check (`make mailbox-ungated`, test only), the
+/// delivery reservation refuses the replay on its own: the HIGH-6 fix stays
+/// pinned whatever the check does.
+#[test]
+fn test_the_delivery_reservation_alone_refuses_a_replay_during_ism_resolution() {
+    assert_replay_during_recipient_ism_resolution_refused(MAILBOX_UNGATED_BYTECODE, REPLAY_REFUSED);
 }
 
 #[test]
@@ -7906,15 +7942,39 @@ fn rt_fee_credit(session: &mut TestSession, payer: H256) -> u64 {
         .data
 }
 
+/// The red-team contract's failed calls in a receipt, `(function, error)`,
+/// rolled back or not: a callback that panics keeps its events, flagged.
+fn rt_failures<R>(receipt: &CallReceipt<R>) -> Vec<(String, String)> {
+    receipt
+        .events
+        .iter()
+        .filter(|e| e.source == REDTEAM_ID && e.topic == "call_failed")
+        .map(|e| test_session::rkyv_deserialize::<(String, String)>(&e.data))
+        .collect()
+}
+
+/// Asserts that the red-team contract's failed calls were `expected`, by
+/// function and a fragment of the error.
+fn assert_rt_failures<R>(receipt: &CallReceipt<R>, expected: &[(&str, &str)]) {
+    let failures = rt_failures(receipt);
+    assert_eq!(failures.len(), expected.len(), "{failures:?}");
+    for ((fn_name, error), (want_fn, want_error)) in failures.iter().zip(expected) {
+        assert_eq!(fn_name, want_fn, "{failures:?}");
+        assert!(error.contains(want_error), "{fn_name} failed with {error}");
+    }
+}
+
 /// A recipient's ISM lookup may fail and the Mailbox then falls back to the
 /// default ISM. The attacker uses that tolerated failure for speculative work:
 /// a nested dispatch, a nested delivery of someone else's message and a
-/// same-message replay, then panics. The deliveries are refused anyway, since
-/// a contract can't call `process`. None of it may survive, and the honest
-/// message must remain deliverable afterwards.
-#[test]
-fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
-    let mut s = HyperlaneSession::new();
+/// same-message replay, then panics. None of it may survive, and the honest
+/// message must remain deliverable afterwards. `failures` are the nested
+/// calls that fail, by function and error.
+fn assert_speculative_ism_lookup_leaves_no_partial_state(
+    mailbox: &[u8],
+    failures: &[(&str, &str)],
+) {
+    let mut s = HyperlaneSession::with_mailbox(mailbox);
     rt_deploy(&mut s.session);
 
     let attacker_msg = message::encode(
@@ -7962,6 +8022,7 @@ fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
         .mailbox_process_via_tx(Vec::new(), attacker_msg.clone())
         .expect("outer delivery falls back to the default ISM");
 
+    assert_rt_failures(&receipt, failures);
     assert_eq!(rt_counters(&mut s.session).0, 1, "delivered exactly once");
     assert_eq!(s.mailbox_nonce(), 0, "speculative dispatch must roll back");
     assert_eq!(
@@ -8003,12 +8064,34 @@ fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
     assert_eq!(delivered_ids(&receipt), vec![message::id(&honest_msg)]);
 }
 
-/// A recipient nominates itself as ISM and replays the message from both
-/// `verify` and `handle`, the HIGH-6 case. Both are refused: a contract can't
-/// call `process`, and the delivery is reserved before any call anyway.
+/// On the production Mailbox both nested deliveries are refused, since a
+/// contract can't call `process`.
 #[test]
-fn redteam_nominated_ism_and_handle_replay_rejected() {
-    let mut s = HyperlaneSession::new();
+fn redteam_speculative_ism_lookup_leaves_no_partial_state() {
+    assert_speculative_ism_lookup_leaves_no_partial_state(
+        MAILBOX_BYTECODE,
+        &[
+            ("process", CONTRACT_PROCESS_REFUSED),
+            ("process", CONTRACT_PROCESS_REFUSED),
+        ],
+    );
+}
+
+/// Without the caller check (test only), the nested delivery of the other
+/// message goes through until the panic rolls it back, and the replay is
+/// refused by the delivery reservation.
+#[test]
+fn redteam_speculative_ism_lookup_leaves_no_partial_state_without_the_caller_check() {
+    assert_speculative_ism_lookup_leaves_no_partial_state(
+        MAILBOX_UNGATED_BYTECODE,
+        &[("process", REPLAY_REFUSED)],
+    );
+}
+
+/// A recipient nominates itself as ISM and replays the message from both
+/// `verify` and `handle`, the HIGH-6 case. Both replays fail with `refusal`.
+fn assert_nominated_ism_and_handle_replay_rejected(mailbox: &[u8], refusal: &str) {
+    let mut s = HyperlaneSession::with_mailbox(mailbox);
     rt_deploy(&mut s.session);
     rt_set_returns(&mut s.session, 0, REDTEAM_ID);
 
@@ -8030,8 +8113,22 @@ fn redteam_nominated_ism_and_handle_replay_rejected() {
         .expect("outer delivery succeeds");
 
     assert_eq!(rt_results(&mut s.session), vec![false, false]);
+    assert_rt_failures(&receipt, &[("process", refusal), ("process", refusal)]);
     assert_eq!(rt_counters(&mut s.session).0, 1);
     assert_eq!(delivered_ids(&receipt), vec![message::id(&msg)]);
+}
+
+/// On the production Mailbox a contract can't call `process`.
+#[test]
+fn redteam_nominated_ism_and_handle_replay_rejected() {
+    assert_nominated_ism_and_handle_replay_rejected(MAILBOX_BYTECODE, CONTRACT_PROCESS_REFUSED);
+}
+
+/// Without the caller check (test only), the delivery reservation refuses
+/// both replays.
+#[test]
+fn redteam_nominated_ism_and_handle_replay_rejected_without_the_caller_check() {
+    assert_nominated_ism_and_handle_replay_rejected(MAILBOX_UNGATED_BYTECODE, REPLAY_REFUSED);
 }
 
 /// The attacker contract is both the dispatch sender and its own hook, and

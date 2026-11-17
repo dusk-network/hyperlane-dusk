@@ -524,6 +524,11 @@ mod mailbox {
         /// at most one entry to the delivered set. The relayer's simulation
         /// is a query, so it still runs.
         pub fn process(&mut self, metadata: Vec<u8>, encoded_message: Vec<u8>) {
+            // The VM tests also build a copy without this check, with
+            // `--cfg hyperlane_dusk_ungated_test` (`make mailbox-ungated`),
+            // to show that the delivery reservation below refuses a replay
+            // on its own (HIGH-6). That copy is never deployed.
+            #[cfg(not(hyperlane_dusk_ungated_test))]
             assert!(
                 caller::is_transaction_or_query(),
                 "Mailbox: process must be a transaction's own call"
