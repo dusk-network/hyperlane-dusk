@@ -246,16 +246,16 @@ transfer pays for. `fees` prints what they come to.
 skips steps already recorded there. If it stops halfway, fix the cause and run
 it again. Router enrollment is re-checked on chain each time. If the recorded
 contracts aren't on chain, for example after a testnet reset, or a recorded
-contract reports another `state_version` than this checkout's (Mailbox 5,
-MerkleTreeHook 2, IGP 4, ValidatorAnnounce 2, native route 4), `deploy`
+contract reports another `state_version` than this checkout's (Mailbox 6,
+MerkleTreeHook 2, IGP 4, ValidatorAnnounce 3, native route 5), `deploy`
 stops; move the directory aside and deploy again. Older routes may pay
 sponsored escrow claims to forged keys
-([security notes](security.md#issues-found-and-fixed), CRITICAL-1), older
-core contracts keep storage anyone can fill
-([storage.md](storage.md)), and an older IGP can't be topped up (LOW-15),
-so `agent-configs` refuses them too. So is a Sepolia IGP or token recorded
-by an older version of this script, which initialized them in a second
-transaction that anyone could send first
+([security notes](security.md#issues-found-and-fixed), CRITICAL-1) and
+register any key that asks (MEDIUM-10), older core contracts keep storage
+anyone can fill cheaply ([storage.md](storage.md)), and an older IGP can't
+be topped up (LOW-15), so `agent-configs` refuses them too. So is a
+Sepolia IGP or token recorded by an older version of this script, which
+initialized them in a second transaction that anyone could send first
 ([security notes](security.md#fourth-review), HIGH-8).
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
@@ -321,10 +321,13 @@ contract query (`POST /on/contracts:<mailbox>/process`) and only submits if
 it succeeds. Its RUES endpoint must allow that query: behind a proxy that
 refuses it, nothing is delivered and the relayer logs `not submitting the
 message`. The agents need contracts at the current `state_version`s
-(Mailbox 5, MerkleTreeHook 2, ValidatorAnnounce 2), and an agent build that
+(Mailbox 6, MerkleTreeHook 2, ValidatorAnnounce 3), and an agent build that
 reads them: deliveries come from `ProcessId` events, checkpoint roots are
 computed from the Merkle hook's message IDs, and validator locations come
 from `ValidatorAnnouncement` events ([storage.md](storage.md#what-agents-read)).
+The Mailbox takes `process`, and ValidatorAnnounce `announce`, only as a
+transaction's own call, as the agents send them, or as a query, as the
+relayer simulates `process`.
 
 Each Dusk transaction an agent sends is logged as `dusk-tx call succeeded`
 with its `tx_id`. Its gas use and result are in the node's GraphQL API:
@@ -357,15 +360,16 @@ target/release/dusk-tx transfer-remote --native --rues-url $DUSK --keys my.keys 
   --expected-chain-id 2
 cast call $TOKEN "balanceOf(address)(uint256)" <your sepolia address> --rpc-url $EVM_RPC
 
-# Sepolia -> Dusk: burn on Sepolia, release on Dusk. Register your account on
-# the route once first; until you do, transfers to you wait in escrow.
-target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
-  --expected-chain-id 2
+# Sepolia -> Dusk: burn on Sepolia, release on Dusk. The route holds the first
+# transfer to your account in escrow; claiming it pays it out and registers
+# the account, and later transfers arrive directly.
 H=$(target/release/dusk-tx account --offline --keys my.keys | jq -r .account_h256)
 FEE=$(cast call $TOKEN "quoteGasPayment(uint32)(uint256)" 1146442572 --rpc-url $EVM_RPC | awk '{print $1}')
 cast send $TOKEN "transferRemote(uint32,bytes32,uint256)" 1146442572 0x$H 1000000000 \
   --value $FEE --rpc-url $EVM_RPC --private-key <your key>
-target/release/dusk-tx account --rues-url $DUSK --keys my.keys
+target/release/dusk-tx account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE
+target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
+  --expected-chain-id 2
 ```
 
 `quoteGasPayment` on the token is what a transfer to Dusk pays: our IGP's
@@ -381,8 +385,9 @@ Hyperlane does. `dusk-tx` refuses a 32-byte value whose first 12 bytes aren't
 zero: no EVM route can deliver to it, and the DUSK would stay locked on Dusk.
 `--raw-recipient` overrides that for non-EVM destinations.
 
-**Escrow.** A transfer to a Dusk account that hasn't registered on the route
-waits in escrow. A recipient whose only DUSK is in that escrow can't pay gas
+**Escrow.** A transfer to a Dusk account the route hasn't paid before waits
+in escrow, and a claim of it registers the account, so later transfers
+arrive directly. A recipient whose only DUSK is in that escrow can't pay gas
 to claim it, so anyone can claim it for them. The route decodes the public
 key the claimant names and pays the account that signs with it, whose hash
 the escrow is under. The claimant only pays the gas:
@@ -393,13 +398,14 @@ target/release/dusk-tx account --rues-url $DUSK --address <base58 address> --war
 # Claim your own escrow, or someone else's with --for; either also registers the account
 target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
   --expected-chain-id 2 [--for <base58 address>]
-# Register your own account in advance, so transfers arrive directly
-target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
-  --expected-chain-id 2
 ```
 
-Nobody can register an account for someone else in advance: only a claim of
-an existing escrow registers another account.
+Nobody can register an account in advance, their own or anyone else's:
+routes have no `register_account`, so each account in a route's registry
+is one somebody sent a transfer to ([security notes](security.md#registry-growth),
+MEDIUM-10). A wallet can't prepare an account ahead, but the first transfer
+takes the same number of transactions as before: a claim where a
+registration used to be.
 
 **Undeliverable messages.** Some transfers can never be delivered. A
 transfer to the zero recipient is one example, and so is anything that
@@ -598,13 +604,18 @@ Testnet runs on trust choices and tooling that mainnet can't:
   the relayer spends against what the IGPs collect, and the IGPs' and the
   oracle's ownership under the same custody as the rest.
 - **Storage.** Anyone can add to most contracts' storage for good, paying
-  gas and, for messages, fees. [storage.md](storage.md#ceilings) lists what
-  filling each contract costs: about 3,700 DUSK for a WarpDrc20's
-  allowances, 4,300 DUSK of deliveries to close the Mailbox's dispatch, and
-  23,000 to 47,000 DUSK for a route's registry
-  ([security notes](security.md#open-registry-growth)). Only the Mailbox
-  reports its memory. Decide which limits mainnet needs, and price or bound
-  the rest.
+  gas and, for messages, fees, but each delivery and announcement takes a
+  transaction, routes register only accounts that claimed a transfer, a
+  WarpDrc20 keeps its last GiB for the bridge, and new dispatch payers fund
+  0.01 DUSK. [storage.md](storage.md#ceilings) lists what filling each
+  contract costs: 2,300 to 2,900 DUSK to stop a WarpDrc20's transfers to
+  new holders at its 3 GiB reserve, 74,000 to 82,000 DUSK for
+  ValidatorAnnounce, about 116,000 DUSK of dispatches to close the
+  Mailbox's dispatch at the 0.001 DUSK protocol fee, and about 177,000 to
+  make its `process` fail. Before mainnet: a successor Mailbox that routes
+  can move to, a fee on deliveries through ISMs the deployment doesn't
+  trust, a dust threshold for new WarpDrc20 holders and the mainnet
+  protocol fee. Only the Mailbox reports its memory.
 - **Upgrades.** The contracts are immutable. Plan how a fix ships: a pause
   limited to `dispatch` and `transfer_remote` (never `process` or claims), a
   redeploy, and a migration of route custody that doesn't depend on forging

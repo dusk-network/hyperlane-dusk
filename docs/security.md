@@ -43,9 +43,10 @@ and which design decisions are still open.
 | Area | Dusk behaviour |
 |---|---|
 | Caller identity | No `msg.sender`. A shared resolver maps a root Moonlight call to `keccak256(public_sender)` and a nested call to the caller's `ContractId`, both as `H256`. All owner checks use this. |
+| Who can deliver and announce | Only a transaction's own call or a query can call the Mailbox's `process` and ValidatorAnnounce's `announce`; Solidity's take any caller. No contract can deliver a message, to itself or for others, or announce, so each delivery and announcement costs a transaction and a block holds at most 1,000. A recipient can't call back into `process` (HIGH-6). The relayer's simulation of `process` is a query, and still runs. |
 | Native value | No `msg.value`. WarpNative, Mailbox fee funding and IGP top-ups check the exact Moonlight deposit through the transfer contract. Hook payments use authenticated contract-to-contract transfers. |
-| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. Anyone can top up a message's IGP payment (`pay_for_gas`, as `payForGas` on EVM) from a Moonlight transaction's deposit; the IGP keeps its quote, sends the rest of the deposit back to the signer, and records the payment as it records a dispatch's. |
-| Account recipients | An account is `keccak256(bls_public_key)` and must be registered on a route before it can receive. Transfers to unregistered recipients go to escrow, which is only ever paid to the key with that hash. |
+| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`, at least 0.01 DUSK for a payer with no credit). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. Anyone can top up a message's IGP payment (`pay_for_gas`, as `payForGas` on EVM) from a Moonlight transaction's deposit; the IGP keeps its quote, sends the rest of the deposit back to the signer, and records the payment as it records a dispatch's. |
+| Account recipients | An account is `keccak256(bls_public_key)`. A route registers it only when its escrow is claimed, so the first transfer to an account waits in escrow and later ones are paid directly. Escrow is only ever paid to the key with that hash. |
 | Reverts | `assert!` and `expect(...)` panics instead of custom errors. |
 | Upgrades | None. Contract IDs are deterministic; an upgrade is a new deployment. Redeploying over existing state is refused. |
 | Multisig metadata | Stricter than Solidity: validators must be sorted, the threshold valid, and the signature section an exact multiple of 65 bytes. |
@@ -55,7 +56,7 @@ and which design decisions are still open.
 | Delivered messages | The Mailbox records a delivery by the first 16 bytes of the message ID, and keeps no list of deliveries and no delivery heights. Agents index deliveries from the `ProcessId` events. Another message is refused as delivered only if its ID shares those 16 bytes: someone else's message only through a second preimage of 128 bits of keccak256, one's own after about 2^64 hashes ([storage.md](storage.md#the-16-byte-delivery-key)). |
 | Merkle roots | The MerkleTreeHook stores every inserted message ID and block height, but no root per insertion. Validators compute the root at an index from the stored IDs. |
 | Validator locations | ValidatorAnnounce stores the keccak256 of each announced location, not the location. The location is in the `ValidatorAnnouncement` event; agents check it against the stored hash. |
-| DRC20 storage | WarpDrc20 stores balances and allowances under a 32-byte hash of each principal (`drc20::account_id`). The ABI and events still use principals. |
+| DRC20 storage | WarpDrc20 stores balances and allowances under a 32-byte hash of each principal (`drc20::account_id`). The ABI and events still use principals. An owner holds at most 64 allowances, and transfers to new holders and approvals of new spenders stop where they could take the token's memory past 3 GiB, leaving the last GiB to the bridge ([storage.md](storage.md#the-warpdrc20-reserve)). |
 | Escrow claims | A recipient claims its own escrow with `claim_pending`, which registers the transaction's sender and pays it, for about 1.9M gas. Anyone can call `claim_pending_for(key)` and pay the gas. The route decodes `key` from its compressed encoding and reverts if that isn't a valid key; the escrow lookup, the registration and the payout all use the decoded key, the one the recipient signs with. The decoding costs about 57M gas, so that claim takes about 59M. Either claim reverts with nothing in escrow and then registers nothing, so neither can register a key nobody sent anything to, and routes have no other call that registers someone else. |
 | Unsupported | Routing, Aggregation and CCIP-read ISMs; rate-limited hooks and ISMs. |
 
@@ -68,7 +69,7 @@ and which design decisions are still open.
 | HIGH-3 | WarpDrc20Collateral treated every recipient as a contract. | Added account registration and escrow, matching WarpNative. |
 | HIGH-4 | WarpDrc20 `mint`, `burn` and `transfer` could overflow. | Checked arithmetic. |
 | HIGH-5 | A hook could re-enter `dispatch` from `quote_dispatch`, desynchronising nonces from stored messages and permanently stalling Dusk-origin relaying. | Persisted dispatch guard across all hook and payment callbacks. |
-| HIGH-6 | `process` asked the recipient for its ISM before marking the message delivered, so a recipient could re-enter `process` and have the same message handled twice. | Delivery is reserved before any external call (PR #11). |
+| HIGH-6 | `process` asked the recipient for its ISM before marking the message delivered, so a recipient could re-enter `process` and have the same message handled twice. | Delivery is reserved before any external call (PR #11). Since Mailbox 6 a contract can't call `process` at all, so a nested call is refused before it gets that far. |
 | MEDIUM-1 | IGP quote truncated `u128` cost with `as u64`. | `u64::try_from`, reverting on overflow. |
 | MEDIUM-2 | ProtocolFee, IGP, Mailbox fee total and Mailbox nonce could overflow. | Checked arithmetic; dispatch fails on nonce exhaustion. |
 | MEDIUM-3 | Multisig ISM ignored trailing partial-signature bytes and did not reject an uninitialised validator set. | Exact-length check and explicit initialisation check. |
@@ -84,12 +85,15 @@ and which design decisions are still open.
 | LOW-4 | Contract WASMs embedded the builder's absolute paths and weren't reproducible, so nobody could rebuild a release and check a deployed contract ID. | Paths remapped; one codegen unit with LTO (also 30–45% smaller). The build still depended on where `rusk-private` was: Cargo hashes the absolute path of a path dependency outside the workspace into its symbol names, which reordered functions and data in 11 of the 17 WASMs. Cargo now reaches it through the in-repository `rusk` link, and the WASMs are the same wherever the checkouts and the toolchain are ([testnet.md](testnet.md#reproduce-the-contracts)). |
 | LOW-5 | `dusk-tx transfer-remote` accepted any 32-byte recipient. A right-padded EVM address passed Dusk's checks, the EVM token rejected it, and the DUSK stayed locked. | `dusk-tx` takes a 20-byte address and rejects non-zero upper bytes unless `--raw-recipient`. |
 | CRITICAL-1 | `claim_pending_for` and `register_account_for` used the caller's `PublicKey` as given. A twin of the recipient's key (a changed y limb, or x.c0 stored as x.c0 + p, which even passes `is_valid`) has the recipient's hash but other raw bytes, so anyone could pay an escrow, or every later transfer to a registered account, into an account nobody can spend from. On all three routes. | Routes decode the key from its compressed encoding and use only the decoded key. |
-| MEDIUM-9 | `register_account_for` registered any key for about 39k gas, enough to fill a route's 4 GiB of memory for about 500 DUSK, after which new escrow entries couldn't be allocated. | Removed. Only `register_account` (the signer) and a claim of existing escrow register keys. |
+| MEDIUM-9 | `register_account_for` registered any key for about 39k gas, enough to fill a route's 4 GiB of memory for about 500 DUSK, after which new escrow entries couldn't be allocated. | Removed. Only `register_account` (the signer) and a claim of existing escrow registered keys, and since MEDIUM-10's fix only a claim does. |
 | LOW-6 | The relayer sent `process` with a 30M gas limit. A failed transaction pays its whole limit, so anyone who delivered a message first cost the relayer 30M gas. | The relayer's limit is 5M (`DUSK_RELAYER_GAS_LIMIT`), checked against the ISM threshold. |
 
 The fixes have regression tests in `tests/tests/integration.rs`, except the
 overflow paths listed under known limitations. HIGH-5 and HIGH-6 use the
-`reentrant-hook` contract to attempt the real nested call.
+`reentrant-hook` contract to attempt the real nested call; HIGH-6's is now
+refused as a contract's call to `process`
+(`test_contracts_cannot_call_process` tries it from a recipient's
+`handle` with a message the Mailbox would otherwise deliver).
 
 ## Second review
 
@@ -99,7 +103,7 @@ these, some of them in the fixes' own claims:
 
 | ID | Issue | Status |
 |---|---|---|
-| MEDIUM-10 | Routes still register any number of keys. Without `register_account_for` (MEDIUM-9) every entry costs a transaction signed by its key, but anyone can fund new keys and call `register_account` from each, and no entry is ever removed. A test said that nobody could fill a route's memory with registrations. | **Open**, see [below](#open-registry-growth). The test now says what holds. The storage redesign left route registries as they are. |
+| MEDIUM-10 | Routes still register any number of keys. Without `register_account_for` (MEDIUM-9) every entry costs a transaction signed by its key, but anyone can fund new keys and call `register_account` from each, and no entry is ever removed. A test said that nobody could fill a route's memory with registrations. | Fixed. Routes have no `register_account` (WarpNative 5, WarpDrc20 8, WarpDrc20Collateral 7): only a claim of escrow registers an account, so every entry stands for a transfer someone sent from the remote chain ([below](#registry-growth)). |
 | MEDIUM-11 | Routes deployed before the CRITICAL-1 fix reported the same `state_version` as fixed ones, so `deploy/testnet.sh deploy` and `demo/deploy.sh --skip-deploy` would reuse a recorded deployment whose sponsored claims still pay forged keys. | Fixed. Routes are at `state_version` 4 (WarpNative), 6 (WarpDrc20, 7 since the storage redesign) and 5 (WarpDrc20Collateral, 6 since MEDIUM-13), and both scripts refuse a recorded route below that and say to redeploy. `agent-configs` and `preflight` check it too. |
 | LOW-7 | The Mailbox's `withdraw_dispatch_credit`, and each route's owner-only wrapper of it, pay the recipient key as given. A payer who passes a twin of the recipient's key (see CRITICAL-1) is debited and the event names the recipient, but the DUSK goes to an account nobody can spend from. Only the caller's own credit, or a route's credit by its owner, is at risk. | Fixed. The Mailbox decodes the key from its compressed encoding, reverts if that fails or gives the identity, and pays and names the decoded key; the routes' wrappers go through it. Decoding costs about 57M gas, so a withdrawal takes 58.7M, and `dusk-tx withdraw-dispatch` defaults to an 80M limit. |
 | LOW-8 | `claim_pending` paid the sender but didn't register it, unlike `claim_pending_for`, so every later transfer to that account went to escrow again. The contracts' comments said a recipient had to register before claiming, which it didn't. | Fixed. `claim_pending` registers the sender, then pays it. |
@@ -122,46 +126,45 @@ The review also asked for tests that had been missing, now in
   (`test_relayed_process_at_threshold_6_fits_a_5m_gas_limit`). The costliest
   is a payout from a collateral route locking the upstream DRC20, at 3.27M.
 
-### Open: registry growth
+### Registry growth
 
-Each registration adds about 339 bytes to the route's memory (338.6 on
-average, the map's own overhead included), and nothing removes it. The
-memory is wasm32: at most 4 GiB, and it never shrinks. A route whose memory
-is full of registrations can't allocate a new escrow entry or registration:
+Each registration adds about 352 bytes to the route's memory (a
+key takes 200 bytes in memory), and nothing removes it. The memory is
+wasm32: at most 4 GiB, and it never shrinks. A route whose memory is full
+of registrations can't allocate a new escrow entry or registration:
 transfers to recipients that aren't registered can't be delivered, those
 recipients can't claim, and WarpDrc20 can't mint to an account with no
-balance yet. The registrations never go away, so neither does the problem.
+balance yet.
 
-`register_account` registers the transaction's signer, so an entry costs a
-transaction signed by a new key, and that key needs DUSK for its gas first.
-`test_self_registration_costs_two_transactions_per_key` measures the funding
-transfer and the registration at about 1.85M gas each, nearly all of it the
-1.75M signature check every Moonlight transaction pays at the Boreas
-host-query prices testnet and mainnet use (the registration itself costs
-about 35k). Filling 4 GiB takes about 12.7 million entries:
-
-| Per entry | Gas | DUSK to fill 4 GiB at 1 LUX/gas |
-|---|---|---|
-| Registration only | 1.85M | about 23,500 |
-| A funding transfer and the registration | 3.70M | about 46,900 |
-
-This assumes the minimum gas price of 1 LUX, that the whole 4 GiB is free,
-and one ordinary transfer to fund each key. Funding many keys from a
-contract in one transaction costs less per key, so the registration-only
-figure is the floor. Each key must also hold its registration's gas limit
-when it submits, but keeps what isn't spent. It takes two transactions per
-entry, about 15,600 blocks filled to their 3 billion gas limit. For
-comparison, `register_account_for` (MEDIUM-9) did the same for about
-500 DUSK.
+Until the fix, `register_account` registered the transaction's signer, so
+an entry cost a funded key and two transactions, about 23,700 to 47,400
+DUSK for a route's 4 GiB. Now a route registers an account only when its
+escrow is claimed: `claim_pending` by the account or `claim_pending_for`
+by anyone for it, and both revert with nothing in escrow. Escrow only
+comes from a delivery from the route's enrolled router, so each entry
+takes a transfer someone sent from the remote chain and paid our IGP
+there for, its delivery on Dusk, which the relayer pays and the IGP fee
+repays, and a claim. `test_a_registration_costs_an_inbound_transfer_and_two_transactions`
+measures the funding transfer and the claim at about 1.85M gas each.
+Filling 4 GiB takes 9.8M to 12.2M inbound transfers, as many EVM
+transactions, 1.3 to 1.6 ETH of IGP fees at the default pricing, and
+39,000 to 71,000 DUSK of Dusk gas for the deliveries and the claims, with a
+funding transfer for each key or without. Entries sorted by their key
+fill 20% sooner than random ones ([storage.md](storage.md#key-order)).
 
 The Mailbox's process path had the same problem, worse: it stored every
 processed message ID in a growing `Vec`, which failed at 33.5M deliveries
 for about 1,074 DUSK. The storage redesign removed that list
 ([storage.md](storage.md)); the Mailbox now keeps 16 bytes per delivery,
-about 26 bytes of memory, and filling it takes about 163M deliveries and
-5,700 DUSK, or 122M and 4,300 DUSK to close dispatch. Registrations are
-the most expensive storage on any contract to fill, so they stay as they
-are for testnet. Routes don't report their memory use yet.
+about 26 bytes of memory, and since a contract can't call `process`, each
+delivery takes a transaction: filling the Mailbox with deliveries takes
+239,000 to 301,000 DUSK, and closing its dispatch 179,000 to 225,000.
+In DUSK a registry costs less to fill than the Mailbox, but each of its
+entries also takes a transfer on the remote chain, 9.8M to 12.2M EVM
+transactions in all. The cheapest damage anywhere is to a WarpDrc20's new
+holders, and it stops at a 3 GiB reserve that leaves the bridge working
+([costs.md](costs.md#attack-costs)). Routes don't report their memory use
+yet.
 
 ## Storage study
 
@@ -246,6 +249,30 @@ otherwise never sends it and says so. Before `send` only unsigned reads
 reach the node, its chain ID and, without `--nonce`, the signer's account
 ([operations.md](operations.md#acknowledged-sends)).
 
+## State growth, stage 1
+
+Stage 1 of the state-growth plan, before the public testnet, bounds who can
+add to the contracts' memory cheaply, since Dusk's gas doesn't price the
+bytes a call leaves behind ([storage.md](storage.md#who-can-add-entries)):
+
+| Change | Contracts | Effect |
+|---|---|---|
+| `process` and `announce` take only a transaction's own call or a query | Mailbox 6, ValidatorAnnounce 3 | No contract can make many deliveries or announcements in one transaction. Filling the Mailbox with deliveries went from about 5,700 DUSK in 4 hours to 239,000 to 301,000 DUSK over 15 to 19 days of full blocks, and ValidatorAnnounce from about 10,100 DUSK to 74,000 to 82,000. A recipient can't call back into `process` (HIGH-6). |
+| Routes register an account only when its escrow is claimed | WarpNative 5, WarpDrc20 8, WarpDrc20Collateral 7 | MEDIUM-10 is fixed: a route's registry fills only with accounts someone sent a transfer to, 9.8M to 12.2M of them. |
+| At most 64 allowances per owner; transfers to new holders and approvals of new spenders stop at 3 GiB | WarpDrc20 8 | Approvals to the reserve cost 79,000 to 99,000 DUSK instead of 3,000 to 3,800 for the whole token. Holders still reach it for 2,300 to 2,900 DUSK and token units, but then only transfers and approvals to new addresses stop; the bridge keeps the last GiB. |
+| `fund_dispatch` takes at least 0.01 DUSK for a payer with no credit | Mailbox 6 | Credit for new payers fills the Mailbox's 3 GiB for 475,000 to 595,000 DUSK instead of about 92,200. |
+
+Each rule has a VM test that fails without it, in `tests/tests/integration.rs`:
+`test_contracts_cannot_call_process`, `test_contracts_cannot_announce`,
+`test_a_funded_key_cannot_register_itself`,
+`test_warp_drc20_owner_holds_at_most_64_allowances`,
+`test_warp_drc20_zeroed_allowances_free_their_entries`,
+`test_warp_drc20_new_holders_and_allowances_stop_at_3_gib` and
+`test_a_new_dispatch_payer_funds_at_least_a_hundredth_of_a_dusk`.
+`deploy/testnet.sh`, `demo/deploy.sh` and the agents refuse the earlier
+versions. The ranges run from keys in increasing order, which an attacker
+can arrange, to keys in random order ([storage.md](storage.md#key-order)).
+
 ## Owner powers
 
 `dusk-tx deploy-hyperlane` makes the deployer key the owner, fee beneficiary
@@ -292,11 +319,11 @@ Accepted:
   If a user loses that key, the funds stay locked. An admin drain would add
   a path to seize user funds.
 - **Immutable registration** (issue #5). No call removes a registration or
-  points it at another key. Registering again overwrites the entry, but with
-  the same key: every key a route stores is canonical, either the
-  transaction's sender, which the node decodes from its compressed encoding,
-  or a key `claim_pending_for` has decoded, and only one canonical key has a
-  given hash. A new key produces a new recipient hash anyway, and remapping
+  points it at another key. A later claim registers again, but with the same
+  key: every key a route stores is canonical, either the claiming
+  transaction's sender, which the node decodes from its compressed
+  encoding, or a key `claim_pending_for` has decoded, and only one
+  canonical key has a given hash. A new key produces a new recipient hash anyway, and remapping
   would give an admin control over where user funds go.
 - **Top-ups aren't checked against the Mailbox**, as on EVM. `pay_for_gas`
   records a payment for any message ID and destination it is given. The
@@ -425,11 +452,15 @@ Accepted:
   keeps 32 bytes per message plus 16 per block, and the IGP 64 bytes per
   payment, from dispatches and top-ups alike; top-ups stop at 3 GiB.
   `dispatch` closes for good when the Mailbox reaches 3 GiB: after
-  about 100M messages, or fewer when deliveries share the memory.
-  Deliveries alone close it after about 122M, which anyone can pay for with
-  about 4,300 DUSK of gas by delivering messages to a recipient that names
-  itself as its ISM ([storage.md](storage.md#ceilings)). Monitor
-  `memory_bytes`.
+  about 100M messages, or fewer when deliveries share the memory. Anyone
+  can close it on purpose with dispatches, for about 116,000
+  DUSK at the testnet protocol fee, mostly the fee, or with 97M to 122M
+  deliveries, a transaction each, for 179,000 to 225,000 DUSK
+  ([storage.md](storage.md#ceilings)). Monitor `memory_bytes`.
+- **Contracts can't deliver or announce.** `process` and `announce` take
+  only a transaction's own call or a query, so no contract can relay a
+  message, to itself or for others, and a recipient can't deliver another
+  message from its `handle`.
 - `dispatch` is permissionless, as in Hyperlane. Security comes from the
   destination ISM.
 - Dispatch credit can only be withdrawn to Moonlight accounts, not to

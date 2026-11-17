@@ -254,6 +254,10 @@ bash demo/bridge.sh to-evm 2
 bash demo/bridge.sh help
 ```
 
+A route holds the first transfer to an account in escrow until the account
+claims it, which registers it for later transfers, so `bridge.sh to-dusk`
+claims the deployer's escrow after the first transfer to it.
+
 Every Dusk write prints its locally computed transaction hash before the first
 propagation attempt, and `bridge.sh` requires, validates, and prints the
 completed canonical hash before continuing.
@@ -414,8 +418,9 @@ dusk-tx query --contract <validator-announce-hex> \
 dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex> \
     --expected-chain-id <u8>
 
-# Register BLS key for receiving bridged tokens
-dusk-tx register-account --warp-contract <hex> --expected-chain-id <u8>
+# Claim a transfer waiting in escrow: a route holds the first transfer to an
+# account until it is claimed, which registers the account for later ones
+dusk-tx claim-pending --warp-contract <hex> --expected-chain-id <u8>
 
 # Approve collateral custody and inspect DRC20 balances
 dusk-tx drc20-approve --token <hex> --spender <collateral-route-hex> --amount <amount> \

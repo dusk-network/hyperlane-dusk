@@ -67,7 +67,15 @@ need no prepaid credit.
 
 Senders that call the Mailbox's `dispatch` directly (for example
 TestRecipient, or an application contract) pay from credit prepaid to the
-Mailbox:
+Mailbox. A payer with no credit takes at least 0.01 DUSK (10,000,000 LUX):
+each payer with credit is an entry in the Mailbox's memory for as long as
+its credit lasts, and the minimum is what an entry costs. A payer with
+credit can be topped up by any amount. Credit that reaches zero, spent by
+dispatches or withdrawn, leaves no entry, so funding that payer again takes
+the minimum again. `dusk-tx fund-dispatch` reads the payer's credit and
+refuses less than the minimum for a payer with none before it signs, since
+a failed transaction pays its whole gas limit. Routes fund their own credit
+for each transfer through the transfer contract, which has no minimum.
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)

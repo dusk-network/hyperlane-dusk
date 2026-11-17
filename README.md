@@ -59,13 +59,14 @@ implemented. The agents return an explicit error if a deployment points at one.
   Hyperlane `H256` address. A user account is `keccak256` of its BLS public
   key.
 - **Receiving tokens.** A warp route has to map a recipient hash back to a
-  BLS key, so an account is registered on the route once. Transfers to an
-  unregistered hash wait in escrow until they are claimed, which also
-  registers the account. The recipient can claim them itself
-  (`claim_pending`), or anyone can claim them for it (`claim_pending_for`)
+  BLS key, so it registers each account once. The first transfer to an
+  account waits in escrow until it is claimed, which registers the account,
+  and later transfers arrive directly. The recipient can claim it itself
+  (`claim_pending`), or anyone can claim it for it (`claim_pending_for`)
   and pay the gas, so a recipient with no DUSK yet can still receive. The
   route decodes the key it is given and pays the account that signs with
-  it.
+  it. Nothing else registers an account, so a route stores only accounts
+  someone sent a transfer to.
 - **Paying fees.** Dusk has no `msg.value`. A warp transfer's Moonlight
   deposit includes the quoted dispatch fee (for native DUSK, the amount plus
   the fee), and the route passes the fee on to the Mailbox. Contracts and
@@ -75,17 +76,22 @@ implemented. The agents return an explicit error if a deployment points at one.
   transaction's deposit too, and the IGP sends back what it doesn't charge.
 - **Reentrancy.** The Dusk VM allows a callee to call back into its caller.
   The Mailbox holds an explicit guard across hook calls during dispatch, and
-  marks a message delivered before any external call during `process`. The
-  collateral route holds one across `transfer_remote`, `handle` and its
+  refuses `process` from any contract, so a recipient can't call back into
+  it; it also marks a message delivered before any external call. The
+  collateral route holds a guard across `transfer_remote`, `handle` and its
   claims, since its token can call back into it.
 - **No upgrades.** Contract IDs are deterministic and contracts are
   immutable. An upgrade means a new deployment plus a config migration.
 - **Storage.** A contract's state is its wasm32 memory, at most 4 GiB, and
-  it never shrinks. The contracts keep growing state in 64 KiB chunks and
-  store only what they check: message IDs, not messages; 16 bytes of each
-  delivered message's ID; hashes of validator locations. Agents read the
-  rest from finalized events. [docs/storage.md](docs/storage.md) has the
-  layouts, what filling each contract costs, and what agents read;
+  it never shrinks, and Dusk's gas doesn't price the bytes a call leaves
+  behind. The contracts keep growing state in 64 KiB chunks and store only
+  what they check: message IDs, not messages; 16 bytes of each delivered
+  message's ID; hashes of validator locations. Agents read the rest from
+  finalized events. Each delivery and announcement takes a transaction of
+  its own, since contracts can't call `process` or `announce`, and the
+  other paths anyone can add to are priced or capped.
+  [docs/storage.md](docs/storage.md) has the layouts, the limits, what
+  filling each contract costs, and what agents read;
   [docs/costs.md](docs/costs.md) what every call costs.
 - **Finality.** Agents only index finalized events, and validators only
   checkpoint finalized Merkle state.
