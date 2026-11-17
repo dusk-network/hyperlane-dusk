@@ -10552,6 +10552,56 @@ fn test_credit_for_new_payers_stops_at_3_gib() {
     deliver_until(&mut s, 11);
 }
 
+/// Known property, pinned (docs/costs.md): the 0.01 DUSK a payer with no
+/// credit has to fund isn't locked. One dispatch through a hook the payer
+/// controls spends all of it but a LUX, the protocol fee to the ProtocolFee
+/// and the rest to the hook, and the payer's entry stays. So a new credit
+/// entry costs the protocol fee and about two transactions, not 0.01 DUSK.
+/// If this test fails, the property changed: update the docs.
+#[test]
+fn known_property_a_new_payers_minimum_comes_back_through_its_own_hook() {
+    let mut session = session_with_hooks();
+    rt_deploy(&mut session);
+    let protocol_fee = 1_000u64;
+    let hook_fee = MIN_NEW_PAYER_CREDIT - protocol_fee - 1;
+    rt_set_returns(&mut session, hook_fee, ContractId::from_bytes([0; 32]));
+    session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, MIN_NEW_PAYER_CREDIT),
+            MIN_NEW_PAYER_CREDIT,
+        )
+        .expect("the minimum funds a new payer");
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "dispatch",
+            &(
+                REMOTE_DOMAIN,
+                [0xA7u8; 32],
+                b"x".to_vec(),
+                Vec::<u8>::new(),
+                REDTEAM_ID,
+            ),
+        )
+        .expect("a dispatch through the payer's own hook");
+    assert_eq!(rt_fee_credit(&mut session, *OWNER_ID), 1, "the entry stays");
+    assert_eq!(rt_counters(&mut session).2, hook_fee);
+    assert_eq!(session.contract_balance(&REDTEAM_ID).unwrap(), hook_fee);
+    session
+        .call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(*OWNER_ID, 1u64),
+            1,
+        )
+        .expect("a top-up of a LUX: the entry is still there");
+}
+
 /// The Mailbox records a delivered message by the first 16 bytes of its ID.
 /// The same message is refused a second time and distinct messages are
 /// delivered. An ID that shares only the last 16 bytes with a delivered one
@@ -11422,3 +11472,246 @@ fn test_warp_drc20_new_holders_and_allowances_stop_at_3_gib() {
     );
 }
 
+/// A session with a WarpDrc20 and a collateral route that wraps it, the
+/// topology `dusk-tx deploy-hyperlane` no longer deploys. The owner gets
+/// synthetic tokens by claim and locks them in the collateral route.
+fn session_with_collateral_over_warp_drc20_from(warp_drc20_bytecode: &[u8]) -> (TestSession, H256) {
+    let remote_router: H256 = [0xCC; 32];
+    let mut session = TestSession::instantiate(vec![
+        (&*OWNER_PK, INITIAL_DUSK_BALANCE),
+        (&*RELAYER_PK, INITIAL_DUSK_BALANCE),
+    ]);
+    session
+        .deploy(
+            TEST_MOCK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .contract_id(TEST_MOCK_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            MERKLE_TREE_HOOK_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(MAILBOX_ID,))
+                .contract_id(MERKLE_TREE_HOOK_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            warp_drc20_bytecode,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    alloc::string::String::from("Test Token"),
+                    alloc::string::String::from("TEST"),
+                    9u8,
+                    vec![(REMOTE_DOMAIN, remote_router)],
+                ))
+                .contract_id(WARP_DRC20_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            WARP_DRC20_COLLATERAL_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    WARP_DRC20_ID,
+                    MAILBOX_ID,
+                    *OWNER_ID,
+                    vec![(REMOTE_DOMAIN, remote_router)],
+                ))
+                .contract_id(WARP_DRC20_COLLATERAL_ID),
+        )
+        .unwrap();
+    session
+        .deploy(
+            MAILBOX_BYTECODE,
+            dusk_vm::ContractData::builder()
+                .owner(DEPLOYER)
+                .init_arg(&(
+                    LOCAL_DOMAIN,
+                    *OWNER_ID,
+                    TEST_MOCK_ID,
+                    TEST_MOCK_ID,
+                    MERKLE_TREE_HOOK_ID,
+                ))
+                .contract_id(MAILBOX_ID),
+        )
+        .unwrap();
+    let locked = 10_000_000u64;
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_DRC20_ID, remote_router, 0, *OWNER_ID, locked),
+            ),
+        )
+        .unwrap();
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "claim_pending", &())
+        .unwrap();
+    session
+        .call_public::<_, ()>(
+            &OWNER_SK,
+            WARP_DRC20_ID,
+            "approve",
+            &Drc20ApproveCall {
+                spender: Drc20Account::Contract(WARP_DRC20_COLLATERAL_ID),
+                amount: locked,
+            },
+        )
+        .unwrap();
+    session
+        .call_public::<_, MessageId>(
+            &OWNER_SK,
+            WARP_DRC20_COLLATERAL_ID,
+            "transfer_remote",
+            &(REMOTE_DOMAIN, [0xAB; 32], locked - 1_000),
+        )
+        .unwrap();
+    (session, remote_router)
+}
+
+/// Known limitation, pinned (docs/security.md): a collateral route pays out
+/// with its token's own `transfer`, so one over a WarpDrc20 inherits the
+/// WarpDrc20's holder reserve. Once holders fill the token to its 3 GiB
+/// reserve, the synthetic route still pays new accounts, but the collateral
+/// route can't pay an account with no balance of the token: a payout to a
+/// registered account reverts, so the message can't be delivered, and
+/// escrow can't be claimed. This is why `dusk-tx deploy-hyperlane` won't
+/// wrap a WarpDrc20 and the demo wraps the pinned canonical DRC20. If this
+/// test fails, the limitation changed: update the docs.
+#[test]
+fn known_limitation_collateral_route_over_warp_drc20_stops_paying_new_holders_at_the_reserve() {
+    let closed = "WarpDrc20: storage full, transfers to new holders are closed";
+    let limit_pages = HOLDER_MEMORY_LIMIT / WASM_PAGE;
+    let token = with_initial_memory_pages(WARP_DRC20_BYTECODE, limit_pages - 24);
+    let (mut session, remote_router) = session_with_collateral_over_warp_drc20_from(&token);
+    rt_deploy(&mut session);
+    let new_key = |seed: u64| {
+        let sk = AccountSecretKey::random(&mut StdRng::seed_from_u64(seed));
+        let pk = AccountPublicKey::from(&sk);
+        (sk, pk)
+    };
+
+    // X registers on the collateral route while there is room, then moves
+    // its tokens away: registered, with no balance.
+    let (x_sk, x_pk) = new_key(0xC0_11A7);
+    session.transfer(&RELAYER_SK, &x_pk, 1_000_000_000);
+    register_by_claim(
+        &mut session,
+        WARP_DRC20_COLLATERAL_ID,
+        remote_router,
+        100,
+        &x_sk,
+        500,
+    );
+    session
+        .call_public::<_, ()>(
+            &x_sk,
+            WARP_DRC20_ID,
+            "transfer",
+            &hyperlane_dusk_types::drc20::TransferCall {
+                to: Drc20Account::moonlight(&OWNER_PK),
+                amount: 500,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&x_pk)),
+        0
+    );
+
+    // Holders fill the token to its reserve, from a contract.
+    give_attacker_tokens(&mut session, remote_router, 101, 1_000_000);
+    let mut holders = 0u32;
+    loop {
+        let batch: Vec<RtAction> = (holders..holders + 64)
+            .map(|i| drc20_transfer(drc20_spender(0x77, i), 1))
+            .collect();
+        if run_direct(&mut session, batch).is_ok() {
+            holders += 64;
+            continue;
+        }
+        match run_direct(
+            &mut session,
+            vec![drc20_transfer(drc20_spender(0x77, holders), 1)],
+        ) {
+            Ok(_) => holders += 1,
+            Err(error) => {
+                assert_contract_panic_contains(Err::<CallReceipt<()>, _>(error), closed);
+                break;
+            }
+        }
+    }
+
+    // The synthetic route still pays a new account.
+    let (z_sk, z_pk) = new_key(0x2222);
+    session.transfer(&RELAYER_SK, &z_pk, 1_000_000_000);
+    register_by_claim(&mut session, WARP_DRC20_ID, remote_router, 102, &z_sk, 7);
+    assert_eq!(
+        warp_drc20_balance_of(&mut session, Drc20Account::moonlight(&z_pk)),
+        7
+    );
+
+    // The collateral route pays a registered account that holds the token.
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_DRC20_COLLATERAL_ID, remote_router, 103, *OWNER_ID, 3),
+            ),
+        )
+        .expect("a payout to an existing holder still works");
+
+    // But not one with no balance: the delivery reverts.
+    let x_id = message::keccak256(&x_pk.to_bytes());
+    assert_contract_panic_contains(
+        session.direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_DRC20_COLLATERAL_ID, remote_router, 104, x_id, 5),
+            ),
+        ),
+        closed,
+    );
+
+    // And a new account's escrow can't be claimed.
+    let (y_sk, y_pk) = new_key(0x3333);
+    session.transfer(&RELAYER_SK, &y_pk, 1_000_000_000);
+    let y_id = message::keccak256(&y_pk.to_bytes());
+    session
+        .direct_call::<_, ()>(
+            MAILBOX_ID,
+            "process",
+            &(
+                Vec::<u8>::new(),
+                inbound_transfer(WARP_DRC20_COLLATERAL_ID, remote_router, 105, y_id, 5),
+            ),
+        )
+        .expect("escrow on the collateral route still works");
+    assert_contract_panic_contains(
+        session.call_public::<_, ()>(&y_sk, WARP_DRC20_COLLATERAL_ID, "claim_pending", &()),
+        closed,
+    );
+    assert_eq!(
+        route_u64(
+            &mut session,
+            WARP_DRC20_COLLATERAL_ID,
+            "pending_balance",
+            y_id
+        ),
+        5
+    );
+}
