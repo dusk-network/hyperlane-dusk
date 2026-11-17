@@ -30,6 +30,7 @@ Runs the local reproducibility checks that do not require a live E2E network:
   - make all
   - make clippy-contracts
   - make test-types (including the canonical DRC20 ABI feature)
+  - make check-genesis-contracts
   - cargo test -p hyperlane-dusk-integration-tests
   - cargo test -p hyperlane-dusk-data-driver
   - cargo test -p dusk-tx
@@ -167,6 +168,9 @@ make clippy-contracts
 
 info "Running Dusk type tests"
 make test-types
+
+info "Checking the VM tests' genesis contracts against RUSK_COMMIT"
+make check-genesis-contracts
 
 info "Building pinned canonical DRC20 VM fixture"
 make canonical-drc20-fixture

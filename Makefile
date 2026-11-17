@@ -175,6 +175,12 @@ test: test-types test-integration
 secret-hygiene:
 	bash scripts/secret-hygiene-check.sh
 
+# Check that the genesis transfer and stake contracts the VM tests run are
+# the ones rusk-private ships at RUSK_COMMIT (local, no network).
+.PHONY: check-genesis-contracts
+check-genesis-contracts: rusk-version
+	bash scripts/check-genesis-contracts.sh
+
 # Build and test everything against a Rusk checkout (RUSK_DIR to override).
 .PHONY: repro-check
 repro-check:
