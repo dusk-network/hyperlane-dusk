@@ -7,7 +7,9 @@
 //!
 //! When sending tokens to a remote chain, this contract locks the DRC20
 //! tokens (via `transfer_from`). When receiving tokens from a remote chain,
-//! it unlocks them (via `transfer`) to the recipient.
+//! it unlocks them (via `transfer`) to the recipient. Tokens for an account
+//! the route hasn't paid before wait in escrow until they are claimed, which
+//! also registers the account for later transfers.
 //!
 //! Equivalent to `HypERC20Collateral` in the Solidity Hyperlane contracts.
 
@@ -76,11 +78,12 @@ mod warp_drc20_collateral {
         /// Registry of external accounts: keccak256(pk.to_bytes()) → pk.
         ///
         /// External Dusk accounts use 96-byte BLS public keys that don't
-        /// fit in a 32-byte H256. An account is registered by
-        /// `register_account`, or when its escrow is claimed with
-        /// `claim_pending` or `claim_pending_for`, so that inbound transfers
-        /// can resolve to its External account. Every stored key is
-        /// canonical (see [`canonical_account`]).
+        /// fit in a 32-byte H256. An account is registered when its escrow
+        /// is claimed with `claim_pending` or `claim_pending_for`, so that
+        /// later inbound transfers can resolve to its External account.
+        /// Nothing else registers one, so every entry stands for a transfer
+        /// someone sent it. Every stored key is canonical (see
+        /// [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Pending transfers for recipients who haven't registered yet.
         ///
@@ -159,18 +162,6 @@ mod warp_drc20_collateral {
         // Account registration
         // =================================================================
 
-        /// Register the caller's BLS public key so that inbound transfers
-        /// can resolve the H256 recipient to an External DRC20 account.
-        ///
-        /// Reads the sender from `abi::public_sender()` (Moonlight TX), which
-        /// the node decodes from the transaction's compressed encoding, so
-        /// it is already canonical. Stores `keccak256(pk.to_bytes()) → pk`.
-        pub fn register_account(&mut self) {
-            let pk = abi::public_sender()
-                .expect("WarpCollateral: register_account requires Moonlight TX");
-            self.register(pk);
-        }
-
         /// Check whether an H256 has a registered account.
         pub fn is_registered(&self, h: H256) -> bool {
             self.registered_accounts.contains_key(&h)
@@ -179,10 +170,11 @@ mod warp_drc20_collateral {
         /// Register the transaction's sender and pay it the wrapped DRC20
         /// tokens escrowed for its hash.
         ///
-        /// The sender is already canonical (see [`Self::register_account`]).
-        /// Registering it means later transfers to it are paid out directly,
-        /// as after [`Self::claim_pending_for`]. A call with nothing in
-        /// escrow reverts and registers nothing.
+        /// The sender is `abi::public_sender()`, which the node decodes from
+        /// the transaction's compressed encoding, so it is already
+        /// canonical. Registering it means later transfers to it are paid
+        /// out directly, as after [`Self::claim_pending_for`]. A call with
+        /// nothing in escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
             self.enter();
             let pk =
@@ -236,14 +228,15 @@ mod warp_drc20_collateral {
             self.pending_total
         }
 
-        /// Deployment compatibility version. Version 6: `transfer_remote`,
-        /// `handle`, the claims and `withdraw_dispatch_credit` can't be
-        /// re-entered. Version 5: `claim_pending_for` pays the decoded key,
-        /// and `claim_pending` registers the sender. Version 4 added
-        /// `claim_pending_for`.
+        /// Deployment compatibility version. Version 7 drops
+        /// `register_account`: only a claim of escrow registers an account.
+        /// Version 6: `transfer_remote`, `handle`, the claims and
+        /// `withdraw_dispatch_credit` can't be re-entered. Version 5:
+        /// `claim_pending_for` pays the decoded key, and `claim_pending`
+        /// registers the sender. Version 4 added `claim_pending_for`.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            6
+            7
         }
 
         // =================================================================

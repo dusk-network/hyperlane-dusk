@@ -7,7 +7,9 @@
 //! When sending DUSK to a remote chain, the caller deposits DUSK into this
 //! contract via the Moonlight TX `deposit` field. When receiving DUSK from
 //! a remote chain, the contract sends DUSK to the recipient via the
-//! `contract_to_account` transfer contract call.
+//! `contract_to_account` transfer contract call. DUSK for an account the
+//! route hasn't paid before waits in escrow until it is claimed, which also
+//! registers the account for later transfers.
 //!
 //! Equivalent to `HypNative` in the Solidity Hyperlane contracts.
 
@@ -73,11 +75,11 @@ mod warp_native {
         /// Registry of external accounts: keccak256(pk) → pk.
         ///
         /// External Dusk accounts use 96-byte BLS public keys that don't
-        /// fit in a 32-byte H256. An account is registered by
-        /// `register_account`, or when its escrow is claimed with
-        /// `claim_pending` or `claim_pending_for`, so that inbound transfers
-        /// can look up the full key. Every stored key is canonical (see
-        /// [`canonical_account`]).
+        /// fit in a 32-byte H256. An account is registered when its escrow
+        /// is claimed with `claim_pending` or `claim_pending_for`, so that
+        /// later inbound transfers can look up the full key. Nothing else
+        /// registers one, so every entry stands for a transfer someone sent
+        /// it. Every stored key is canonical (see [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Pending transfers for recipients who haven't registered yet.
         /// `claim_pending` (the recipient) or `claim_pending_for` (anyone)
@@ -144,18 +146,6 @@ mod warp_native {
         // Account registration
         // =================================================================
 
-        /// Register the caller's BLS public key so that inbound transfers
-        /// can resolve the H256 recipient to a full account key.
-        ///
-        /// Reads the sender from `abi::public_sender()` (Moonlight TX), which
-        /// the node decodes from the transaction's compressed encoding, so
-        /// it is already canonical. Stores `keccak256(pk.to_bytes()) → pk`.
-        pub fn register_account(&mut self) {
-            let pk =
-                abi::public_sender().expect("WarpNative: register_account requires Moonlight TX");
-            self.register(pk);
-        }
-
         /// Check whether an H256 has a registered account.
         pub fn is_registered(&self, h: H256) -> bool {
             self.registered_accounts.contains_key(&h)
@@ -164,10 +154,11 @@ mod warp_native {
         /// Register the transaction's sender and pay it the DUSK escrowed for
         /// its hash.
         ///
-        /// The sender is already canonical (see [`Self::register_account`]).
-        /// Registering it means later transfers to it are paid out directly,
-        /// as after [`Self::claim_pending_for`]. A call with nothing in
-        /// escrow reverts and registers nothing.
+        /// The sender is `abi::public_sender()`, which the node decodes from
+        /// the transaction's compressed encoding, so it is already
+        /// canonical. Registering it means later transfers to it are paid
+        /// out directly, as after [`Self::claim_pending_for`]. A call with
+        /// nothing in escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender().expect("WarpNative: claim_pending requires Moonlight TX");
             let h = self.register(pk);
@@ -260,12 +251,14 @@ mod warp_native {
             self.pending_total
         }
 
-        /// Deployment compatibility version. Version 4: `claim_pending_for`
-        /// pays the decoded key, and `claim_pending` registers the sender.
-        /// Version 3 added `claim_pending_for`.
+        /// Deployment compatibility version. Version 5 drops
+        /// `register_account`: only a claim of escrow registers an account.
+        /// Version 4: `claim_pending_for` pays the decoded key, and
+        /// `claim_pending` registers the sender. Version 3 added
+        /// `claim_pending_for`.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            4
+            5
         }
 
         // =================================================================

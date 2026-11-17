@@ -248,8 +248,8 @@ struct Net {
 }
 
 impl Net {
-    /// The contracts deployed, with the user registered on every route and
-    /// the collateral route approved to take its tokens.
+    /// The contracts deployed, with the collateral route approved to take
+    /// the user's tokens.
     fn deployed() -> Self {
         let mut s = TestSession::instantiate(vec![
             (&*OWNER_PK, dusk(1_000_000.0)),
@@ -361,16 +361,18 @@ impl Net {
                 vec![(REMOTE_DOMAIN, COLLATERAL_ROUTER)],
             )),
         );
-        deploy::<()>(&mut s, "hyperlane_dusk_redteam_attacker", ATTACKER_ID, None);
+        deploy(
+            &mut s,
+            "hyperlane_dusk_redteam_attacker",
+            ATTACKER_ID,
+            Some(&Vec::<Action>::new()),
+        );
         let mut net = Self {
             s,
             validators,
             threshold: 1,
             inbound_nonce: 0,
         };
-        for route in [NATIVE_ID, SYNTHETIC_ID, COLLATERAL_ID] {
-            net.call(&USER_SK, route, "register_account", &(), 0);
-        }
         net.call(
             &USER_SK,
             TOKEN_ID,
@@ -385,8 +387,10 @@ impl Net {
     }
 
     /// As [`Self::deployed`], with custody on each route for inbound
-    /// transfers, and synthetic tokens for the user: an outbound transfer
-    /// locks DUSK and collateral, an inbound one mints.
+    /// transfers, the user registered on every route, and synthetic tokens
+    /// for the user: an outbound transfer locks DUSK and collateral, an
+    /// inbound one mints. A route registers an account only when it claims
+    /// its escrow, so the user claims a first transfer on each.
     fn new() -> Self {
         let mut net = Self::deployed();
         let fee = net.quote(NATIVE_ID, 1);
@@ -405,6 +409,10 @@ impl Net {
             &(REMOTE_DOMAIN, [0xEE; 32], 100_000_000_000u64),
             fee,
         );
+        for route in ROUTES {
+            net.deliver(route, *USER_ID, 1_000);
+            net.call(&USER_SK, route, "claim_pending", &(), 0);
+        }
         net.deliver(SYNTHETIC_ID, *USER_ID, 100_000_000_000);
         net
     }
@@ -508,6 +516,17 @@ impl Net {
         let encoded = self.inbound(route, recipient, amount);
         let metadata = self.metadata(&encoded);
         self.call(&RELAYER_SK, MAILBOX_ID, "process", &(metadata, encoded), 0);
+    }
+
+    /// A direct call, with nothing below it, that must succeed: what a
+    /// query runs, here to set state up without a transaction.
+    fn direct<A>(&mut self, contract: ContractId, fn_name: &str, args: &A) -> CallReceipt<Vec<u8>>
+    where
+        A: rkyv::Serialize<AllocSerializer<4096>>,
+    {
+        self.s
+            .direct_call_raw(contract, fn_name, archive(args))
+            .unwrap_or_else(|e| panic!("{fn_name} on {contract:?} failed: {e}"))
     }
 
     fn memory(&mut self) -> Vec<u64> {
@@ -835,8 +854,8 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("IGP hook_type", &[87, 2]),
     ("IGP mailbox", &[215, 36]),
     ("IGP owner", &[870, 37]),
-    ("IGP pay_for_gas", &[1_924_374, 12_033, 1, 3, 3, 1_069, 344]),
-    ("IGP pay_for_gas, with a refund", &[1_940_547, 28_207, 2, 3, 4, 1_353, 344]),
+    ("IGP pay_for_gas", &[1_924_176, 12_033, 1, 3, 3, 1_069, 344]),
+    ("IGP pay_for_gas, with a refund", &[1_940_160, 28_018, 2, 3, 4, 1_353, 344]),
     ("IGP quote_dispatch", &[1_514, 9]),
     ("IGP quote_gas_payment", &[959, 9]),
     ("IGP quote_pay_for_gas", &[950, 9]),
@@ -863,7 +882,7 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("ISM verify, 6 of 6 signatures", &[3_297_455, 1_344_193, 0, 2, 1, 723, 884]),
     ("Mailbox default_hook", &[215, 36]),
     ("Mailbox default_ism", &[215, 36]),
-    ("Mailbox delivered", &[338, 2]),
+    ("Mailbox delivered", &[472, 2]),
     ("Mailbox dispatch, 64-byte body, free hook instead of the IGP", &[2_155_553, 234_981, 14, 6, 8, 1_444, 442]),
     ("Mailbox dispatch_default, 1 KiB body", &[3_159_088, 1_160_128, 16, 6, 10, 2_666, 1_462]),
     ("Mailbox dispatch_default, 64-byte body", &[2_174_094, 255_826, 16, 6, 10, 1_610, 406]),
@@ -872,20 +891,20 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("Mailbox dispatched_block_height", &[180, 9]),
     ("Mailbox dispatched_id", &[278, 36]),
     ("Mailbox fee_credit", &[302, 9]),
-    ("Mailbox fund_dispatch, existing payer", &[1_920_076, 9_055, 1, 3, 3, 1_069, 328]),
-    ("Mailbox fund_dispatch, new payer", &[1_920_239, 9_218, 1, 3, 3, 1_069, 328]),
+    ("Mailbox fund_dispatch, existing payer", &[1_920_080, 9_059, 1, 3, 3, 1_069, 328]),
+    ("Mailbox fund_dispatch, new payer", &[1_920_244, 9_223, 1, 3, 3, 1_069, 328]),
     ("Mailbox latest_dispatched_id", &[215, 36]),
     ("Mailbox local_domain", &[88, 5]),
     ("Mailbox memory_bytes", &[107, 9]),
     ("Mailbox nonce", &[88, 5]),
     ("Mailbox owner", &[870, 37]),
-    ("Mailbox process, recipient contract, 1 KiB body, 6 of 6 signatures", &[3_667_795, 1_629_069, 3, 3, 3, 852, 2_011]),
-    ("Mailbox process, recipient contract, 16 KiB body, 6 of 6 signatures", &[8_392_512, 5_063_546, 3, 3, 3, 852, 18_907]),
-    ("Mailbox process, recipient contract, empty body, 1 of 6 signatures", &[2_210_910, 285_397, 3, 3, 3, 852, 528]),
-    ("Mailbox process, recipient contract, empty body, 3 of 6 signatures", &[2_666_260, 730_014, 3, 3, 3, 852, 669]),
-    ("Mailbox process, recipient contract, empty body, 6 of 6 signatures", &[3_350_924, 1_398_214, 3, 3, 3, 852, 885]),
-    ("Mailbox process, recipient contract, largest body, 6 of 6 signatures", &[22_662_250, 15_437_188, 3, 3, 3, 852, 69_921]),
-    ("Mailbox process, recipient that is its own ISM", &[1_936_258, 21_586, 3, 3, 3, 852, 383]),
+    ("Mailbox process, recipient contract, 1 KiB body, 6 of 6 signatures", &[3_667_947, 1_629_220, 3, 3, 3, 852, 2_011]),
+    ("Mailbox process, recipient contract, 16 KiB body, 6 of 6 signatures", &[8_393_988, 5_065_022, 3, 3, 3, 852, 18_907]),
+    ("Mailbox process, recipient contract, empty body, 1 of 6 signatures", &[2_210_506, 284_993, 3, 3, 3, 852, 528]),
+    ("Mailbox process, recipient contract, empty body, 3 of 6 signatures", &[2_668_604, 732_358, 3, 3, 3, 852, 669]),
+    ("Mailbox process, recipient contract, empty body, 6 of 6 signatures", &[3_352_040, 1_399_330, 3, 3, 3, 852, 885]),
+    ("Mailbox process, recipient contract, largest body, 6 of 6 signatures", &[22_663_055, 15_437_992, 3, 3, 3, 852, 69_921]),
+    ("Mailbox process, recipient that is its own ISM", &[1_938_161, 23_489, 3, 3, 3, 852, 383]),
     ("Mailbox quote_dispatch_for_sender", &[50_964, 9]),
     ("Mailbox recipient_ism", &[1_014, 36]),
     ("Mailbox renounce_ownership", &[1_944_836, 38_181, 0, 2, 2, 779, 290]),
@@ -922,9 +941,9 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("ProtocolFee set_protocol_fee", &[1_943_807, 36_305, 0, 2, 2, 750, 296]),
     ("ProtocolFee state_version", &[87, 5]),
     ("ProtocolFee transfer_ownership", &[1_948_562, 38_194, 0, 2, 2, 817, 325]),
-    ("ValidatorAnnounce announce, new validator, 1 KiB location", &[2_364_814, 362_820, 0, 2, 2, 1_905, 1_520]),
-    ("ValidatorAnnounce announce, new validator, 50-byte location", &[2_172_240, 252_696, 0, 2, 2, 835, 446]),
-    ("ValidatorAnnounce announce, second location of a validator", &[2_173_069, 252_642, 0, 2, 2, 835, 450]),
+    ("ValidatorAnnounce announce, new validator, 1 KiB location", &[2_365_734, 363_740, 0, 2, 2, 1_905, 1_520]),
+    ("ValidatorAnnounce announce, new validator, 50-byte location", &[2_173_162, 253_617, 0, 2, 2, 835, 446]),
+    ("ValidatorAnnounce announce, second location of a validator", &[2_173_997, 253_570, 0, 2, 2, 835, 450]),
     ("ValidatorAnnounce announced_validator_count", &[88, 5]),
     ("ValidatorAnnounce get_announced_storage_location_hashes, 1 location", &[2_631, 44]),
     ("ValidatorAnnounce get_announced_storage_location_hashes, 16 locations", &[6_712, 572]),
@@ -933,11 +952,11 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("ValidatorAnnounce mailbox", &[215, 36]),
     ("ValidatorAnnounce state_version", &[87, 5]),
     ("WarpDrc20 allowance", &[25_902, 9]),
-    ("WarpDrc20 approve, a new spender", &[1_966_790, 42_825, 0, 2, 2, 1_179, 507]),
-    ("WarpDrc20 approve, an existing allowance", &[1_966_522, 42_557, 0, 2, 2, 1_179, 507]),
+    ("WarpDrc20 approve, a new spender", &[1_966_799, 42_833, 0, 2, 2, 1_179, 506]),
+    ("WarpDrc20 approve, an existing allowance", &[1_967_455, 43_489, 0, 2, 2, 1_179, 506]),
     ("WarpDrc20 balance_of", &[17_971, 9]),
-    ("WarpDrc20 claim_pending", &[1_968_356, 61_847, 0, 2, 4, 1_304, 284]),
-    ("WarpDrc20 claim_pending_contract, by the red-team contract", &[1_931_272, 18_283, 1, 3, 3, 1_249, 366]),
+    ("WarpDrc20 claim_pending", &[1_968_155, 61_712, 0, 2, 4, 1_304, 284]),
+    ("WarpDrc20 claim_pending_contract, by the red-team contract", &[1_931_301, 18_312, 1, 3, 3, 1_249, 366]),
     ("WarpDrc20 claim_pending_for", &[61_600_185, 59_676_035, 0, 2, 4, 1_304, 509]),
     ("WarpDrc20 decimals", &[88, 2]),
     ("WarpDrc20 enroll_remote_router, enrolled domain", &[1_949_868, 38_967, 0, 2, 2, 787, 332]),
@@ -949,34 +968,32 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("WarpDrc20 mailbox", &[215, 36]),
     ("WarpDrc20 name", &[911, 27]),
     ("WarpDrc20 owner", &[870, 37]),
-    ("WarpDrc20 pending_balance", &[280, 9]),
+    ("WarpDrc20 pending_balance", &[302, 9]),
     ("WarpDrc20 pending_total", &[104, 9]),
-    ("WarpDrc20 process, existing escrow, 1 of 6 signatures", &[2_232_164, 301_294, 3, 3, 4, 931, 599]),
-    ("WarpDrc20 process, existing escrow, 3 of 6 signatures", &[2_689_306, 747_683, 3, 3, 4, 931, 740]),
-    ("WarpDrc20 process, existing escrow, 6 of 6 signatures", &[3_375_742, 1_417_656, 3, 3, 4, 931, 955]),
-    ("WarpDrc20 process, mint to a registered account, 1 of 6 signatures", &[2_253_810, 322_940, 3, 3, 5, 1_386, 599]),
-    ("WarpDrc20 process, mint to a registered account, 3 of 6 signatures", &[2_711_200, 769_578, 3, 3, 5, 1_386, 740]),
-    ("WarpDrc20 process, mint to a registered account, 6 of 6 signatures", &[3_395_440, 1_437_354, 3, 3, 5, 1_386, 955]),
-    ("WarpDrc20 process, new escrow, 1 of 6 signatures", &[2_232_583, 301_713, 3, 3, 4, 931, 599]),
-    ("WarpDrc20 process, new escrow, 3 of 6 signatures", &[2_689_379, 747_757, 3, 3, 4, 931, 740]),
-    ("WarpDrc20 process, new escrow, 6 of 6 signatures", &[3_374_630, 1_416_544, 3, 3, 4, 931, 955]),
+    ("WarpDrc20 process, existing escrow, 1 of 6 signatures", &[2_233_492, 302_622, 3, 3, 4, 931, 599]),
+    ("WarpDrc20 process, existing escrow, 3 of 6 signatures", &[2_689_163, 747_541, 3, 3, 4, 931, 740]),
+    ("WarpDrc20 process, existing escrow, 6 of 6 signatures", &[3_376_153, 1_418_066, 3, 3, 4, 931, 955]),
+    ("WarpDrc20 process, mint to a registered account, 1 of 6 signatures", &[2_255_272, 324_402, 3, 3, 5, 1_386, 599]),
+    ("WarpDrc20 process, mint to a registered account, 3 of 6 signatures", &[2_712_154, 770_531, 3, 3, 5, 1_386, 740]),
+    ("WarpDrc20 process, mint to a registered account, 6 of 6 signatures", &[3_397_261, 1_439_175, 3, 3, 5, 1_386, 955]),
+    ("WarpDrc20 process, new escrow, 1 of 6 signatures", &[2_233_522, 302_651, 3, 3, 4, 931, 599]),
+    ("WarpDrc20 process, new escrow, 3 of 6 signatures", &[2_689_775, 748_153, 3, 3, 4, 931, 740]),
+    ("WarpDrc20 process, new escrow, 6 of 6 signatures", &[3_376_181, 1_418_095, 3, 3, 4, 931, 955]),
     ("WarpDrc20 quote_transfer_remote", &[58_893, 9]),
-    ("WarpDrc20 register_account, new account", &[1_944_057, 37_459, 0, 2, 2, 778, 288]),
-    ("WarpDrc20 register_account, registered account", &[1_944_093, 37_496, 0, 2, 2, 778, 288]),
     ("WarpDrc20 set_hook", &[1_948_943, 39_351, 0, 2, 2, 767, 314]),
     ("WarpDrc20 set_ism", &[1_948_628, 39_347, 0, 2, 2, 766, 313]),
     ("WarpDrc20 state_version", &[87, 5]),
     ("WarpDrc20 symbol", &[784, 9]),
     ("WarpDrc20 total_supply", &[104, 9]),
-    ("WarpDrc20 transfer, to a holder", &[1_968_232, 43_956, 0, 2, 2, 1_179, 508]),
-    ("WarpDrc20 transfer, to a new holder", &[1_967_907, 43_631, 0, 2, 2, 1_179, 508]),
-    ("WarpDrc20 transfer_from", &[2_004_768, 63_955, 0, 2, 2, 1_179, 724]),
+    ("WarpDrc20 transfer, to a holder", &[1_968_234, 43_958, 0, 2, 2, 1_179, 508]),
+    ("WarpDrc20 transfer, to a new holder", &[1_967_909, 43_633, 0, 2, 2, 1_179, 508]),
+    ("WarpDrc20 transfer_from", &[2_005_702, 64_889, 0, 2, 2, 1_179, 724]),
     ("WarpDrc20 transfer_ownership", &[1_950_254, 39_886, 0, 2, 2, 817, 325]),
     ("WarpDrc20 transfer_remote", &[2_277_606, 356_420, 27, 7, 15, 2_587, 445]),
     ("WarpDrc20 withdraw_dispatch_credit", &[61_634_142, 59_708_501, 2, 4, 3, 1_111, 525]),
-    ("WarpDrc20Collateral claim_pending", &[1_972_209, 65_766, 5, 3, 4, 1_304, 284]),
-    ("WarpDrc20Collateral claim_pending_contract, by the red-team contract", &[1_942_902, 29_913, 6, 4, 3, 1_249, 366]),
-    ("WarpDrc20Collateral claim_pending_for", &[61_604_835, 59_680_686, 5, 3, 4, 1_304, 509]),
+    ("WarpDrc20Collateral claim_pending", &[1_972_009, 65_632, 5, 3, 4, 1_304, 284]),
+    ("WarpDrc20Collateral claim_pending_contract, by the red-team contract", &[1_942_931, 29_942, 6, 4, 3, 1_249, 366]),
+    ("WarpDrc20Collateral claim_pending_for", &[61_604_701, 59_680_551, 5, 3, 4, 1_304, 509]),
     ("WarpDrc20Collateral enroll_remote_router, enrolled domain", &[1_949_868, 38_967, 0, 2, 2, 787, 332]),
     ("WarpDrc20Collateral enroll_remote_router, new domain", &[1_949_850, 38_949, 0, 2, 2, 787, 332]),
     ("WarpDrc20Collateral enrolled_router", &[922, 36]),
@@ -985,30 +1002,28 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("WarpDrc20Collateral is_registered", &[726, 2]),
     ("WarpDrc20Collateral mailbox", &[215, 36]),
     ("WarpDrc20Collateral owner", &[870, 37]),
-    ("WarpDrc20Collateral pending_balance", &[280, 9]),
+    ("WarpDrc20Collateral pending_balance", &[302, 9]),
     ("WarpDrc20Collateral pending_total", &[104, 9]),
-    ("WarpDrc20Collateral process, existing escrow, 1 of 6 signatures", &[2_234_794, 303_924, 4, 4, 4, 931, 599]),
-    ("WarpDrc20Collateral process, existing escrow, 3 of 6 signatures", &[2_691_128, 749_506, 4, 4, 4, 931, 740]),
-    ("WarpDrc20Collateral process, existing escrow, 6 of 6 signatures", &[3_376_397, 1_418_311, 4, 4, 4, 931, 955]),
-    ("WarpDrc20Collateral process, new escrow, 1 of 6 signatures", &[2_234_780, 303_909, 4, 4, 4, 931, 599]),
-    ("WarpDrc20Collateral process, new escrow, 3 of 6 signatures", &[2_691_139, 749_517, 4, 4, 4, 931, 740]),
-    ("WarpDrc20Collateral process, new escrow, 6 of 6 signatures", &[3_376_005, 1_417_918, 4, 4, 4, 931, 955]),
-    ("WarpDrc20Collateral process, payout to a registered account, 1 of 6 signatures", &[2_292_535, 361_665, 9, 4, 5, 1_386, 599]),
-    ("WarpDrc20Collateral process, payout to a registered account, 3 of 6 signatures", &[2_748_843, 807_221, 9, 4, 5, 1_386, 740]),
-    ("WarpDrc20Collateral process, payout to a registered account, 6 of 6 signatures", &[3_433_707, 1_475_621, 9, 4, 5, 1_386, 955]),
+    ("WarpDrc20Collateral process, existing escrow, 1 of 6 signatures", &[2_235_616, 304_746, 4, 4, 4, 931, 599]),
+    ("WarpDrc20Collateral process, existing escrow, 3 of 6 signatures", &[2_692_196, 750_574, 4, 4, 4, 931, 740]),
+    ("WarpDrc20Collateral process, existing escrow, 6 of 6 signatures", &[3_377_975, 1_419_889, 4, 4, 4, 931, 955]),
+    ("WarpDrc20Collateral process, new escrow, 1 of 6 signatures", &[2_237_014, 306_144, 4, 4, 4, 931, 599]),
+    ("WarpDrc20Collateral process, new escrow, 3 of 6 signatures", &[2_691_669, 750_047, 4, 4, 4, 931, 740]),
+    ("WarpDrc20Collateral process, new escrow, 6 of 6 signatures", &[3_378_390, 1_420_304, 4, 4, 4, 931, 955]),
+    ("WarpDrc20Collateral process, payout to a registered account, 1 of 6 signatures", &[2_293_433, 362_562, 9, 4, 5, 1_386, 599]),
+    ("WarpDrc20Collateral process, payout to a registered account, 3 of 6 signatures", &[2_749_103, 807_481, 9, 4, 5, 1_386, 740]),
+    ("WarpDrc20Collateral process, payout to a registered account, 6 of 6 signatures", &[3_435_670, 1_477_584, 9, 4, 5, 1_386, 955]),
     ("WarpDrc20Collateral quote_transfer_remote", &[58_981, 9]),
-    ("WarpDrc20Collateral register_account, new account", &[1_944_123, 37_459, 0, 2, 2, 778, 288]),
-    ("WarpDrc20Collateral register_account, registered account", &[1_944_159, 37_496, 0, 2, 2, 778, 288]),
     ("WarpDrc20Collateral set_hook", &[1_948_943, 39_351, 0, 2, 2, 767, 314]),
     ("WarpDrc20Collateral set_ism", &[1_948_628, 39_347, 0, 2, 2, 766, 313]),
     ("WarpDrc20Collateral state_version", &[87, 5]),
     ("WarpDrc20Collateral transfer_ownership", &[1_950_254, 39_886, 0, 2, 2, 817, 325]),
-    ("WarpDrc20Collateral transfer_remote", &[2_301_340, 380_154, 30, 7, 15, 2_587, 445]),
+    ("WarpDrc20Collateral transfer_remote", &[2_300_753, 379_567, 30, 7, 15, 2_587, 445]),
     ("WarpDrc20Collateral withdraw_dispatch_credit", &[61_634_724, 59_709_084, 2, 4, 3, 1_111, 525]),
     ("WarpDrc20Collateral wrapped_token", &[215, 36]),
-    ("WarpNative claim_pending", &[1_961_925, 55_416, 1, 3, 4, 1_133, 284]),
-    ("WarpNative claim_pending_contract, by the red-team contract", &[1_937_087, 24_098, 3, 5, 3, 895, 366]),
-    ("WarpNative claim_pending_for", &[61_589_585, 59_665_436, 1, 3, 4, 1_133, 509]),
+    ("WarpNative claim_pending", &[1_961_796, 55_353, 1, 3, 4, 1_133, 284]),
+    ("WarpNative claim_pending_contract, by the red-team contract", &[1_935_202, 22_213, 3, 5, 3, 895, 366]),
+    ("WarpNative claim_pending_for", &[61_589_387, 59_665_238, 1, 3, 4, 1_133, 509]),
     ("WarpNative enroll_remote_router, enrolled domain", &[1_949_868, 38_967, 0, 2, 2, 787, 332]),
     ("WarpNative enroll_remote_router, new domain", &[1_949_850, 38_949, 0, 2, 2, 787, 332]),
     ("WarpNative enrolled_router", &[922, 36]),
@@ -1017,25 +1032,23 @@ const BUDGETS: &[(&str, &[u64])] = &[
     ("WarpNative is_registered", &[726, 2]),
     ("WarpNative mailbox", &[215, 36]),
     ("WarpNative owner", &[870, 37]),
-    ("WarpNative pending_balance", &[280, 9]),
+    ("WarpNative pending_balance", &[302, 9]),
     ("WarpNative pending_total", &[104, 9]),
-    ("WarpNative process, existing escrow, 1 of 6 signatures", &[2_234_081, 303_211, 4, 4, 4, 931, 599]),
-    ("WarpNative process, existing escrow, 3 of 6 signatures", &[2_691_087, 749_465, 4, 4, 4, 931, 740]),
-    ("WarpNative process, existing escrow, 6 of 6 signatures", &[3_377_057, 1_418_970, 4, 4, 4, 931, 955]),
-    ("WarpNative process, new escrow, 1 of 6 signatures", &[2_234_201, 303_331, 4, 4, 4, 931, 599]),
-    ("WarpNative process, new escrow, 3 of 6 signatures", &[2_691_215, 749_592, 4, 4, 4, 931, 740]),
-    ("WarpNative process, new escrow, 6 of 6 signatures", &[3_376_457, 1_418_371, 4, 4, 4, 931, 955]),
-    ("WarpNative process, payout to a registered account, 1 of 6 signatures", &[2_249_625, 318_693, 5, 4, 5, 1_216, 599]),
-    ("WarpNative process, payout to a registered account, 3 of 6 signatures", &[2_707_971, 766_287, 5, 4, 5, 1_216, 740]),
-    ("WarpNative process, payout to a registered account, 6 of 6 signatures", &[3_393_322, 1_435_174, 5, 4, 5, 1_216, 955]),
+    ("WarpNative process, existing escrow, 1 of 6 signatures", &[2_235_141, 304_271, 4, 4, 4, 931, 599]),
+    ("WarpNative process, existing escrow, 3 of 6 signatures", &[2_692_291, 750_669, 4, 4, 4, 931, 740]),
+    ("WarpNative process, existing escrow, 6 of 6 signatures", &[3_378_184, 1_420_098, 4, 4, 4, 931, 955]),
+    ("WarpNative process, new escrow, 1 of 6 signatures", &[2_234_974, 304_104, 4, 4, 4, 931, 599]),
+    ("WarpNative process, new escrow, 3 of 6 signatures", &[2_691_628, 750_006, 4, 4, 4, 931, 740]),
+    ("WarpNative process, new escrow, 6 of 6 signatures", &[3_378_360, 1_420_274, 4, 4, 4, 931, 955]),
+    ("WarpNative process, payout to a registered account, 1 of 6 signatures", &[2_250_773, 319_841, 5, 4, 5, 1_216, 599]),
+    ("WarpNative process, payout to a registered account, 3 of 6 signatures", &[2_706_869, 765_185, 5, 4, 5, 1_216, 740]),
+    ("WarpNative process, payout to a registered account, 6 of 6 signatures", &[3_392_895, 1_434_747, 5, 4, 5, 1_216, 955]),
     ("WarpNative quote_transfer_remote", &[58_981, 9]),
-    ("WarpNative register_account, new account", &[1_943_924, 37_459, 0, 2, 2, 778, 288]),
-    ("WarpNative register_account, registered account", &[1_943_961, 37_496, 0, 2, 2, 778, 288]),
     ("WarpNative set_hook", &[1_948_943, 39_351, 0, 2, 2, 767, 314]),
     ("WarpNative set_ism", &[1_948_628, 39_347, 0, 2, 2, 766, 313]),
     ("WarpNative state_version", &[87, 5]),
     ("WarpNative transfer_ownership", &[1_950_254, 39_886, 0, 2, 2, 817, 325]),
-    ("WarpNative transfer_remote", &[2_238_303, 317_179, 27, 7, 14, 2_131, 445]),
+    ("WarpNative transfer_remote", &[2_237_716, 316_592, 27, 7, 14, 2_131, 445]),
     ("WarpNative transfer_remote, first message on the Mailbox", &[2_242_940, 321_839, 27, 7, 14, 2_131, 445]),
     ("WarpNative withdraw_dispatch_credit", &[61_634_142, 59_708_501, 2, 4, 3, 1_111, 525]),
 ];
@@ -1218,12 +1231,13 @@ fn user_flows_fit_their_budgets() {
         ),
     );
     for route in ROUTES {
+        // 0.01 DUSK, the least a payer with no credit takes.
         net.call(
             &OWNER_SK,
             MAILBOX_ID,
             "fund_dispatch",
-            &(route.to_bytes(), 10_000u64),
-            10_000,
+            &(route.to_bytes(), 10_000_000u64),
+            10_000_000,
         );
         p.tx(
             &format!("{} withdraw_dispatch_credit", route_name(route)),
@@ -1292,18 +1306,9 @@ fn user_flows_fit_their_budgets() {
         ),
     );
 
-    // Registrations and claims, on every route.
+    // Claims, which register the account, on every route.
     for (index, route) in (0u64..).zip(ROUTES) {
         let name = route_name(route);
-        let (sk, pk, _) = fresh_key(10 + index);
-        net.s.transfer(&OWNER_SK, &pk, dusk(1.0));
-        for label in ["new account", "registered account"] {
-            p.tx(
-                &format!("{name} register_account, {label}"),
-                measure(&mut net, &sk, route, "register_account", &(), 0),
-            );
-        }
-
         let (sk, pk, id) = fresh_key(20 + index);
         net.deliver(route, id, 1_000);
         net.s.transfer(&OWNER_SK, &pk, dusk(1.0));
@@ -1814,31 +1819,26 @@ fn agent_queries_fit_their_budgets_and_reply_limits() {
     let nonce: u32 = net.query(MAILBOX_ID, "nonce", &());
     let last = nonce - 1;
 
-    // 256 validators, and one of them with 16 locations.
-    let actions = (0..256u64)
-        .map(|i| {
-            let location = format!("s3://hyperlane-validator-{i:04}/eu-west-1");
-            let (validator, signature) = announcement(1_000 + i, &location);
-            action(
-                VALIDATOR_ANNOUNCE_ID,
-                "announce",
-                &(validator, location, signature),
-            )
-        })
-        .collect();
-    run(&mut net, actions);
-    let actions = (1..16u64)
-        .map(|i| {
-            let location = format!("s3://hyperlane-validator-0000/{i}");
-            let (validator, signature) = announcement(1_000, &location);
-            action(
-                VALIDATOR_ANNOUNCE_ID,
-                "announce",
-                &(validator, location, signature),
-            )
-        })
-        .collect();
-    run(&mut net, actions);
+    // 256 validators, and one of them with 16 locations. Each announcement
+    // is a transaction's own call; direct calls set them up faster.
+    for i in 0..256u64 {
+        let location = format!("s3://hyperlane-validator-{i:04}/eu-west-1");
+        let (validator, signature) = announcement(1_000 + i, &location);
+        net.direct(
+            VALIDATOR_ANNOUNCE_ID,
+            "announce",
+            &(validator, location, signature),
+        );
+    }
+    for i in 1..16u64 {
+        let location = format!("s3://hyperlane-validator-0000/{i}");
+        let (validator, signature) = announcement(1_000, &location);
+        net.direct(
+            VALIDATOR_ANNOUNCE_ID,
+            "announce",
+            &(validator, location, signature),
+        );
+    }
     let (busy, _) = announcement(1_000, "");
     let (quiet, _) = announcement(1_001, "");
     let many = validator_keys(255);
@@ -2285,6 +2285,52 @@ fn grow_per_tx(
     growth
 }
 
+/// A call that must be a transaction's own: its contract, its function and
+/// its archived arguments.
+type TopLevelCall = (ContractId, &'static str, Vec<u8>);
+
+/// How many of a top-level path's entries are transactions, for their gas.
+const TOP_LEVEL_SAMPLE: u32 = 64;
+
+/// Makes `entries` calls that each must be a transaction's own call, so a
+/// contract can't batch them: a warm-up transaction, then
+/// [`TOP_LEVEL_SAMPLE`] transactions signed by `sk`, whose average gas is
+/// the gas per entry, and the rest as direct calls, which run the same code
+/// with nothing below it, as a query does, and leave the same memory behind
+/// without the transfer contract's signature check. The memory per entry is
+/// over all of them.
+fn grow_top_level(
+    net: &mut Net,
+    path: &str,
+    entries: u32,
+    sk: &AccountSecretKey,
+    mut make: impl FnMut(&mut Net, u32) -> TopLevelCall,
+) -> Growth {
+    let (contract, fn_name, args) = make(net, 0);
+    net.call_raw(sk, contract, fn_name, args, 0);
+    let before = net.memory();
+    let mut gas = 0;
+    for i in 1..=entries {
+        let (contract, fn_name, args) = make(net, i);
+        if i <= TOP_LEVEL_SAMPLE {
+            gas += net.call_raw(sk, contract, fn_name, args, 0).gas_spent;
+        } else {
+            net.s
+                .direct_call_raw(contract, fn_name, args)
+                .unwrap_or_else(|e| panic!("{path} {i}: {fn_name} failed: {e}"));
+        }
+    }
+    let growth = Growth {
+        path: path.to_string(),
+        entries,
+        gas: gas / u64::from(TOP_LEVEL_SAMPLE),
+        batched: false,
+        grown: grown_since(net, &before),
+    };
+    growth.print();
+    growth
+}
+
 /// Dispatches and deliveries: the Mailbox, its hooks and the IGP.
 fn messaging_growth(entries: u32) -> Vec<Growth> {
     let mut net = Net::new();
@@ -2322,12 +2368,12 @@ fn messaging_growth(entries: u32) -> Vec<Growth> {
         &(0u64, ATTACKER_ID),
         0,
     );
-    rows.push(grow_batched(
+    rows.push(grow_top_level(
         &mut net,
         "delivery to a recipient that is its own ISM",
         entries,
-        256,
-        |i| {
+        &RELAYER_SK,
+        |_, i| {
             let encoded = message::encode(
                 VERSION,
                 i,
@@ -2337,10 +2383,90 @@ fn messaging_growth(entries: u32) -> Vec<Growth> {
                 ATTACKER_ID.to_bytes(),
                 b"",
             );
-            action(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+            (MAILBOX_ID, "process", archive(&(Vec::<u8>::new(), encoded)))
         },
     ));
     rows
+}
+
+/// Approvals of new spenders, at most 64 per owner: `owners` red-team
+/// contracts, deployed for this, approve 64 spenders each in one direct
+/// call, for the memory per entry, and owners with Moonlight keys, each
+/// funded by a transfer, approve [`TOP_LEVEL_SAMPLE`] spenders in a
+/// transaction each, for the gas per entry, which is what an owner pays: a
+/// contract costs a deployment, at least 5M gas at 2,000 LUX, per 64.
+fn grow_approvals(net: &mut Net, owners: u32) -> Growth {
+    let spender = |owner: u32, index: u32| {
+        let mut key = [0x62; 193];
+        key[..4].copy_from_slice(&owner.to_le_bytes());
+        key[4..8].copy_from_slice(&index.to_le_bytes());
+        Account::Moonlight(key)
+    };
+    let approvals = |owner: u32| -> Vec<Action> {
+        (0..64)
+            .map(|index| {
+                action(
+                    SYNTHETIC_ID,
+                    "approve",
+                    &ApproveCall {
+                        spender: spender(owner, index),
+                        amount: 1,
+                    },
+                )
+            })
+            .collect()
+    };
+    let attacker = |owner: u32| {
+        let mut id = [0x80; 32];
+        id[..4].copy_from_slice(&owner.to_le_bytes());
+        ContractId::from_bytes(id)
+    };
+    let approve_as = |net: &mut Net, owner: u32| {
+        deploy(
+            &mut net.s,
+            "hyperlane_dusk_redteam_attacker",
+            attacker(owner),
+            Some(&Vec::<Action>::new()),
+        );
+        net.s
+            .direct_call_raw(attacker(owner), "run", archive(&(approvals(owner), true)))
+            .unwrap_or_else(|e| panic!("owner {owner}'s approvals failed: {e}"));
+    };
+    approve_as(net, 0);
+    let before = net.memory();
+    for owner in 1..=owners {
+        approve_as(net, owner);
+    }
+    let grown = grown_since(net, &before);
+
+    let mut gas = 0;
+    for owner in 0..TOP_LEVEL_SAMPLE / 8 {
+        let (sk, pk, _) = fresh_key(0x2_0000 + u64::from(owner));
+        net.s.transfer(&OWNER_SK, &pk, dusk(1.0));
+        for index in 0..8 {
+            gas += net
+                .call(
+                    &sk,
+                    SYNTHETIC_ID,
+                    "approve",
+                    &ApproveCall {
+                        spender: spender(u32::MAX - owner, index),
+                        amount: 1,
+                    },
+                    0,
+                )
+                .gas_spent;
+        }
+    }
+    let growth = Growth {
+        path: String::from("WarpDrc20 approval of a new spender"),
+        entries: 64 * owners,
+        gas: gas / u64::from(TOP_LEVEL_SAMPLE),
+        batched: false,
+        grown,
+    };
+    growth.print();
+    growth
 }
 
 /// Announcements and the synthetic token's balances and allowances.
@@ -2348,34 +2474,34 @@ fn registry_growth(entries: u32) -> Vec<Growth> {
     let mut net = Net::new();
     // The contract keeps the location's hash, so the shortest location
     // fills it for the least gas; the longest costs the most per entry.
-    let mut rows = vec![grow_batched(
+    let mut rows = vec![grow_top_level(
         &mut net,
         "announcement of a new validator, 1-byte location",
         entries,
-        256,
-        |i| {
+        &RELAYER_SK,
+        |_, i| {
             let location = String::from("x");
             let (validator, signature) = announcement(10_000_000 + u64::from(i), &location);
-            action(
+            (
                 VALIDATOR_ANNOUNCE_ID,
                 "announce",
-                &(validator, location, signature),
+                archive(&(validator, location, signature)),
             )
         },
     )];
-    rows.push(grow_batched(
+    rows.push(grow_top_level(
         &mut net,
         "announcement of a new validator, 1 KiB location",
         entries,
-        48,
-        |i| {
+        &RELAYER_SK,
+        |_, i| {
             let mut location = format!("s3://{i:08}/");
             location.extend(std::iter::repeat_n('x', 1024 - location.len()));
             let (validator, signature) = announcement(10_000 + u64::from(i), &location);
-            action(
+            (
                 VALIDATOR_ANNOUNCE_ID,
                 "announce",
-                &(validator, location, signature),
+                archive(&(validator, location, signature)),
             )
         },
     ));
@@ -2406,22 +2532,7 @@ fn registry_growth(entries: u32) -> Vec<Growth> {
             )
         },
     ));
-    rows.push(grow_batched(
-        &mut net,
-        "WarpDrc20 approval of a new spender",
-        entries,
-        128,
-        |i| {
-            action(
-                SYNTHETIC_ID,
-                "approve",
-                &ApproveCall {
-                    spender: new_account(i, 0x62),
-                    amount: 1,
-                },
-            )
-        },
-    ));
+    rows.push(grow_approvals(&mut net, entries / 64));
     rows
 }
 
@@ -2431,19 +2542,18 @@ fn route_growth(batched_entries: u32, tx_entries: u32) -> Vec<Growth> {
     let mut net = Net::new();
     let mut rows = Vec::new();
     for route in ROUTES {
-        // Batched deliveries need an ISM that takes no signatures.
-        net.call(&OWNER_SK, route, "set_ism", &(TEST_MOCK_ID,), 0);
         let router = match route {
             NATIVE_ID => NATIVE_ROUTER,
             SYNTHETIC_ID => SYNTHETIC_ROUTER,
             _ => COLLATERAL_ROUTER,
         };
-        rows.push(grow_batched(
+        // As the relayer delivers them, signed at the net's threshold of 1.
+        rows.push(grow_top_level(
             &mut net,
             &format!("{} escrow for a new recipient", route_name(route)),
             batched_entries,
-            256,
-            |i| {
+            &RELAYER_SK,
+            |net, i| {
                 let mut recipient = [0x5E; 32];
                 recipient[..4].copy_from_slice(&i.to_le_bytes());
                 let encoded = message::encode(
@@ -2455,18 +2565,26 @@ fn route_growth(batched_entries: u32, tx_entries: u32) -> Vec<Growth> {
                     route.to_bytes(),
                     &token_message::encode(recipient, 1),
                 );
-                action(MAILBOX_ID, "process", &(Vec::<u8>::new(), encoded))
+                let metadata = net.metadata(&encoded);
+                (MAILBOX_ID, "process", archive(&(metadata, encoded)))
             },
         ));
     }
+    // A payer with no credit funds at least 0.01 DUSK.
     rows.push(grow_per_tx(
         &mut net,
         "Mailbox credit for a new payer",
         tx_entries,
         |net, i| {
             let payer = message::keccak256(&i.to_le_bytes());
-            net.call(&OWNER_SK, MAILBOX_ID, "fund_dispatch", &(payer, 1u64), 1)
-                .gas_spent
+            net.call(
+                &OWNER_SK,
+                MAILBOX_ID,
+                "fund_dispatch",
+                &(payer, 10_000_000u64),
+                10_000_000,
+            )
+            .gas_spent
         },
     ));
     // A top-up records a payment for any message ID, paid from its
@@ -2484,27 +2602,36 @@ fn route_growth(batched_entries: u32, tx_entries: u32) -> Vec<Growth> {
         )
         .gas_spent
     }));
+    // A route registers an account when it claims its escrow: a delivery
+    // from the enrolled router, then the account's claim. The same keys
+    // register on each route, funded on the first.
     for route in ROUTES {
         rows.push(grow_per_tx(
             &mut net,
             &format!("{} registration of a new account", route_name(route)),
             tx_entries,
             |net, i| {
-                let (sk, pk, _) = fresh_key(0x1_0000 + u64::from(i));
+                let (sk, pk, id) = fresh_key(0x1_0000 + u64::from(i));
                 if route == NATIVE_ID {
                     net.s.transfer(&OWNER_SK, &pk, dusk(1.0));
                 }
-                net.call(&sk, route, "register_account", &(), 0).gas_spent
+                let encoded = net.inbound(route, id, 1);
+                let metadata = net.metadata(&encoded);
+                net.direct(MAILBOX_ID, "process", &(metadata, encoded));
+                net.call(&sk, route, "claim_pending", &(), 0).gas_spent
             },
         ));
     }
     rows
 }
 
-/// Bytes per entry and gas per entry, over 32,768 entries (4,096 for the
-/// paths that take a transaction each), for docs/costs.md. Memory grows in
-/// 64 KiB pages, so it takes that many entries to resolve a few bytes per
-/// entry. Slow; run it in release mode:
+/// Bytes per entry and gas per entry, over 32,768 entries (4,096 for credit,
+/// top-ups and registrations, which take a deposit or two transactions
+/// each), for docs/costs.md. Memory grows in 64 KiB pages, so it takes that
+/// many entries to resolve a few bytes per entry. Deliveries, announcements
+/// and escrow are a transaction's own calls: their gas is a transaction's,
+/// and most of their entries are made with direct calls
+/// ([`grow_top_level`]). Slow; run it in release mode:
 ///
 ///   cargo test --release -p hyperlane-dusk-integration-tests --test cost_profile \
 ///       growth -- --ignored --nocapture
@@ -2518,39 +2645,47 @@ const PRECISE_GROWTH_BUDGETS: &[(&str, &str, f64)] = &[
     ("dispatch through the deployed hooks", "IGP", 71.0),
     ("delivery to a recipient that is its own ISM", "Mailbox", 29.0),
     ("announcement of a new validator, 1-byte location", "ValidatorAnnounce", 119.0),
-    ("announcement of a new validator, 1 KiB location", "ValidatorAnnounce", 122.0),
+    ("announcement of a new validator, 1 KiB location", "ValidatorAnnounce", 121.0),
     ("WarpDrc20 transfer to a new holder", "WarpDrc20", 69.0),
-    ("WarpDrc20 approval of a new spender", "WarpDrc20", 66.0),
+    ("WarpDrc20 approval of a new spender", "WarpDrc20", 69.0),
     ("WarpNative escrow for a new recipient", "Mailbox", 29.0),
-    ("WarpNative escrow for a new recipient", "WarpNative", 82.0),
+    ("WarpNative escrow for a new recipient", "WarpNative", 80.0),
     ("WarpDrc20 escrow for a new recipient", "Mailbox", 29.0),
-    ("WarpDrc20 escrow for a new recipient", "WarpDrc20", 82.0),
+    ("WarpDrc20 escrow for a new recipient", "WarpDrc20", 80.0),
     ("WarpDrc20Collateral escrow for a new recipient", "Mailbox", 29.0),
-    ("WarpDrc20Collateral escrow for a new recipient", "WarpDrc20Collateral", 82.0),
+    ("WarpDrc20Collateral escrow for a new recipient", "WarpDrc20Collateral", 80.0),
     ("Mailbox credit for a new payer", "Mailbox", 71.0),
     ("IGP top-up", "IGP", 71.0),
-    ("WarpNative registration of a new account", "WarpNative", 370.0),
-    ("WarpDrc20 registration of a new account", "WarpDrc20", 370.0),
-    ("WarpDrc20Collateral registration of a new account", "WarpDrc20Collateral", 370.0),
+    // A registration comes with the delivery of the escrow it claims (the
+    // Mailbox's delivered key), and on WarpDrc20 with the balance the claim
+    // mints, on the collateral route with the locked token's balance for the
+    // account (the canonical DRC20 keys balances by principal).
+    ("WarpNative registration of a new account", "Mailbox", 36.0),
+    ("WarpNative registration of a new account", "WarpNative", 388.0),
+    ("WarpDrc20 registration of a new account", "Mailbox", 36.0),
+    ("WarpDrc20 registration of a new account", "WarpDrc20", 458.0),
+    ("WarpDrc20Collateral registration of a new account", "Mailbox", 36.0),
+    ("WarpDrc20Collateral registration of a new account", "WarpDrc20Collateral", 388.0),
+    ("WarpDrc20Collateral registration of a new account", "DRC20 token", 740.0),
 ];
 /// Per path, the most gas per entry, marginal or per transaction: the
 /// measured value plus 5%, rounded up.
 #[rustfmt::skip]
 const PRECISE_GAS_BUDGETS: &[(&str, u64)] = &[
-    ("dispatch through the deployed hooks", 189_029),
-    ("delivery to a recipient that is its own ISM", 36_885),
-    ("announcement of a new validator, 1-byte location", 265_744),
-    ("announcement of a new validator, 1 KiB location", 471_726),
-    ("WarpDrc20 transfer to a new holder", 59_120),
-    ("WarpDrc20 approval of a new spender", 55_696),
-    ("WarpNative escrow for a new recipient", 60_782),
-    ("WarpDrc20 escrow for a new recipient", 60_973),
-    ("WarpDrc20Collateral escrow for a new recipient", 62_881),
-    ("Mailbox credit for a new payer", 1_922_682),
+    ("dispatch through the deployed hooks", 188_359),
+    ("delivery to a recipient that is its own ISM", 1_936_964),
+    ("announcement of a new validator, 1-byte location", 2_164_872),
+    ("announcement of a new validator, 1 KiB location", 2_371_755),
+    ("WarpDrc20 transfer to a new holder", 58_970),
+    ("WarpDrc20 approval of a new spender", 1_971_711),
+    ("WarpNative escrow for a new recipient", 2_237_210),
+    ("WarpDrc20 escrow for a new recipient", 2_237_583),
+    ("WarpDrc20Collateral escrow for a new recipient", 2_239_782),
+    ("Mailbox credit for a new payer", 1_922_686),
     ("IGP top-up", 1_923_911),
-    ("WarpNative registration of a new account", 1_947_220),
-    ("WarpDrc20 registration of a new account", 1_947_344),
-    ("WarpDrc20Collateral registration of a new account", 1_947_344),
+    ("WarpNative registration of a new account", 1_969_602),
+    ("WarpDrc20 registration of a new account", 1_979_417),
+    ("WarpDrc20Collateral registration of a new account", 1_995_011),
 ];
 
 #[test]

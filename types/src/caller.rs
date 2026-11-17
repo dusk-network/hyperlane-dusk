@@ -44,6 +44,24 @@ pub fn effective_caller() -> H256 {
     }
 }
 
+/// Return whether the current frame is a transaction's own call or a query.
+///
+/// A transaction's own call has the transfer contract, which runs every
+/// transaction, as its only caller. A query, or a test's direct call, has no
+/// caller. Any other frame was called by a contract: one that a transaction
+/// or a query called, or a contract's `init` while it is deployed, which also
+/// runs with no caller of its own. An entry point that checks this costs a
+/// transaction per call, since a contract can't call it many times in one.
+#[cfg(feature = "abi")]
+#[must_use]
+pub fn is_transaction_or_query() -> bool {
+    match abi::callstack().as_slice() {
+        [] => true,
+        [caller] => *caller == TRANSFER_CONTRACT,
+        _ => false,
+    }
+}
+
 /// Return whether the current frame is an authentic contract-to-contract
 /// transfer callback whose declared source is `expected_source`.
 ///

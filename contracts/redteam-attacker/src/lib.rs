@@ -7,7 +7,8 @@
 //! recipient of native escrow and holder of a token that calls its sender
 //! back (`callback-fee-token`). At each callback point it replays a
 //! configured list of raw calls, records whether each succeeded, and can
-//! panic afterwards so the caller observes a failed callback.
+//! panic afterwards so the caller observes a failed callback. It can also
+//! make calls from its `init`, while it is deployed.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -94,6 +95,13 @@ mod redteam_attacker {
                 received: 0,
                 ism_burn: 0,
             }
+        }
+
+        /// Makes `actions` while the contract is deployed, panicking if any
+        /// call fails. `init` runs with no caller of its own, so these calls
+        /// come from a contract at the bottom of the call stack.
+        pub fn init(&mut self, actions: Vec<Action>) {
+            self.run(actions, true);
         }
 
         /// Sets the calls replayed at `point`, and whether it then panics.

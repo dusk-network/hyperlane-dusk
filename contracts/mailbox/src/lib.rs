@@ -12,7 +12,8 @@
 //!
 //! - **process**: Deliver a message from a remote chain. The message is
 //!   verified by an Interchain Security Module (ISM) and then delivered
-//!   to the recipient contract's `handle` function.
+//!   to the recipient contract's `handle` function. Unlike Solidity's,
+//!   it takes no calls from contracts: each delivery is a transaction.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -85,6 +86,14 @@ mod mailbox {
 
     /// The hook function the transfer contract calls with a hook's payment.
     const RECEIVE_PAYMENT: &str = "receive_payment";
+
+    /// The least `fund_dispatch` takes for a payer with no credit: 0.01 DUSK.
+    /// Each payer with credit is an entry in this contract's memory for as
+    /// long as the credit lasts, so a new one costs at least this much.
+    /// Credit is withdrawable, but a withdrawal decodes a key for about 57M
+    /// gas, 0.057 DUSK at 1 LUX per gas, so dust credit isn't worth taking
+    /// back.
+    const MIN_NEW_PAYER_CREDIT: u64 = 10_000_000;
 
     // =====================================================================
     // State
@@ -239,9 +248,18 @@ mod mailbox {
         ///
         /// Anyone may fund an identity, but only dispatches whose encoded
         /// sender equals `payer` can consume the credit.
+        ///
+        /// A payer with no credit takes at least [`MIN_NEW_PAYER_CREDIT`],
+        /// 0.01 DUSK; one with credit takes any amount. Credit that reaches
+        /// zero, spent by dispatches or withdrawn, leaves no entry behind, so
+        /// its payer needs the minimum again.
         pub fn fund_dispatch(&mut self, payer: H256, amount: u64) {
             assert!(payer != [0u8; 32], "Mailbox: payer cannot be zero");
             assert!(amount > 0, "Mailbox: funding amount is zero");
+            assert!(
+                amount >= MIN_NEW_PAYER_CREDIT || self.fee_credits.contains_key(&payer),
+                "Mailbox: a payer with no credit takes at least 0.01 DUSK"
+            );
             let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &amount)
                 .expect("Mailbox: fee deposit failed");
             let credit = self.fee_credits.entry(payer).or_insert(0);
@@ -486,7 +504,17 @@ mod mailbox {
         ///
         /// Verifies the message via the recipient's ISM (or the default
         /// ISM) and then calls `handle` on the recipient contract.
+        ///
+        /// Only a transaction's own call or a query can deliver: a contract
+        /// can't call this, so every delivery costs a transaction and adds
+        /// at most one entry to the delivered set. The relayer's simulation
+        /// is a query, so it still runs.
         pub fn process(&mut self, metadata: Vec<u8>, encoded_message: Vec<u8>) {
+            assert!(
+                caller::is_transaction_or_query(),
+                "Mailbox: process must be a transaction's own call"
+            );
+
             // Decode and validate the message.
             let msg = message::decode(&encoded_message).expect("Mailbox: invalid message encoding");
 
@@ -517,9 +545,10 @@ mod mailbox {
                 events::ProcessId { message_id: id },
             );
 
-            // Recipient ISM resolution is itself an external call and can
-            // reenter process. Reserve delivery before this lookup as well
-            // as verification and handling; failed calls roll it all back.
+            // Recipient ISM resolution is itself an external call. A call
+            // back into `process` is refused at the check above; delivery is
+            // reserved before this lookup, verification and handling as
+            // well, and failed calls roll it all back.
             let recipient_id = ContractId::from_bytes(msg.recipient);
             let ism = self.resolve_recipient_ism(recipient_id);
 
@@ -614,6 +643,8 @@ mod mailbox {
 
         /// Returns the deployment compatibility version expected by tooling.
         ///
+        /// Version 6 takes `process` only as a transaction's own call or a
+        /// query, and funds a payer with no credit from 0.01 DUSK up.
         /// Version 5 keeps only the first 16 bytes of delivered message IDs,
         /// drops the processed-message log (`processed_count`,
         /// `processed_at_index`, `processed_block_height_at_index`) and
@@ -624,7 +655,7 @@ mod mailbox {
         /// lookup.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            5
+            6
         }
 
         /// Compute a quote for dispatching a message from the caller.

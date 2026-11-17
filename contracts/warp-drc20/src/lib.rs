@@ -6,7 +6,14 @@
 //!
 //! This contract IS a DRC20 token that mints tokens when receiving cross-chain
 //! transfers (via `handle`) and burns tokens when sending cross-chain
-//! transfers (via `transfer_remote`).
+//! transfers (via `transfer_remote`). Tokens for an account the route hasn't
+//! minted to before wait in escrow until they are claimed, which also
+//! registers the account for later transfers.
+//!
+//! Two limits keep holders from filling its memory: an owner holds at most
+//! 64 allowances, and transfers and approvals that would add an entry stop
+//! once the memory would pass 3 GiB, leaving the last GiB to the bridge's
+//! mints, escrow and claims.
 //!
 //! Equivalent to `HypERC20` in the Solidity Hyperlane contracts.
 
@@ -60,6 +67,37 @@ mod warp_drc20 {
     /// Zero contract ID used as "no contract set".
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
 
+    /// Most allowances one owner holds at once. Approving another spender
+    /// reverts until the owner sets one of them to zero, which removes it.
+    const MAX_ALLOWANCES_PER_OWNER: usize = 64;
+
+    /// Size of a wasm32 memory page.
+    const WASM_PAGE_BYTES: u64 = 64 * 1024;
+
+    /// Memory a transfer to a new holder or an approval of a new spender
+    /// never grows this contract past: 3 GiB of the 4 GiB a wasm32 contract
+    /// can address. Memory never shrinks, so the last GiB stays for the
+    /// bridge: mints, escrow, and the registrations and mints of claims,
+    /// which come only from transfers someone paid for on another chain.
+    const HOLDER_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+
+    /// The most B-tree nodes adding a key to a map allocates: one per level
+    /// of the tree when every level splits, and a new root. Every node but
+    /// the root holds at least 5 keys, so a map of n keys has at most
+    /// log6((n + 1) / 2) + 1 levels, 12 for any n below 2^32, and an
+    /// insertion allocates at most 13 nodes.
+    const MAX_NODES_PER_INSERT: u64 = 13;
+
+    /// The most memory adding a balance can grow this contract by. A node
+    /// of these maps takes under 600 bytes, so dlmalloc, which grows memory
+    /// in whole pages when no free block fits, grows it by at most a page
+    /// for each.
+    const NEW_BALANCE_MEMORY_BOUND: u64 = MAX_NODES_PER_INSERT * WASM_PAGE_BYTES;
+
+    /// The most memory adding an allowance can grow this contract by: the
+    /// owners' map, and the first node of the owner's own map of spenders.
+    const NEW_ALLOWANCE_MEMORY_BOUND: u64 = (MAX_NODES_PER_INSERT + 1) * WASM_PAGE_BYTES;
+
     // =====================================================================
     // State
     // =====================================================================
@@ -71,8 +109,9 @@ mod warp_drc20 {
         /// balance has no entry.
         balances: BTreeMap<AccountId, u64>,
         /// Allowances, keyed by the owner's and then the spender's
-        /// [`account_id`]. A zero allowance has no entry, and an owner with
-        /// none has no map.
+        /// [`account_id`]. A zero allowance has no entry, an owner with
+        /// none has no map, and an owner holds at most
+        /// [`MAX_ALLOWANCES_PER_OWNER`].
         allowances: BTreeMap<AccountId, BTreeMap<AccountId, u64>>,
         /// Total token supply.
         supply: u64,
@@ -97,11 +136,12 @@ mod warp_drc20 {
         /// Registry of external accounts: keccak256(pk.to_bytes()) → pk.
         ///
         /// External Dusk accounts use 96-byte BLS public keys that don't
-        /// fit in a 32-byte H256. An account is registered by
-        /// `register_account`, or when its escrow is claimed with
-        /// `claim_pending` or `claim_pending_for`, so that inbound transfers
-        /// can look up the full key and mint to its External account.
-        /// Every stored key is canonical (see [`canonical_account`]).
+        /// fit in a 32-byte H256. An account is registered when its escrow
+        /// is claimed with `claim_pending` or `claim_pending_for`, so that
+        /// later inbound transfers can look up the full key and mint to its
+        /// External account. Nothing else registers one, so every entry
+        /// stands for a transfer someone sent it. Every stored key is
+        /// canonical (see [`canonical_account`]).
         registered_accounts: BTreeMap<H256, AccountPublicKey>,
         /// Inbound synthetic balances waiting for an authenticated recipient.
         ///
@@ -182,19 +222,6 @@ mod warp_drc20 {
         // Account registration
         // =================================================================
 
-        /// Register the caller's BLS public key so that inbound transfers
-        /// can resolve the H256 recipient to a full account key and mint
-        /// to an External account.
-        ///
-        /// Reads the sender from `abi::public_sender()` (Moonlight TX), which
-        /// the node decodes from the transaction's compressed encoding, so
-        /// it is already canonical. Stores `keccak256(pk.to_bytes()) → pk`.
-        pub fn register_account(&mut self) {
-            let pk =
-                abi::public_sender().expect("WarpDrc20: register_account requires Moonlight TX");
-            self.register(pk);
-        }
-
         /// Check whether an H256 has a registered account.
         pub fn is_registered(&self, h: H256) -> bool {
             self.registered_accounts.contains_key(&h)
@@ -205,10 +232,11 @@ mod warp_drc20 {
         ///
         /// The H256 recipient is derived from the authenticated public sender,
         /// so an arbitrary account cannot claim another recipient's balance.
-        /// The sender is already canonical (see [`Self::register_account`]).
-        /// Registering it means later transfers to it are minted directly,
-        /// as after [`Self::claim_pending_for`]. A call with nothing in
-        /// escrow reverts and registers nothing.
+        /// The sender is `abi::public_sender()`, which the node decodes from
+        /// the transaction's compressed encoding, so it is already
+        /// canonical. Registering it means later transfers to it are minted
+        /// directly, as after [`Self::claim_pending_for`]. A call with
+        /// nothing in escrow reverts and registers nothing.
         pub fn claim_pending(&mut self) {
             let pk = abi::public_sender().expect("WarpDrc20: claim_pending requires Moonlight TX");
             let h = self.register(pk);
@@ -255,14 +283,17 @@ mod warp_drc20 {
             self.pending_total
         }
 
-        /// Deployment compatibility version. Version 7 stores balances and
-        /// allowances under 32-byte account IDs instead of the principals;
-        /// the ABI is unchanged. Version 6: `claim_pending_for` mints to the
-        /// decoded key, and `claim_pending` registers the sender. Version 5
-        /// added `claim_pending_for`.
+        /// Deployment compatibility version. Version 8 drops
+        /// `register_account`, holds an owner to 64 allowances, and stops
+        /// transfers to new holders and approvals of new spenders at 3 GiB
+        /// of memory. Version 7 stores balances and allowances under 32-byte
+        /// account IDs instead of the principals; the ABI is unchanged.
+        /// Version 6: `claim_pending_for` mints to the decoded key, and
+        /// `claim_pending` registers the sender. Version 5 added
+        /// `claim_pending_for`.
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn state_version(&self) -> u32 {
-            7
+            8
         }
 
         // =================================================================
@@ -300,6 +331,10 @@ mod warp_drc20 {
         }
 
         /// Transfer tokens from the caller to a recipient.
+        ///
+        /// A transfer to an account with no balance adds a holder, and
+        /// reverts once that could take this contract's memory past 3 GiB;
+        /// transfers to holders keep working.
         pub fn transfer(&mut self, args: TransferCall) {
             let from = drc20::sender_account();
             let from_id = account_id(&from);
@@ -307,6 +342,12 @@ mod warp_drc20 {
         }
 
         /// Approve a spender to transfer tokens on behalf of the caller.
+        ///
+        /// An owner holds at most 64 allowances: approving another spender
+        /// reverts until the owner approves zero for one of them, which
+        /// removes it. A new spender also reverts once its allowance could
+        /// take this contract's memory past 3 GiB. Changing an existing
+        /// allowance always works.
         pub fn approve(&mut self, args: ApproveCall) {
             assert!(!args.spender.is_zero(), "WarpDrc20: spender cannot be zero");
             let owner = drc20::sender_account();
@@ -681,7 +722,8 @@ mod warp_drc20 {
                 .unwrap_or(0)
         }
 
-        /// Transfer tokens between accounts. `from_id` is `from`'s account ID.
+        /// Transfer tokens between accounts, for `transfer` and
+        /// `transfer_from`. `from_id` is `from`'s account ID.
         fn do_transfer(&mut self, from: Account, from_id: AccountId, to: Account, value: u64) {
             // No call ever resolves to a Phoenix principal, so tokens sent to
             // one could never be spent again.
@@ -692,12 +734,20 @@ mod warp_drc20 {
             let from_balance = self.balance(&from_id);
             assert!(from_balance >= value, "WarpDrc20: insufficient balance");
             if value > 0 && from != to {
-                self.set_balance(from_id, from_balance - value);
                 let to_id = account_id(&to);
-                let to_balance = self
-                    .balance(&to_id)
+                let to_balance = self.balance(&to_id);
+                // A new holder is an entry anyone can add for a token unit.
+                // Checked before anything is stored or allocated.
+                if to_balance == 0 {
+                    assert!(
+                        memory_bytes_used() + NEW_BALANCE_MEMORY_BOUND <= HOLDER_MEMORY_LIMIT,
+                        "WarpDrc20: storage full, transfers to new holders are closed"
+                    );
+                }
+                let to_balance = to_balance
                     .checked_add(value)
                     .expect("WarpDrc20: balance overflow");
+                self.set_balance(from_id, from_balance - value);
                 self.set_balance(to_id, to_balance);
             }
             abi::emit(
@@ -765,7 +815,9 @@ mod warp_drc20 {
             );
         }
 
-        /// Set or clear a sparse allowance entry.
+        /// Set or clear a sparse allowance entry. A new spender must fit
+        /// under the owner's limit and the memory limit; only `approve`
+        /// adds one, since `transfer_from` only lowers an allowance.
         fn set_allowance(&mut self, owner: AccountId, spender: AccountId, value: u64) {
             if value == 0 {
                 let remove_owner = if let Some(spenders) = self.allowances.get_mut(&owner) {
@@ -778,12 +830,28 @@ mod warp_drc20 {
                     self.allowances.remove(&owner);
                 }
             } else {
+                let spenders = self.allowances.get(&owner);
+                if !spenders.is_some_and(|spenders| spenders.contains_key(&spender)) {
+                    assert!(
+                        spenders.map_or(0, BTreeMap::len) < MAX_ALLOWANCES_PER_OWNER,
+                        "WarpDrc20: an owner holds at most 64 allowances"
+                    );
+                    assert!(
+                        memory_bytes_used() + NEW_ALLOWANCE_MEMORY_BOUND <= HOLDER_MEMORY_LIMIT,
+                        "WarpDrc20: storage full, new allowances are closed"
+                    );
+                }
                 self.allowances
                     .entry(owner)
                     .or_default()
                     .insert(spender, value);
             }
         }
+    }
+
+    /// Current size of the contract's linear memory.
+    fn memory_bytes_used() -> u64 {
+        core::arch::wasm32::memory_size(0) as u64 * WASM_PAGE_BYTES
     }
 
     /// Decode a caller-supplied account key to the key its owner signs with.
