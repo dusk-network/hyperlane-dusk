@@ -269,8 +269,9 @@ enum Command {
         warp_collateral_token: Option<String>,
         /// What the canonical DRC20 of `--warp-collateral-token
         /// canonical-drc20` mints to the deployer, in its smallest unit; it
-        /// has --warp-decimals.
-        #[arg(long, default_value = "10000000000000000000")]
+        /// has --warp-decimals. The default, 5 tokens at 18 decimals, fits a
+        /// signed 64-bit integer, so shell scripts can do arithmetic on it.
+        #[arg(long, default_value = "5000000000000000000")]
         collateral_token_supply: u64,
         /// Token name for WarpDrc20.
         #[arg(long, default_value = "Wrapped Ether")]
