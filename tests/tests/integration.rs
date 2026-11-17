@@ -10922,6 +10922,10 @@ fn drc20_allowance(session: &mut TestSession, owner: Drc20Account, spender: Drc2
     )
 }
 
+fn drc20_allowance_count(session: &mut TestSession, owner: Drc20Account) -> u32 {
+    query(session, WARP_DRC20_ID, "allowance_count", &owner)
+}
+
 /// The red-team contract gets `amount` WarpDrc20 tokens the way any
 /// contract does: a transfer to it waits in escrow and it claims it.
 fn give_attacker_tokens(session: &mut TestSession, remote_router: H256, nonce: u32, amount: u64) {
@@ -11128,7 +11132,9 @@ fn test_warp_drc20_owner_holds_at_most_64_allowances() {
     // 63 made-up spenders and the relayer, which can spend.
     let mut actions: Vec<RtAction> = (0..63).map(|i| drc20_approve(spender(i), 1)).collect();
     actions.push(drc20_approve(relayer, 10));
+    assert_eq!(drc20_allowance_count(&mut session, attacker), 0);
     run_direct(&mut session, actions).expect("an owner holds 64 allowances");
+    assert_eq!(drc20_allowance_count(&mut session, attacker), 64);
     assert_contract_panic_contains(
         run_direct(&mut session, vec![drc20_approve(spender(63), 1)]),
         limit,
@@ -11136,9 +11142,11 @@ fn test_warp_drc20_owner_holds_at_most_64_allowances() {
     run_direct(&mut session, vec![drc20_approve(spender(0), 5)])
         .expect("changing an allowance it holds works");
     assert_eq!(drc20_allowance(&mut session, attacker, spender(0)), 5);
+    assert_eq!(drc20_allowance_count(&mut session, attacker), 64);
 
     run_direct(&mut session, vec![drc20_approve(spender(1), 0)])
         .expect("approving zero removes an allowance");
+    assert_eq!(drc20_allowance_count(&mut session, attacker), 63);
     run_direct(&mut session, vec![drc20_approve(spender(63), 1)])
         .expect("which makes room for one new spender");
     assert_contract_panic_contains(
@@ -11159,6 +11167,7 @@ fn test_warp_drc20_owner_holds_at_most_64_allowances() {
         )
         .expect("the relayer uses up its allowance");
     assert_eq!(drc20_allowance(&mut session, attacker, relayer), 0);
+    assert_eq!(drc20_allowance_count(&mut session, attacker), 63);
     run_direct(&mut session, vec![drc20_approve(spender(64), 1)])
         .expect("an allowance used up makes room too");
     assert_contract_panic_contains(
@@ -11177,6 +11186,57 @@ fn test_warp_drc20_owner_holds_at_most_64_allowances() {
             },
         )
         .expect("another owner has its own 64");
+    assert_eq!(
+        drc20_allowance_count(&mut session, Drc20Account::moonlight(&OWNER_PK)),
+        1
+    );
+}
+
+/// Nobody can spend from the zero account, and a transfer to it would read
+/// as a burn in its event while the supply stays the same, so WarpDrc20
+/// refuses one, by `transfer` or `transfer_from`, of any amount.
+#[test]
+fn test_warp_drc20_refuses_transfers_to_the_zero_account() {
+    let (mut session, remote_router) = session_with_warp_drc20_flow();
+    rt_deploy(&mut session);
+    give_attacker_tokens(&mut session, remote_router, 0, 1_000);
+    let attacker = Drc20Account::Contract(REDTEAM_ID);
+    let relayer = Drc20Account::moonlight(&RELAYER_PK);
+    let refused = "WarpDrc20: recipient cannot be zero";
+    let zeros = [
+        Drc20Account::Contract(ContractId::from_bytes([0; 32])),
+        Drc20Account::Moonlight([0; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES]),
+    ];
+    let supply: u64 = query(&mut session, WARP_DRC20_ID, "total_supply", &());
+    run_direct(&mut session, vec![drc20_approve(relayer, 10)]).expect("the relayer may spend");
+    for zero in zeros {
+        for amount in [0, 1] {
+            assert_contract_panic_contains(
+                run_direct(&mut session, vec![drc20_transfer(zero, amount)]),
+                refused,
+            );
+        }
+        assert_contract_panic_contains(
+            session.call_public::<_, ()>(
+                &RELAYER_SK,
+                WARP_DRC20_ID,
+                "transfer_from",
+                &hyperlane_dusk_types::drc20::TransferFromCall {
+                    owner: attacker,
+                    to: zero,
+                    amount: 1,
+                },
+            ),
+            refused,
+        );
+        assert_eq!(warp_drc20_balance_of(&mut session, zero), 0);
+    }
+    assert_eq!(warp_drc20_balance_of(&mut session, attacker), 1_000);
+    assert_eq!(drc20_allowance(&mut session, attacker, relayer), 10);
+    assert_eq!(
+        query::<_, u64>(&mut session, WARP_DRC20_ID, "total_supply", &()),
+        supply
+    );
 }
 
 /// The most memory a transfer to a new holder can allocate: 13 B-tree
@@ -11205,6 +11265,11 @@ fn test_warp_drc20_new_holders_and_allowances_stop_at_3_gib() {
     rt_deploy(&mut session);
     let memory = |session: &mut TestSession| session.memory_len(WARP_DRC20_ID);
     let start = memory(&mut session);
+    assert_eq!(
+        query::<_, u64>(&mut session, WARP_DRC20_ID, "memory_bytes", &()),
+        start,
+        "the token reports its memory"
+    );
     assert!(
         (HOLDER_MEMORY_LIMIT - 16 * WASM_PAGE..=HOLDER_MEMORY_LIMIT - 14 * WASM_PAGE)
             .contains(&start),
@@ -11263,6 +11328,10 @@ fn test_warp_drc20_new_holders_and_allowances_stop_at_3_gib() {
         }
     }
     let closed_at = memory(&mut session);
+    assert_eq!(
+        query::<_, u64>(&mut session, WARP_DRC20_ID, "memory_bytes", &()),
+        closed_at
+    );
     assert!(holders > 1_000, "{holders} new holders");
     assert!(approvals_closed_first);
     assert!(HOLDER_MEMORY_LIMIT - closed_at < NEW_BALANCE_MEMORY_BOUND);
@@ -11352,3 +11421,4 @@ fn test_warp_drc20_new_holders_and_allowances_stop_at_3_gib() {
         "WarpDrc20: storage full, transfers to new holders are closed",
     );
 }
+

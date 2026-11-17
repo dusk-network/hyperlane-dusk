@@ -284,9 +284,10 @@ mod warp_drc20 {
         }
 
         /// Deployment compatibility version. Version 8 drops
-        /// `register_account`, holds an owner to 64 allowances, and stops
+        /// `register_account`, holds an owner to 64 allowances, stops
         /// transfers to new holders and approvals of new spenders at 3 GiB
-        /// of memory. Version 7 stores balances and allowances under 32-byte
+        /// of memory, refuses transfers to the zero account, and adds
+        /// `memory_bytes` and `allowance_count`. Version 7 stores balances and allowances under 32-byte
         /// account IDs instead of the principals; the ABI is unchanged.
         /// Version 6: `claim_pending_for` mints to the decoded key, and
         /// `claim_pending` registers the sender. Version 5 added
@@ -330,11 +331,32 @@ mod warp_drc20 {
             self.allowance_of(&account_id(&args.owner), &account_id(&args.spender))
         }
 
+        /// Returns how many spenders `owner` has a live allowance for. Once
+        /// it has 64, approving another spender reverts until one of them is
+        /// set to zero.
+        pub fn allowance_count(&self, owner: Account) -> u32 {
+            let count = self
+                .allowances
+                .get(&account_id(&owner))
+                .map_or(0, BTreeMap::len);
+            u32::try_from(count).unwrap_or(u32::MAX)
+        }
+
+        /// Returns the size of this contract's memory in bytes. It only
+        /// grows; transfers to new holders and approvals of new spenders stop
+        /// before they could take it past 3 GiB, and mints, escrow and
+        /// claims use the rest.
+        #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
+        pub fn memory_bytes(&self) -> u64 {
+            memory_bytes_used()
+        }
+
         /// Transfer tokens from the caller to a recipient.
         ///
         /// A transfer to an account with no balance adds a holder, and
         /// reverts once that could take this contract's memory past 3 GiB;
-        /// transfers to holders keep working.
+        /// transfers to holders keep working. A transfer to the zero account
+        /// reverts.
         pub fn transfer(&mut self, args: TransferCall) {
             let from = drc20::sender_account();
             let from_id = account_id(&from);
@@ -725,6 +747,9 @@ mod warp_drc20 {
         /// Transfer tokens between accounts, for `transfer` and
         /// `transfer_from`. `from_id` is `from`'s account ID.
         fn do_transfer(&mut self, from: Account, from_id: AccountId, to: Account, value: u64) {
+            // Nobody can spend from the zero account, and its transfer event
+            // would read as a burn while the supply stays the same.
+            assert!(!to.is_zero(), "WarpDrc20: recipient cannot be zero");
             // No call ever resolves to a Phoenix principal, so tokens sent to
             // one could never be spent again.
             assert!(
