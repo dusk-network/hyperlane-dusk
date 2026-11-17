@@ -215,6 +215,20 @@ if args[0] == "claim-fees":
 out({"success": False, "error": f"stub dusk-tx: unexpected {args[0]}"}, 1)
 '''
 
+# mktemp on a full disk: the temporary record deploy/testnet.sh writes,
+# .state.XXXXXX in the deployment's directory, is a link to /dev/full, where
+# every write fails. Any other template gets the real mktemp's file.
+MKTEMP_FULL = r'''#!/usr/bin/env python3
+import os, sys
+directory, name = os.path.split(sys.argv[-1])
+if name.startswith(".state."):
+    path = os.path.join(directory, ".state.full." + str(os.getpid()))
+    os.symlink("/dev/full", path)
+    print(path)
+else:
+    os.execv("@REAL@", ["mktemp", *sys.argv[1:]])
+'''
+
 # A fake EVM chain for cast and forge: contracts are JSON objects in
 # FIXTURE_EVM, calls read them and sends change them, as far as the scripts
 # use Hyperlane's Mailbox, hooks, IGP, gas oracle, factories, HypERC20 and
@@ -2347,6 +2361,22 @@ class TestnetDeploymentRecord(DeployedTestnet):
             # fees reads no record.
             self.assert_ok(self.run_script("fees"))
         self.assert_ok(self.run_script("preflight"))
+
+    def test_a_record_that_cant_be_written_stops_the_command(self):
+        # state_set wrote the record with `printf ... > tmp && mv tmp
+        # record`, and under set -e a failed write in that list didn't stop
+        # the script: deploy went on from a step the record lacked, sending
+        # transactions, and could report the deployment complete with
+        # nothing recorded. Here the disk is full.
+        if not os.path.exists("/dev/full"):
+            self.skipTest("needs /dev/full")
+        write_executable(self.bin / "mktemp", MKTEMP_FULL.replace("@REAL@", shutil.which("mktemp")))
+        self.forget_deployment()
+        self.assert_fails(self.run_script("deploy"), "so this run stops before the next step")
+        self.assertEqual(self.traced("dusk-tx deploy-hyperlane") + self.traced("cast send") + self.traced("forge"),
+                         [])
+        self.assertFalse((self.out / "deployment.json").exists())
+        self.assertEqual(list(self.out.glob(".state.*")), [])
 
     def test_deploy_records_the_report_it_read_back(self):
         # deploy read the contracts in deploy-hyperlane's report back, then

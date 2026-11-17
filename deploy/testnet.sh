@@ -121,12 +121,18 @@ STATE_JSON=""
 state_get() { [ -n "$STATE_JSON" ] && jq -r "$1 // empty" <<<"$STATE_JSON" || true; }
 # The record as JSON, {} when there is none.
 state_json() { if [ -n "$STATE_JSON" ]; then printf '%s\n' "$STATE_JSON"; else echo '{}'; fi; }
+# A record that can't be written stops the command there, so nothing goes
+# on from a step the record lacks. A failed write in an && list wouldn't
+# stop it under set -e, so each step is checked.
 state_set() {
     local new tmp
     new="$(state_json | jq "$@")" || fail "Can't update $STATE"
-    mkdir -p "$OUT_DIR"
-    tmp="$(mktemp "$OUT_DIR/.state.XXXXXX")"
-    printf '%s\n' "$new" > "$tmp" && mv "$tmp" "$STATE"
+    mkdir -p "$OUT_DIR" || fail "Can't create $OUT_DIR"
+    tmp="$(mktemp "$OUT_DIR/.state.XXXXXX")" || fail "Can't write to $OUT_DIR"
+    if ! printf '%s\n' "$new" > "$tmp" || ! mv "$tmp" "$STATE"; then
+        rm -f "$tmp"
+        fail "Can't write $STATE, so this run stops before the next step. Free space or fix the directory's permissions, then run it again: it resumes from what $STATE records."
+    fi
     STATE_JSON="$new"
 }
 
