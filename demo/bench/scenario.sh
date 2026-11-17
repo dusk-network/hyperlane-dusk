@@ -91,11 +91,17 @@ evm_balance() {
     cast call "$(state .evm.token)" "balanceOf(address)(uint256)" "$ANVIL_DEPLOYER" \
         --rpc-url "$HARNESS_EVM" | awk '{print $1}'
 }
+# The native route's DUSK that no escrow holds: a delivery to Dusk takes
+# from it, whether it pays the deployer or waits in escrow for its claim.
 route_locked() {
-    "$DUSK_TX" query --rues-url "$HARNESS_DUSK" \
+    local custody pending
+    custody="$("$DUSK_TX" query --rues-url "$HARNESS_DUSK" \
         --contract 0100000000000000000000000000000000000000000000000000000000000000 \
         --method contract_balance --return-type u64 --arg-bytes32 "$(state .dusk.warp_native)" \
-        | jq -r '.value'
+        | jq -r '.value')"
+    pending="$("$DUSK_TX" query --rues-url "$HARNESS_DUSK" --contract "$(state .dusk.warp_native)" \
+        --method pending_total --return-type u64 | jq -r '.value')"
+    echo $((custody - pending))
 }
 wait_for() {
     # wait_for <label> <getter> <target>

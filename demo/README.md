@@ -84,7 +84,13 @@ Notes:
 - Each ISM case runs synthetic DRC20, native DUSK, and DRC20-collateral routes
   in both directions. It checks exact native and token custody, DRC20 allowance
   consumption, and one value-backed ProtocolFee collection per outbound Dusk
-  dispatch.
+  dispatch. The collateral route wraps the pinned canonical DRC20
+  (`make canonical-drc20-fixture`, which `start-env.sh` runs once), not the
+  WarpDrc20: a collateral route pays out with its token's `transfer`, which a
+  WarpDrc20 refuses to new holders past its 3 GiB reserve
+  ([docs/security.md](../docs/security.md#state-growth-stage-1)). The fixture
+  builds from Cargo's git cache when it holds the pinned revision, or from
+  `CANONICAL_DRC20_REPOSITORY`, so no network is needed once it's there.
 - The `messageIdMultisig` case deploys a real MessageIdMultisig ISM on both
   chains and runs both an Anvil-origin validator and a Dusk-origin validator.
   Dusk -> EVM delivery therefore requires a checkpoint produced from Dusk
@@ -254,6 +260,10 @@ bash demo/bridge.sh to-evm 2
 bash demo/bridge.sh help
 ```
 
+A route holds the first transfer to an account in escrow until the account
+claims it, which registers it for later transfers, so `bridge.sh to-dusk`
+claims the deployer's escrow after the first transfer to it.
+
 Every Dusk write prints its locally computed transaction hash before the first
 propagation attempt, and `bridge.sh` requires, validates, and prints the
 completed canonical hash before continuing.
@@ -283,12 +293,14 @@ Key overrides:
 The demo and E2E scripts use deterministic local development keys. They are not
 production deployment scripts.
 
-`dusk-tx` resolves encrypted `consensus.keys` passwords in this order:
+`dusk-tx` resolves encrypted `consensus.keys` passwords in this order, and
+uses the first one set:
 
-1. `DUSK_CONSENSUS_PASSWORD_FILE`
-2. `DUSK_CONSENSUS_PASSWORD`
-3. `DUSK_CONSENSUS_KEYS_PASS`
-4. `--password` / the CLI default, intended for local demos only
+1. `--password`, intended for local demos only
+2. the file `DUSK_CONSENSUS_PASSWORD_FILE` names
+3. `DUSK_CONSENSUS_PASSWORD`
+4. `DUSK_CONSENSUS_KEYS_PASS`
+5. the local demo's password, `password`
 
 When a raw BLS secret key is unavoidable, pass it with `--secret-key-stdin` so
 it does not appear in shell history or process argv.
@@ -369,6 +381,7 @@ bash demo/demo.sh --skip-deploy
   |  TestRecipient          |           |  +- WarpDrc20          |
   |                         |           |  +- WarpNative         |
   |                         |           |  +- Drc20Collateral    |
+  |                         |           |     (canonical DRC20)   |
   +-------------------------+           +-------------------------+
 
   EVM -> Dusk: HypERC20.transferRemote -> relay -> Dusk route handle
@@ -381,7 +394,7 @@ bash demo/demo.sh --skip-deploy
 # Deploy the full local route matrix on Dusk
 dusk-tx deploy-hyperlane --domain 4242 --default-ism testMock --deploy-warp-drc20 \
     --igp-domain-config 31338:200000:10000000000:1 \
-    --deploy-warp-native --warp-collateral-token warp-drc20 --expected-chain-id <u8>
+    --deploy-warp-native --warp-collateral-token canonical-drc20 --expected-chain-id <u8>
 
 # Pre-fund Mailbox dispatch credit for a direct dispatcher (warp routes
 # charge each transfer's fee to its sender instead)
@@ -414,8 +427,9 @@ dusk-tx query --contract <validator-announce-hex> \
 dusk-tx enroll-router --warp-contract <hex> --domain 31338 --router <hex> \
     --expected-chain-id <u8>
 
-# Register BLS key for receiving bridged tokens
-dusk-tx register-account --warp-contract <hex> --expected-chain-id <u8>
+# Claim a transfer waiting in escrow: a route holds the first transfer to an
+# account until it is claimed, which registers the account for later ones
+dusk-tx claim-pending --warp-contract <hex> --expected-chain-id <u8>
 
 # Approve collateral custody and inspect DRC20 balances
 dusk-tx drc20-approve --token <hex> --spender <collateral-route-hex> --amount <amount> \

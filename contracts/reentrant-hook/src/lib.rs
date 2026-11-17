@@ -4,7 +4,9 @@
 
 //! Test-only hook that attempts nested dispatch from quote, post-dispatch,
 //! or native-payment callbacks, and can reject a post-dispatch callback.
-//! It also acts as a recipient that replays a message during ISM resolution.
+//! It also acts as a recipient that replays a message during ISM resolution,
+//! recording whether the Mailbox already counted the message delivered and
+//! why the replay failed.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -18,13 +20,15 @@
 mod reentrant_hook {
     extern crate alloc;
 
+    use alloc::format;
+    use alloc::string::String;
     use alloc::vec::Vec;
 
-    use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
+    use dusk_core::abi::{self, ContractError, ContractId, CONTRACT_ID_BYTES};
 
     use dusk_core::transfer::ReceiveFromContract;
 
-    use hyperlane_dusk_types::{caller, MessageId, H256};
+    use hyperlane_dusk_types::{caller, message, MessageId, H256};
 
     /// Zero contract ID selects the Mailbox default hook.
     const ZERO_CONTRACT: ContractId = ContractId::from_bytes([0u8; CONTRACT_ID_BYTES]);
@@ -49,6 +53,11 @@ mod reentrant_hook {
         inbound_message: Vec<u8>,
         /// Number of inbound deliveries observed.
         handled_count: u32,
+        /// Whether the Mailbox reported the inbound message delivered when
+        /// it asked for this recipient's ISM, before verifying it.
+        delivered_at_ism_lookup: bool,
+        /// The error of the failed replay, empty if it succeeded.
+        nested_error: String,
     }
 
     impl ReentrantHook {
@@ -64,6 +73,8 @@ mod reentrant_hook {
                 fail_post_dispatch: false,
                 inbound_message: Vec::new(),
                 handled_count: 0,
+                delivered_at_ism_lookup: false,
+                nested_error: String::new(),
             }
         }
 
@@ -147,18 +158,30 @@ mod reentrant_hook {
             self.inbound_message = encoded_message;
             self.attempted = false;
             self.nested_succeeded = false;
+            self.delivered_at_ism_lookup = false;
+            self.nested_error = String::new();
         }
 
-        /// Attempts a same-message replay before selecting the default ISM.
+        /// Asks the Mailbox whether the message is already recorded
+        /// delivered, then attempts a same-message replay, before selecting
+        /// the default ISM.
         pub fn interchain_security_module(&mut self) -> ContractId {
             if !self.inbound_message.is_empty() && !self.attempted {
                 self.attempted = true;
-                let nested: Result<(), _> = abi::call(
+                let id = message::id(&self.inbound_message);
+                self.delivered_at_ism_lookup = abi::call(self.mailbox, "delivered", &(id,))
+                    .expect("ReentrantHook: delivered query failed");
+                let nested: Result<(), ContractError> = abi::call(
                     self.mailbox,
                     "process",
                     &(Vec::<u8>::new(), self.inbound_message.clone()),
                 );
                 self.nested_succeeded = nested.is_ok();
+                self.nested_error = match nested {
+                    Ok(()) => String::new(),
+                    Err(ContractError::Panic(message)) => message,
+                    Err(other) => format!("{other:?}"),
+                };
             }
             ZERO_CONTRACT
         }
@@ -185,6 +208,17 @@ mod reentrant_hook {
         /// Returns whether the attempted nested dispatch succeeded.
         pub fn nested_succeeded(&self) -> bool {
             self.nested_succeeded
+        }
+
+        /// Returns whether the Mailbox reported the inbound message delivered
+        /// during the recipient's ISM lookup.
+        pub fn delivered_at_ism_lookup(&self) -> bool {
+            self.delivered_at_ism_lookup
+        }
+
+        /// Returns the error of the failed inbound replay, empty if none.
+        pub fn nested_error(&self) -> String {
+            self.nested_error.clone()
         }
 
         /// Returns the number of successful post-dispatch callbacks.

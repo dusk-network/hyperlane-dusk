@@ -40,7 +40,8 @@ use dusk_core::transfer::data::{ContractBytecode, ContractCall, ContractDeploy};
 use dusk_core::transfer::moonlight::Transaction as MoonlightTransaction;
 use dusk_core::transfer::Transaction;
 use hyperlane_dusk_types::drc20::{
-    Account as Drc20Account, ApproveCall as Drc20ApproveCall, BalanceOf as Drc20BalanceOf,
+    Account as Drc20Account, Allowance as Drc20Allowance, ApproveCall as Drc20ApproveCall,
+    BalanceOf as Drc20BalanceOf,
 };
 use hyperlane_dusk_types::{DomainGasConfig, EthAddress, GasPaymentRecord};
 use rkyv::ser::serializers::AllocSerializer;
@@ -48,6 +49,7 @@ use rkyv::ser::Serializer;
 use rkyv::Serialize;
 use serde_json::json;
 
+mod deployment;
 mod keys;
 mod multicall;
 mod rues;
@@ -85,9 +87,38 @@ const PAY_FOR_GAS_GAS_LIMIT: u64 = 3_000_000;
 /// The first IGP `state_version` with `pay_for_gas` and `quote_pay_for_gas`.
 const IGP_TOP_UP_STATE_VERSION: u32 = 4;
 /// WarpNative's `state_version` in this checkout. Its DRC20 routes report
-/// others (WarpDrc20 7, WarpDrc20Collateral 6), so `transfer-remote
+/// others (WarpDrc20 8, WarpDrc20Collateral 7), so `transfer-remote
 /// --native` tells a native route by it.
-const WARP_NATIVE_STATE_VERSION: u32 = 4;
+const WARP_NATIVE_STATE_VERSION: u32 = 5;
+/// The least dispatch credit the Mailbox takes for a payer with none, 0.01
+/// DUSK (the Mailbox's `MIN_NEW_PAYER_CREDIT`).
+const MIN_NEW_PAYER_CREDIT: u64 = 10_000_000;
+/// The memory the Mailbox takes no new payer past, and a WarpDrc20 no new
+/// holder or spender: 3 GiB. Each refuses a new entry unless the most it can
+/// allocate still fits under it.
+const NEW_ENTRY_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+/// A wasm32 memory page.
+const WASM_PAGE_BYTES: u64 = 64 * 1024;
+/// The most a new Mailbox credit entry or WarpDrc20 holder can allocate.
+const NEW_ENTRY_MEMORY_BOUND: u64 = 13 * WASM_PAGE_BYTES;
+/// The most a WarpDrc20 allowance for a new spender can allocate.
+const NEW_ALLOWANCE_MEMORY_BOUND: u64 = 14 * WASM_PAGE_BYTES;
+/// The most allowances a WarpDrc20 owner holds at once.
+const MAX_ALLOWANCES_PER_OWNER: u32 = 64;
+/// `--warp-collateral-token` value that deploys the pinned canonical DRC20.
+const CANONICAL_DRC20: &str = "canonical-drc20";
+/// The pinned canonical DRC20's Wasm in the WASM directory, built by `make
+/// canonical-drc20-fixture`.
+const CANONICAL_DRC20_WASM: &str = "canonical_drc20_roles_pausable.wasm";
+/// Why a collateral route doesn't wrap a WarpDrc20.
+const WARP_DRC20_COLLATERAL_REFUSED: &str = "a collateral route pays out with its token's \
+     `transfer`, and a WarpDrc20 refuses transfers to new holders once its memory nears its 3 GiB \
+     reserve, so the route would stop paying new accounts (docs/security.md). Wrap a plain DRC20, \
+     such as the pinned canonical one (`--warp-collateral-token canonical-drc20`)";
+/// The ProtocolFee `deploy-hyperlane` deploys: 0.001 DUSK a dispatch, which
+/// its owner can raise to at most 0.1 DUSK.
+const PROTOCOL_FEE: u64 = 1_000_000;
+const MAX_PROTOCOL_FEE: u64 = 100_000_000;
 /// The hook types the fee contracts report (Hyperlane's HookType).
 const IGP_HOOK_TYPE: u8 = 4;
 const PROTOCOL_FEE_HOOK_TYPE: u8 = 6;
@@ -195,7 +226,10 @@ enum Command {
         #[arg(long)]
         ack_before_send: bool,
     },
-    /// Deploy the full Hyperlane contract stack.
+    /// Deploy the full Hyperlane contract stack, then read every contract
+    /// back: the owner Rusk records for it, its owner, each binding its init
+    /// set and its state version must be what was sent, or the command fails
+    /// and reports none of the contracts as deployed.
     DeployHyperlane {
         #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
@@ -231,10 +265,22 @@ enum Command {
         /// Also deploy the native DUSK collateral warp route.
         #[arg(long)]
         deploy_warp_native: bool,
-        /// Deploy a collateral route wrapping a DRC20 ID, or `warp-drc20`
-        /// to wrap the synthetic route deployed by this command.
+        /// Deploy a collateral route wrapping a DRC20: its contract ID (64
+        /// hex chars), or `canonical-drc20` to deploy the pinned canonical
+        /// DRC20 (`canonical_drc20_roles_pausable.wasm` in the WASM
+        /// directory, `make canonical-drc20-fixture`) with the deployer as
+        /// its admin and holder of --collateral-token-supply. A WarpDrc20
+        /// can't be wrapped: a collateral route pays out with its token's
+        /// `transfer`, which a WarpDrc20 refuses to new holders past its
+        /// 3 GiB reserve.
         #[arg(long)]
         warp_collateral_token: Option<String>,
+        /// What the canonical DRC20 of `--warp-collateral-token
+        /// canonical-drc20` mints to the deployer, in its smallest unit; it
+        /// has --warp-decimals. The default, 5 tokens at 18 decimals, fits a
+        /// signed 64-bit integer, so shell scripts can do arithmetic on it.
+        #[arg(long, default_value = "5000000000000000000")]
+        collateral_token_supply: u64,
         /// Token name for WarpDrc20.
         #[arg(long, default_value = "Wrapped Ether")]
         warp_name: String,
@@ -565,36 +611,9 @@ enum Command {
         #[arg(long, default_value = "1")]
         gas_price: u64,
     },
-    /// Register the caller's BLS key on a warp route contract.
-    RegisterAccount {
-        #[arg(long, default_value = "http://localhost:8080/")]
-        rues_url: String,
-        #[arg(long)]
-        keys: Option<PathBuf>,
-        /// Password for consensus.keys. Takes precedence over
-        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
-        #[arg(long)]
-        password: Option<String>,
-        #[arg(long)]
-        secret_key: Option<String>,
-        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
-        #[arg(long)]
-        secret_key_stdin: bool,
-        /// Warp route contract ID (64 hex chars).
-        #[arg(long, name = "warp-contract")]
-        warp_contract: String,
-        /// Expected native Dusk chain ID. The endpoint must report it before
-        /// the signer is read or a transaction is constructed.
-        #[arg(long)]
-        expected_chain_id: u8,
-        #[arg(long, default_value = "30000000")]
-        gas_limit: u64,
-        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
-        #[arg(long, default_value = "1")]
-        gas_price: u64,
-    },
-    /// Claim tokens held in escrow on a warp route because they arrived before
-    /// the recipient registered.
+    /// Claim tokens held in escrow on a warp route. A transfer to an account
+    /// the route hasn't paid before waits there, and the claim also
+    /// registers the account, so later transfers arrive directly.
     ClaimPending {
         #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
@@ -1043,6 +1062,7 @@ async fn run(command: Command) -> Result<(), String> {
             deploy_warp_drc20,
             deploy_warp_native,
             warp_collateral_token,
+            collateral_token_supply,
             warp_name,
             warp_symbol,
             warp_decimals,
@@ -1065,6 +1085,7 @@ async fn run(command: Command) -> Result<(), String> {
                 deploy_warp_drc20,
                 deploy_warp_native,
                 warp_collateral_token.as_deref(),
+                collateral_token_supply,
                 &warp_name,
                 &warp_symbol,
                 warp_decimals,
@@ -1287,30 +1308,6 @@ async fn run(command: Command) -> Result<(), String> {
                 &warp_contract,
                 domain,
                 &router,
-                expected_chain_id,
-                gas_limit,
-                gas_price,
-            )
-            .await
-        }
-        Command::RegisterAccount {
-            rues_url,
-            keys,
-            password,
-            secret_key,
-            warp_contract,
-            secret_key_stdin,
-            expected_chain_id,
-            gas_limit,
-            gas_price,
-        } => {
-            cmd_register_account(
-                &rues_url,
-                keys,
-                password.as_deref().unwrap_or_default(),
-                secret_key,
-                secret_key_stdin,
-                &warp_contract,
                 expected_chain_id,
                 gas_limit,
                 gas_price,
@@ -1811,8 +1808,8 @@ mod tests {
         );
     }
 
-    /// Routes register an account for someone else only by claiming its
-    /// escrow, so only `claim-pending` takes another account.
+    /// Routes register an account only by claiming its escrow, so there's
+    /// no `register-account`, and `claim-pending` takes another account.
     #[test]
     fn only_claim_pending_takes_another_account() {
         let route = "11".repeat(32);
@@ -1825,8 +1822,7 @@ mod tests {
             "--expected-chain-id",
             "2",
         ];
-        assert!(Cli::try_parse_from(register).is_ok());
-        assert!(Cli::try_parse_from(register.into_iter().chain(["--for", &account])).is_err());
+        assert!(Cli::try_parse_from(register).is_err());
         assert!(Cli::try_parse_from([
             "dusk-tx",
             "claim-pending",
@@ -2393,12 +2389,16 @@ mod tests {
 
     /// The paths and bodies of the requests a mock RUES endpoint got.
     type MockRequests = Vec<(String, Vec<u8>)>;
+    /// Replies for a mock RUES endpoint, in order: a path suffix, a status
+    /// and a body (`mock_rues`).
+    type MockReplies = Vec<(&'static str, u16, Vec<u8>)>;
 
     /// A RUES endpoint on localhost that answers requests in order, one a
     /// connection: each request's path must end with the next reply's
-    /// suffix, and gets its status and body. Returns the base URL and the
-    /// requests' paths and bodies, once every reply is sent or 20 seconds
-    /// pass with no request.
+    /// suffix, and gets its status and body. Status 0 is no answer: the
+    /// connection stays open for two seconds, then closes. Returns the base
+    /// URL and the requests' paths and bodies, once every reply is sent or
+    /// 20 seconds pass with no request.
     fn mock_rues(
         replies: Vec<(&'static str, u16, Vec<u8>)>,
     ) -> (String, std::thread::JoinHandle<MockRequests>) {
@@ -2445,10 +2445,20 @@ mod tests {
                 let mut input = vec![0; length];
                 reader.read_exact(&mut input).unwrap();
                 assert!(path.ends_with(suffix), "expected {suffix}, got {path}");
+                if status == 0 {
+                    std::thread::sleep(Duration::from_secs(2));
+                    requests.push((path, input));
+                    continue;
+                }
+                // A 204 has no body, and so no length.
+                let length = if status == 204 {
+                    String::new()
+                } else {
+                    format!("Content-Length: {}\r\n", body.len())
+                };
                 write!(
                     stream,
-                    "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 {status} Mock\r\n{length}Connection: close\r\n\r\n"
                 )
                 .unwrap();
                 stream.write_all(&body).unwrap();
@@ -2950,7 +2960,6 @@ mod tests {
                 "--router",
                 &id,
             ],
-            vec!["register-account", "--warp-contract", &id],
             vec!["claim-pending", "--warp-contract", &id],
             vec![
                 "set-igp-config",
@@ -3131,12 +3140,15 @@ mod tests {
         let (url, server) = mock_rues(vec![
             ("/chain_id", 200, vec![2]),
             ("/enrolled_router", 200, vec![0x11; 32]),
-            ("/state_version", 200, super::rkyv_serialize(&4u32)),
+            ("/state_version", 200, super::rkyv_serialize(&5u32)),
             (
                 "/quote_transfer_remote",
                 200,
                 super::rkyv_serialize(&6_000_000_000u64),
             ),
+            ("/mailbox", 200, vec![0x44; 32]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+            ("/memory_bytes", 200, super::rkyv_serialize(&(1u64 << 20))),
         ]);
         // It gets as far as the key, which doesn't exist (or its password,
         // which a test of the password's sources may hold at the time).
@@ -3148,7 +3160,7 @@ mod tests {
             .into_iter()
             .map(|(path, _)| path)
             .collect();
-        assert_eq!(paths.len(), 4, "{paths:?}");
+        assert_eq!(paths.len(), 7, "{paths:?}");
         assert!(
             !paths
                 .iter()
@@ -3156,7 +3168,7 @@ mod tests {
             "{paths:?}"
         );
 
-        for version in [7u32, 6] {
+        for version in [8u32, 7] {
             let (url, server) = mock_rues(vec![
                 ("/chain_id", 200, vec![2]),
                 ("/enrolled_router", 200, vec![0x11; 32]),
@@ -3165,6 +3177,481 @@ mod tests {
             let error = super::run(transfer(&url)).await.unwrap_err();
             assert!(error.contains("drop --native"), "{error}");
             assert_eq!(server.join().unwrap().len(), 3);
+        }
+    }
+
+    /// The Mailbox takes at least 0.01 DUSK for a payer with no credit.
+    /// `fund-dispatch` of less reads the payer's credit and stops before the
+    /// key is read when it has none, since a failed transaction pays its
+    /// whole gas limit. A payer with credit, or an amount at the minimum,
+    /// goes on (here as far as the key, which doesn't exist).
+    #[tokio::test]
+    async fn fund_dispatch_refuses_less_than_the_minimum_for_a_new_payer() {
+        let fund = |url: &str, amount: u64| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "fund-dispatch",
+                "--rues-url",
+                url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--mailbox",
+                &"33".repeat(32),
+                "--payer",
+                &"44".repeat(32),
+                "--amount",
+                &amount.to_string(),
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+        ]);
+        let error = super::run(fund(&url, super::MIN_NEW_PAYER_CREDIT - 1))
+            .await
+            .unwrap_err();
+        assert!(error.contains("takes at least 10000000 LUX"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 2);
+
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&1u64)),
+        ]);
+        let error = super::run(fund(&url, 1)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 2);
+
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+            ("/memory_bytes", 200, super::rkyv_serialize(&(1u64 << 20))),
+        ]);
+        let error = super::run(fund(&url, super::MIN_NEW_PAYER_CREDIT))
+            .await
+            .unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 3);
+    }
+
+    /// The Mailbox takes no new payer once a credit entry, 13 pages at
+    /// most, could take its memory past 3 GiB. `fund-dispatch` for a payer
+    /// with no credit, and `transfer-remote`, whose route is a new payer
+    /// unless it has standing credit, read the Mailbox's memory and stop
+    /// before the key is read when there is no room. A payer with credit
+    /// adds no entry and goes on, and so does a transfer that pays no
+    /// dispatch fee, which funds no credit.
+    #[tokio::test]
+    async fn new_payers_are_checked_for_room_in_the_mailbox() {
+        let limit = super::NEW_ENTRY_MEMORY_LIMIT;
+        let page = super::WASM_PAGE_BYTES;
+        let fund = |url: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "fund-dispatch",
+                "--rues-url",
+                url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--mailbox",
+                &"33".repeat(32),
+                "--payer",
+                &"44".repeat(32),
+                "--amount",
+                &super::MIN_NEW_PAYER_CREDIT.to_string(),
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let transfer = |url: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "transfer-remote",
+                "--native",
+                "--rues-url",
+                url,
+                "--keys",
+                "/nonexistent/dusk-tx-test.keys",
+                "--warp-contract",
+                &"22".repeat(32),
+                "--destination",
+                "11155111",
+                "--recipient",
+                &"33".repeat(20),
+                "--amount",
+                "1000000000",
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let route_replies = |credit: u64, memory: Option<u64>| {
+            let mut replies = vec![
+                ("/chain_id", 200, vec![2]),
+                ("/enrolled_router", 200, vec![0x11; 32]),
+                ("/state_version", 200, super::rkyv_serialize(&5u32)),
+                (
+                    "/quote_transfer_remote",
+                    200,
+                    super::rkyv_serialize(&6_000_000_000u64),
+                ),
+                ("/mailbox", 200, vec![0x44; 32]),
+                ("/fee_credit", 200, super::rkyv_serialize(&credit)),
+            ];
+            if let Some(memory) = memory {
+                replies.push(("/memory_bytes", 200, super::rkyv_serialize(&memory)));
+            }
+            replies
+        };
+
+        // At 12 pages below the limit a new payer's 13 don't fit.
+        for (command, replies) in [
+            (
+                fund as fn(&str) -> super::Command,
+                vec![
+                    ("/chain_id", 200, vec![2]),
+                    ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+                    (
+                        "/memory_bytes",
+                        200,
+                        super::rkyv_serialize(&(limit - 12 * page)),
+                    ),
+                ],
+            ),
+            (
+                transfer as fn(&str) -> super::Command,
+                route_replies(0, Some(limit - 12 * page)),
+            ),
+        ] {
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let error = super::run(command(&url)).await.unwrap_err();
+            assert!(error.contains("within 13 pages of 3 GiB"), "{error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        }
+
+        // At 13 pages below, they do: it goes on to the key.
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&0u64)),
+            (
+                "/memory_bytes",
+                200,
+                super::rkyv_serialize(&(limit - 13 * page)),
+            ),
+        ]);
+        let error = super::run(fund(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 3);
+
+        // A payer, or a route, with credit isn't checked.
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/fee_credit", 200, super::rkyv_serialize(&1u64)),
+        ]);
+        let error = super::run(fund(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 2);
+        let (url, server) = mock_rues(route_replies(5, None));
+        let error = super::run(transfer(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 6);
+
+        // Nor is a route whose transfer pays no dispatch fee: it funds no
+        // credit and adds no entry, so whatever the route's credit and the
+        // Mailbox's memory, it goes on to the key without reading them.
+        let mut free = route_replies(0, None);
+        free.truncate(3);
+        free.push(("/quote_transfer_remote", 200, super::rkyv_serialize(&0u64)));
+        let (url, server) = mock_rues(free);
+        let error = super::run(transfer(&url)).await.unwrap_err();
+        assert!(error.to_lowercase().contains("consensus"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 4);
+    }
+
+    /// A view's replies as a Rusk node gives them for a contract that
+    /// doesn't export it, with the contract's `control` returning the
+    /// archived amount given after each, as many times as `optional_view`
+    /// asks before it takes the view as missing.
+    fn missing_view(view: &'static str, control: (&'static str, Vec<u8>)) -> MockReplies {
+        let failed = (view, 500, crate::rues::FAILED_QUERY_BODY.to_vec());
+        vec![
+            failed.clone(),
+            (control.0, 200, control.1.clone()),
+            failed,
+            (control.0, 200, control.1),
+        ]
+    }
+
+    /// Replies to a view that don't show the contract lacks it: another
+    /// failure than the VM's, an answer that doesn't decode, no answer, or
+    /// the VM's failure and then a control that fails too, or answers
+    /// without an amount, at the first try or the second. Each with what
+    /// the error says.
+    fn unreadable_view(
+        view: &'static str,
+        control: &'static str,
+    ) -> Vec<(MockReplies, &'static str)> {
+        let failed = crate::rues::FAILED_QUERY_BODY.to_vec();
+        let no_amount = "answered, but not with an amount";
+        let mut cases = vec![
+            (
+                vec![(view, 500, Vec::new())],
+                "failed (500 Internal Server Error)",
+            ),
+            (
+                vec![(view, 500, b"upstream error".to_vec())],
+                "upstream error",
+            ),
+            (
+                vec![(view, 502, failed.clone())],
+                "failed (502 Bad Gateway)",
+            ),
+            (
+                vec![(view, 200, vec![1, 2, 3])],
+                "answered, but not with the expected value",
+            ),
+            (
+                vec![(view, 204, Vec::new())],
+                "answered, but not with the expected value",
+            ),
+            (vec![(view, 0, Vec::new())], "HTTP error"),
+            (
+                vec![(view, 500, failed.clone()), (control, 500, failed.clone())],
+                "and so did",
+            ),
+        ];
+        // Bodies longer than an amount whose last 8 bytes would decode as
+        // one: text, and an amount behind 8 bytes of anything.
+        let padded = [vec![0xff; 8], super::rkyv_serialize(&0u64)].concat();
+        for (status, body) in [
+            (200, Vec::new()),
+            (200, vec![1, 2, 3]),
+            (204, Vec::new()),
+            (200, b"upstream failure".to_vec()),
+            (200, padded),
+        ] {
+            cases.push((
+                vec![(view, 500, failed.clone()), (control, status, body.clone())],
+                no_amount,
+            ));
+            cases.push((
+                vec![
+                    (view, 500, failed.clone()),
+                    (control, 200, super::rkyv_serialize(&0u64)),
+                    (view, 500, failed.clone()),
+                    (control, status, body),
+                ],
+                no_amount,
+            ));
+        }
+        cases
+    }
+
+    /// A WarpDrc20 holds an owner to 64 allowances and takes no allowance
+    /// for a new spender once one, 14 pages at most, could take its memory
+    /// past 3 GiB. `drc20-approve` of a new spender checks both before it
+    /// signs; an existing spender, or a token that doesn't count
+    /// allowances, isn't checked. A token counts as without the count only
+    /// as the node reports a missing view, twice, with the token's
+    /// `allowance` returning an amount after each: any other reply, or
+    /// none, stops the approval before it is signed.
+    #[tokio::test]
+    async fn drc20_approve_checks_the_cap_and_room_for_a_new_spender() {
+        let limit = super::NEW_ENTRY_MEMORY_LIMIT;
+        let page = super::WASM_PAGE_BYTES;
+        let approve = |url: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "drc20-approve",
+                "--rues-url",
+                url,
+                "--secret-key",
+                &"11".repeat(32),
+                "--token",
+                &"22".repeat(32),
+                "--spender",
+                &"33".repeat(32),
+                "--amount",
+                "5",
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let replies = |allowance: u64, count: Option<u32>, memory: Option<u64>| {
+            let mut replies = vec![
+                ("/chain_id", 200, vec![2]),
+                ("/allowance", 200, super::rkyv_serialize(&allowance)),
+            ];
+            match count {
+                Some(count) => {
+                    replies.push(("/allowance_count", 200, super::rkyv_serialize(&count)))
+                }
+                None if allowance == 0 => replies.extend(missing_view(
+                    "/allowance_count",
+                    ("/allowance", super::rkyv_serialize(&allowance)),
+                )),
+                None => {}
+            }
+            if let Some(memory) = memory {
+                replies.push(("/memory_bytes", 200, super::rkyv_serialize(&memory)));
+            }
+            replies
+        };
+        let refused = |replies: Vec<(&'static str, u16, Vec<u8>)>, why: &'static str| async move {
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let error = super::run(approve(&url)).await.unwrap_err();
+            assert!(error.contains(why), "{error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        };
+        // Past the cap, and without room.
+        refused(replies(0, Some(64), None), "already holds 64 allowances").await;
+        refused(
+            replies(0, Some(3), Some(limit - 13 * page)),
+            "within 14 pages of 3 GiB",
+        )
+        .await;
+
+        // Room, an existing spender, or a token without the count: it goes
+        // on to read the signer's account, which the mock doesn't answer.
+        for replies in [
+            replies(0, Some(63), Some(limit - 14 * page)),
+            replies(1, None, None),
+            replies(0, None, None),
+        ] {
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let error = super::run(approve(&url)).await.unwrap_err();
+            assert!(
+                !error.contains("allowances") && !error.contains("3 GiB"),
+                "{error}"
+            );
+            assert_eq!(server.join().unwrap().len(), count);
+        }
+
+        // A reply that doesn't show the token lacks the count stops it
+        // before it signs: here before the signer's account is read.
+        let mut generic = replies(0, Some(0), None);
+        generic[2] = ("/allowance_count", 500, Vec::new());
+        refused(generic, "Can't tell whether the token limits allowances").await;
+        let owner = super::Drc20Account::Moonlight(
+            [0x66; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES],
+        );
+        let spender = super::Drc20Account::Contract(super::ContractId::from_bytes([0x33; 32]));
+        for (view, why) in unreadable_view("/allowance_count", "/allowance") {
+            let mut replies = vec![("/allowance", 200, super::rkyv_serialize(&0u64))];
+            replies.extend(view);
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let client =
+                crate::rues::RuesClient::with_test_timeout(&url, Duration::from_millis(500));
+            let error = super::check_room_for_new_spender(&client, &[0x22; 32], owner, spender)
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("Can't tell whether the token limits allowances"),
+                "{error}"
+            );
+            assert!(error.contains(why), "{why}: {error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        }
+    }
+
+    /// A collateral route pays out with its token's `transfer`, and a
+    /// WarpDrc20 refuses that to new holders past its 3 GiB reserve, so
+    /// `deploy-hyperlane` won't wrap one: not `warp-drc20`, refused before
+    /// anything is asked of the node, and not a token ID that turns out to
+    /// be a warp route. A token counts as no route only as the node reports
+    /// a missing `mailbox`, twice, with the token's `balance_of` returning
+    /// a balance after each: any other reply, or none, stops the deploy.
+    #[tokio::test]
+    async fn collateral_routes_dont_wrap_a_warp_drc20() {
+        let deploy = |url: &str, token: &str| {
+            Cli::try_parse_from([
+                "dusk-tx",
+                "deploy-hyperlane",
+                "--rues-url",
+                url,
+                "--default-ism",
+                "testMock",
+                "--igp-domain-config",
+                "1:0:10000000000:1",
+                "--deploy-warp-drc20",
+                "--warp-collateral-token",
+                token,
+                "--expected-chain-id",
+                "2",
+            ])
+            .unwrap()
+            .command
+        };
+        let (url, server) = mock_rues(Vec::new());
+        let error = super::run(deploy(&url, "warp-drc20")).await.unwrap_err();
+        assert!(error.contains("warp-drc20 is refused"), "{error}");
+        assert!(error.contains("3 GiB"), "{error}");
+        assert!(server.join().unwrap().is_empty());
+
+        let token = super::ContractId::from_bytes([0x55; 32]);
+        let deployer = super::Drc20Account::Moonlight(
+            [0x66; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES],
+        );
+        let balance = || ("/balance_of", 200, super::rkyv_serialize(&0u64));
+        let checked = |mailbox: MockReplies| {
+            let mut replies = vec![("/owner", 200, vec![0x77; 32]), balance()];
+            replies.extend(mailbox);
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let client =
+                crate::rues::RuesClient::with_test_timeout(&url, Duration::from_millis(500));
+            (client, server, count)
+        };
+        // A route answers `mailbox`, at once or once the node runs it.
+        let failed = crate::rues::FAILED_QUERY_BODY.to_vec();
+        for mailbox in [
+            vec![("/mailbox", 200, vec![0x44; 32])],
+            vec![
+                ("/mailbox", 500, failed.clone()),
+                balance(),
+                ("/mailbox", 200, vec![0x44; 32]),
+            ],
+        ] {
+            let (client, server, count) = checked(mailbox);
+            let error = super::check_explicit_collateral_token(&client, token, deployer)
+                .await
+                .unwrap_err();
+            assert!(error.contains("is a warp route"), "{error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        }
+        // A plain DRC20 has none, as the node reports a missing view.
+        let (client, server, count) = checked(missing_view(
+            "/mailbox",
+            ("/balance_of", super::rkyv_serialize(&0u64)),
+        ));
+        super::check_explicit_collateral_token(&client, token, deployer)
+            .await
+            .expect("a plain DRC20 is wrapped");
+        assert_eq!(server.join().unwrap().len(), count);
+        // A reply that doesn't show the token has no `mailbox` stops it.
+        for (mailbox, why) in unreadable_view("/mailbox", "/balance_of") {
+            let (client, server, count) = checked(mailbox);
+            let error = super::check_explicit_collateral_token(&client, token, deployer)
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("Can't tell whether the explicit collateral token"),
+                "{error}"
+            );
+            assert!(error.contains(why), "{why}: {error}");
+            assert_eq!(server.join().unwrap().len(), count);
         }
     }
 
@@ -3429,6 +3916,217 @@ mod tests {
         );
         assert_eq!(server.join().unwrap().len(), 10);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `deploy-hyperlane` as `deploy/testnet.sh` runs it, against a node that
+    /// takes every deploy: the read-back is the last thing it asks, and
+    /// replies that differ from what it sent make it fail instead of
+    /// reporting the deployment. `tamper` changes the reply to one view of
+    /// one contract. Returns the command's result and the requests made.
+    async fn deploy_hyperlane_with(
+        tamper: Option<(&'static str, &'static str, super::deployment::Value)>,
+    ) -> (Result<(), String>, MockRequests) {
+        use dusk_core::transfer::moonlight::AccountData;
+        let dir = std::env::temp_dir().join(format!(
+            "dusk-tx-deploy-hyperlane-{}-{}",
+            std::process::id(),
+            tamper.is_some()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // In the order deploy-hyperlane deploys them, which gives each its
+        // deploy nonce.
+        let names = [
+            "test_mock",
+            "test_recipient",
+            "merkle_tree_hook",
+            "ism_multisig",
+            "protocol_fee",
+            "aggregation_hook",
+            "mailbox",
+            "validator_announce",
+            "igp",
+            "warp_native",
+        ];
+        let secret = "11".repeat(32);
+        let (_, pk) = crate::keys::load_from_hex(&secret).unwrap();
+        let pk_bytes = pk.to_bytes();
+        let mut ids = std::collections::HashMap::new();
+        for (nonce, name) in names.iter().enumerate() {
+            let wasm = [b"\0asm\x01\0\0\0".as_slice(), name.as_bytes()].concat();
+            std::fs::write(dir.join(format!("hyperlane_dusk_{name}.wasm")), &wasm).unwrap();
+            ids.insert(
+                *name,
+                super::gen_contract_id(&wasm, nonce as u64, &pk_bytes),
+            );
+        }
+        let (a, b) = (super::EthAddress([0x22; 20]), super::EthAddress([0x11; 20]));
+        let pricing = super::DomainGasConfig {
+            gas_overhead: 110_000,
+            token_exchange_rate: 375_000,
+            gas_price: 1_000_000_000,
+        };
+        let sent = super::deployment::Sent {
+            owner_key: pk_bytes.to_vec(),
+            owner: hyperlane_dusk_types::message::keccak256(&pk_bytes),
+            domain: 1_146_442_572,
+            test_mock: ids["test_mock"],
+            test_recipient: ids["test_recipient"],
+            merkle_tree_hook: ids["merkle_tree_hook"],
+            ism: Some((ids["ism_multisig"], vec![b, a], 2)),
+            protocol_fee: (ids["protocol_fee"], 1_000_000, 100_000_000),
+            aggregation_hook: ids["aggregation_hook"],
+            mailbox: ids["mailbox"],
+            validator_announce: ids["validator_announce"],
+            igp: (ids["igp"], vec![(11_155_111, pricing)]),
+            warp_drc20: None,
+            warp_native: Some(ids["warp_native"]),
+            canonical_token: None,
+            warp_collateral: None,
+        };
+
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let executed =
+            br#"{"data":{"tx":{"err":null,"gasSpent":18700000,"blockHeight":9}}}"#.to_vec();
+        let accepted =
+            br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Accepted"}}}"#.to_vec();
+        let mut replies = vec![
+            ("/chain_id", 200, vec![2]),
+            (
+                "/account",
+                200,
+                super::rkyv_serialize(&AccountData {
+                    nonce: 0,
+                    balance: 1_000_000_000_000_000,
+                }),
+            ),
+        ];
+        // No contract has any of the IDs yet.
+        for name in [
+            "test_mock",
+            "test_recipient",
+            "merkle_tree_hook",
+            "ism_multisig",
+            "mailbox",
+            "validator_announce",
+            "protocol_fee",
+            "aggregation_hook",
+            "igp",
+            "warp_native",
+        ] {
+            let id = hex::encode(ids[name].to_bytes());
+            replies.push((
+                leak(format!("{id}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ));
+        }
+        for _ in names {
+            replies.extend([
+                ("/on/transactions/preverify", 200, Vec::new()),
+                ("/on/transactions/propagate", 200, Vec::new()),
+                ("/graphql", 200, executed.clone()),
+            ]);
+        }
+        replies.push(("/graphql", 200, accepted));
+        // Then the read-back: the owners Rusk records, then each view.
+        for (_, contract) in sent.contracts() {
+            let id = hex::encode(contract.to_bytes());
+            replies.push((leak(format!("{id}/owner")), 200, pk_bytes.to_vec()));
+        }
+        for check in super::deployment::checks(&sent) {
+            let mut reply = check.expected.encode();
+            if let Some((name, method, value)) = &tamper {
+                if check.name == *name && check.method == *method {
+                    reply = value.encode();
+                }
+            }
+            let path = format!("{}/{}", hex::encode(check.contract), check.method);
+            replies.push((leak(path), 200, reply));
+        }
+
+        let (url, server) = mock_rues(replies);
+        let command = Cli::try_parse_from([
+            "dusk-tx",
+            "deploy-hyperlane",
+            "--rues-url",
+            &url,
+            "--secret-key",
+            &secret,
+            "--domain",
+            "1146442572",
+            "--wasm-dir",
+            dir.to_str().unwrap(),
+            "--deploy-warp-native",
+            "--default-ism",
+            "messageIdMultisig",
+            "--multisig-validators",
+            &format!("0x{},0x{}", hex::encode(a.0), hex::encode(b.0)),
+            "--multisig-threshold",
+            "2",
+            "--igp-domain-config",
+            "11155111:110000:375000:1000000000",
+            "--expected-chain-id",
+            "2",
+        ])
+        .unwrap()
+        .command;
+        let result = super::run(command).await;
+        let requests = server.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        (result, requests)
+    }
+
+    /// An honest deployment is read back whole before it is reported, and
+    /// one whose Mailbox someone else initialized, or whose route came with
+    /// a router enrolled, is not reported at all.
+    #[tokio::test]
+    async fn deploy_hyperlane_reports_only_a_deployment_that_reads_back_as_sent() {
+        use super::deployment::Value;
+        let (result, requests) = deploy_hyperlane_with(None).await;
+        result.unwrap();
+        // 2 + 10 + 30 + 1 before the read-back: its 10 owners and 40 views.
+        assert_eq!(requests.len(), 93, "{requests:?}");
+        assert!(requests[43..]
+            .iter()
+            .all(|(path, _)| !path.contains("/transactions/")));
+
+        let attacker = [0xee; 32];
+        for (name, method, value, expected) in [
+            (
+                "Mailbox",
+                "owner",
+                Value::Owner(Some(attacker)),
+                "owner is the account with hash eeee",
+            ),
+            (
+                "WarpNative",
+                "enrolled_router",
+                Value::Bytes32(attacker),
+                "enrolled_router(1146442572) is eeee",
+            ),
+            (
+                "IsmMultisig",
+                "validators_and_threshold",
+                Value::Validators(vec![super::EthAddress([0x11; 20])], 1),
+                "validators_and_threshold is 1 of [0x1111",
+            ),
+            (
+                "IGP",
+                "beneficiary",
+                Value::Bytes32(attacker),
+                "beneficiary is eeee",
+            ),
+        ] {
+            let (result, requests) = deploy_hyperlane_with(Some((name, method, value))).await;
+            let error = result.unwrap_err();
+            assert!(
+                error.contains("reports none of them as deployed"),
+                "{error}"
+            );
+            assert!(error.contains(&format!("{name} ")), "{error}");
+            assert!(error.contains(expected), "{expected}: {error}");
+            assert_eq!(requests.len(), 93);
+        }
     }
 
     /// `top_up_quote` is the IGP's `quote_pay_for_gas`: gas x price x rate
@@ -4157,11 +4855,30 @@ async fn cmd_fund_dispatch(
     if amount == 0 {
         return Err("Funding amount must be greater than zero".into());
     }
-    let mailbox = ContractId::from_bytes(parse_bytes32(mailbox_hex)?);
+    let mailbox_bytes = parse_bytes32(mailbox_hex)?;
+    let mailbox = ContractId::from_bytes(mailbox_bytes);
     let payer = parse_bytes32(payer_hex)?;
     let args = rkyv_serialize(&(payer, amount));
     let client = RuesClient::new(rues_url)?;
     let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    // A failed transaction pays its whole gas limit, so check what the
+    // Mailbox would refuse first: a payer with no credit is a new entry,
+    // which takes the minimum and room under the Mailbox's 3 GiB.
+    let credit: u64 = client
+        .contract_query(&mailbox_bytes, "fee_credit", &(payer,))
+        .await
+        .map_err(|e| format!("Can't read the payer's dispatch credit: {e}"))?;
+    if credit == 0 {
+        if amount < MIN_NEW_PAYER_CREDIT {
+            return Err(format!(
+                "The payer has no dispatch credit, and the Mailbox takes at least \
+                 {MIN_NEW_PAYER_CREDIT} LUX (0.01 DUSK) to fund a payer with none; \
+                 {amount} LUX is less"
+            ));
+        }
+        check_room_for_new_payer(&client, &mailbox_bytes, "The payer has no dispatch credit")
+            .await?;
+    }
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
     let (nonce, _balance) = client.query_account(&pk).await?;
     let tx = moonlight_call_with_deposit(
@@ -4186,6 +4903,29 @@ async fn cmd_fund_dispatch(
     });
     confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// Refuse when the Mailbox at `mailbox` has no room for a new payer: its
+/// memory plus what a new credit entry can allocate would pass 3 GiB, where
+/// it takes no new payers (its dispatch is closing). `why` says why the call
+/// adds a payer.
+async fn check_room_for_new_payer(
+    client: &RuesClient,
+    mailbox: &[u8; 32],
+    why: &str,
+) -> Result<(), String> {
+    let memory: u64 = client
+        .contract_query(mailbox, "memory_bytes", &())
+        .await
+        .map_err(|e| format!("Can't read the Mailbox's memory: {e}"))?;
+    if memory.saturating_add(NEW_ENTRY_MEMORY_BOUND) > NEW_ENTRY_MEMORY_LIMIT {
+        return Err(format!(
+            "{why}, and the Mailbox's memory, {memory} bytes, is within 13 pages of 3 GiB: \
+             it takes no new payers there (its dispatch is closing), so the transaction \
+             would fail"
+        ));
+    }
     Ok(())
 }
 
@@ -4263,6 +5003,32 @@ fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
         return Err("Invalid recipient public key: identity or invalid curve point".into());
     }
     Ok(recipient)
+}
+
+/// The pinned canonical DRC20's init argument: `drc20-roles-pausable` from
+/// dusk-network/contracts at the revision
+/// `scripts/build-canonical-drc20-fixture.sh` pins.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+struct CanonicalDrc20Init {
+    admin: Drc20Account,
+    token: CanonicalDrc20Token,
+    cap: u64,
+}
+
+/// The canonical DRC20's token settings.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+struct CanonicalDrc20Token {
+    name: String,
+    symbol: String,
+    decimals: u8,
+    initial_balances: Vec<CanonicalDrc20Balance>,
+}
+
+/// One balance the canonical DRC20 mints at its init.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+struct CanonicalDrc20Balance {
+    account: Drc20Account,
+    amount: u64,
 }
 
 fn rkyv_serialize<T>(value: &T) -> Vec<u8>
@@ -4597,6 +5363,54 @@ fn confirmation_error_with_hash(tx_id: &str, error: &str) -> String {
 
 // ── cmd_deploy_hyperlane ────────────────────────────────────────────────────
 
+/// Check a DRC20 named by ID for a collateral route: it exists, answers the
+/// DRC20 `balance_of`, and isn't a warp route. A WarpDrc20 is one, and every
+/// route answers `mailbox`; see [`WARP_DRC20_COLLATERAL_REFUSED`]. The token
+/// counts as no route only once the node has shown it has no `mailbox`
+/// ([`RuesClient::optional_view`]): a reply that doesn't stops the deploy.
+async fn check_explicit_collateral_token(
+    client: &RuesClient,
+    token: ContractId,
+    deployer: Drc20Account,
+) -> Result<(), String> {
+    let token_hex = hex::encode(token.to_bytes());
+    if !client.contract_exists(&token_hex).await? {
+        return Err(format!(
+            "Explicit collateral token does not exist on-chain: {token_hex}"
+        ));
+    }
+    let balance_of = Drc20BalanceOf { account: deployer };
+    client
+        .contract_query::<_, u64>(&token.to_bytes(), "balance_of", &balance_of)
+        .await
+        .map_err(|error| {
+            format!(
+                "Explicit collateral token {token_hex} does not expose the required DRC20 balance_of ABI: {error}"
+            )
+        })?;
+    let mailbox = client
+        .optional_view::<_, [u8; 32]>(
+            &token.to_bytes(),
+            "mailbox",
+            &(),
+            ("balance_of", &rkyv_serialize(&balance_of)),
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "Can't tell whether the explicit collateral token {token_hex} is a warp route, \
+                 which it must not be, so nothing was deployed: {error}"
+            )
+        })?;
+    if mailbox.is_some() {
+        return Err(format!(
+            "Explicit collateral token {token_hex} is a warp route, so a WarpDrc20: \
+             {WARP_DRC20_COLLATERAL_REFUSED}"
+        ));
+    }
+    Ok(())
+}
+
 async fn cmd_deploy_hyperlane(
     rues_url: &str,
     keys_path: Option<PathBuf>,
@@ -4610,6 +5424,7 @@ async fn cmd_deploy_hyperlane(
     deploy_warp_drc20: bool,
     deploy_warp_native: bool,
     warp_collateral_token: Option<&str>,
+    collateral_token_supply: u64,
     warp_name: &str,
     warp_symbol: &str,
     warp_decimals: u8,
@@ -4619,6 +5434,11 @@ async fn cmd_deploy_hyperlane(
     multisig_threshold: u8,
     expected_chain_id: u8,
 ) -> Result<(), String> {
+    if warp_collateral_token == Some("warp-drc20") {
+        return Err(format!(
+            "--warp-collateral-token warp-drc20 is refused: {WARP_DRC20_COLLATERAL_REFUSED}"
+        ));
+    }
     let igp_domain_configs = parse_igp_domain_configs(igp_domain_config_args)?;
     let default_ism = parse_default_ism(default_ism)?;
     let (multisig_validators, multisig_threshold) = match default_ism {
@@ -4698,37 +5518,26 @@ async fn cmd_deploy_hyperlane(
     let warp_native_bytes = deploy_warp_native
         .then(|| load_wasm("warp_native"))
         .transpose()?;
-    let wraps_deployed_warp = warp_collateral_token == Some("warp-drc20");
-    if wraps_deployed_warp && !deploy_warp_drc20 {
-        return Err("--warp-collateral-token warp-drc20 requires --deploy-warp-drc20".into());
-    }
+    let deploys_canonical_token = warp_collateral_token == Some(CANONICAL_DRC20);
     let explicit_collateral_token = warp_collateral_token
-        .filter(|token| *token != "warp-drc20")
+        .filter(|token| *token != CANONICAL_DRC20)
         .map(parse_bytes32)
         .transpose()?
         .map(ContractId::from_bytes);
     if let Some(token) = explicit_collateral_token {
-        let token_hex = hex::encode(token.to_bytes());
-        if !client.contract_exists(&token_hex).await? {
-            return Err(format!(
-                "Explicit collateral token does not exist on-chain: {token_hex}"
-            ));
-        }
-        client
-            .contract_query::<_, u64>(
-                &token.to_bytes(),
-                "balance_of",
-                &Drc20BalanceOf {
-                    account: Drc20Account::moonlight(&pk),
-                },
-            )
-            .await
-            .map_err(|error| {
-                format!(
-                    "Explicit collateral token {token_hex} does not expose the required DRC20 balance_of ABI: {error}"
-                )
-            })?;
+        check_explicit_collateral_token(&client, token, Drc20Account::moonlight(&pk)).await?;
     }
+    let canonical_token_bytes = deploys_canonical_token
+        .then(|| {
+            let path = wasm_dir.join(CANONICAL_DRC20_WASM);
+            std::fs::read(&path).map_err(|e| {
+                format!(
+                    "Failed to read {} (make canonical-drc20-fixture builds it): {e}",
+                    path.display()
+                )
+            })
+        })
+        .transpose()?;
     let warp_collateral_bytes = warp_collateral_token
         .is_some()
         .then(|| load_wasm("warp_drc20_collateral"))
@@ -4773,16 +5582,21 @@ async fn cmd_deploy_hyperlane(
         nonce_counter += 1;
         (id, warp_bytes)
     });
-    let collateral_token = if wraps_deployed_warp {
-        warp_drc20_id.as_ref().map(|(id, _)| *id)
-    } else {
-        explicit_collateral_token
-    };
     let warp_native_id = warp_native_bytes.map(|warp_bytes| {
         let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
         nonce_counter += 1;
         (id, warp_bytes)
     });
+    let canonical_token_id = canonical_token_bytes.map(|token_bytes| {
+        let id = gen_contract_id(&token_bytes, nonce_counter, &pk_bytes);
+        nonce_counter += 1;
+        (id, token_bytes)
+    });
+    let collateral_token = canonical_token_id
+        .as_ref()
+        .map(|(id, _)| *id)
+        .or(explicit_collateral_token);
+    let deployed_canonical_token = canonical_token_id.as_ref().map(|(id, _)| *id);
     let warp_collateral_id = warp_collateral_bytes.map(|warp_bytes| {
         let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
         (id, warp_bytes)
@@ -4823,6 +5637,9 @@ async fn cmd_deploy_hyperlane(
     }
     if let Some((ref id, _)) = warp_native_id {
         eprintln!("    WarpNative:      {}", hex::encode(id.to_bytes()));
+    }
+    if let Some((ref id, _)) = canonical_token_id {
+        eprintln!("    CollateralToken: {}", hex::encode(id.to_bytes()));
     }
     if let Some((ref id, _)) = warp_collateral_id {
         eprintln!("    WarpCollateral:  {}", hex::encode(id.to_bytes()));
@@ -4880,6 +5697,12 @@ async fn cmd_deploy_hyperlane(
         let warp_hex = hex::encode(warp_id.to_bytes());
         if client.contract_exists(&warp_hex).await? {
             existing.push(("WarpNative".into(), warp_hex));
+        }
+    }
+    if let Some((ref token_id, _)) = canonical_token_id {
+        let token_hex = hex::encode(token_id.to_bytes());
+        if client.contract_exists(&token_hex).await? {
+            existing.push(("CollateralToken".into(), token_hex));
         }
     }
     if let Some((ref warp_id, _)) = warp_collateral_id {
@@ -4964,11 +5787,11 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     .await?;
 
     // 4. Optional: MessageIdMultisigISM
+    let mut validators = multisig_validators;
+    validators.sort();
     if let Some(ism_multisig_bytes) = ism_multisig_bytes {
         let _ism_multisig_id = ism_multisig_id.expect("ISM ID missing");
-        let mut validators = multisig_validators;
-        validators.sort();
-        let init = rkyv_serialize(&(owner_h256, validators, multisig_threshold));
+        let init = rkyv_serialize(&(owner_h256, validators.clone(), multisig_threshold));
         deploy_one(
             &client,
             &sk,
@@ -4988,8 +5811,8 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
 
     // 5. ProtocolFee: funded through the aggregation hook.
     let pf_init = rkyv_serialize(&(
-        1_000_000u64,
-        100_000_000u64,
+        PROTOCOL_FEE,
+        MAX_PROTOCOL_FEE,
         aggregation_hook_id,
         owner_h256,
         owner_h256,
@@ -5148,7 +5971,41 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         None
     };
 
-    // 12. Optional: existing DRC20 collateral route.
+    // 12. Optional: the pinned canonical DRC20 the collateral route wraps,
+    // its whole supply minted to the deployer.
+    if let Some((_, token_bytes)) = canonical_token_id {
+        let deployer = Drc20Account::moonlight(&pk);
+        let token_init = rkyv_serialize(&CanonicalDrc20Init {
+            admin: deployer,
+            token: CanonicalDrc20Token {
+                name: String::from("Canonical DRC20"),
+                symbol: String::from("CDRC20"),
+                decimals: warp_decimals,
+                initial_balances: vec![CanonicalDrc20Balance {
+                    account: deployer,
+                    amount: collateral_token_supply,
+                }],
+            },
+            cap: 0,
+        });
+        deploy_one(
+            &client,
+            &sk,
+            &pk,
+            token_bytes,
+            token_init,
+            &mut mn,
+            &mut dn,
+            &mut deployed,
+            gas_limit,
+            gas_price,
+            chain_id,
+            "CollateralToken",
+        )
+        .await?;
+    }
+
+    // 13. Optional: the DRC20 collateral route.
     let deployed_warp_collateral = if let Some((warp_id, warp_bytes)) = warp_collateral_id {
         let wrapped_token = collateral_token.expect("collateral token missing");
         let warp_init = rkyv_serialize(&(
@@ -5183,6 +6040,44 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         eprintln!("  Every deploy is in a final block");
     }
 
+    // Nothing is reported as deployed until every contract reads back as
+    // what was sent: a deploy or an init someone else front-ran would have
+    // chosen another owner or other bindings (deployment.rs).
+    let sent = deployment::Sent {
+        owner_key: pk_bytes.to_vec(),
+        owner: owner_h256,
+        domain,
+        test_mock: test_mock_id,
+        test_recipient: test_recipient_id,
+        merkle_tree_hook: merkle_tree_hook_id,
+        ism: ism_multisig_id.map(|id| (id, validators.clone(), multisig_threshold)),
+        protocol_fee: (protocol_fee_id, PROTOCOL_FEE, MAX_PROTOCOL_FEE),
+        aggregation_hook: aggregation_hook_id,
+        mailbox: mailbox_id,
+        validator_announce: va_id,
+        igp: (igp_id, igp_domain_configs.clone()),
+        warp_drc20: deployed_warp_drc20.map(|id| {
+            (
+                id,
+                warp_name.to_string(),
+                warp_symbol.to_string(),
+                warp_decimals,
+            )
+        }),
+        warp_native: deployed_warp_native,
+        canonical_token: deployed_canonical_token.map(|id| deployment::CanonicalToken {
+            id,
+            holder: rkyv_serialize(&Drc20BalanceOf {
+                account: Drc20Account::moonlight(&pk),
+            }),
+            supply: collateral_token_supply,
+        }),
+        warp_collateral: deployed_warp_collateral
+            .map(|id| (id, collateral_token.expect("collateral token missing"))),
+    };
+    let read_back = deployment::read_back(&client, &sent).await?;
+    eprintln!("  Read back {read_back} values: every contract holds what was sent");
+
     let mut contracts = json!({
         "test_mock": hex::encode(test_mock_id.to_bytes()),
         "test_recipient": hex::encode(test_recipient_id.to_bytes()),
@@ -5204,6 +6099,9 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     }
     if let Some(warp_id) = deployed_warp_collateral {
         contracts["warp_drc20_collateral"] = json!(hex::encode(warp_id.to_bytes()));
+        if let Some(token) = collateral_token {
+            contracts["collateral_token"] = json!(hex::encode(token.to_bytes()));
+        }
     }
 
     let output = json!({
@@ -5217,6 +6115,8 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             "gas_price": config.gas_price,
         })).collect::<Vec<_>>(),
         "contracts": contracts,
+        // How many values were read back, each as sent.
+        "read_back": read_back,
         // Every deploy is final once the last one is.
         "last_tx_id": deployed.last().map(|(tx_id, _)| tx_id),
         "last_block_height": confirmation.inclusion.block_height,
@@ -6546,64 +7446,6 @@ async fn cmd_enroll_router(
     Ok(())
 }
 
-// ── cmd_register_account ──────────────────────────────────────────────────
-
-async fn cmd_register_account(
-    rues_url: &str,
-    keys_path: Option<PathBuf>,
-    password: &str,
-    secret_key_hex: Option<String>,
-    secret_key_stdin: bool,
-    warp_contract_hex: &str,
-    expected_chain_id: u8,
-    gas_limit: u64,
-    gas_price: u64,
-) -> Result<(), String> {
-    let warp_bytes = parse_bytes32(warp_contract_hex)?;
-    let warp_id = ContractId::from_bytes(warp_bytes);
-
-    // The route registers the transaction signer. Only a claim registers an
-    // account for someone else (claim-pending --for).
-    let client = RuesClient::new(rues_url)?;
-    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let (nonce, _balance) = client.query_account(&pk).await?;
-
-    let tx = moonlight_call(
-        &sk,
-        warp_id,
-        "register_account",
-        Vec::new(),
-        gas_limit,
-        gas_price,
-        next_moonlight_nonce(nonce)?,
-        chain_id,
-    )?;
-
-    let tx_id = hex::encode(tx.hash().to_bytes());
-    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-
-    let h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
-    let pending: u64 = client
-        .contract_query(&warp_bytes, "pending_balance", &(h256,))
-        .await
-        .unwrap_or(0);
-
-    let mut output = account_identity(&pk);
-    output["success"] = json!(true);
-    output["fn_name"] = json!("register_account");
-    output["warp_contract"] = json!(warp_contract_hex);
-    output["pending"] = json!(pending.to_string());
-    output["tx_id"] = json!(tx_id);
-    confirmation.record(&mut output);
-    if pending > 0 {
-        output["next"] =
-            json!("Tokens are waiting in escrow for this account: run dusk-tx claim-pending");
-    }
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    Ok(())
-}
-
 // ── cmd_claim_pending ─────────────────────────────────────────────────────
 
 /// The route call a claim makes.
@@ -7248,6 +8090,15 @@ async fn cmd_drc20_approve(
     let client = RuesClient::new(rues_url)?;
     let chain_id = bind_chain_id(&client, expected_chain_id).await?;
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    if amount > 0 {
+        check_room_for_new_spender(
+            &client,
+            &token.to_bytes(),
+            Drc20Account::moonlight(&pk),
+            Drc20Account::Contract(spender),
+        )
+        .await?;
+    }
     let (nonce, _) = client.query_account(&pk).await?;
     let tx = moonlight_call(
         &sk,
@@ -7270,6 +8121,63 @@ async fn cmd_drc20_approve(
     });
     confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// Refuse an approval a WarpDrc20 would refuse: an allowance for a new
+/// spender when the owner already holds 64, or when the token's memory plus
+/// what the allowance can allocate would pass 3 GiB. A token that has no
+/// `allowance_count` isn't a WarpDrc20 and has neither limit, but it counts
+/// as having none only once the node has shown it
+/// ([`RuesClient::optional_view`]): a reply that doesn't stops the approval
+/// before it is signed.
+async fn check_room_for_new_spender(
+    client: &RuesClient,
+    token: &[u8; 32],
+    owner: Drc20Account,
+    spender: Drc20Account,
+) -> Result<(), String> {
+    let allowance_args = Drc20Allowance { owner, spender };
+    let allowance: u64 = client
+        .contract_query(token, "allowance", &allowance_args)
+        .await
+        .map_err(|e| format!("Can't read the current allowance: {e}"))?;
+    if allowance > 0 {
+        return Ok(());
+    }
+    let count = client
+        .optional_view::<_, u32>(
+            token,
+            "allowance_count",
+            &owner,
+            ("allowance", &rkyv_serialize(&allowance_args)),
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "Can't tell whether the token limits allowances, as a WarpDrc20 does, so \
+                 nothing was signed: {e}"
+            )
+        })?;
+    let Some(count) = count else {
+        return Ok(());
+    };
+    if count >= MAX_ALLOWANCES_PER_OWNER {
+        return Err(format!(
+            "The signer already holds {count} allowances on this WarpDrc20, the most an owner \
+             holds: approve 0 for one of them first"
+        ));
+    }
+    let memory: u64 = client
+        .contract_query(token, "memory_bytes", &())
+        .await
+        .map_err(|e| format!("Can't read the token's memory: {e}"))?;
+    if memory.saturating_add(NEW_ALLOWANCE_MEMORY_BOUND) > NEW_ENTRY_MEMORY_LIMIT {
+        return Err(format!(
+            "The WarpDrc20's memory, {memory} bytes, is within 14 pages of 3 GiB, where it \
+             takes no allowances for new spenders, so the approval would fail"
+        ));
+    }
     Ok(())
 }
 
@@ -7397,6 +8305,28 @@ async fn cmd_transfer_remote(
     } else {
         dispatch_fee
     };
+    // The route funds its dispatch credit for each transfer that pays a fee,
+    // and its credit is spent to zero, which leaves no entry: so it is a new
+    // payer each time unless someone gave it standing credit. A free
+    // dispatch funds nothing and adds no entry.
+    if dispatch_fee > 0 {
+        let mailbox: [u8; 32] = client
+            .contract_query(&warp_bytes, "mailbox", &())
+            .await
+            .map_err(|e| format!("Can't read the route's Mailbox: {e}"))?;
+        let route_credit: u64 = client
+            .contract_query(&mailbox, "fee_credit", &(warp_bytes,))
+            .await
+            .map_err(|e| format!("Can't read the route's dispatch credit: {e}"))?;
+        if route_credit == 0 {
+            check_room_for_new_payer(
+                &client,
+                &mailbox,
+                "The route funds new dispatch credit for each transfer",
+            )
+            .await?;
+        }
+    }
 
     let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
 
@@ -7510,8 +8440,8 @@ fn format_dusk(lux: u64) -> String {
 }
 
 /// The account's address and the recipient hash warp routes deliver to:
-/// `keccak256` of the 96-byte public key, which `register_account` maps back
-/// to the account.
+/// `keccak256` of the 96-byte public key, which a route maps back to the
+/// account once the account claims its first transfer there.
 fn account_identity(pk: &BlsPublicKey) -> serde_json::Value {
     let pk_bytes = pk.to_bytes();
     json!({

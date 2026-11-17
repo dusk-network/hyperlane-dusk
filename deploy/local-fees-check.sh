@@ -128,13 +128,6 @@ dusk_latest_id() { dq --contract "$DUSK_MAILBOX" --method latest_dispatched_id -
 gql() { curl -sf -m 30 -X POST "${DUSK_RUES_URL%/}/on/graphql/query" --data "$1"; }
 dusk_height() { gql 'query { block(height: -1) { header { height } } }' | jq -er '.block.header.height'; }
 
-# The transfer from Anvil (3.) pays the deployer, which a fresh route holds
-# in escrow until the account is registered.
-if [ "$(daccount --warp-contract "$DUSK_ROUTE" | jq -r '.route.registered')" != true ]; then
-    dtx register-account --warp-contract "$DUSK_ROUTE" >/dev/null || fail "Can't register the deployer on $DUSK_ROUTE"
-    ok "registered the deployer on the native route"
-fi
-
 # ── 1. A warp transfer from Dusk ─────────────────────────────────────────────
 
 minted="$(cast call "$EVM_TOKEN" "balanceOf(address)(uint256)" "$EVM_USER" --rpc-url "$EVM_RPC" | num)"
@@ -185,6 +178,15 @@ evm_transfer_id="$(cast receipt "$tx" --json --rpc-url "$EVM_RPC" \
     | jq -r --arg s "$(cast sig-event 'DispatchId(bytes32)')" '.logs[] | select(.topics[0] == $s) | .topics[1]')"
 info "$EVM_CHAIN_NAME -> Dusk transfer $evm_transfer_id paid $quote wei, $(( $(cast balance "$EVM_IGP" --rpc-url "$EVM_RPC") - igp_balance )) of it to the EVM IGP"
 wait_until "$DELIVERY_TIMEOUT" "the transfer from $EVM_CHAIN_NAME was delivered" dusk_delivered "$evm_transfer_id"
+# A route pays an account it hasn't paid before into escrow. The deployer's
+# claim pays it out and registers the deployer, so a later transfer to it
+# pays out directly.
+pending="$(dq --contract "$DUSK_ROUTE" --method pending_balance --return-type u64 --arg-bytes32 "$account")"
+if [ "$pending" != 0 ]; then
+    [ "$pending" = 500000000 ] || fail "the transfer from $EVM_CHAIN_NAME escrowed $pending LUX"
+    dtx claim-pending --warp-contract "$DUSK_ROUTE" >/dev/null || fail "Can't claim the deployer's escrow on $DUSK_ROUTE"
+    ok "claimed the transfer from escrow, which registered the deployer on the native route"
+fi
 [ "$(dq --contract 0100000000000000000000000000000000000000000000000000000000000000 --method contract_balance \
     --return-type u64 --arg-bytes32 "$DUSK_ROUTE")" = "$((locked - 500000000))" ] \
     || fail "the transfer from $EVM_CHAIN_NAME released the wrong amount"

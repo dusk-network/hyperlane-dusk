@@ -14,7 +14,8 @@
 //! that announced it. An agent reads a validator's locations from those
 //! events and checks each against
 //! `get_announced_storage_location_hashes(validator)`, which lists the hashes
-//! in announcement order.
+//! in announcement order. And contracts can't call `announce`: each
+//! announcement is a transaction of its own.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -39,6 +40,7 @@ mod validator_announce {
 
     use dusk_core::abi::{self, ContractId, CONTRACT_ID_BYTES};
 
+    use hyperlane_dusk_types::caller;
     use hyperlane_dusk_types::events;
     use hyperlane_dusk_types::message::keccak256;
     use hyperlane_dusk_types::storage::ChunkedLog;
@@ -111,12 +113,20 @@ mod validator_announce {
         /// over the announcement digest. The contract stores
         /// `keccak256(storage_location)`; the location itself is in the
         /// `ValidatorAnnouncement` event.
+        ///
+        /// Only a transaction's own call or a query can announce, so each
+        /// announcement costs a transaction: a contract can't make many in
+        /// one.
         pub fn announce(
             &mut self,
             validator: EthAddress,
             storage_location: String,
             signature: Vec<u8>,
         ) -> bool {
+            assert!(
+                caller::is_transaction_or_query(),
+                "ValidatorAnnounce: announce must be a transaction's own call"
+            );
             assert!(
                 !storage_location.is_empty(),
                 "ValidatorAnnounce: storage location cannot be empty"
@@ -219,14 +229,15 @@ mod validator_announce {
 
         /// Returns the persisted state layout version expected by deployment tooling.
         ///
-        /// Version 2 stores location hashes instead of locations: it replaces
-        /// `get_announced_storage_locations` and
+        /// Version 3 takes `announce` only as a transaction's own call or a
+        /// query. Version 2 stores location hashes instead of locations: it
+        /// replaces `get_announced_storage_locations` and
         /// `get_announced_storage_locations_for_validator` with
         /// `get_announced_storage_location_hashes`, and pages of
         /// `get_announced_validators` hold up to 256 validators.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            2
+            3
         }
 
         // =================================================================

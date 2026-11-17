@@ -13,6 +13,8 @@
 //   pays per operation.
 // - `marginal gas`: the gas one more call adds to a transaction that makes
 //   many, from a contract: what someone filling a contract's memory pays.
+//   Deliveries and announcements are a transaction's own calls, which no
+//   contract can make, so they report `tx gas` only.
 // - `<contract> bytes`: how much the contract's memory grew per call, over
 //   many calls, measured in whole 64 KiB pages.
 //
@@ -101,6 +103,11 @@ fn deploy_plain(session: &mut TestSession, name: &str, id: ContractId) {
     deploy::<()>(session, name, id, None);
 }
 
+/// The red-team contract at `id`, whose `init` makes no calls.
+fn deploy_attacker(session: &mut TestSession, id: ContractId) {
+    deploy(session, "redteam_attacker", id, Some(&Vec::<Action>::new()));
+}
+
 fn report(operation: &str, metric: &str, value: impl std::fmt::Display) {
     println!("cost|{operation}|{metric}|{value}");
 }
@@ -184,6 +191,47 @@ fn measure_batches(
     }
 }
 
+/// Runs calls that must each be a transaction's own, `make(i)` being the
+/// `i`-th. Reports the gas of a transaction making one, over 16, and the
+/// memory each contract in `grows` gained per call over `total` more, made
+/// as direct calls: they run with nothing below them, as a transaction's
+/// own call does, without its signature check.
+fn measure_top_level(
+    session: &mut TestSession,
+    operation: &str,
+    total: u32,
+    grows: &[(&str, ContractId)],
+    mut make: impl FnMut(u32) -> Action,
+) {
+    const SAMPLES: u32 = 16;
+    let gas = average_tx_gas(SAMPLES, |i| {
+        let (target, fn_name, args) = make(i);
+        session
+            .call_public_raw(&RELAYER_SK, target, &fn_name, args)
+            .map(|receipt| receipt.gas_spent)
+    });
+    report(operation, "tx gas", gas);
+
+    let before: Vec<u64> = grows
+        .iter()
+        .map(|(_, id)| session.memory_len(*id))
+        .collect();
+    for i in SAMPLES..SAMPLES + total {
+        let (target, fn_name, args) = make(i);
+        session
+            .direct_call_raw(target, &fn_name, args)
+            .unwrap_or_else(|e| panic!("{operation} {i} failed: {e}"));
+    }
+    for ((name, id), before) in grows.iter().zip(before) {
+        let grown = session.memory_len(*id) - before;
+        report(
+            operation,
+            &format!("{name} bytes"),
+            format!("{:.1}", grown as f64 / f64::from(total)),
+        );
+    }
+}
+
 /// The deployed hook set: MerkleTreeHook and ProtocolFee aggregated as the
 /// required hook, the IGP as the default hook, TestMock as the default ISM.
 fn session_with_deployed_hooks() -> TestSession {
@@ -244,7 +292,7 @@ fn session_with_deployed_hooks() -> TestSession {
             AGGREGATION_HOOK_ID,
         )),
     );
-    deploy_plain(&mut session, "redteam_attacker", ATTACKER_ID);
+    deploy_attacker(&mut session, ATTACKER_ID);
     session
 }
 
@@ -273,7 +321,7 @@ fn session_with_free_hooks() -> TestSession {
             MERKLE_TREE_HOOK_ID,
         )),
     );
-    deploy_plain(&mut session, "redteam_attacker", ATTACKER_ID);
+    deploy_attacker(&mut session, ATTACKER_ID);
     session
 }
 
@@ -476,9 +524,15 @@ fn process_costs() {
                 dusk(1.0),
             )
             .expect("an outbound transfer gives the route custody");
+        // The route registers the owner when it claims a first transfer.
+        let first = inbound_transfer(1_000, *OWNER_ID, 1_000);
+        let metadata = signed_metadata(&first, &signers);
         session
-            .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "register_account", &())
-            .expect("register_account should succeed");
+            .call_public::<_, ()>(&RELAYER_SK, MAILBOX_ID, "process", &(metadata, first))
+            .expect("a first transfer waits in escrow");
+        session
+            .call_public::<_, ()>(&OWNER_SK, WARP_NATIVE_ID, "claim_pending", &())
+            .expect("claim_pending should succeed");
         let gas = average_tx_gas(16, |nonce| {
             let inbound = inbound_transfer(nonce, *OWNER_ID, 1_000);
             let metadata = signed_metadata(&inbound, &signers);
@@ -498,11 +552,10 @@ fn process_costs() {
     session
         .direct_call::<_, ()>(ATTACKER_ID, "set_returns", &(0u64, ATTACKER_ID))
         .expect("set_returns should succeed");
-    measure_batches(
+    measure_top_level(
         &mut session,
         "process, self-verifying recipient",
         65_536,
-        256,
         &[("Mailbox", MAILBOX_ID)],
         |nonce| {
             let inbound = message::encode(
@@ -539,14 +592,16 @@ fn announcement(index: u32, location: &str) -> (EthAddress, Vec<u8>) {
 #[test]
 #[ignore = "measurement for docs/storage.md; slow"]
 fn announce_costs() {
-    let mut session = TestSession::instantiate(vec![(&*OWNER_PK, dusk(1_000_000.0))]);
+    let mut session = TestSession::instantiate(vec![
+        (&*OWNER_PK, dusk(1_000_000.0)),
+        (&*RELAYER_PK, dusk(1_000.0)),
+    ]);
     deploy(
         &mut session,
         "validator_announce",
         VALIDATOR_ANNOUNCE_ID,
         Some(&(LOCAL_DOMAIN, MAILBOX_ID)),
     );
-    deploy_plain(&mut session, "redteam_attacker", ATTACKER_ID);
 
     // A validator's announcement of a typical S3 location.
     let location = |i: u32| format!("s3://hyperlane-validator-{i:08}/eu-west-1");
@@ -565,11 +620,10 @@ fn announce_costs() {
     report("announce, new validator, 46-byte location", "tx gas", gas);
 
     // Fresh keys with the longest location accepted, 1 KiB.
-    measure_batches(
+    measure_top_level(
         &mut session,
         "announce, new validator, 1 KiB location",
         32_768,
-        48,
         &[("ValidatorAnnounce", VALIDATOR_ANNOUNCE_ID)],
         |i| {
             let mut location = format!("s3://{i:08}/");
@@ -607,10 +661,8 @@ fn drc20_costs() {
             vec![(REMOTE_DOMAIN, REMOTE_ROUTER)],
         )),
     );
-    session
-        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "register_account", &())
-        .expect("register_account should succeed");
-    // Mint to the owner, and to the attacker contract through escrow.
+    // Mint to the owner, which registers by claiming it, and to the
+    // attacker contract, through escrow.
     for (nonce, recipient) in [(0u32, *OWNER_ID), (1, ATTACKER_ID.to_bytes())] {
         let inbound = message::encode(
             VERSION,
@@ -625,6 +677,9 @@ fn drc20_costs() {
             .direct_call::<_, ()>(MAILBOX_ID, "process", &(Vec::<u8>::new(), inbound))
             .expect("the inbound transfer should be delivered");
     }
+    session
+        .call_public::<_, ()>(&OWNER_SK, WARP_DRC20_ID, "claim_pending", &())
+        .expect("claim_pending should succeed");
     run(
         &mut session,
         vec![action(WARP_DRC20_ID, "claim_pending_contract", &())],
@@ -677,22 +732,41 @@ fn drc20_costs() {
             )
         },
     );
-    measure_batches(
-        &mut session,
+    // An owner holds at most 64 allowances, so 512 contracts approve 64
+    // spenders each, in a direct call apiece.
+    let owners = 512u32;
+    let before = session.memory_len(WARP_DRC20_ID);
+    for owner in 0..owners {
+        let mut id = [0x80; 32];
+        id[..4].copy_from_slice(&owner.to_le_bytes());
+        let attacker = ContractId::from_bytes(id);
+        deploy_attacker(&mut session, attacker);
+        let actions: Vec<Action> = (0..64)
+            .map(|index| {
+                action(
+                    WARP_DRC20_ID,
+                    "approve",
+                    &ApproveCall {
+                        spender: fresh_moonlight(owner * 64 + index, 0x64),
+                        amount: 1,
+                    },
+                )
+            })
+            .collect();
+        let args = rkyv::to_bytes::<_, 4096>(&(actions, true))
+            .expect("the batch should serialize")
+            .to_vec();
+        session
+            .direct_call_raw(attacker, "run", args)
+            .unwrap_or_else(|e| panic!("owner {owner}'s approvals failed: {e}"));
+    }
+    report(
         "DRC20 approve a new spender",
-        32_768,
-        128,
-        &grows,
-        |i| {
-            action(
-                WARP_DRC20_ID,
-                "approve",
-                &ApproveCall {
-                    spender: fresh_moonlight(i, 0x64),
-                    amount: 1,
-                },
-            )
-        },
+        "WarpDrc20 bytes",
+        format!(
+            "{:.1}",
+            (session.memory_len(WARP_DRC20_ID) - before) as f64 / f64::from(owners * 64)
+        ),
     );
 }
 

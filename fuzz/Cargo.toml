@@ -1,0 +1,94 @@
+[package]
+name = "hyperlane-dusk-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# A workspace of its own: the fuzz targets build natively with sanitizers,
+# without the contract workspace's Rusk dependencies, and keep their own lock.
+[workspace]
+members = ["."]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# The shared types, as the agents use them: no `abi` (software keccak256), no
+# Rusk dependency.
+hyperlane-dusk-types = { path = "../types" }
+rkyv = { version = "0.7", default-features = false, features = ["alloc", "size_32", "validation"] }
+# Independent references.
+sha3 = "0.10"
+k256 = { version = "0.13", features = ["ecdsa"] }
+
+[profile.release]
+debug = 1
+overflow-checks = true
+
+[[bin]]
+name = "message_codec"
+path = "fuzz_targets/message_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keccak"
+path = "fuzz_targets/keccak.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "token_message"
+path = "fuzz_targets/token_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "digests_signatures"
+path = "fuzz_targets/digests_signatures.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ism_metadata"
+path = "fuzz_targets/ism_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunked_log"
+path = "fuzz_targets/chunked_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "block_heights"
+path = "fuzz_targets/block_heights.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merkle"
+path = "fuzz_targets/merkle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rkyv_types"
+path = "fuzz_targets/rkyv_types.rs"
+test = false
+doc = false
+bench = false

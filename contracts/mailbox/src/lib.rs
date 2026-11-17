@@ -12,7 +12,8 @@
 //!
 //! - **process**: Deliver a message from a remote chain. The message is
 //!   verified by an Interchain Security Module (ISM) and then delivered
-//!   to the recipient contract's `handle` function.
+//!   to the recipient contract's `handle` function. Unlike Solidity's,
+//!   it takes no calls from contracts: each delivery is a transaction.
 
 #![no_std]
 #![cfg(target_family = "wasm")]
@@ -43,6 +44,7 @@
 mod mailbox {
     extern crate alloc;
 
+    use alloc::collections::btree_map::Entry;
     use alloc::collections::{BTreeMap, BTreeSet};
     use alloc::string::String;
     use alloc::vec::Vec;
@@ -73,10 +75,24 @@ mod mailbox {
     /// Size of a wasm32 memory page.
     const WASM_PAGE_BYTES: u64 = 64 * 1024;
 
-    /// Memory `dispatch` never grows this contract past: 3 GiB of the 4 GiB
-    /// a wasm32 contract can address. Memory never shrinks, so the last GiB
-    /// stays free for `process`, which keeps working, and for withdrawals.
+    /// Memory `dispatch` and credit for a new payer never grow this contract
+    /// past: 3 GiB of the 4 GiB a wasm32 contract can address. Memory never
+    /// shrinks, so the last GiB stays free for `process`, which keeps
+    /// working, and for withdrawals and top-ups, which add no entry.
     const DISPATCH_MEMORY_LIMIT: u64 = 3 * 1024 * 1024 * 1024;
+
+    /// The most B-tree nodes adding a key to a map allocates: one per level
+    /// of the tree when every level splits, and a new root. Every node but
+    /// the root holds at least 5 keys, so a map of n keys has at most
+    /// log6((n + 1) / 2) + 1 levels, 12 for any n below 2^32, and an
+    /// insertion allocates at most 13 nodes.
+    const MAX_NODES_PER_INSERT: u64 = 13;
+
+    /// The most memory a new payer's credit can grow this contract by. A
+    /// node of `fee_credits` takes under 600 bytes, so dlmalloc, which grows
+    /// memory in whole pages when no free block fits, grows it by at most a
+    /// page for each.
+    const NEW_CREDIT_MEMORY_BOUND: u64 = MAX_NODES_PER_INSERT * WASM_PAGE_BYTES;
 
     /// Bytes dlmalloc adds to a request before growing memory for it: the
     /// chunk header and alignment, and the segment footer it keeps at the top
@@ -85,6 +101,14 @@ mod mailbox {
 
     /// The hook function the transfer contract calls with a hook's payment.
     const RECEIVE_PAYMENT: &str = "receive_payment";
+
+    /// The least `fund_dispatch` takes for a payer with no credit: 0.01 DUSK.
+    /// Each payer with credit is an entry in this contract's memory for as
+    /// long as the credit lasts, so a new one costs at least this much.
+    /// Credit is withdrawable, but a withdrawal decodes a key for about 57M
+    /// gas, 0.057 DUSK at 1 LUX per gas, so dust credit isn't worth taking
+    /// back.
+    const MIN_NEW_PAYER_CREDIT: u64 = 10_000_000;
 
     // =====================================================================
     // State
@@ -239,15 +263,23 @@ mod mailbox {
         ///
         /// Anyone may fund an identity, but only dispatches whose encoded
         /// sender equals `payer` can consume the credit.
+        ///
+        /// A payer with no credit takes at least [`MIN_NEW_PAYER_CREDIT`],
+        /// 0.01 DUSK; one with credit takes any amount. Credit that reaches
+        /// zero, spent by dispatches or withdrawn, leaves no entry behind, so
+        /// its payer needs the minimum again. A payer with no credit is also
+        /// refused once its entry could take the memory past 3 GiB, where
+        /// dispatch closes too (see [`Self::add_credit`]).
         pub fn fund_dispatch(&mut self, payer: H256, amount: u64) {
             assert!(payer != [0u8; 32], "Mailbox: payer cannot be zero");
             assert!(amount > 0, "Mailbox: funding amount is zero");
+            assert!(
+                amount >= MIN_NEW_PAYER_CREDIT || self.fee_credits.contains_key(&payer),
+                "Mailbox: a payer with no credit takes at least 0.01 DUSK"
+            );
             let _: () = abi::call(TRANSFER_CONTRACT, "deposit", &amount)
                 .expect("Mailbox: fee deposit failed");
-            let credit = self.fee_credits.entry(payer).or_insert(0);
-            *credit = credit
-                .checked_add(amount)
-                .expect("Mailbox: fee credit overflow");
+            self.add_credit(payer, amount);
             abi::emit(
                 events::DispatchFeeFunded::TOPIC,
                 events::DispatchFeeFunded { payer, amount },
@@ -303,7 +335,10 @@ mod mailbox {
         /// The transfer contract supplies the declared source; requiring an
         /// authentic nested transfer callback prevents a root caller from
         /// forging it. Warp routes use this callback to contribute each user's
-        /// dispatch quote immediately before dispatch.
+        /// dispatch quote immediately before dispatch, which spends it, so
+        /// it takes any amount. A contract with no credit is refused once its
+        /// entry could take the memory past 3 GiB, as in `fund_dispatch`;
+        /// its only use is a dispatch, which closes there.
         pub fn receive_dispatch_funding(&mut self, transfer: ReceiveFromContract) {
             assert!(
                 caller::authentic_transfer_callback(transfer.contract, transfer.contract),
@@ -319,10 +354,7 @@ mod mailbox {
             );
             assert!(transfer.value > 0, "Mailbox: funding amount is zero");
             let payer = transfer.contract.to_bytes();
-            let credit = self.fee_credits.entry(payer).or_insert(0);
-            *credit = credit
-                .checked_add(transfer.value)
-                .expect("Mailbox: fee credit overflow");
+            self.add_credit(payer, transfer.value);
             abi::emit(
                 events::DispatchFeeFunded::TOPIC,
                 events::DispatchFeeFunded {
@@ -486,7 +518,22 @@ mod mailbox {
         ///
         /// Verifies the message via the recipient's ISM (or the default
         /// ISM) and then calls `handle` on the recipient contract.
+        ///
+        /// Only a transaction's own call or a query can deliver: a contract
+        /// can't call this, so every delivery costs a transaction and adds
+        /// at most one entry to the delivered set. The relayer's simulation
+        /// is a query, so it still runs.
         pub fn process(&mut self, metadata: Vec<u8>, encoded_message: Vec<u8>) {
+            // The VM tests also build a copy without this check, with
+            // `--cfg hyperlane_dusk_ungated_test` (`make mailbox-ungated`),
+            // to show that the delivery reservation below refuses a replay
+            // on its own (HIGH-6). That copy is never deployed.
+            #[cfg(not(hyperlane_dusk_ungated_test))]
+            assert!(
+                caller::is_transaction_or_query(),
+                "Mailbox: process must be a transaction's own call"
+            );
+
             // Decode and validate the message.
             let msg = message::decode(&encoded_message).expect("Mailbox: invalid message encoding");
 
@@ -517,9 +564,10 @@ mod mailbox {
                 events::ProcessId { message_id: id },
             );
 
-            // Recipient ISM resolution is itself an external call and can
-            // reenter process. Reserve delivery before this lookup as well
-            // as verification and handling; failed calls roll it all back.
+            // Recipient ISM resolution is itself an external call. A call
+            // back into `process` is refused at the check above; delivery is
+            // reserved before this lookup, verification and handling as
+            // well, and failed calls roll it all back.
             let recipient_id = ContractId::from_bytes(msg.recipient);
             let ism = self.resolve_recipient_ism(recipient_id);
 
@@ -572,7 +620,8 @@ mod mailbox {
         }
 
         /// Returns the size of this contract's memory in bytes. It only
-        /// grows; `dispatch` never takes it past [`DISPATCH_MEMORY_LIMIT`].
+        /// grows; `dispatch` and credit for a new payer never take it past
+        /// [`DISPATCH_MEMORY_LIMIT`].
         #[allow(clippy::unused_self)] // Contract queries are instance methods in the Dusk ABI.
         pub fn memory_bytes(&self) -> u64 {
             Self::memory_bytes_used()
@@ -614,6 +663,9 @@ mod mailbox {
 
         /// Returns the deployment compatibility version expected by tooling.
         ///
+        /// Version 6 takes `process` only as a transaction's own call or a
+        /// query, funds a payer with no credit from 0.01 DUSK up, and adds
+        /// no payer once its entry could take the memory past 3 GiB.
         /// Version 5 keeps only the first 16 bytes of delivered message IDs,
         /// drops the processed-message log (`processed_count`,
         /// `processed_at_index`, `processed_block_height_at_index`) and
@@ -624,7 +676,7 @@ mod mailbox {
         /// lookup.
         #[allow(clippy::unused_self)]
         pub fn state_version(&self) -> u32 {
-            5
+            6
         }
 
         /// Compute a quote for dispatching a message from the caller.
@@ -870,6 +922,32 @@ mod mailbox {
         /// Current size of the contract's linear memory.
         fn memory_bytes_used() -> u64 {
             core::arch::wasm32::memory_size(0) as u64 * WASM_PAGE_BYTES
+        }
+
+        /// Add `amount` to `payer`'s dispatch credit. A top-up changes its
+        /// entry in place. A payer with no credit is a new entry in this
+        /// contract's memory, refused unless what it can allocate fits under
+        /// [`DISPATCH_MEMORY_LIMIT`], checked before it is allocated, so the
+        /// last GiB stays for deliveries. Credit only pays for dispatches,
+        /// which close at the same limit.
+        fn add_credit(&mut self, payer: H256, amount: u64) {
+            match self.fee_credits.entry(payer) {
+                Entry::Occupied(mut credit) => {
+                    let total = credit
+                        .get()
+                        .checked_add(amount)
+                        .expect("Mailbox: fee credit overflow");
+                    credit.insert(total);
+                }
+                Entry::Vacant(credit) => {
+                    assert!(
+                        Self::memory_bytes_used() + NEW_CREDIT_MEMORY_BOUND
+                            <= DISPATCH_MEMORY_LIMIT,
+                        "Mailbox: storage full, dispatch is closing to new payers"
+                    );
+                    credit.insert(amount);
+                }
+            }
         }
 
         /// The most the rest of `dispatch` can grow this contract's memory,

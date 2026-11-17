@@ -260,6 +260,34 @@ wait_for_dusk_announcements() {
     done
 }
 
+# A route pays an account it hasn't paid before into escrow, and the
+# account's claim pays it out and registers it, so later transfers arrive
+# directly. Wait until `amount` waits in escrow for the deployer on `route`,
+# then claim it.
+claim_first_transfer() {
+    local route="$1" amount="$2" label="$3" account_h256="$4" dusk_chain_id="$5"
+    local relayer_pid="$6" relayer_log="$7" validator_pid="$8" validator_log="$9"
+    local start_ts pending
+    start_ts="$(date +%s)"
+    while true; do
+        if [ $(( $(date +%s) - start_ts )) -gt "$TIMEOUT_SECS" ]; then
+            tail_logs_on_fail "$relayer_log" "${validator_pid:+$validator_log}"
+            fail "timeout waiting for the $label escrow"
+        fi
+        assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
+        pending="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$route" \
+          --method pending_balance --return-type u64 --arg-bytes32 "$account_h256" 2>/dev/null \
+          | jq -r '.value // 0')"
+        [ "$pending" = "$amount" ] && break
+        sleep 3
+    done
+    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" claim-pending \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --warp-contract "$route" \
+      --expected-chain-id "$dusk_chain_id" >/dev/null \
+      || fail "claiming the $label escrow failed"
+    info "Claimed the first $label transfer from escrow; the deployer is registered there."
+}
+
 # Prove the live multisig threshold on both chains: deliveries succeed with
 # exactly `threshold` validators per origin, stall with one fewer, and resume
 # when a validator comes back.
@@ -439,7 +467,7 @@ run_case() {
     # after agent startup would create an artificial Moonlight nonce race.
     local state="$BRIDGE_STATE_FILE"
     local evm_token evm_native_token evm_collateral_token
-    local dusk_mailbox dusk_warp dusk_warp_native dusk_warp_collateral dusk_protocol_fee
+    local dusk_mailbox dusk_warp dusk_warp_native dusk_warp_collateral dusk_collateral_token dusk_protocol_fee
     local account_h256 evm_domain dusk_domain dusk_chain_id_hex dusk_chain_id
     evm_token="$(jq -r '.evm.token' "$state")"
     evm_native_token="$(jq -r '.evm.native_token' "$state")"
@@ -448,6 +476,7 @@ run_case() {
     dusk_warp="$(jq -r '.dusk.warp_drc20' "$state")"
     dusk_warp_native="$(jq -r '.dusk.warp_native' "$state")"
     dusk_warp_collateral="$(jq -r '.dusk.warp_drc20_collateral' "$state")"
+    dusk_collateral_token="$(jq -r '.dusk.collateral_token' "$state")"
     dusk_protocol_fee="$(jq -r '.dusk.protocol_fee' "$state")"
     account_h256="$(jq -r '.account_h256' "$state")"
     evm_domain="$(jq -r '.evm_domain' "$state")"
@@ -546,7 +575,11 @@ print(int(${dusk_supply_before}) + int(${amount_to_dusk_wei}))
 PY
 )"
 
-    info "Waiting for relayer to mint on Dusk (target supply=${expected_dusk_supply})..."
+    info "Waiting for the relayer to deliver to Dusk, into escrow for the deployer..."
+    claim_first_transfer "$dusk_warp" "$amount_to_dusk_wei" "WarpDrc20" "$account_h256" \
+      "$dusk_chain_id" "$relayer_pid" "$relayer_log" "$validator_pid" "$validator_log"
+
+    info "Waiting for the claim to mint on Dusk (target supply=${expected_dusk_supply})..."
     local start_ts now supply
     start_ts="$(date +%s)"
     while true; do
@@ -662,6 +695,8 @@ PY
       "$dusk_domain" "0x${account_h256}" "$native_return" \
       --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
     local native_locked_target="$((native_send - native_return))"
+    claim_first_transfer "$dusk_warp_native" "$native_return" "WarpNative" "$account_h256" \
+      "$dusk_chain_id" "$relayer_pid" "$relayer_log" "$validator_pid" "$validator_log"
     start_ts="$(date +%s)"
     while true; do
         now="$(date +%s)"
@@ -679,16 +714,16 @@ PY
     info "Native route round trip delivered with exact DUSK custody."
 
     # ----------------------------
-    # DRC20 collateral round trip
+    # DRC20 collateral round trip, with the canonical DRC20 the route wraps
     # ----------------------------
     local collateral_send=500000000000000000 collateral_return=200000000000000000
     local owner_token_before collateral_locked_before
     owner_token_before="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
-      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_collateral_token" | jq -r '.balance')"
     collateral_locked_before="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
-      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+      --token "$dusk_collateral_token" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-approve \
-      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" \
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_collateral_token" \
       --spender "$dusk_warp_collateral" --amount "$collateral_send" \
       --expected-chain-id "$dusk_chain_id" >/dev/null
 
@@ -716,9 +751,9 @@ PY
     done
     local owner_token_after collateral_locked_after
     owner_token_after="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
-      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+      --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_collateral_token" | jq -r '.balance')"
     collateral_locked_after="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
-      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+      --token "$dusk_collateral_token" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
     [ "$owner_token_after" = "$((owner_token_before - collateral_send))" ] || fail "owner collateral debit mismatch"
     [ "$collateral_locked_after" = "$((collateral_locked_before + collateral_send))" ] || fail "DRC20 custody mismatch after lock"
 
@@ -727,6 +762,8 @@ PY
       "$dusk_domain" "0x${account_h256}" "$collateral_return" \
       --rpc-url "$ANVIL_RPC" --private-key "$ANVIL_PRIVATE_KEY" >/dev/null
     local owner_return_target="$((owner_token_after + collateral_return))"
+    claim_first_transfer "$dusk_warp_collateral" "$collateral_return" "WarpDrc20Collateral" \
+      "$account_h256" "$dusk_chain_id" "$relayer_pid" "$relayer_log" "$validator_pid" "$validator_log"
     start_ts="$(date +%s)"
     while true; do
         now="$(date +%s)"
@@ -736,12 +773,12 @@ PY
         fi
         assert_agents_alive "$relayer_pid" "$validator_pid" "$relayer_log" "$validator_log"
         owner_token_after="$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" drc20-balance \
-          --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_warp" | jq -r '.balance')"
+          --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --token "$dusk_collateral_token" | jq -r '.balance')"
         [ "$owner_token_after" = "$owner_return_target" ] && break
         sleep 2
     done
     collateral_locked_after="$("$DUSK_TX" drc20-balance --rues-url "$DUSK_RUES_URL" \
-      --token "$dusk_warp" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
+      --token "$dusk_collateral_token" --account-contract "$dusk_warp_collateral" | jq -r '.balance')"
     [ "$collateral_locked_after" = "$((collateral_locked_before + collateral_send - collateral_return))" ] || fail "DRC20 custody mismatch after unlock"
     info "Collateral route round trip delivered with exact token custody."
 

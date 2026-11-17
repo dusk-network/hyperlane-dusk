@@ -20,6 +20,26 @@ const MAX_CONTRACT_OWNER_RESPONSE_BYTES: usize = 64 * 1024;
 /// in rusk-private's node/src/mempool.rs). Propagate queues such a
 /// transaction instead.
 const MISSING_INTERMEDIATE_NONCE: &str = "Missing intermediate nonce";
+/// How long a request may take.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The body of a Rusk node's HTTP 500 answer to a contract query that
+/// fails in the VM. A query of a function the contract doesn't export gets
+/// it, and so does every other query that fails there, one whose call
+/// panics or whose contract doesn't exist among them: the node tells them
+/// apart only in its log.
+pub const FAILED_QUERY_BODY: &[u8] = br#"{"error":"Internal server error"}"#;
+/// How many times [`RuesClient::optional_view`] asks for a view before it
+/// takes it as missing, and how long it waits between.
+const MISSING_VIEW_TRIES: usize = 2;
+const MISSING_VIEW_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A node's answer to a contract query that came back.
+enum QueryReply {
+    /// HTTP 2xx, with the archived value the method returned.
+    Value(Vec<u8>),
+    /// HTTP 500 with [`FAILED_QUERY_BODY`]: the query failed in the VM.
+    Failed,
+}
 
 pub struct RuesClient {
     client: reqwest::Client,
@@ -107,15 +127,27 @@ impl core::fmt::Display for TransactionStatusQueryError {
 
 impl RuesClient {
     pub fn new(base_url: &str) -> Result<Self, String> {
+        Self::with_timeout(base_url, REQUEST_TIMEOUT)
+    }
+
+    /// A client whose requests give up after `timeout`.
+    fn with_timeout(base_url: &str, timeout: std::time::Duration) -> Result<Self, String> {
         let base_url = reqwest::Url::parse(base_url).map_err(|_| "Invalid RUES URL".to_owned())?;
         if !matches!(base_url.scheme(), "http" | "https") {
             return Err("RUES URL must use HTTP or HTTPS".into());
         }
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(timeout)
             .build()
             .map_err(|e| format!("Failed to build RUES HTTP client: {}", e.without_url()))?;
         Ok(Self { client, base_url })
+    }
+
+    /// A client whose requests give up after `timeout`, for tests of a
+    /// node that doesn't answer.
+    #[cfg(test)]
+    pub fn with_test_timeout(base_url: &str, timeout: std::time::Duration) -> Self {
+        Self::with_timeout(base_url, timeout).unwrap()
     }
 
     fn endpoint(&self, path: &str) -> reqwest::Url {
@@ -166,6 +198,90 @@ impl RuesClient {
         let hex_id = hex::encode(contract_id);
         let response = self.raw_contract_query(&hex_id, method, &body).await?;
         rkyv_deserialize(&response)
+    }
+
+    /// The view `method` of a contract that may not have it: its value, or
+    /// `None` when the contract doesn't export it.
+    ///
+    /// A node answers a query of a function the contract doesn't export as
+    /// it answers every query that fails in the VM ([`FAILED_QUERY_BODY`]),
+    /// so that answer alone doesn't show the view is missing. It counts as
+    /// missing only when it comes back every one of `MISSING_VIEW_TRIES`
+    /// times, a second apart, and after each the contract answers `control`
+    /// with an amount: `control` is a query of a view it has that returns a
+    /// `u64`, with its argument archived. The node then runs the contract's
+    /// code, and only this view fails. The caller must ask for a view that
+    /// can't fail on a contract that has it, one that reads state with a
+    /// well-formed argument.
+    ///
+    /// Any other answer is an error: another status or body, no answer in
+    /// time, a value that doesn't decode as `O`, or a control that fails or
+    /// answers anything but a `u64`, an empty reply among them.
+    pub async fn optional_view<I, O>(
+        &self,
+        contract_id: &[u8; 32],
+        method: &str,
+        args: &I,
+        control: (&str, &[u8]),
+    ) -> Result<Option<O>, String>
+    where
+        I: Serialize<AllocSerializer<256>>,
+        O: Archive,
+        O::Archived: Deserialize<O, Infallible> + for<'b> rkyv::CheckBytes<DefaultValidator<'b>>,
+    {
+        let body = rkyv_serialize(args);
+        let hex_id = hex::encode(contract_id);
+        for attempt in 0..MISSING_VIEW_TRIES {
+            if attempt > 0 && !cfg!(test) {
+                tokio::time::sleep(MISSING_VIEW_PAUSE).await;
+            }
+            match self.contract_query_reply(&hex_id, method, &body).await? {
+                QueryReply::Value(value) => {
+                    return rkyv_deserialize(&value).map(Some).map_err(|error| {
+                        format!("Query {hex_id}/{method} answered, but not with the expected value: {error}")
+                    });
+                }
+                QueryReply::Failed => {
+                    let (control_method, control_args) = control;
+                    let amount = self
+                        .raw_contract_query(&hex_id, control_method, control_args)
+                        .await
+                        .map_err(|error| {
+                            format!(
+                                "Query {hex_id}/{method} failed, and so did {control_method}, \
+                                 which it has: {error}"
+                            )
+                        })?;
+                    // An archived u64 is exactly its 8 bytes. rkyv reads a
+                    // root from the end of its buffer, so a longer reply
+                    // would decode its last 8 bytes; it isn't an amount.
+                    let decoded = if amount.len() == core::mem::size_of::<u64>() {
+                        rkyv_deserialize::<u64>(&amount)
+                    } else {
+                        Err(format!("{} bytes, not 8", amount.len()))
+                    };
+                    decoded.map_err(|error| {
+                        format!(
+                            "Query {hex_id}/{method} failed, and {control_method}, which it has, \
+                             answered, but not with an amount: {error}"
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// A contract query with an argument already archived, and its reply as
+    /// the node sends it: the archived value the method returned.
+    pub async fn contract_query_raw(
+        &self,
+        contract_id: &[u8; 32],
+        method: &str,
+        args: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.raw_contract_query(&hex::encode(contract_id), method, args)
+            .await
     }
 
     /// Preverify then propagate a serialized transaction.
@@ -403,6 +519,26 @@ impl RuesClient {
         method: &str,
         body: &[u8],
     ) -> Result<Vec<u8>, String> {
+        match self
+            .contract_query_reply(contract_hex, method, body)
+            .await?
+        {
+            QueryReply::Value(value) => Ok(value),
+            QueryReply::Failed => Err(format!(
+                "Query {contract_hex}/{method} failed (500 Internal Server Error): {}",
+                String::from_utf8_lossy(FAILED_QUERY_BODY)
+            )),
+        }
+    }
+
+    /// A contract query's answer: its value, or that it failed in the VM.
+    /// Any other answer, or none, is an error.
+    async fn contract_query_reply(
+        &self,
+        contract_hex: &str,
+        method: &str,
+        body: &[u8],
+    ) -> Result<QueryReply, String> {
         let url = self.endpoint(&format!("/on/contracts:{contract_hex}/{method}"));
         let response = self
             .client
@@ -422,14 +558,18 @@ impl RuesClient {
         let response_body = read_response_body(response, max_bytes, "contract query")
             .await
             .map_err(|error| error.to_string())?;
-        if !status.is_success() {
-            return Err(format!(
-                "Query {contract_hex}/{method} failed ({status}): {}",
-                String::from_utf8_lossy(&response_body)
-            ));
+        if status.is_success() {
+            return Ok(QueryReply::Value(response_body));
         }
-
-        Ok(response_body)
+        if status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+            && response_body == FAILED_QUERY_BODY
+        {
+            return Ok(QueryReply::Failed);
+        }
+        Err(format!(
+            "Query {contract_hex}/{method} failed ({status}): {}",
+            String::from_utf8_lossy(&response_body)
+        ))
     }
 }
 

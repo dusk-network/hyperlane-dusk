@@ -61,8 +61,8 @@ behaviour the script can't tell, and `deploy` stops.
 - Checkouts laid out as in the [README](../README.md#building), with
   `rusk-private` at the commit in [`RUSK_VERSION`](../RUSK_VERSION). Then
   `make all dusk-tx`.
-- Foundry (`forge`, `cast`), `jq`, `curl`, `python3`. `forge build` must work
-  in `hyperlane-monorepo/solidity`.
+- Foundry (`forge`, `cast`), `jq`, `curl`, `python3`, `flock` (util-linux).
+  `forge build` must work in `hyperlane-monorepo/solidity`.
 - A **Dusk domain ID**. The default `1146442572` is free in the Hyperlane
   registry; `1146442571` ("DUSK") is kept for mainnet.
 - **Funded keys:**
@@ -127,8 +127,10 @@ Gas on Dusk:
 ### Dusk keys
 
 `dusk-tx` signs with an encrypted consensus key file, as exported by
-rusk-wallet. It takes the password from `--password`, or else from
-`DUSK_CONSENSUS_PASSWORD`.
+rusk-wallet. It takes the password from the first of these that is set:
+`--password`, the file `DUSK_CONSENSUS_PASSWORD_FILE` names,
+`DUSK_CONSENSUS_PASSWORD`, and `DUSK_CONSENSUS_KEYS_PASS`. With none of
+them it tries the local demo's password, `password`.
 
 To export an account's key file with rusk-wallet (built from `rusk-private`
 with `cargo build --release -p rusk-wallet`):
@@ -233,6 +235,9 @@ transfer pays for. `fees` prints what they come to.
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;
+- the recorded Dusk contracts read back as `deploy` left them, owned by
+  `DUSK_KEYS`'s account
+  ([Reading back the Dusk contracts](#reading-back-the-dusk-contracts));
 - the ISM the recorded route uses on chain, its own or else the Mailbox's
   default, is a MessageIdMultisig ISM whose validators and threshold are
   `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`, each validator listed
@@ -244,22 +249,77 @@ transfer pays for. `fees` prints what they come to.
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
 skips steps already recorded there. If it stops halfway, fix the cause and run
-it again. Router enrollment is re-checked on chain each time. If the recorded
-contracts aren't on chain, for example after a testnet reset, or a recorded
-contract reports another `state_version` than this checkout's (Mailbox 5,
-MerkleTreeHook 2, IGP 4, ValidatorAnnounce 2, native route 4), `deploy`
-stops; move the directory aside and deploy again. Older routes may pay
-sponsored escrow claims to forged keys
-([security notes](security.md#issues-found-and-fixed), CRITICAL-1), older
-core contracts keep storage anyone can fill
-([storage.md](storage.md)), and an older IGP can't be topped up (LOW-15),
-so `agent-configs` refuses them too. So is a Sepolia IGP or token recorded
-by an older version of this script, which initialized them in a second
-transaction that anyone could send first
+it again. Every command but `fees` takes a lock on that directory
+(`flock` on its `.lock`) and holds it until it exits, and reads the record
+once: one command at a time runs on a deployment, and what a command
+checked is what it records and what the configs it writes name. A command
+started while another holds the lock stops at once; run it again when the
+other has finished. Router enrollment is re-checked on chain each time: on
+either side, `deploy` enrolls a router only where there is none, reading it
+right before each write, and refuses another rather than replace it, since
+that router's holders would be cut off from what backs their tokens. The
+lock keeps out only this script's commands: a router the owner enrolls
+another way between that last read and the enrollment is replaced by it,
+since enrolling a router replaces whatever is there. Don't use the owner
+keys elsewhere while `deploy` runs ([Before mainnet](#before-mainnet)). If
+the recorded contracts aren't on chain, for example after a testnet reset,
+or a recorded contract reports another `state_version` than this
+checkout's (Mailbox 6, MerkleTreeHook 2, IGP 4, ValidatorAnnounce 3, native
+route 5), `deploy` stops; move the directory aside and deploy again. Older
+routes may pay sponsored escrow claims to forged keys
+([security notes](security.md#issues-found-and-fixed), CRITICAL-1) and
+register any key that asks (MEDIUM-10), older core contracts keep storage
+anyone can fill cheaply ([storage.md](storage.md)), and an older IGP can't
+be topped up (LOW-15), so `agent-configs` refuses them too. So is a
+Sepolia IGP or token recorded by an older version of this script, which
+initialized them in a second transaction that anyone could send first
 ([security notes](security.md#fourth-review), HIGH-8).
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
+
+### Reading back the Dusk contracts
+
+Someone can deploy at our contract IDs first, or front-run a contract's
+`init`, and choose its owner and bindings ([Before mainnet](#before-mainnet)).
+So `dusk-tx deploy-hyperlane` reads every contract back once it has deployed
+them all: the owner Rusk records for each, its owner, each binding its
+`init` set and its `state_version`. When one isn't what it sent, or can't
+be read, it fails and reports none of them. `deploy` then reads them again,
+against the settings, before it records them:
+
+- every owner is `DUSK_KEYS`'s account;
+- the Mailbox is at `DUSK_DOMAIN`, its default ISM is the MessageIdMultisig
+  ISM deployed with it, with `EVM_ORIGIN_VALIDATORS` and
+  `EVM_ORIGIN_THRESHOLD`, its required hook is the aggregation hook and its
+  default hook the IGP;
+- the aggregation hook takes its calls from the Mailbox and calls the
+  Merkle hook, then the ProtocolFee, which take theirs from it; the IGP,
+  ValidatorAnnounce and the route take theirs from the Mailbox;
+- the IGP and the ProtocolFee pay the deployer, the ProtocolFee charges
+  0.001 DUSK and at most 0.1, and the IGP charges what the settings say;
+- the route has no ISM or hook of its own and no router yet, and
+  TestRecipient no ISM of its own;
+- every contract is at this checkout's `state_version`.
+
+When one isn't, `deploy` stops, names it, and records nothing. Don't use
+those contracts: their IDs are taken, so move `deploy/out/<DEPLOY_NAME>/`
+aside and deploy again with another `DUSK_KEYS`. If `deploy` stopped after
+`deploy-hyperlane` reported its contracts, for example because a read
+failed, running it again reads back the contracts in `dusk-deploy.json`
+instead of deploying again.
+
+`deploy` records the owner it read (`.dusk_owner`). Every command that uses
+the recorded contracts reads them back first: `preflight` and `deploy`
+against `DUSK_KEYS`'s account, the others against that owner. A deployment
+recorded without one, by an older version of this script, is refused.
+These later reads leave out what the owner may change on purpose: the
+Mailbox's default ISM, the ISM's validators and threshold, the
+beneficiaries, the ProtocolFee's fee, the IGP's pricing and the route's
+ISM. The ISM the route uses and the IGP's pricing are held to the settings
+instead, and the route's router for the EVM chain must be the recorded
+token, or none yet. Routes have no view that lists their routers, so only
+their routers for Dusk and the EVM chain are read.
 
 ## Run the agents
 
@@ -321,10 +381,13 @@ contract query (`POST /on/contracts:<mailbox>/process`) and only submits if
 it succeeds. Its RUES endpoint must allow that query: behind a proxy that
 refuses it, nothing is delivered and the relayer logs `not submitting the
 message`. The agents need contracts at the current `state_version`s
-(Mailbox 5, MerkleTreeHook 2, ValidatorAnnounce 2), and an agent build that
+(Mailbox 6, MerkleTreeHook 2, ValidatorAnnounce 3), and an agent build that
 reads them: deliveries come from `ProcessId` events, checkpoint roots are
 computed from the Merkle hook's message IDs, and validator locations come
 from `ValidatorAnnouncement` events ([storage.md](storage.md#what-agents-read)).
+The Mailbox takes `process`, and ValidatorAnnounce `announce`, only as a
+transaction's own call, as the agents send them, or as a query, as the
+relayer simulates `process`.
 
 Each Dusk transaction an agent sends is logged as `dusk-tx call succeeded`
 with its `tx_id`. Its gas use and result are in the node's GraphQL API:
@@ -357,15 +420,16 @@ target/release/dusk-tx transfer-remote --native --rues-url $DUSK --keys my.keys 
   --expected-chain-id 2
 cast call $TOKEN "balanceOf(address)(uint256)" <your sepolia address> --rpc-url $EVM_RPC
 
-# Sepolia -> Dusk: burn on Sepolia, release on Dusk. Register your account on
-# the route once first; until you do, transfers to you wait in escrow.
-target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
-  --expected-chain-id 2
+# Sepolia -> Dusk: burn on Sepolia, release on Dusk. The route holds the first
+# transfer to your account in escrow; claiming it pays it out and registers
+# the account, and later transfers arrive directly.
 H=$(target/release/dusk-tx account --offline --keys my.keys | jq -r .account_h256)
 FEE=$(cast call $TOKEN "quoteGasPayment(uint32)(uint256)" 1146442572 --rpc-url $EVM_RPC | awk '{print $1}')
 cast send $TOKEN "transferRemote(uint32,bytes32,uint256)" 1146442572 0x$H 1000000000 \
   --value $FEE --rpc-url $EVM_RPC --private-key <your key>
-target/release/dusk-tx account --rues-url $DUSK --keys my.keys
+target/release/dusk-tx account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE
+target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
+  --expected-chain-id 2
 ```
 
 `quoteGasPayment` on the token is what a transfer to Dusk pays: our IGP's
@@ -381,8 +445,9 @@ Hyperlane does. `dusk-tx` refuses a 32-byte value whose first 12 bytes aren't
 zero: no EVM route can deliver to it, and the DUSK would stay locked on Dusk.
 `--raw-recipient` overrides that for non-EVM destinations.
 
-**Escrow.** A transfer to a Dusk account that hasn't registered on the route
-waits in escrow. A recipient whose only DUSK is in that escrow can't pay gas
+**Escrow.** A transfer to a Dusk account the route hasn't paid before waits
+in escrow, and a claim of it registers the account, so later transfers
+arrive directly. A recipient whose only DUSK is in that escrow can't pay gas
 to claim it, so anyone can claim it for them. The route decodes the public
 key the claimant names and pays the account that signs with it, whose hash
 the escrow is under. The claimant only pays the gas:
@@ -393,21 +458,31 @@ target/release/dusk-tx account --rues-url $DUSK --address <base58 address> --war
 # Claim your own escrow, or someone else's with --for; either also registers the account
 target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
   --expected-chain-id 2 [--for <base58 address>]
-# Register your own account in advance, so transfers arrive directly
-target/release/dusk-tx register-account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
-  --expected-chain-id 2
 ```
 
-Nobody can register an account for someone else in advance: only a claim of
-an existing escrow registers another account.
+Nobody can register an account in advance, their own or anyone else's:
+routes have no `register_account`, so each account in a route's registry
+is one somebody sent a transfer to ([security notes](security.md#registry-growth),
+MEDIUM-10). A wallet can't prepare an account ahead, but the first transfer
+takes the same number of transactions as before: a claim where a
+registration used to be.
 
 **Undeliverable messages.** Some transfers can never be delivered. A
-transfer to the zero recipient is one example, and so is anything that
-makes the destination's `handle` revert. The relayer simulates each
+transfer to the zero recipient is one example, a transfer of 0 from Sepolia
+another (Dusk's routes refuse a transfer of nothing), and so is anything
+that makes the destination's `handle` revert. The relayer simulates each
 delivery first, finds that it would fail, and retries it with backoff
 without paying for it. The tokens stay where they are: burned on Sepolia,
 or locked in the Dusk route. Add such messages to the relayer's denylist to
 stop the retries.
+
+A message to Dusk whose delivery needs more gas than the relayer's limit,
+`DUSK_RELAYER_GAS_LIMIT` (5M), can't be delivered either, and it costs the
+relayer each time: the simulation runs with the block's gas, so it passes,
+and the transaction fails on chain, paying the whole 5M. The relayer sends
+every delivery to Dusk with at most that limit, whatever the message paid
+for, and tries it again only once more is paid
+([costs.md](costs.md#what-stays-uncovered)). Denylist such a message too.
 
 **Fees.** `bash deploy/testnet.sh revenue` shows what the IGPs and the
 ProtocolFee hold, and `claim` collects it
@@ -565,6 +640,10 @@ In the rehearsal:
   `DUSK_TX_BIN`, its config and its keys. Hyperlane applies every `HYP_*`
   variable over the config files, so one left in your shell would
   otherwise change the rehearsal's agents, or point them at another node.
+  The agents sign with Anvil's public development keys, so it also stops,
+  before it exports a key or starts an agent, when `EVM_RPC`,
+  `DUSK_RUES_URL` or any endpoint in the configs it makes from
+  `agent-configs`' files isn't `http://localhost` or `http://127.0.0.1`.
 - Every agent signs its Dusk transactions with the deployer's key, because
   the local chain funds no other account with a key file. Don't send your own
   transactions from that key while the relayer is delivering, or one of them
@@ -588,7 +667,17 @@ Testnet runs on trust choices and tooling that mainnet can't:
   deploy. Anyone watching the mempool can deploy at our IDs first, and can
   repeat that for a fresh key. Each contract's `init` should require that the
   transaction signer is the owner, so such a deploy fails and leaves the ID
-  free.
+  free. Until then, `deploy` reads every contract back and stops on a deploy
+  or `init` someone else front-ran
+  ([Reading back the Dusk contracts](#reading-back-the-dusk-contracts)), but
+  their IDs are taken by then.
+- **Router enrollment.** `deploy` reads a route's router right before it
+  enrolls one, and enrolls only where there is none, but a route's
+  `enroll_remote_router` replaces whatever router is there: a router the
+  owner enrolls another way between the read and the enrollment is
+  replaced, and its holders cut off from what backs their tokens. The Dusk
+  routes should take the router they expect to replace, none for a first
+  enrollment, and refuse any other.
 - **Validator set.** Sepolia → Dusk trusts one Abacus Works validator. Mainnet
   needs a deliberately chosen set for both directions.
 - **Gas payments.** Both IGPs are priced and the relayer enforces payment
@@ -598,13 +687,19 @@ Testnet runs on trust choices and tooling that mainnet can't:
   the relayer spends against what the IGPs collect, and the IGPs' and the
   oracle's ownership under the same custody as the rest.
 - **Storage.** Anyone can add to most contracts' storage for good, paying
-  gas and, for messages, fees. [storage.md](storage.md#ceilings) lists what
-  filling each contract costs: about 3,700 DUSK for a WarpDrc20's
-  allowances, 4,300 DUSK of deliveries to close the Mailbox's dispatch, and
-  23,000 to 47,000 DUSK for a route's registry
-  ([security notes](security.md#open-registry-growth)). Only the Mailbox
-  reports its memory. Decide which limits mainnet needs, and price or bound
-  the rest.
+  gas and, for messages, fees, but each delivery and announcement takes a
+  transaction, routes register only accounts that claimed a transfer, a
+  WarpDrc20 keeps its last GiB for the bridge, and new dispatch payers fund
+  0.01 DUSK. [storage.md](storage.md#ceilings) lists what filling each
+  contract costs: 2,300 to 2,900 DUSK to stop a WarpDrc20's transfers to
+  new holders at its 3 GiB reserve, 74,000 to 82,000 DUSK for
+  ValidatorAnnounce, about 116,000 DUSK of dispatches to close the
+  Mailbox's dispatch at the 0.001 DUSK protocol fee, and about 177,000 to
+  make its `process` fail. Before mainnet: a successor Mailbox that routes
+  can move to, a fee on deliveries through ISMs the deployment doesn't
+  trust, a dust threshold for new WarpDrc20 holders and the mainnet
+  protocol fee. The Mailbox and WarpDrc20 report their memory; WarpNative
+  and WarpDrc20Collateral don't yet.
 - **Upgrades.** The contracts are immutable. Plan how a fix ships: a pause
   limited to `dispatch` and `transfer_remote` (never `process` or claims), a
   redeploy, and a migration of route custody that doesn't depend on forging

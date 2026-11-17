@@ -40,8 +40,10 @@ Option 1 is fine for testnet. Mainnet needs an explicit choice.
 
 `dusk-tx` is both the deployment CLI and the agents' transaction helper.
 
-- Consensus key passwords are read from `DUSK_CONSENSUS_PASSWORD_FILE`, then
-  `DUSK_CONSENSUS_PASSWORD`, then `DUSK_CONSENSUS_KEYS_PASS`. Never pass a
+- Consensus key passwords are read from `--password`, then the file
+  `DUSK_CONSENSUS_PASSWORD_FILE` names, then `DUSK_CONSENSUS_PASSWORD`, then
+  `DUSK_CONSENSUS_KEYS_PASS`: the first one set is used. With none of them,
+  `dusk-tx` tries the local demo's password, `password`. Never pass a
   password as a command-line argument outside local demos.
 - A raw BLS secret key goes through `--secret-key-stdin`.
 - An authenticated RPC URL goes through `--rues-url-stdin`, which the agents
@@ -67,7 +69,42 @@ need no prepaid credit.
 
 Senders that call the Mailbox's `dispatch` directly (for example
 TestRecipient, or an application contract) pay from credit prepaid to the
-Mailbox:
+Mailbox. A payer with no credit takes at least 0.01 DUSK (10,000,000 LUX):
+each payer with credit is an entry in the Mailbox's memory for as long as
+its credit lasts. A payer with credit can be topped up by any amount.
+Credit that reaches zero, spent by dispatches or withdrawn, leaves no
+entry, so funding that payer again takes the minimum again. Routes fund
+their own credit for each transfer through the transfer contract, which
+has no minimum.
+
+Near 3 GiB of memory (`memory_bytes`) the Mailbox takes no new payers, as
+it takes no dispatches; top-ups and withdrawals go on. A new payer's entry
+can allocate 13 pages and a dispatch 4 to 10, so new payers stop first:
+from 13 pages below 3 GiB to about 4 below, about 9 pages or 17,000 to
+22,000 deliveries' worth, payers with credit still dispatch while new ones
+are refused with `Mailbox: storage full, dispatch is closing to new
+payers`. A route's credit goes back to zero after every transfer, so each
+transfer makes it a new payer, and route transfers fail in that window
+with the same message. Standing credit for the route, any amount funded to
+its contract ID with `fund-dispatch`, lets its transfers through until
+dispatch itself closes.
+
+`dusk-tx` checks what the Mailbox would refuse before it signs, since a
+failed transaction pays its whole gas limit: `fund-dispatch` reads the
+payer's credit and refuses less than the minimum for a payer with none, or
+any amount when the Mailbox has no room for a new payer, and
+`transfer-remote` refuses a transfer that pays a dispatch fee when the
+route has no credit and the Mailbox no room (a free dispatch funds no
+credit, so it adds no payer). `drc20-approve` checks a WarpDrc20's limits
+the same way for a new spender: at most 64 allowances per owner, and room
+under 3 GiB. A token without `allowance_count` isn't a WarpDrc20 and has
+neither limit, but a Rusk node answers a query of a function a contract
+doesn't have as it answers every query that fails. So `drc20-approve`
+takes the token as without it only when that answer comes back twice, a
+second apart, with the token's `allowance` returning an amount after each.
+Any other answer, or none, stops it before it signs: another status or
+body, a reply that isn't the value asked for, or an `allowance` that fails
+or returns no amount, an empty reply among them.
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)
@@ -144,13 +181,16 @@ Before they read a price or send anything, `dusk-igp`, `evm-igp`, `claim`
 and `revenue` check that the Dusk node is on `DUSK_EXPECTED_CHAIN_ID` and the
 EVM RPC on `EVM_CHAIN_ID`: the contract IDs and addresses in the state can
 exist on another network, a Dusk ID being derived from the bytecode, the
-deployer key and a nonce. They also check that the recorded contracts are
-the deployment's: the Mailbox at `DUSK_DOMAIN`, the fee contracts called
-from its hooks and taking their calls from what calls them there (the IGP
-is its default hook, the ProtocolFee in its required aggregation hook), the
-Sepolia contracts created as `deploy` recorded, and the Sepolia token bound
-to `EVM_MAILBOX` and the recorded ISM. Each `dusk-tx` command they run is
-bound to the chain too (below).
+deployer key and a nonce. `dusk-igp`, `evm-igp` and `claim` also check that
+the recorded contracts are the deployment's: the Mailbox at `DUSK_DOMAIN`,
+the fee contracts called from its hooks and taking their calls from what
+calls them there (the IGP is its default hook, the ProtocolFee in its
+required aggregation hook), the Sepolia contracts created as `deploy`
+recorded, and the Sepolia token bound to `EVM_MAILBOX` and the recorded
+ISM. `dusk-igp` and `claim` read the Dusk contracts back first, as `deploy`
+left them ([testnet.md](testnet.md#reading-back-the-dusk-contracts)).
+`revenue`, which only reads, checks the chains alone. Each `dusk-tx`
+command they run is bound to the chain too (below).
 
 `evm-igp` first checks that the Sepolia IGP reads Dusk's pricing from the
 StorageGasOracle `deploy` recorded, and stops before sending anything when it
@@ -224,8 +264,11 @@ dusk-tx pay-for-gas --rues-url <node> --keys payer.keys --igp <dusk igp> \
 - `--gas-amount` is the gas to add. The relayer from Dusk requires the gas
   paid for, all payments together, to cover its `gasFraction` (`2/3` by
   default) of its estimate of the delivery (`eth_estimateGas` of
-  `process`). A message without hook metadata has paid for 50,000 gas plus
-  the IGP's overhead; pay for the rest, with some margin.
+  `process`). A message without hook metadata, or with fewer than its 8
+  bytes, has paid for 50,000 gas plus the IGP's overhead; pay for the rest,
+  with some margin. One dispatched with EVM-style `StandardHookMetadata` has
+  paid for 256 gas plus the overhead
+  ([security.md](security.md#deviations-from-solidity-hyperlane)).
 - The IGP charges `gas amount x gas price x exchange rate / 1e10` LUX, with
   no overhead: a dispatch paid for that. It charges its price when the
   transaction runs, from the transaction's deposit, and sends the rest of
@@ -266,8 +309,13 @@ cast send <evm igp> "payForGas(bytes32,uint32,uint256,address)" <message id> <du
 ```
 
 A message to Dusk must have paid for `EVM_IGP_GAS_OVERHEAD` Dusk gas
-(2,170,000 by default). `bash deploy/local-fees-check.sh` tops up a message
-both ways in the local rehearsal.
+(2,170,000 by default). Paying for more than the relayer's limit,
+`DUSK_RELAYER_GAS_LIMIT` (5M), doesn't help: the relayer sends every
+delivery to Dusk with at most that limit, so a message that needs more
+fails on chain however much it paid
+([costs.md](costs.md#what-stays-uncovered)).
+`bash deploy/local-fees-check.sh` tops up a message both ways in the local
+rehearsal.
 
 ### Collecting the fees
 
@@ -433,7 +481,14 @@ the private Rusk repository.
 
 `.github/workflows/manual-repro-check.yml` runs the full build and test suite
 (`make repro-check-agent`) on demand against exact commits of this repository,
-`rusk-private` and `hyperlane-monorepo`. It needs:
+`rusk-private` and `hyperlane-monorepo`. Besides the contracts, the VM tests,
+the `dusk-tx` tests and a check that the agents build, it runs the agent's
+one test against the real `dusk-tx`,
+`a_dusk_tx_build_sends_only_on_the_agents_word`: the agent drives `dusk-tx`
+through its output, the `Prepared TX` line, the go-ahead to send and the
+error prefixes that decide whether a delivery may have been sent, and the
+agents' public CI can only test that against a stand-in, as it can't build
+`dusk-tx` without `rusk-private`. It needs:
 
 - A self-hosted Linux runner labelled `dusk-hyperlane` and
   `dusk-hyperlane-ephemeral`, with `cargo`, `git`, `make`, `rg` and `rustup`.
@@ -446,3 +501,18 @@ the private Rusk repository.
 gh workflow run manual-repro-check.yml \
   -f dusk_ref=<40-char sha> -f rusk_ref=<40-char sha> -f monorepo_ref=<40-char sha>
 ```
+
+### Release gate
+
+Before a release of this repository or of the agents, and whenever
+`dusk-tx` changes, check both against each other where `rusk-private` is
+at hand:
+
+- `make repro-check-agent` (or the workflow above) at the commits to
+  release: the full build and tests here, and the agent's test against
+  this `dusk-tx`.
+- In the monorepo fork,
+  `bash rust/main/chains/hyperlane-dusk/scripts/dusk-tx-interop-check.sh`:
+  the same test against `dusk-tx` built at the commit of this repository the
+  agents pin (`DUSK_REF` in `.github/workflows/dusk-agent-gate.yml`). Its
+  README says how to point it at another commit.

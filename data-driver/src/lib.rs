@@ -21,7 +21,7 @@ use dusk_data_driver::{
 };
 use serde::Deserialize;
 
-use hyperlane_dusk_types::drc20::{Allowance, BalanceOf};
+use hyperlane_dusk_types::drc20::{Account, Allowance, BalanceOf};
 use hyperlane_dusk_types::events;
 use hyperlane_dusk_types::{DomainGasConfig, EthAddress, GasPaymentRecord, MessageId, H256};
 
@@ -239,6 +239,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "is_registered" | "pending_balance" => json_to_rkyv::<(H256,)>(json),
             "balance_of" => json_to_rkyv::<BalanceOf>(json),
             "allowance" => json_to_rkyv::<Allowance>(json),
+            "allowance_count" => json_to_rkyv::<Account>(json),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
         }
     }
@@ -301,6 +302,7 @@ impl ConvertibleContract for HyperlaneDataDriver {
             "is_registered" | "pending_balance" => rkyv_to_json::<(H256,)>(rkyv),
             "balance_of" => rkyv_to_json::<BalanceOf>(rkyv),
             "allowance" => rkyv_to_json::<Allowance>(rkyv),
+            "allowance_count" => rkyv_to_json::<Account>(rkyv),
             name => Err(Error::Unsupported(format!("fn_name {name}"))),
         }
     }
@@ -312,7 +314,8 @@ impl ConvertibleContract for HyperlaneDataDriver {
             | "nonce"
             | "gas_payment_count"
             | "state_version"
-            | "announced_validator_count" => rkyv_to_json::<u32>(rkyv),
+            | "announced_validator_count"
+            | "allowance_count" => rkyv_to_json::<u32>(rkyv),
             // u64 outputs
             "protocol_fee"
             | "max_protocol_fee"
@@ -484,6 +487,29 @@ mod tests {
         HyperlaneDataDriver
             .decode_input_fn("balance_of", &encoded)
             .expect("contract-account balance query should decode");
+    }
+
+    /// WarpDrc20's `allowance_count` takes the owner itself and answers a
+    /// `u32`; its `memory_bytes` answers as the Mailbox's does.
+    #[test]
+    fn warp_drc20_allowance_count_round_trips() {
+        let owner = r#"{"kind":"Contract","bytes":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]}"#;
+        let encoded = HyperlaneDataDriver
+            .encode_input_fn("allowance_count", owner)
+            .expect("an allowance count query should encode");
+        assert_eq!(
+            HyperlaneDataDriver
+                .decode_input_fn("allowance_count", &encoded)
+                .expect("an allowance count query should decode")["kind"],
+            "Contract"
+        );
+        let count = rkyv::to_bytes::<_, 16>(&64u32).unwrap();
+        assert_eq!(
+            HyperlaneDataDriver
+                .decode_output_fn("allowance_count", &count)
+                .expect("an allowance count should decode"),
+            serde_json::json!(64)
+        );
     }
 
     #[test]
@@ -778,8 +804,9 @@ mod tests {
         );
     }
 
-    /// Routes no longer export `register_account_for`; only a claim
-    /// registers a key on someone else's behalf.
+    /// Routes no longer export `register_account` or `register_account_for`;
+    /// only a claim of escrow registers a key, the claimant's own or someone
+    /// else's.
     #[test]
     fn sponsored_claim_input_round_trips_and_registration_for_is_gone() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(0x434c_4149);
@@ -800,6 +827,9 @@ mod tests {
             .is_err());
         assert!(HyperlaneDataDriver
             .decode_input_fn("register_account_for", &bytes)
+            .is_err());
+        assert!(HyperlaneDataDriver
+            .encode_input_fn("register_account", "null")
             .is_err());
     }
 

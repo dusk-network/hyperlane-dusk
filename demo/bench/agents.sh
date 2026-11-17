@@ -218,12 +218,8 @@ EOF
     TESTNET_ENV="$ENV_FILE" bash "$DUSK_DIR/deploy/testnet.sh" deploy
     TESTNET_ENV="$ENV_FILE" bash "$DUSK_DIR/deploy/testnet.sh" agent-configs
 
-    # Register the deployer on the route, so deliveries to it pay out rather
-    # than wait in escrow. Done before any agent shares its Dusk key.
-    info "Registering the deployer's account on the native route..."
-    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
-        --rues-url "$RUSK_URL/" --keys "$CONSENSUS_KEYS" --warp-contract "$(state .dusk.warp_native)" \
-        --expected-chain-id "$chain_id" >/dev/null
+    # Transfers to the deployer wait in escrow on the route, which registers
+    # an account only when it claims; the scenario counts them either way.
     mkdir -p "$BENCH_DIR/secrets"
     DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" export-signer-key \
         --keys "$CONSENSUS_KEYS" --out "$BENCH_DIR/secrets/dusk-signer.key" >/dev/null

@@ -145,6 +145,19 @@ impl TestSession {
             })
     }
 
+    /// [`Self::direct_call`] with arguments already serialized, for
+    /// arguments too large for [`rkyv_serialize`]'s scratch space, such as
+    /// long batches of calls. Returns the raw return value.
+    #[allow(dead_code)]
+    pub fn direct_call_raw(
+        &mut self,
+        contract: ContractId,
+        fn_name: &str,
+        fn_args: Vec<u8>,
+    ) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+        self.query_raw(contract, fn_name, fn_args, u64::MAX)
+    }
+
     /// A read-only query with the archived argument `fn_args`, as a node
     /// runs one over HTTP: a direct call with the block gas limit. Returns
     /// the raw reply and the gas spent.

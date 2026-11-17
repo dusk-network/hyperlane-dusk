@@ -36,5 +36,5 @@ for (const [route, remote] of [[token, state.evm.token], [native, state.evm.nati
 }
 assert.equal(await native.isRegistered(bytes(state.account_h256)), true);
 assert.equal(await native.isRegistered(new Uint8Array(32)), false);
-assert.equal(await collateral.wrappedToken(), state.dusk.warp_drc20);
+assert.equal(await collateral.wrappedToken(), state.dusk.collateral_token);
 console.log(`SDK live checks passed: ${state.dusk_default_ism}, nonce=${view.nonce}, exact supply=${await token.totalSupply()}`);
