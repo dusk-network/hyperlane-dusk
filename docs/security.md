@@ -287,10 +287,10 @@ pin what stage 1 leaves as it is, and fail if it changes:
 `known_limitation_collateral_route_over_warp_drc20_stops_paying_new_holders_at_the_reserve`
 and `known_property_a_new_payers_minimum_comes_back_through_its_own_hook`.
 The VM tests need the private rusk-private checkout, which CI can't fetch,
-so they are a release gate run by hand (`make repro-check`, about 10
-minutes), with `make check-genesis-contracts`, which checks that the
-genesis transfer and stake contracts they run are the ones rusk-private
-ships at `RUSK_COMMIT`.
+so they are a release gate run by hand (`make repro-check`; the VM tests
+take about 10 minutes), with `make check-genesis-contracts`, which checks
+that the genesis transfer and stake contracts they run are the ones
+rusk-private ships at `RUSK_COMMIT`.
 `deploy/testnet.sh`, `demo/deploy.sh` and the agents refuse the earlier
 versions. The ranges run from keys in increasing order, which an attacker
 can arrange, to keys in random order ([storage.md](storage.md#key-order)).
