@@ -109,7 +109,10 @@ def quote_signer_history(evm, igp, signer, block):
 # Answers the dusk-tx subcommands the scripts use from FIXTURE_CHAIN, and
 # writes back what the transactions it is asked for would change. `query`
 # looks up "<contract>/<method>" (plus "/<arg>" for --arg-u32 and --arg-u64);
-# a missing entry, or one with "error", fails as dusk-tx does.
+# a missing entry, or one with "error", fails as dusk-tx does. FIXTURE_CHAIN's
+# "interleave", {"key": key, "after_reads": n, "value": v}, makes another
+# process's change to that answer once it has been read n times, before the
+# next read; "reads" counts the reads.
 DUSK_TX_STUB = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -146,6 +149,12 @@ if args[0] == "query":
     for flag in ("--arg-u32", "--arg-u64"):
         if opt(flag) is not None:
             key += "/" + opt(flag)
+    plan = chain.get("interleave")
+    if plan and plan["key"] == key:
+        plan["reads"] = plan.get("reads", 0) + 1
+        if plan["reads"] == plan["after_reads"] + 1:
+            queries[key] = {"value": plan["value"]}
+        save()
     if opt("--method") == "quote_gas_payment":
         config = queries.get(f"{opt('--contract')}/domain_gas_config/{opt('--arg-u32')}", {}).get("value")
         if config and config["gas_price"]:
@@ -792,6 +801,8 @@ class TestnetScript(unittest.TestCase):
         self.evm = sepolia()
         # Extra environment for the script and its stubs.
         self.extra_env = {}
+        # The dusk-tx stub's "interleave", and what became of it.
+        self.dusk_interleave = None
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -813,7 +824,7 @@ class TestnetScript(unittest.TestCase):
         env_file.write_text('source "$DUSK_DIR/deploy/testnet.env.example"\n'
                             + "".join(f"{key}={shlex.quote(str(value))}\n" for key, value in values.items()))
         self.chain.write_text(json.dumps({"queries": self.queries, "deployer_h256": DEPLOYER_H256,
-                                          "deploy": DUSK_CONTRACTS}))
+                                          "deploy": DUSK_CONTRACTS, "interleave": self.dusk_interleave}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
             self.relayer_config.unlink()
@@ -832,7 +843,8 @@ class TestnetScript(unittest.TestCase):
         result = subprocess.run(["bash", str(self.root / "deploy" / "testnet.sh"), *command],
                                 env=env, capture_output=True, text=True, timeout=120)
         # What the run left on the fake chains, for the next run and the asserts.
-        self.queries = json.loads(self.chain.read_text())["queries"]
+        chain = json.loads(self.chain.read_text())
+        self.queries, self.dusk_interleave = chain["queries"], chain.get("interleave")
         self.evm = json.loads(self.evm_file.read_text())
         return result
 
@@ -1280,6 +1292,59 @@ class TestnetTokenBinding(DeployedTestnet):
         self.assert_fails(result, f"is enrolled with the Dusk route {other}, not the route recorded in")
         self.assertEqual(self.token_writes() + self.traced("dusk-tx enroll-router"), [])
         self.assertEqual(self.evm["contracts"][self.token]["hook"], self.hook)
+
+    def test_a_router_on_the_dusk_route_is_never_replaced(self):
+        # deploy enrolled the recorded token on the Dusk route whenever the
+        # route's router for the EVM chain wasn't that token, replacing any
+        # other, where the EVM side refuses to: run again after the token
+        # record changed, it cut the old token's holders off from the DUSK
+        # behind their tokens. A router that appears after the read-back, as
+        # another deploy with the same key could enroll, is read right
+        # before each write and refused: before the write to the token, and
+        # right before the write to the route. deploy reads the route's
+        # router once in preflight's read-back, then in enroll_routers
+        # before each write.
+        key, other = f"{ROUTE}/enrolled_router/{EVM_DOMAIN}", "00" * 12 + "22" * 20
+        # The token already has the hook deploy sets, so deploy's only
+        # writes to it are enrollments.
+        self.assert_ok(self.run_script("deploy"))
+        for after_reads in (1, 2):
+            with self.subTest(after_reads=after_reads):
+                self.evm["contracts"][self.token].update(routers={}, supply=0)
+                self.queries.pop(key, None)
+                self.dusk_interleave = {"key": key, "after_reads": after_reads, "value": other}
+                result = self.run_script("deploy")
+                self.assertGreater(self.dusk_interleave["reads"], after_reads, "the change came after the read-back")
+                self.assert_fails(result, f"The Dusk route {ROUTE} is enrolled with the router {other} for sepolia "
+                                          f"(domain {EVM_DOMAIN}), not the EVM DUSK token {self.token} recorded in")
+                self.assertIn("not replacing it", result.stderr)
+                self.assertEqual(self.traced("dusk-tx enroll-router"), [])
+                self.assertEqual(self.queries[key], {"value": other})
+                self.assertEqual(len(self.token_writes()), after_reads - 1)
+        # With the router already the recorded token, enrolling it again is
+        # nothing to send.
+        self.dusk_interleave = None
+        self.evm["contracts"][self.token]["routers"] = {str(DUSK_DOMAIN): "0x" + ROUTE}
+        self.queries[key] = {"value": "00" * 12 + self.token[2:]}
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.traced("dusk-tx enroll-router") + self.token_writes(), [])
+        # The token record changed since, to a new token of this deployment
+        # with no route yet: the route is enrolled with the old one, and
+        # every command that uses the route refuses it before sending
+        # anything.
+        new = "0x" + "33" * 20
+        tx = proxy_creation(self.evm, new, self.token_impl, {
+            "type": "token", "mailbox": EVM_MAILBOX, "hook": self.hook, "ism": self.ism, "owner": DEPLOYER,
+            "routers": {}, "supply": 0})
+        state = self.state()
+        self.write_state({**state, "evm": {**state["evm"], "token": new, "token_creation_tx": tx}})
+        for command in ["preflight", "agent-configs", "claim", "deploy"]:
+            with self.subTest(command=command):
+                self.assert_fails(self.run_script(command),
+                                  f"The Dusk route {ROUTE} is enrolled with the router {'00' * 12 + self.token[2:]} "
+                                  f"for sepolia (domain {EVM_DOMAIN}), not none or the EVM DUSK token {new}")
+                self.assertEqual(self.traced("cast send") + self.traced("dusk-tx enroll-router")
+                                 + self.traced("dusk-tx claim-fees"), [])
 
     def test_a_token_of_another_mailbox_is_refused(self):
         # Mixed or restored state: deployment B's token, created by the same

@@ -1681,16 +1681,17 @@ set_evm_route_hook() {
 }
 
 # Enroll this deployment's route on the token, and the token on the route.
-# Preflight checked the token's router, but its owner can enroll another in
-# between, as another deploy with the same key could. So the token is
-# checked again right before the write, and the route is enrolled only on
-# the router that check read being none: another route's is refused, never
-# replaced (check_evm_token_router).
+# Preflight checked both routers, but their owners can enroll others in
+# between, as another deploy with the same key could. So each side is read
+# again right before each write, and enrolled only where it has no router:
+# another one is refused, never replaced, on the EVM side
+# (check_evm_token_router) as on Dusk (dusk_route_router).
 enroll_routers() {
-    local token route enrolled
+    local token route router
     token="$(state_get '.evm.token')"
     route="$(lower "$(state_get '.dusk.warp_native')")"
     check_evm_token_binding
+    router="$(dusk_route_router "$route" "$token")" || exit 1
     if [ "$EVM_TOKEN_ROUTER" != "0x$route" ]; then
         [[ "$EVM_TOKEN_ROUTER" =~ ^0x0{64}$ ]] \
             || fail "The EVM DUSK token $token is enrolled with the Dusk route ${EVM_TOKEN_ROUTER#0x}: not replacing it"
@@ -1699,19 +1700,36 @@ enroll_routers() {
     fi
     [ "$(lower "$(evm_call "$token" "routers(uint32)(bytes32)" "$DUSK_DOMAIN")")" = "0x$route" ] \
         || fail "EVM token does not have the Dusk route enrolled"
-    enrolled="$(dusk_query --contract "$route" --method enrolled_router --return-type bytes32 \
-        --arg-u32 "$EVM_DOMAIN" 2>/dev/null | jq -r '.value // empty')"
-    if [ "$(lower "$enrolled")" != "$(pad32 "$token")" ]; then
+    [ "$router" = token ] || router="$(dusk_route_router "$route" "$token")" || exit 1
+    if [ "$router" = none ]; then
         info "Enrolling the $EVM_CHAIN_NAME token on the Dusk route..."
         dusk_tx enroll-router --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
             --warp-contract "$route" --domain "$EVM_DOMAIN" --router "$(pad32 "$token")" \
             --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" >/dev/null \
             || fail "Dusk router enrollment failed"
     fi
-    enrolled="$(dusk_query --contract "$route" --method enrolled_router --return-type bytes32 \
-        --arg-u32 "$EVM_DOMAIN" | jq -r '.value')"
-    [ "$(lower "$enrolled")" = "$(pad32 "$token")" ] || fail "Dusk route does not have the EVM token enrolled"
+    router="$(dusk_route_router "$route" "$token")" || exit 1
+    [ "$router" = token ] || fail "Dusk route does not have the EVM token enrolled"
     ok "Routes enrolled with each other"
+}
+
+# The Dusk route's router for EVM_DOMAIN: `token` when it is the recorded
+# EVM token, `none` when there is none yet. Any other router fails, as the
+# EVM side's does (check_evm_token_router): the route's DUSK backs that
+# router's tokens, and replacing it would leave their holders nothing to
+# bring them back to.
+dusk_route_router() {
+    local route="$1" token="$2" router
+    router="$(dusk_value "the router of the Dusk route $route for $EVM_CHAIN_NAME" --contract "$route" \
+        --method enrolled_router --return-type bytes32 --arg-u32 "$EVM_DOMAIN")" || return 1
+    if [ "$router" = "$(pad32 "$token")" ]; then
+        echo token
+    elif [ "$router" = "$ZERO_ID" ]; then
+        echo none
+    else
+        echo "[FAIL] The Dusk route $route is enrolled with the router $router for $EVM_CHAIN_NAME (domain $EVM_DOMAIN), not the EVM DUSK token $token recorded in $STATE: not replacing it. The route's DUSK backs that router's tokens, and replacing it would cut their holders off. If $STATE recorded another token before, put it back; if the route is another deployment's, move $OUT_DIR aside." >&2
+        return 1
+    fi
 }
 
 # A state file from another network, or from before a network reset, would
