@@ -75,7 +75,9 @@ dispatches or withdrawn, leaves no entry, so funding that payer again takes
 the minimum again. `dusk-tx fund-dispatch` reads the payer's credit and
 refuses less than the minimum for a payer with none before it signs, since
 a failed transaction pays its whole gas limit. Routes fund their own credit
-for each transfer through the transfer contract, which has no minimum.
+for each transfer through the transfer contract, which has no minimum. Once
+the Mailbox's memory is near 3 GiB (`memory_bytes`), it takes no new
+payers, as it takes no dispatches; top-ups and withdrawals go on.
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)

@@ -108,17 +108,17 @@ largest whose transaction fits 64 KiB.
 
 | Call | Tx gas | Call gas | Calls | Depth | Events | Event bytes | Tx bytes |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| WarpNative transfer_remote | 2,131,158 | 301,516 | 27 | 7 | 14 | 1,937 | 404 |
-| WarpNative transfer_remote, first message on the Mailbox | 2,135,492 | 305,872 | 27 | 7 | 14 | 1,937 | 404 |
-| WarpDrc20 transfer_remote | 2,168,505 | 338,804 | 27 | 7 | 15 | 2,351 | 404 |
-| WarpDrc20Collateral transfer_remote | 2,191,193 | 361,492 | 30 | 7 | 15 | 2,351 | 404 |
+| WarpNative transfer_remote | 2,131,122 | 301,480 | 27 | 7 | 14 | 1,937 | 404 |
+| WarpNative transfer_remote, first message on the Mailbox | 2,135,494 | 305,874 | 27 | 7 | 14 | 1,937 | 404 |
+| WarpDrc20 transfer_remote | 2,168,469 | 338,768 | 27 | 7 | 15 | 2,351 | 404 |
+| WarpDrc20Collateral transfer_remote | 2,191,157 | 361,456 | 30 | 7 | 15 | 2,351 | 404 |
 | Mailbox dispatch_default, empty body | 2,015,598 | 193,783 | 16 | 6 | 10 | 1,399 | 305 |
 | Mailbox dispatch_default, 64-byte body | 2,069,922 | 243,000 | 16 | 6 | 10 | 1,463 | 369 |
 | Mailbox dispatch_default, 1 KiB body | 3,008,012 | 1,104,240 | 16 | 6 | 10 | 2,423 | 1,329 |
 | Mailbox dispatch_default, largest body (63,252 bytes) | 62,351,848 | 55,469,407 | 16 | 6 | 10 | 64,651 | 63,557 |
 | Mailbox dispatch, 64-byte body, free hook instead of the IGP | 2,052,907 | 223,791 | 14 | 6 | 8 | 1,312 | 401 |
-| Mailbox fund_dispatch, new payer | 1,828,803 | 8,783 | 1 | 3 | 3 | 971 | 298 |
-| Mailbox fund_dispatch, existing payer | 1,828,647 | 8,627 | 1 | 3 | 3 | 971 | 298 |
+| Mailbox fund_dispatch, new payer | 1,828,801 | 8,781 | 1 | 3 | 3 | 971 | 298 |
+| Mailbox fund_dispatch, existing payer | 1,828,689 | 8,669 | 1 | 3 | 3 | 971 | 298 |
 | Mailbox withdraw_dispatch_credit | 58,696,331 | 56,862,325 | 1 | 3 | 3 | 1,010 | 477 |
 | WarpNative withdraw_dispatch_credit | 58,699,182 | 56,865,239 | 2 | 4 | 3 | 1,010 | 477 |
 | WarpDrc20 withdraw_dispatch_credit | 58,699,182 | 56,865,239 | 2 | 4 | 3 | 1,010 | 477 |
@@ -143,14 +143,16 @@ largest whose transaction fits 64 KiB.
 - A transfer makes 27 to 30 inter-contract calls, 7 frames deep: route,
   Mailbox, quotes from every hook, the fee forwarding through the transfer
   contract, and the AggregationHook's payment to the ProtocolFee.
-- The first message on a fresh Mailbox costs 4,334 gas more than the next:
+- The first message on a fresh Mailbox costs 4,372 gas more than the next:
   starting the first chunk of every log takes 2 pages in each of the
   Mailbox, the MerkleTreeHook and the IGP. Memory isn't priced by size.
 - A dispatch costs about 980 gas per body byte beyond 64.
 - Withdrawing credit and sponsored claims decode a public key on chain,
   about 57M gas ([security.md](security.md), LOW-7 and CRITICAL-1).
 - `fund_dispatch` takes at least 0.01 DUSK for a payer with no credit,
-  any amount for one with some; the rows fund 0.1025 DUSK.
+  any amount for one with some; the rows fund 0.1025 DUSK. A payer with no
+  credit is refused once its entry, at most 13 pages, could take the
+  Mailbox past 3 GiB.
 - A claim registers the account it pays, the only way a route registers
   one: the first transfer to an account waits in escrow until it is
   claimed. Routes have no `register_account`.
@@ -424,7 +426,7 @@ which run the same code and leave the same memory behind.
 |  | Mailbox | 26 |  |
 | WarpDrc20Collateral escrow for a new recipient | WarpDrc20Collateral | 72 | 2,133,125 per tx |
 |  | Mailbox | 26 |  |
-| Mailbox credit for a new payer, 0.01 DUSK each | Mailbox | 64 | 1,831,129 per tx |
+| Mailbox credit for a new payer, 0.01 DUSK each | Mailbox | 64 | 1,831,142 per tx |
 | IGP top-up (`pay_for_gas`) for any message ID | IGP | 64 | 1,832,296 per tx |
 | WarpNative registration of a new account, by its claim | WarpNative | 352 | 1,875,811 per claim |
 | WarpDrc20 registration of a new account, by its claim | WarpDrc20 | 416 | 1,885,159 per claim |
@@ -629,7 +631,7 @@ dispatch through the IGP to the EVM chain pays 6.001 DUSK.
 | Dispatch with a free hook of the sender's | Mailbox | 32 | 154,582, batched | the protocol fee, 0.001 DUSK | 37.8 |
 | Dispatch through the IGP | IGP | 64 | 179,389, batched | 0.001025 DUSK; 6.001 at the testnet pricing | 19.7; 98,323 at the testnet pricing |
 | | MerkleTreeHook | 32 | | | not reachable, see below |
-| Credit for a new payer | Mailbox | 64 | 1,831,129, a transaction | at least 0.01 DUSK, the payer's credit | 193.8 |
+| Credit for a new payer | Mailbox | 64 | 1,831,142, a transaction | at least 0.01 DUSK, the payer's credit | 193.8 |
 | Top-up for any message ID | IGP | 64 | 1,832,296, a transaction | at least one gas's price, 37,500 LUX at the testnet pricing | 30.6 |
 | New validator, 1-byte location | ValidatorAnnounce | 108 | 2,061,782, a transaction | none | 20.0 |
 | Transfer to a new holder | WarpDrc20 | 62 | 56,161, batched | a token unit | 0.9 |
@@ -650,7 +652,9 @@ dispatch through the IGP to the EVM chain pays 6.001 DUSK.
   EVM transfer per entry, and the EVM IGP for the relayer's gas, without
   which the relayer doesn't deliver it.
 - Credit for a new payer locks 0.01 DUSK in the Mailbox, which only the
-  payer can withdraw, for about 59M gas, 0.059 DUSK; so it is spent.
+  payer can withdraw, for about 59M gas, 0.059 DUSK; so it is spent. New
+  payers stop at 3 GiB, as dispatch does, so credit can't reach the last
+  GiB.
 
 What filling each contract costs, with each way in. The ranges are keys
 in increasing order, which an attacker can arrange and which take about
@@ -717,8 +721,8 @@ limits.
 | Relayed delivery, 1 signature | 2,143,593 | 544 | 1,399 | 1,882 | 1,000 | 1,000 |
 | Relayed delivery, 6 signatures | 3,231,328 | 868 | 928 | 1,190 | 1,000 | 928 |
 | Relayed delivery to a collateral route, 6 signatures | 3,272,066 | 868 | 916 | 1,190 | 1,000 | 916 |
-| WarpNative transfer_remote | 2,131,158 | 404 | 1,407 | 2,514 | 1,000 | 1,000 |
-| WarpDrc20Collateral transfer_remote | 2,191,193 | 404 | 1,369 | 2,514 | 1,000 | 1,000 |
+| WarpNative transfer_remote | 2,131,122 | 404 | 1,407 | 2,514 | 1,000 | 1,000 |
+| WarpDrc20Collateral transfer_remote | 2,191,157 | 404 | 1,369 | 2,514 | 1,000 | 1,000 |
 | Dispatch from an account | 2,015,598 | 305 | 1,488 | 3,297 | 1,000 | 1,000 |
 
 - Relayed deliveries are capped by the 1,000-transaction limit at one

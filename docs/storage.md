@@ -118,7 +118,7 @@ add to is bounded by what it costs to call, by a fee, or by a cap:
 | Deliveries (`process`) | Only a transaction's own call or a query can deliver, so each delivery is a transaction, about 1.85M gas, and a block holds at most 1,000 | Mailbox 6 |
 | Announcements (`announce`) | The same, about 2.06M gas each | ValidatorAnnounce 3 |
 | Dispatches | The protocol fee, 0.001 DUSK on testnet; dispatch closes at 3 GiB ([below](#the-dispatch-limit)) | Mailbox 5 |
-| Dispatch credit (`fund_dispatch`) | A transaction each, and at least 0.01 DUSK for a payer with no credit | Mailbox 6 |
+| Dispatch credit (`fund_dispatch`) | A transaction each, and at least 0.01 DUSK for a payer with no credit; new payers stop at 3 GiB, as dispatch does | Mailbox 6 |
 | IGP top-ups (`pay_for_gas`) | A transaction each, and the gas bought; top-ups close at 3 GiB | IGP 4 |
 | Route registrations | Only a claim of escrow registers an account, and escrow only comes from a delivery from the enrolled router: a transfer someone sent, and paid the relaying of, on the remote chain | routes 5, 8, 7 |
 | WarpDrc20 allowances | At most 64 live allowances per owner, and approvals of new spenders stop at 3 GiB ([below](#the-warpdrc20-reserve)) | WarpDrc20 8 |
@@ -159,6 +159,16 @@ back. A route funds its own credit through the transfer contract for each
 transfer (`receive_dispatch_funding`) with no minimum: only the route can
 fund its own ID that way, and the transfer spends it in the same call.
 
+A payer with no credit is also refused once its entry could take the
+Mailbox past 3 GiB, where dispatch closes (`Mailbox: storage full, credit
+for new payers is closed`), checked before the entry is allocated, by the
+dispatch limit's rule: an entry can allocate at most 13 B-tree nodes, each
+under 600 bytes, so at most 13 pages. Credit only pays for dispatches, so
+nothing honest needs a new payer past that point, and the last GiB stays
+for deliveries. Top-ups and withdrawals change an existing entry and go on.
+The same check covers `receive_dispatch_funding`, though each new entry
+there is a contract of its own, a deployment of at least 10 DUSK.
+
 ### Route registrations
 
 A route registers an account only when its escrow is claimed, with
@@ -186,11 +196,12 @@ in use plus that bound would pass 3 GiB, the dispatch reverts with
 
 The check is made before the allocations it counts, so what a dispatch
 allocates never takes the Mailbox past 3 GiB, and the last GiB stays for
-the other calls: deliveries above all, and withdrawals, credit funding and
-any call's temporary buffers. No hook can deliver a message during a
-dispatch, since a contract can't call `process`. The old check only looked
-at the memory already in use, and a `Vec` doubling after it could take
-1.25 GiB of the reserve at once.
+the other calls: deliveries above all, and withdrawals, top-ups of existing
+credit and any call's temporary buffers. Credit for a new payer stops at
+the same limit ([Dispatch credit](#dispatch-credit)). No hook can deliver a
+message during a dispatch, since a contract can't call `process`. The old
+check only looked at the memory already in use, and a `Vec` doubling after
+it could take 1.25 GiB of the reserve at once.
 
 The bound is 4 pages for a dispatch with no metadata that starts no chunk,
 6 for one that starts a chunk of message IDs, and 10 for the first dispatch,
@@ -366,7 +377,7 @@ the ranges run from keys in increasing order to keys in random order
 | Mailbox, deliveries to a recipient that is its own ISM | dispatch closed at 31M, about 991 DUSK; `process` failed at 33.5M, "capacity overflow" in the processed list, about 1,074 DUSK | a transaction each: dispatch closes after 97M to 122M, 179,000 to 225,000 DUSK; `process` fails at 130M to 163M, the full 4 GiB, 239,000 to 301,000 DUSK |
 | Mailbox, dispatches | 33.5M; "capacity overflow"; about 10,500 DUSK, and the 3 GiB limit never fired | about 100M, when dispatch closes at 3 GiB: about 116,000 DUSK with a free hook, 15,500 of it gas and the rest the 0.001 DUSK protocol fee; 1.02M at a 0.01 DUSK fee |
 | Mailbox, both | | dispatches to 3 GiB, then 33M to 41M deliveries for the last GiB: 177,000 to 192,000 DUSK, the cheapest way to make `process` fail |
-| Mailbox, credit for new payers | | 40M to 50M payers to 3 GiB at 0.01 DUSK each: 475,000 to 595,000 DUSK |
+| Mailbox, credit for new payers | | 40M to 50M payers to 3 GiB, where new payers stop, at 0.01 DUSK each: 475,000 to 595,000 DUSK |
 | MerkleTreeHook | 33.5M dispatches, with the Mailbox | 134M; the Mailbox closes dispatch first |
 | IGP | 16.8M payments; about 5,600 DUSK plus IGP fees | about 67M payments. Top-ups close at 3 GiB, about 94,000 DUSK at the testnet pricing; dispatches through the IGP pay 6.001 DUSK each there, about 403 million DUSK to fill it |
 | ValidatorAnnounce, new keys | 3.5M announcements of 1 KiB locations; about 1,257 DUSK | 36M to 40M, a transaction each: 74,000 to 82,000 DUSK with 1-byte locations |
@@ -377,8 +388,9 @@ the ranges run from keys in increasing order to keys in random order
 
 What happens at each ceiling:
 
-- **Mailbox.** At 3 GiB dispatch closes and stays closed; deliveries and
-  withdrawals go on in the last GiB. If deliveries fill all 4 GiB,
+- **Mailbox.** At 3 GiB dispatch and credit for new payers close and stay
+  closed; deliveries, withdrawals and top-ups go on in the last GiB, which
+  only deliveries can fill. If deliveries fill all 4 GiB,
   `process` fails and the Mailbox has to be replaced, with every route on
   it. Doing that on purpose takes dispatches to 3 GiB and 33M to 41M
   deliveries, about 177,000 to 192,000 DUSK and 4 days of full blocks for

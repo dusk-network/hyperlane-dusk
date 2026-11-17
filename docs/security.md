@@ -45,7 +45,7 @@ and which design decisions are still open.
 | Caller identity | No `msg.sender`. A shared resolver maps a root Moonlight call to `keccak256(public_sender)` and a nested call to the caller's `ContractId`, both as `H256`. All owner checks use this. |
 | Who can deliver and announce | Only a transaction's own call or a query can call the Mailbox's `process` and ValidatorAnnounce's `announce`; Solidity's take any caller. No contract can deliver a message, to itself or for others, or announce, so each delivery and announcement costs a transaction and a block holds at most 1,000. A recipient can't call back into `process` (HIGH-6). The relayer's simulation of `process` is a query, and still runs. |
 | Native value | No `msg.value`. WarpNative, Mailbox fee funding and IGP top-ups check the exact Moonlight deposit through the transfer contract. Hook payments use authenticated contract-to-contract transfers. |
-| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`, at least 0.01 DUSK for a payer with no credit). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. Anyone can top up a message's IGP payment (`pay_for_gas`, as `payForGas` on EVM) from a Moonlight transaction's deposit; the IGP keeps its quote, sends the rest of the deposit back to the signer, and records the payment as it records a dispatch's. |
+| Fees | Mailbox spends prepaid, sender-keyed credit (`fund_dispatch`, at least 0.01 DUSK for a payer with no credit, and no new payer past 3 GiB). Warp routes fund each dispatch from the sender's deposit and assert their own credit is unchanged. The required hook is a static AggregationHook (MerkleTreeHook + ProtocolFee). IGP is the default hook. ProtocolFee and IGP only record a payment after an authenticated transfer of the exact quoted amount, and hold real DUSK until claimed. Anyone can top up a message's IGP payment (`pay_for_gas`, as `payForGas` on EVM) from a Moonlight transaction's deposit; the IGP keeps its quote, sends the rest of the deposit back to the signer, and records the payment as it records a dispatch's. |
 | Account recipients | An account is `keccak256(bls_public_key)`. A route registers it only when its escrow is claimed, so the first transfer to an account waits in escrow and later ones are paid directly. Escrow is only ever paid to the key with that hash. |
 | Reverts | `assert!` and `expect(...)` panics instead of custom errors. |
 | Upgrades | None. Contract IDs are deterministic; an upgrade is a new deployment. Redeploying over existing state is refused. |
@@ -260,15 +260,16 @@ bytes a call leaves behind ([storage.md](storage.md#who-can-add-entries)):
 | `process` and `announce` take only a transaction's own call or a query | Mailbox 6, ValidatorAnnounce 3 | No contract can make many deliveries or announcements in one transaction. Filling the Mailbox with deliveries went from about 5,700 DUSK in 4 hours to 239,000 to 301,000 DUSK over 15 to 19 days of full blocks, and ValidatorAnnounce from about 10,100 DUSK to 74,000 to 82,000. A recipient can't call back into `process` (HIGH-6). |
 | Routes register an account only when its escrow is claimed | WarpNative 5, WarpDrc20 8, WarpDrc20Collateral 7 | MEDIUM-10 is fixed: a route's registry fills only with accounts someone sent a transfer to, 9.8M to 12.2M of them. |
 | At most 64 allowances per owner; transfers to new holders and approvals of new spenders stop at 3 GiB | WarpDrc20 8 | Approvals to the reserve cost 79,000 to 99,000 DUSK instead of 3,000 to 3,800 for the whole token. Holders still reach it for 2,300 to 2,900 DUSK and token units, but then only transfers and approvals to new addresses stop; the bridge keeps the last GiB. |
-| `fund_dispatch` takes at least 0.01 DUSK for a payer with no credit | Mailbox 6 | Credit for new payers fills the Mailbox's 3 GiB for 475,000 to 595,000 DUSK instead of about 92,200. |
+| `fund_dispatch` takes at least 0.01 DUSK for a payer with no credit, and credit for new payers stops at 3 GiB | Mailbox 6 | Credit for new payers fills the Mailbox's 3 GiB for 475,000 to 595,000 DUSK instead of about 92,200, and can't reach the last GiB, which only deliveries fill. Before, credit at 1 LUX could fill all 4 GiB, and with it stop `process`, for about 98,000 to 123,000 DUSK. |
 
 Each rule has a VM test that fails without it, in `tests/tests/integration.rs`:
 `test_contracts_cannot_call_process`, `test_contracts_cannot_announce`,
 `test_a_funded_key_cannot_register_itself`,
 `test_warp_drc20_owner_holds_at_most_64_allowances`,
 `test_warp_drc20_zeroed_allowances_free_their_entries`,
-`test_warp_drc20_new_holders_and_allowances_stop_at_3_gib` and
-`test_a_new_dispatch_payer_funds_at_least_a_hundredth_of_a_dusk`.
+`test_warp_drc20_new_holders_and_allowances_stop_at_3_gib`,
+`test_a_new_dispatch_payer_funds_at_least_a_hundredth_of_a_dusk` and
+`test_credit_for_new_payers_stops_at_3_gib`.
 `deploy/testnet.sh`, `demo/deploy.sh` and the agents refuse the earlier
 versions. The ranges run from keys in increasing order, which an attacker
 can arrange, to keys in random order ([storage.md](storage.md#key-order)).
