@@ -2389,12 +2389,16 @@ mod tests {
 
     /// The paths and bodies of the requests a mock RUES endpoint got.
     type MockRequests = Vec<(String, Vec<u8>)>;
+    /// Replies for a mock RUES endpoint, in order: a path suffix, a status
+    /// and a body (`mock_rues`).
+    type MockReplies = Vec<(&'static str, u16, Vec<u8>)>;
 
     /// A RUES endpoint on localhost that answers requests in order, one a
     /// connection: each request's path must end with the next reply's
-    /// suffix, and gets its status and body. Returns the base URL and the
-    /// requests' paths and bodies, once every reply is sent or 20 seconds
-    /// pass with no request.
+    /// suffix, and gets its status and body. Status 0 is no answer: the
+    /// connection stays open for two seconds, then closes. Returns the base
+    /// URL and the requests' paths and bodies, once every reply is sent or
+    /// 20 seconds pass with no request.
     fn mock_rues(
         replies: Vec<(&'static str, u16, Vec<u8>)>,
     ) -> (String, std::thread::JoinHandle<MockRequests>) {
@@ -2441,6 +2445,11 @@ mod tests {
                 let mut input = vec![0; length];
                 reader.read_exact(&mut input).unwrap();
                 assert!(path.ends_with(suffix), "expected {suffix}, got {path}");
+                if status == 0 {
+                    std::thread::sleep(Duration::from_secs(2));
+                    requests.push((path, input));
+                    continue;
+                }
                 write!(
                     stream,
                     "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -3361,11 +3370,62 @@ mod tests {
         assert_eq!(server.join().unwrap().len(), 4);
     }
 
+    /// A view's replies as a Rusk node gives them for a contract that
+    /// doesn't export it, with the contract answering `control` after each,
+    /// as many times as `optional_view` asks before it takes the view as
+    /// missing.
+    fn missing_view(view: &'static str, control: (&'static str, Vec<u8>)) -> MockReplies {
+        let failed = (view, 500, crate::rues::FAILED_QUERY_BODY.to_vec());
+        vec![
+            failed.clone(),
+            (control.0, 200, control.1.clone()),
+            failed,
+            (control.0, 200, control.1),
+        ]
+    }
+
+    /// Replies to a view that don't show the contract lacks it: another
+    /// failure than the VM's, an answer that doesn't decode, no answer, or
+    /// the VM's failure and then a control that fails too. Each with what
+    /// the error says.
+    fn unreadable_view(
+        view: &'static str,
+        control: &'static str,
+    ) -> Vec<(MockReplies, &'static str)> {
+        let failed = crate::rues::FAILED_QUERY_BODY.to_vec();
+        vec![
+            (
+                vec![(view, 500, Vec::new())],
+                "failed (500 Internal Server Error)",
+            ),
+            (
+                vec![(view, 500, b"upstream error".to_vec())],
+                "upstream error",
+            ),
+            (
+                vec![(view, 502, failed.clone())],
+                "failed (502 Bad Gateway)",
+            ),
+            (
+                vec![(view, 200, vec![1, 2, 3])],
+                "answered, but not with the expected value",
+            ),
+            (vec![(view, 0, Vec::new())], "HTTP error"),
+            (
+                vec![(view, 500, failed.clone()), (control, 500, failed)],
+                "and so did",
+            ),
+        ]
+    }
+
     /// A WarpDrc20 holds an owner to 64 allowances and takes no allowance
     /// for a new spender once one, 14 pages at most, could take its memory
     /// past 3 GiB. `drc20-approve` of a new spender checks both before it
     /// signs; an existing spender, or a token that doesn't count
-    /// allowances, isn't checked.
+    /// allowances, isn't checked. A token counts as without the count only
+    /// as the node reports a missing view, twice, with the token answering
+    /// `allowance` after each: any other reply, or none, stops the approval
+    /// before it is signed.
     #[tokio::test]
     async fn drc20_approve_checks_the_cap_and_room_for_a_new_spender() {
         let limit = super::NEW_ENTRY_MEMORY_LIMIT;
@@ -3399,7 +3459,10 @@ mod tests {
                 Some(count) => {
                     replies.push(("/allowance_count", 200, super::rkyv_serialize(&count)))
                 }
-                None if allowance == 0 => replies.push(("/allowance_count", 500, Vec::new())),
+                None if allowance == 0 => replies.extend(missing_view(
+                    "/allowance_count",
+                    ("/allowance", super::rkyv_serialize(&allowance)),
+                )),
                 None => {}
             }
             if let Some(memory) = memory {
@@ -3438,13 +3501,42 @@ mod tests {
             );
             assert_eq!(server.join().unwrap().len(), count);
         }
+
+        // A reply that doesn't show the token lacks the count stops it
+        // before it signs: here before the signer's account is read.
+        let mut generic = replies(0, Some(0), None);
+        generic[2] = ("/allowance_count", 500, Vec::new());
+        refused(generic, "Can't tell whether the token limits allowances").await;
+        let owner = super::Drc20Account::Moonlight(
+            [0x66; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES],
+        );
+        let spender = super::Drc20Account::Contract(super::ContractId::from_bytes([0x33; 32]));
+        for (view, why) in unreadable_view("/allowance_count", "/allowance") {
+            let mut replies = vec![("/allowance", 200, super::rkyv_serialize(&0u64))];
+            replies.extend(view);
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let client =
+                crate::rues::RuesClient::with_test_timeout(&url, Duration::from_millis(500));
+            let error = super::check_room_for_new_spender(&client, &[0x22; 32], owner, spender)
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("Can't tell whether the token limits allowances"),
+                "{error}"
+            );
+            assert!(error.contains(why), "{why}: {error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        }
     }
 
     /// A collateral route pays out with its token's `transfer`, and a
     /// WarpDrc20 refuses that to new holders past its 3 GiB reserve, so
     /// `deploy-hyperlane` won't wrap one: not `warp-drc20`, refused before
     /// anything is asked of the node, and not a token ID that turns out to
-    /// be a warp route.
+    /// be a warp route. A token counts as no route only as the node reports
+    /// a missing `mailbox`, twice, with the token answering `balance_of`
+    /// after each: any other reply, or none, stops the deploy.
     #[tokio::test]
     async fn collateral_routes_dont_wrap_a_warp_drc20() {
         let deploy = |url: &str, token: &str| {
@@ -3476,26 +3568,55 @@ mod tests {
         let deployer = super::Drc20Account::Moonlight(
             [0x66; hyperlane_dusk_types::drc20::BLS_PUBLIC_KEY_BYTES],
         );
-        let checked = |mailbox_status: u16| {
-            mock_rues(vec![
-                ("/owner", 200, vec![0x77; 32]),
-                ("/balance_of", 200, super::rkyv_serialize(&0u64)),
-                ("/mailbox", mailbox_status, vec![0x44; 32]),
-            ])
+        let balance = || ("/balance_of", 200, super::rkyv_serialize(&0u64));
+        let checked = |mailbox: MockReplies| {
+            let mut replies = vec![("/owner", 200, vec![0x77; 32]), balance()];
+            replies.extend(mailbox);
+            let count = replies.len();
+            let (url, server) = mock_rues(replies);
+            let client =
+                crate::rues::RuesClient::with_test_timeout(&url, Duration::from_millis(500));
+            (client, server, count)
         };
-        let (url, server) = checked(200);
-        let client = crate::rues::RuesClient::new(&url).unwrap();
-        let error = super::check_explicit_collateral_token(&client, token, deployer)
-            .await
-            .unwrap_err();
-        assert!(error.contains("is a warp route"), "{error}");
-        assert_eq!(server.join().unwrap().len(), 3);
-        let (url, server) = checked(500);
-        let client = crate::rues::RuesClient::new(&url).unwrap();
+        // A route answers `mailbox`, at once or once the node runs it.
+        let failed = crate::rues::FAILED_QUERY_BODY.to_vec();
+        for mailbox in [
+            vec![("/mailbox", 200, vec![0x44; 32])],
+            vec![
+                ("/mailbox", 500, failed.clone()),
+                balance(),
+                ("/mailbox", 200, vec![0x44; 32]),
+            ],
+        ] {
+            let (client, server, count) = checked(mailbox);
+            let error = super::check_explicit_collateral_token(&client, token, deployer)
+                .await
+                .unwrap_err();
+            assert!(error.contains("is a warp route"), "{error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        }
+        // A plain DRC20 has none, as the node reports a missing view.
+        let (client, server, count) = checked(missing_view(
+            "/mailbox",
+            ("/balance_of", super::rkyv_serialize(&0u64)),
+        ));
         super::check_explicit_collateral_token(&client, token, deployer)
             .await
             .expect("a plain DRC20 is wrapped");
-        assert_eq!(server.join().unwrap().len(), 3);
+        assert_eq!(server.join().unwrap().len(), count);
+        // A reply that doesn't show the token has no `mailbox` stops it.
+        for (mailbox, why) in unreadable_view("/mailbox", "/balance_of") {
+            let (client, server, count) = checked(mailbox);
+            let error = super::check_explicit_collateral_token(&client, token, deployer)
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("Can't tell whether the explicit collateral token"),
+                "{error}"
+            );
+            assert!(error.contains(why), "{why}: {error}");
+            assert_eq!(server.join().unwrap().len(), count);
+        }
     }
 
     /// Multicall for Dusk's published owner, and the IDs a test Wasm gives
@@ -5208,7 +5329,9 @@ fn confirmation_error_with_hash(tx_id: &str, error: &str) -> String {
 
 /// Check a DRC20 named by ID for a collateral route: it exists, answers the
 /// DRC20 `balance_of`, and isn't a warp route. A WarpDrc20 is one, and every
-/// route answers `mailbox`; see [`WARP_DRC20_COLLATERAL_REFUSED`].
+/// route answers `mailbox`; see [`WARP_DRC20_COLLATERAL_REFUSED`]. The token
+/// counts as no route only once the node has shown it has no `mailbox`
+/// ([`RuesClient::optional_view`]): a reply that doesn't stops the deploy.
 async fn check_explicit_collateral_token(
     client: &RuesClient,
     token: ContractId,
@@ -5220,23 +5343,30 @@ async fn check_explicit_collateral_token(
             "Explicit collateral token does not exist on-chain: {token_hex}"
         ));
     }
+    let balance_of = Drc20BalanceOf { account: deployer };
     client
-        .contract_query::<_, u64>(
-            &token.to_bytes(),
-            "balance_of",
-            &Drc20BalanceOf { account: deployer },
-        )
+        .contract_query::<_, u64>(&token.to_bytes(), "balance_of", &balance_of)
         .await
         .map_err(|error| {
             format!(
                 "Explicit collateral token {token_hex} does not expose the required DRC20 balance_of ABI: {error}"
             )
         })?;
-    if client
-        .contract_query::<_, [u8; 32]>(&token.to_bytes(), "mailbox", &())
+    let mailbox = client
+        .optional_view::<_, [u8; 32]>(
+            &token.to_bytes(),
+            "mailbox",
+            &(),
+            ("balance_of", &rkyv_serialize(&balance_of)),
+        )
         .await
-        .is_ok()
-    {
+        .map_err(|error| {
+            format!(
+                "Can't tell whether the explicit collateral token {token_hex} is a warp route, \
+                 which it must not be, so nothing was deployed: {error}"
+            )
+        })?;
+    if mailbox.is_some() {
         return Err(format!(
             "Explicit collateral token {token_hex} is a warp route, so a WarpDrc20: \
              {WARP_DRC20_COLLATERAL_REFUSED}"
@@ -7960,25 +8090,40 @@ async fn cmd_drc20_approve(
 
 /// Refuse an approval a WarpDrc20 would refuse: an allowance for a new
 /// spender when the owner already holds 64, or when the token's memory plus
-/// what the allowance can allocate would pass 3 GiB. A token that doesn't
-/// answer `allowance_count` isn't a WarpDrc20 and has neither limit.
+/// what the allowance can allocate would pass 3 GiB. A token that has no
+/// `allowance_count` isn't a WarpDrc20 and has neither limit, but it counts
+/// as having none only once the node has shown it
+/// ([`RuesClient::optional_view`]): a reply that doesn't stops the approval
+/// before it is signed.
 async fn check_room_for_new_spender(
     client: &RuesClient,
     token: &[u8; 32],
     owner: Drc20Account,
     spender: Drc20Account,
 ) -> Result<(), String> {
+    let allowance_args = Drc20Allowance { owner, spender };
     let allowance: u64 = client
-        .contract_query(token, "allowance", &Drc20Allowance { owner, spender })
+        .contract_query(token, "allowance", &allowance_args)
         .await
         .map_err(|e| format!("Can't read the current allowance: {e}"))?;
     if allowance > 0 {
         return Ok(());
     }
-    let Ok(count) = client
-        .contract_query::<_, u32>(token, "allowance_count", &owner)
+    let count = client
+        .optional_view::<_, u32>(
+            token,
+            "allowance_count",
+            &owner,
+            ("allowance", &rkyv_serialize(&allowance_args)),
+        )
         .await
-    else {
+        .map_err(|e| {
+            format!(
+                "Can't tell whether the token limits allowances, as a WarpDrc20 does, so \
+                 nothing was signed: {e}"
+            )
+        })?;
+    let Some(count) = count else {
         return Ok(());
     };
     if count >= MAX_ALLOWANCES_PER_OWNER {

@@ -97,7 +97,12 @@ any amount when the Mailbox has no room for a new payer, and
 route has no credit and the Mailbox no room (a free dispatch funds no
 credit, so it adds no payer). `drc20-approve` checks a WarpDrc20's limits
 the same way for a new spender: at most 64 allowances per owner, and room
-under 3 GiB.
+under 3 GiB. A token without `allowance_count` isn't a WarpDrc20 and has
+neither limit, but a Rusk node answers a query of a function a contract
+doesn't have as it answers every query that fails. So `drc20-approve`
+takes the token as without it only when that answer comes back twice, a
+second apart, with the token answering `allowance` after each; any other
+answer, or none, stops it before it signs.
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)
