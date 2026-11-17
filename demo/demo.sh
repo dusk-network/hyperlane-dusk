@@ -349,9 +349,9 @@ info "  ProtocolFee:     $DUSK_PROTOCOL_FEE"
 info "  AggregationHook: $DUSK_AGGREGATION_HOOK"
 info "  TestRecipient:   $DUSK_TEST_RECIPIENT"
 
-# ── Step 4: Enroll Remote Routers & Register Account ─────────────────────────
+# ── Step 4: Enroll Remote Routers ────────────────────────────────────────────
 
-header "Step 4: Enrolling Remote Routers & Registering Account"
+header "Step 4: Enrolling Remote Routers"
 
 DISPATCH_CREDIT_JSON=$("$DUSK_TX" query \
     --rues-url "$DUSK_RUES_URL" \
@@ -403,16 +403,14 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     > /dev/null || fail "Failed to enroll remote router on Dusk"
 ok "Dusk: Remote router enrolled (domain=$EVM_DOMAIN -> ${EVM_TOKEN})"
 
-# Register deployer's BLS key on WarpDrc20 so tokens can be minted to
-# an External account (required for transfer_remote in step 7)
-step "Dusk: Registering deployer BLS key on WarpDrc20..."
-REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
-    --rues-url "$DUSK_RUES_URL" \
-    --keys "$CONSENSUS_KEYS" \
-    --warp-contract "$DUSK_WARP" \
-    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>/dev/null) || fail "Failed to register account on Dusk"
-DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
-ok "Dusk: Account registered (H256: ${DUSK_ACCOUNT_H256:0:16}...)"
+# The deployer's recipient hash on Dusk. WarpDrc20 holds the first transfer
+# to it in escrow, and the deployer's claim in step 6 mints the tokens and
+# registers it, so the tokens can be spent via transfer_remote in step 7.
+ACCOUNT_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" account \
+    --offline \
+    --keys "$CONSENSUS_KEYS" 2>/dev/null) || fail "Failed to read the deployer's Dusk account"
+DUSK_ACCOUNT_H256=$(echo "$ACCOUNT_RESULT" | jq -r '.account_h256')
+ok "Dusk: Deployer account (H256: ${DUSK_ACCOUNT_H256:0:16}...)"
 
 # Wait for block inclusion
 sleep 3
@@ -457,8 +455,8 @@ ok "Dusk WarpDrc20 supply: $DUSK_SUPPLY"
 
 header "Step 6: Bridge EVM -> Dusk (3 $TOKEN_SYMBOL)"
 
-# The Dusk recipient is the deployer's registered account (keccak256(pk))
-# so tokens are minted to the External account and can be spent via transfer_remote
+# The Dusk recipient is the deployer's account (keccak256(pk)). The first
+# transfer to it waits in escrow until the deployer claims it.
 DUSK_TOKEN_RECIPIENT="$DUSK_ACCOUNT_H256"
 
 step "EVM: Calling HypERC20.transferRemote(domain=$DUSK_DOMAIN, amount=3e18)..."
@@ -512,6 +510,15 @@ PROCESS_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" proces
     --message "$RELAY_MSG" \
     --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" 2>/dev/null) || fail "Failed to process message on Dusk"
 ok "Dusk: Message processed!"
+
+step "Dusk: Claiming the transfer from escrow, which registers the deployer..."
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" claim-pending \
+    --rues-url "$DUSK_RUES_URL" \
+    --keys "$CONSENSUS_KEYS" \
+    --warp-contract "$DUSK_WARP" \
+    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
+    >/dev/null 2>&1 || fail "Failed to claim the escrow on Dusk"
+ok "Dusk: Escrow claimed; later transfers arrive directly"
 
 # Wait for Dusk block
 sleep 3

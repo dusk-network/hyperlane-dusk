@@ -131,6 +131,19 @@ start_relayer() {
     fail "relayer failed to start after retries"
 }
 
+# What the route has minted or holds in escrow: the first transfer to an
+# account waits in escrow until the account claims it.
+query_dusk_minted_or_owed() {
+    local dusk_warp="$1" supply pending
+    supply="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+        --contract "$dusk_warp" --method total_supply --return-type u64 \
+        2>/dev/null | jq -r '.value // 0')"
+    pending="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+        --contract "$dusk_warp" --method pending_total --return-type u64 \
+        2>/dev/null | jq -r '.value // 0')"
+    python3 -c 'import sys; print(int(sys.argv[1]) + int(sys.argv[2]))' "$supply" "$pending"
+}
+
 wait_for_dusk_supply() {
     local dusk_warp="$1"
     local expected="$2"
@@ -148,9 +161,7 @@ wait_for_dusk_supply() {
             tail_relayer_log "$relayer_log"
             fail "relayer exited unexpectedly"
         }
-        supply="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
-            --contract "$dusk_warp" --method total_supply --return-type u64 \
-            2>/dev/null | jq -r '.value // 0')"
+        supply="$(query_dusk_minted_or_owed "$dusk_warp")"
         if [ "$supply" = "$expected" ]; then
             return 0
         fi
@@ -308,6 +319,17 @@ wait_for_dusk_supply "$dusk_warp" "$expected_dusk_supply" "$relayer_log_1"
 info "Stopping relayer before Dusk -> EVM burst..."
 kill_pid "$CURRENT_RELAYER_PID"
 CURRENT_RELAYER_PID=""
+
+# The first transfer to the deployer, and the rest of the burst with it,
+# wait in escrow until the deployer claims them, which also registers it.
+info "Claiming the burst from escrow..."
+DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" claim-pending \
+  --rues-url "$DUSK_RUES_URL" --keys "$CONSENSUS_KEYS" --warp-contract "$dusk_warp" \
+  --expected-chain-id "$dusk_chain_id" >/dev/null \
+  || fail "claiming the deployer's escrow failed"
+[ "$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" --contract "$dusk_warp" \
+    --method total_supply --return-type u64 2>/dev/null | jq -r '.value // 0')" = "$expected_dusk_supply" ] \
+  || fail "the claim minted the wrong amount"
 
 evm_balance_mid="$(cast call "$evm_token" "balanceOf(address)(uint256)" \
     "$ANVIL_DEPLOYER" --rpc-url "$ANVIL_RPC" | awk '{print $1}')"

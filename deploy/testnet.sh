@@ -54,16 +54,19 @@ ZERO_ID=0000000000000000000000000000000000000000000000000000000000000000
 TRANSFER_CONTRACT=0100000000000000000000000000000000000000000000000000000000000000
 # The state_version of each core contract this checkout builds. Older ones
 # keep storage anyone can fill, and this checkout's agents don't read them
-# (docs/storage.md); an IGP before 4 can't be topped up (pay_for_gas), so a
-# message that paid it too little is never relayed (docs/operations.md).
-CORE_STATE_VERSIONS="mailbox=5 merkle_tree_hook=2 igp=4 validator_announce=2"
+# (docs/storage.md): before Mailbox 6 and ValidatorAnnounce 3 a contract can
+# deliver or announce many times in one transaction. An IGP before 4 can't be
+# topped up (pay_for_gas), so a message that paid it too little is never
+# relayed (docs/operations.md).
+CORE_STATE_VERSIONS="mailbox=6 merkle_tree_hook=2 igp=4 validator_announce=3"
 # The state_version of each warp route this checkout builds. Older routes may
 # pay a sponsored escrow claim to the key as given, which a forged twin of the
-# recipient's key can exploit (docs/security.md, CRITICAL-1), and don't
-# register a recipient that claims its own escrow. WarpDrc20 7 keys balances
-# by account ID (docs/storage.md). Older collateral routes can be re-entered
+# recipient's key can exploit (docs/security.md, CRITICAL-1), don't register a
+# recipient that claims its own escrow, and register any key that asks
+# (MEDIUM-10). WarpDrc20 8 limits allowances and keeps its last GiB of memory
+# for the bridge (docs/storage.md). Older collateral routes can be re-entered
 # from their token (MEDIUM-13).
-ROUTE_STATE_VERSIONS="warp_native=4 warp_drc20=7 warp_drc20_collateral=6"
+ROUTE_STATE_VERSIONS="warp_native=5 warp_drc20=8 warp_drc20_collateral=7"
 # Module types the Dusk ISMs report (Hyperlane's IsmType).
 MESSAGE_ID_MULTISIG_ISM=5
 TEST_MOCK_ISM=6

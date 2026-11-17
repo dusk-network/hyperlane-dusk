@@ -591,7 +591,7 @@ validate_saved_deployment() {
     [ "$live_evm_value" = "${evm_gas_oracle,,} $saved_overhead" ] \
         || fail "Running EVM IGP's pricing for Dusk differs from the saved deployment; redeploy"
     validate_dusk_query "$dusk_mailbox" nonce u32 "Dusk Mailbox"
-    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 5
+    validate_dusk_state_version "$dusk_mailbox" "Dusk Mailbox" 6
     [ "$(query_dusk_u32 "$dusk_mailbox" local_domain "Dusk Mailbox local domain")" = "$DUSK_DOMAIN" ] \
         || fail "Running Dusk Mailbox local domain differs from the saved deployment; redeploy"
     validate_dusk_state_version "$dusk_test_mock" "Dusk TestMock"
@@ -634,10 +634,10 @@ validate_saved_deployment() {
     [ "$live_route_value" = "$saved_account_h256" ] \
         || fail "Running Dusk Mailbox owner differs from the saved deployment owner; redeploy"
     validate_dusk_state_version "$dusk_merkle" "Dusk MerkleTreeHook" 2
-    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 7
-    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 4
-    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 6
-    validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce" 2
+    validate_dusk_state_version "$dusk_warp" "Dusk synthetic warp route" 8
+    validate_dusk_state_version "$dusk_warp_native" "Dusk native warp route" 5
+    validate_dusk_state_version "$dusk_warp_collateral" "Dusk collateral warp route" 7
+    validate_dusk_state_version "$dusk_validator_announce" "Dusk ValidatorAnnounce" 3
     validate_dusk_state_version "$dusk_igp" "Dusk IGP" 4
     validate_dusk_state_version "$dusk_protocol_fee" "Dusk ProtocolFee"
     validate_dusk_state_version "$dusk_aggregation_hook" "Dusk AggregationHook"
@@ -1100,45 +1100,22 @@ DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" enroll-router \
     >/dev/null || fail "Failed to enroll EVM collateral token on Dusk"
 ok "Dusk collateral router enrolled"
 
-# ── Register BLS Account ────────────────────────────────────────────────────
+# ── Deployer's Dusk Account ─────────────────────────────────────────────────
 
-header "Register BLS Account on Warp Routes"
-
-step "Registering deployer's BLS key on WarpDrc20..."
-REGISTER_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
-    --rues-url "$DUSK_RUES_URL" \
-    --keys "$CONSENSUS_KEYS" \
-    --warp-contract "$DUSK_WARP" \
-    --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID") || {
-        echo "$REGISTER_RESULT" >&2
-        fail "Failed to register account on WarpDrc20"
+# A route registers an account when the account claims its first transfer
+# there from escrow (dusk-tx claim-pending), so there's nothing to register
+# here: the first transfer to the deployer on each route waits in escrow
+# until bridge.sh or the E2E claims it.
+step "Reading the deployer's Dusk account..."
+ACCOUNT_RESULT=$(DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" account \
+    --offline \
+    --keys "$CONSENSUS_KEYS") || {
+        echo "$ACCOUNT_RESULT" >&2
+        fail "Failed to read the deployer's Dusk account"
     }
-DUSK_ACCOUNT_H256=$(echo "$REGISTER_RESULT" | jq -r '.account_h256')
-ok "WarpDrc20 account registered: ${DUSK_ACCOUNT_H256:0:16}..."
-
-# Register on WarpDrc20Collateral if deployed
-if [ -n "$DUSK_WARP_COLLATERAL" ] && [ "$DUSK_WARP_COLLATERAL" != "null" ]; then
-    step "Registering deployer's BLS key on WarpDrc20Collateral..."
-    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
-        --rues-url "$DUSK_RUES_URL" \
-        --keys "$CONSENSUS_KEYS" \
-        --warp-contract "$DUSK_WARP_COLLATERAL" \
-        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
-        >/dev/null || fail "Failed to register on WarpDrc20Collateral"
-    ok "WarpDrc20Collateral account registered"
-fi
-
-# Register on WarpNative if deployed
-if [ -n "$DUSK_WARP_NATIVE" ] && [ "$DUSK_WARP_NATIVE" != "null" ]; then
-    step "Registering deployer's BLS key on WarpNative..."
-    DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" register-account \
-        --rues-url "$DUSK_RUES_URL" \
-        --keys "$CONSENSUS_KEYS" \
-        --warp-contract "$DUSK_WARP_NATIVE" \
-        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" \
-        >/dev/null || fail "Failed to register on WarpNative"
-    ok "WarpNative account registered"
-fi
+DUSK_ACCOUNT_H256=$(echo "$ACCOUNT_RESULT" | jq -er '.account_h256 | strings | select(test("^[0-9a-f]{64}$"))') \
+    || fail "dusk-tx account returned no recipient hash"
+ok "Deployer's Dusk recipient hash: ${DUSK_ACCOUNT_H256:0:16}..."
 
 # ── Write Combined State File ────────────────────────────────────────────────
 
@@ -1225,7 +1202,7 @@ echo "    WarpDrc20: $DUSK_WARP ($TOKEN_SYMBOL)"
 echo ""
 echo -e "  ${GREEN}Deployer:${NC}"
 echo "    EVM:  $ANVIL_DEPLOYER"
-echo "    Dusk: ${DUSK_ACCOUNT_H256:0:16}... (BLS key registered)"
+echo "    Dusk: ${DUSK_ACCOUNT_H256:0:16}... (its first transfer on each route waits in escrow until claimed)"
 echo ""
 echo "  Ready to bridge! Run:"
 echo "    bash demo/bridge.sh status"

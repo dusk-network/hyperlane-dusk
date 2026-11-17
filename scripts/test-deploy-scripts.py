@@ -132,7 +132,7 @@ def set_pricing(igp, config):
 # As dusk-tx does: every command that signs needs --expected-chain-id, and
 # refuses an endpoint on another chain (FIXTURE_DUSK_CHAIN_ID, or 2).
 SIGNING = ("call", "deploy-hyperlane", "deploy-wasm", "fund-dispatch", "withdraw-dispatch", "dispatch",
-           "process", "enroll-router", "register-account", "claim-pending", "set-igp-config",
+           "process", "enroll-router", "claim-pending", "set-igp-config",
            "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote")
 if args[0] in SIGNING and "--quote-only" not in args:
     expected, endpoint = opt("--expected-chain-id"), os.environ.get("FIXTURE_DUSK_CHAIN_ID", "2")
@@ -695,7 +695,7 @@ def dusk_queries():
     return {
         f"{MAILBOX}/local_domain": {"value": DUSK_DOMAIN},
         f"{MAILBOX}/default_ism": {"value": MULTISIG},
-        f"{MAILBOX}/state_version": {"value": 5},
+        f"{MAILBOX}/state_version": {"value": 6},
         f"{MAILBOX}/default_hook": {"value": IGP},
         f"{MAILBOX}/required_hook": {"value": AGGREGATION_HOOK},
         f"{AGGREGATION_HOOK}/mailbox": {"value": MAILBOX},
@@ -711,8 +711,8 @@ def dusk_queries():
         f"{IGP}/beneficiary": {"value": DEPLOYER_H256},
         f"{PROTOCOL_FEE}/claimable_fees": {"value": 0},
         f"{PROTOCOL_FEE}/beneficiary": {"value": DEPLOYER_H256},
-        f"{VALIDATOR_ANNOUNCE}/state_version": {"value": 2},
-        f"{ROUTE}/state_version": {"value": 4},
+        f"{VALIDATOR_ANNOUNCE}/state_version": {"value": 3},
+        f"{ROUTE}/state_version": {"value": 5},
         f"{ROUTE}/interchain_security_module": {"value": ZERO},
         f"{MULTISIG}/module_type": {"value": 5},
         f"{MULTISIG}/validators_and_threshold": {"value": {"validators": [VALIDATOR], "threshold": 1}},

@@ -95,11 +95,18 @@ tail_logs_on_fail() {
     tail -n 160 "$relayer_log" 2>/dev/null || true
 }
 
+# What the route has minted or holds in escrow. The first transfer to an
+# account waits in escrow until the account claims it, so a delivery to the
+# deployer shows here whether it minted or not.
 query_dusk_supply() {
-    local dusk_warp="$1"
-    "$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+    local dusk_warp="$1" supply pending
+    supply="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
         --contract "$dusk_warp" --method total_supply --return-type u64 \
-        2>/dev/null | jq -r '.value // 0'
+        2>/dev/null | jq -r '.value // 0')"
+    pending="$("$DUSK_TX" query --rues-url "$DUSK_RUES_URL" \
+        --contract "$dusk_warp" --method pending_total --return-type u64 \
+        2>/dev/null | jq -r '.value // 0')"
+    python3 -c 'import sys; print(int(sys.argv[1]) + int(sys.argv[2]))' "$supply" "$pending"
 }
 
 start_relayer() {

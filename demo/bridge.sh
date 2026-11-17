@@ -231,11 +231,31 @@ cmd_to_dusk() {
     ok "Message processed on Dusk!"
     echo -e "  ${DIM}Dusk TX: $dusk_process_tx${NC}"
 
+    # Step 4: The route pays an account it hasn't paid before into escrow.
+    # Claiming it pays it out and registers the account, so later transfers
+    # arrive directly.
+    local pending
+    pending=$("$DUSK_TX" query \
+        --rues-url "$DUSK_RUES_URL" --contract "$DUSK_WARP" \
+        --method pending_balance --return-type u64 \
+        --arg-bytes32 "$DUSK_ACCOUNT_H256" 2>/dev/null | jq -r '.value // 0') \
+        || fail "Cannot query the escrow on Dusk"
+    if [ "$pending" != "0" ]; then
+        step "Claiming the first transfer to this account from escrow..."
+        DUSK_CONSENSUS_PASSWORD="$CONSENSUS_PASSWORD" "$DUSK_TX" claim-pending \
+            --rues-url "$DUSK_RUES_URL" \
+            --keys "$CONSENSUS_KEYS" \
+            --warp-contract "$DUSK_WARP" \
+            --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" >/dev/null \
+            || fail "Claiming the escrow on Dusk failed"
+        ok "Claimed $(from_wei "$pending") $TOKEN_SYMBOL; later transfers arrive directly"
+    fi
+
     # Wait for Dusk block (~10s block time)
     step "Waiting for Dusk block confirmation..."
     sleep 15
 
-    # Step 4: Verify
+    # Step 5: Verify
     echo ""
     echo -e "${BOLD}Result:${NC}"
 
