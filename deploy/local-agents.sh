@@ -47,6 +47,29 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 # doesn't count.
 is_local_url() { [[ "$1" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]+)?(/|$) ]]; }
 
+# Every endpoint an agent config names: each string under a key the agents
+# read endpoints from, and any other string that holds a URL, a list of
+# URLs in one string split at its commas.
+config_endpoints() {
+    jq -r '[paths(strings) as $p | {key: ($p | last | tostring), value: getpath($p)}][]
+        | select((.key | test("^(https?|wss?|urls?|rpcUrls?|customRpcUrls|grpcUrls|customGrpcUrls)$"; "i"))
+                 or (.value | test("://")))
+        | .value | split(",")[] | gsub("^\\s+|\\s+$"; "")' "$1"
+}
+
+# Refuse a config that sends an agent anywhere but this machine: the configs
+# come from saved templates, which can name other nodes than EVM_RPC and
+# DUSK_RUES_URL, and the agents sign with public development keys.
+check_config_endpoints() {
+    local config="$1" url endpoints=0
+    while IFS= read -r url; do
+        is_local_url "$url" \
+            || fail "$config names an endpoint that isn't http://localhost or http://127.0.0.1, and local-agents.sh is for local rehearsals only: regenerate the configs with TESTNET_ENV=$ENV_FILE bash deploy/testnet.sh agent-configs"
+        endpoints=$((endpoints + 1))
+    done < <(config_endpoints "$config")
+    [ "$endpoints" -gt 0 ] || fail "$config names no endpoint"
+}
+
 # Anvil's public development keys #1-#5.
 RELAYER_EVM_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
 EVM_ORIGIN_VALIDATOR_KEY=0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
@@ -151,13 +174,19 @@ cmd_start() {
         grep -qi "$address" <<<"$DUSK_ORIGIN_VALIDATORS" || fail "DUSK_ORIGIN_VALIDATORS does not include $address"
     done
 
+    # The configs the agents run, checked before any key is exported or
+    # handed over.
+    local name
+    write_configs
+    for name in $(agent_names); do
+        check_config_endpoints "$AGENTS_DIR/$name.json"
+    done
     if [ ! -f "$DUSK_SIGNER_KEY_FILE" ]; then
         mkdir -p "$(dirname "$DUSK_SIGNER_KEY_FILE")"
         "$DUSK_TX" export-signer-key --keys "$DUSK_KEYS" --out "$DUSK_SIGNER_KEY_FILE" >/dev/null \
             || fail "Could not export the Dusk signer key to $DUSK_SIGNER_KEY_FILE"
         ok "Wrote the Dusk signer key file $DUSK_SIGNER_KEY_FILE"
     fi
-    write_configs
 
     start_agent validator-evm validator \
         HYP_VALIDATOR_KEY="$EVM_ORIGIN_VALIDATOR_KEY" "$EVM_SIGNER_ENV=$EVM_ORIGIN_VALIDATOR_KEY"

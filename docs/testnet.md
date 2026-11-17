@@ -640,6 +640,10 @@ In the rehearsal:
   `DUSK_TX_BIN`, its config and its keys. Hyperlane applies every `HYP_*`
   variable over the config files, so one left in your shell would
   otherwise change the rehearsal's agents, or point them at another node.
+  The agents sign with Anvil's public development keys, so it also stops,
+  before it exports a key or starts an agent, when `EVM_RPC`,
+  `DUSK_RUES_URL` or any endpoint in the configs it makes from
+  `agent-configs`' files isn't `http://localhost` or `http://127.0.0.1`.
 - Every agent signs its Dusk transactions with the deployer's key, because
   the local chain funds no other account with a key file. Don't send your own
   transactions from that key while the relayer is delivering, or one of them

@@ -2957,14 +2957,22 @@ class AgentEnvironment(unittest.TestCase):
                 self.assertNotIn("node.example", result.stdout + result.stderr)
                 self.assertFalse((self.root / "deploy" / "out").exists())
 
-    def test_rehearsal_agents_get_a_clean_environment(self):
-        (self.root / "deploy").mkdir()
+    def rehearsal(self, relayer=None, validator=None):
+        """deploy/local-agents.sh in a temporary checkout, with the agent
+        config templates agent-configs writes, or `relayer` and `validator`
+        in their place, and stand-ins for cast, dusk-tx and the agents.
+        Returns the environment to run it in, the deployment's directory
+        and the dusk-tx stand-in."""
+        (self.root / "deploy").mkdir(exist_ok=True)
         shutil.copy2(ROOT / "deploy" / "local-agents.sh", self.root / "deploy" / "local-agents.sh")
         out = self.root / "deploy" / "out" / "rehearsal"
-        out.mkdir(parents=True)
-        (out / "relayer.json").write_text(json.dumps({"db": "x", "chains": {"anvil": {"name": "anvil"},
-                                                                          "dusk": {"name": "dusk"}}}))
-        (out / "validator-dusk.json").write_text(json.dumps({"db": "y", "chains": {"dusk": {"name": "dusk"}}}))
+        out.mkdir(parents=True, exist_ok=True)
+        anvil = {"name": "anvil", "rpcUrls": [{"http": "http://localhost:8545"}]}
+        dusk = {"name": "dusk", "rpcUrls": [{"http": "http://localhost:8080/"}]}
+        relayer = relayer or {"db": "x", "chains": {"anvil": anvil, "dusk": dusk}}
+        validator = validator or {"db": "y", "chains": {"dusk": dusk}}
+        (out / "relayer.json").write_text(json.dumps(relayer))
+        (out / "validator-dusk.json").write_text(json.dumps(validator))
         keys = self.root / "consensus.keys"
         keys.write_text("{}")
         dev = list(ANVIL_DEV_KEYS.values())
@@ -2977,7 +2985,7 @@ class AgentEnvironment(unittest.TestCase):
             "DUSK_SIGNER_KEY_FILE": out / "agents" / "dusk-signer.key",
         }.items()) + "export DUSK_CONSENSUS_PASSWORD=password\nexport EVM_DEPLOYER_KEY=0x" + "11" * 32 + "\n")
         tools = self.root / "tools"
-        tools.mkdir()
+        tools.mkdir(exist_ok=True)
         write_executable(tools / "cast", "#!/usr/bin/env python3\nimport sys\nkeys = " + repr(ANVIL_DEV_KEYS) + "\n"
                          "args = sys.argv[1:]\n"
                          "if args[0] == 'wallet':\n    print(keys[args[args.index('--private-key') + 1]])\n"
@@ -2989,8 +2997,52 @@ class AgentEnvironment(unittest.TestCase):
         env = {"PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.root),
                "TESTNET_ENV": str(env_file), "DUSK_TX": str(dusk_tx), "AGENT_BIN_DIR": str(self.bin),
                "AGENT_RUN_DIR": str(self.run_dir), **OPERATOR_ENV}
+        return env, out, dusk_tx
+
+    REHEARSAL_AGENTS = ["validator-evm", "validator-dusk-1", "validator-dusk-2", "validator-dusk-3", "relayer"]
+
+    def test_rehearsal_agents_refuse_configs_that_name_other_nodes(self):
+        # local-agents.sh checked EVM_RPC and DUSK_RUES_URL, but the agents
+        # run configs made from the templates agent-configs saved, which can
+        # name other nodes: a validator started on one with a public
+        # development key. Every endpoint in every config the agents get is
+        # checked before a key is exported or an agent started.
+        anvil = {"name": "anvil", "rpcUrls": [{"http": "http://localhost:8545"}]}
+        dusk = {"name": "dusk", "rpcUrls": [{"http": "http://localhost:8080/"}]}
+        remote = "https://node.example/"
+        cases = {
+            "the EVM chain's RPC": ({"chains": {"anvil": {**anvil, "rpcUrls": [{"http": remote}]}, "dusk": dusk}},
+                                    None),
+            "the relayer's Dusk node": ({"chains": {"anvil": anvil, "dusk": {**dusk, "rpcUrls": [{"http": remote}]}}},
+                                        None),
+            "the validators' Dusk node": (None, {"chains": {"dusk": {**dusk, "rpcUrls": [{"http": remote}]}}}),
+            "a second RPC": ({"chains": {"anvil": {**anvil, "rpcUrls": [{"http": "http://localhost:8545"},
+                                                                       {"http": remote}]}, "dusk": dusk}}, None),
+            "a list in one string": ({"chains": {"anvil": {**anvil, "customRpcUrls":
+                                                           f"http://localhost:8545,{remote}"}, "dusk": dusk}}, None),
+            "a URL that only looks local": (None, {"chains": {"dusk": {
+                **dusk, "rpcUrls": [{"http": "http://localhost:8080@node.example/"}]}}}),
+            "a WebSocket": ({"chains": {"anvil": {**anvil, "ws": "ws://node.example"}, "dusk": dusk}}, None),
+            "another chain": ({"chains": {"anvil": anvil, "dusk": dusk,
+                                          "other": {"rpcUrls": [{"http": remote}]}}}, None),
+            "no endpoint at all": (None, {"chains": {"dusk": {"name": "dusk"}}}),
+        }
+        for case, (relayer, validator) in cases.items():
+            with self.subTest(case=case):
+                env, out, _ = self.rehearsal(relayer, validator)
+                shutil.rmtree(out / "agents", ignore_errors=True)
+                result = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "start"],
+                                        env=env, capture_output=True, text=True, timeout=60)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("names", result.stderr)
+                self.assertNotIn("node.example", result.stdout + result.stderr)
+                self.assertFalse((out / "agents" / "dusk-signer.key").exists())
+                self.assertEqual(list((out / "agents").glob("*.pid")), [])
+
+    def test_rehearsal_agents_get_a_clean_environment(self):
+        env, out, dusk_tx = self.rehearsal()
         agents = out / "agents"
-        names = ["validator-evm", "validator-dusk-1", "validator-dusk-2", "validator-dusk-3", "relayer"]
+        names = self.REHEARSAL_AGENTS
         self.addCleanup(self.stop_all, [agents / f"{name}.pid" for name in names])
         result = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "start"],
                                 env=env, capture_output=True, text=True, timeout=120)
