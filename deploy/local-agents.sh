@@ -42,6 +42,11 @@ info() { echo "[INFO] $*" >&2; }
 ok()   { echo "[OK]   $*" >&2; }
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 
+# As in testnet.sh: the host, and an optional port, must be followed by the
+# path or nothing, so that userinfo such as http://localhost:8545@node.example/
+# doesn't count.
+is_local_url() { [[ "$1" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]+)?(/|$) ]]; }
+
 # Anvil's public development keys #1-#5.
 RELAYER_EVM_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
 EVM_ORIGIN_VALIDATOR_KEY=0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
@@ -130,8 +135,8 @@ write_configs() {
 }
 
 cmd_start() {
-    [[ "$EVM_RPC" =~ ^http://(localhost|127\.0\.0\.1)[:/] ]] \
-        || fail "local-agents.sh uses public development keys and is for local rehearsals only (EVM_RPC is $EVM_RPC)"
+    is_local_url "$EVM_RPC" && is_local_url "$DUSK_RUES_URL" \
+        || fail "local-agents.sh uses public development keys and is for local rehearsals only: EVM_RPC and DUSK_RUES_URL must be http://localhost or http://127.0.0.1"
     [ -f "$OUT_DIR/relayer.json" ] && [ -f "$OUT_DIR/validator-dusk.json" ] \
         || fail "No agent configs in $OUT_DIR; run: TESTNET_ENV=$ENV_FILE bash deploy/testnet.sh agent-configs"
     [ -x "$AGENT_BIN_DIR/relayer" ] && [ -x "$AGENT_BIN_DIR/validator" ] \

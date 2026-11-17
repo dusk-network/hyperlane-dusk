@@ -2934,6 +2934,29 @@ class AgentEnvironment(unittest.TestCase):
         self.assertEqual(environment["DUSK_TX_BIN"], str(self.root / "demo" / "bench" / "dusk-tx-shim.sh"))
         self.assertEqual((environment["BENCH_AGENT"], environment["BENCH_DUSK_TX_REAL"]), ("relayer", "/usr/bin/false"))
 
+    def test_rehearsal_agents_refuse_urls_that_only_look_local(self):
+        # local-agents.sh starts agents with public development keys. A URL
+        # with userinfo (http://localhost:8545@node.example/) reaches
+        # node.example, and DUSK_RUES_URL was not checked at all.
+        (self.root / "deploy").mkdir()
+        shutil.copy2(ROOT / "deploy" / "local-agents.sh", self.root / "deploy" / "local-agents.sh")
+        for evm, dusk in [("http://localhost:8545@node.example/", "http://localhost:8080/"),
+                          ("http://127.0.0.1:8545@node.example", "http://localhost:8080/"),
+                          ("http://localhost:8545", "https://node.example/"),
+                          ("http://localhost:8545", "http://localhost:8080@node.example/")]:
+            with self.subTest(evm=evm, dusk=dusk):
+                env_file = self.root / "deploy" / "local.env"
+                env_file.write_text(f"DEPLOY_NAME=rehearsal\nEVM_CHAIN_NAME=anvil\n"
+                                    f"EVM_RPC={shlex.quote(evm)}\nDUSK_RUES_URL={shlex.quote(dusk)}\n")
+                env = {"PATH": os.environ["PATH"], "HOME": str(self.root), "TESTNET_ENV": str(env_file),
+                       "AGENT_BIN_DIR": str(self.bin), "AGENT_RUN_DIR": str(self.run_dir)}
+                result = subprocess.run(["bash", str(self.root / "deploy" / "local-agents.sh"), "start"],
+                                        env=env, capture_output=True, text=True, timeout=60)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("for local rehearsals only", result.stderr)
+                self.assertNotIn("node.example", result.stdout + result.stderr)
+                self.assertFalse((self.root / "deploy" / "out").exists())
+
     def test_rehearsal_agents_get_a_clean_environment(self):
         (self.root / "deploy").mkdir()
         shutil.copy2(ROOT / "deploy" / "local-agents.sh", self.root / "deploy" / "local-agents.sh")
