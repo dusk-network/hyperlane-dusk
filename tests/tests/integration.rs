@@ -10313,6 +10313,148 @@ fn assert_deliveries_continue_past_the_dispatch_limit(s: &mut HyperlaneSession, 
     assert!(mailbox_memory(&mut s.session) > DISPATCH_MEMORY_LIMIT);
 }
 
+/// The red-team contract at `attacker` takes `amount` from the transaction
+/// and sends it to the Mailbox through the transfer contract, as a route
+/// funds its dispatch credit (`receive_dispatch_funding`).
+fn rt_fund_dispatch_credit(
+    session: &mut TestSession,
+    attacker: ContractId,
+    amount: u64,
+) -> Result<CallReceipt<Vec<u8>>, ContractError> {
+    let actions = vec![
+        rt_action(dusk_core::transfer::TRANSFER_CONTRACT, "deposit", &amount),
+        rt_action(
+            dusk_core::transfer::TRANSFER_CONTRACT,
+            "contract_to_contract",
+            &dusk_core::transfer::ContractToContract {
+                contract: MAILBOX_ID,
+                value: amount,
+                fn_name: String::from("receive_dispatch_funding"),
+                data: Vec::new(),
+            },
+        ),
+    ];
+    let args = rkyv::to_bytes::<_, 4096>(&(actions, true))
+        .expect("the funding should serialize")
+        .to_vec();
+    session.call_public_raw_with_deposit(&OWNER_SK, attacker, "run", args, amount)
+}
+
+/// Credit for a payer with no credit is a new entry in the Mailbox's memory,
+/// and it stops where dispatch does: a new payer is refused once its entry,
+/// at most 13 B-tree nodes of a page each, could take the memory past
+/// 3 GiB, whether `fund_dispatch` adds it or a contract funds itself
+/// through the transfer contract. Top-ups and withdrawals add no entry and
+/// go on, and so do deliveries, which the last GiB is for. The Mailbox
+/// starts 16 pages below the limit, and deliveries bring it to the
+/// boundary a page at a time.
+#[test]
+fn test_credit_for_new_payers_stops_at_3_gib() {
+    const NEW_CREDIT_MEMORY_BOUND: u64 = 13 * WASM_PAGE;
+    let limit_pages = DISPATCH_MEMORY_LIMIT / WASM_PAGE;
+    let mailbox = with_initial_memory_pages(MAILBOX_BYTECODE, limit_pages - 16);
+    let mut s = HyperlaneSession::with_mailbox(&mailbox);
+    rt_deploy(&mut s.session);
+    rt_set_returns(&mut s.session, 0, REDTEAM_ID);
+    let second_attacker = ContractId::from_bytes([44; 32]);
+    rt_deploy_at(&mut s.session, second_attacker, Vec::new())
+        .expect("a second red-team contract deploys");
+    let refused = "Mailbox: storage full, credit for new payers is closed";
+    let payer = |index: u32| {
+        let mut id = [0x9Au8; 32];
+        id[..4].copy_from_slice(&index.to_le_bytes());
+        id
+    };
+    let fund = |s: &mut HyperlaneSession, payer: H256, amount: u64| {
+        s.session.call_public_with_deposit::<_, ()>(
+            &RELAYER_SK,
+            MAILBOX_ID,
+            "fund_dispatch",
+            &(payer, amount),
+            amount,
+        )
+    };
+    let credit = |s: &mut HyperlaneSession, payer: H256| -> u64 {
+        query(&mut s.session, MAILBOX_ID, "fee_credit", &(payer,))
+    };
+    let filler = |nonce: u32| {
+        message::encode(
+            VERSION,
+            nonce,
+            REMOTE_DOMAIN,
+            [0xABu8; 32],
+            LOCAL_DOMAIN,
+            REDTEAM_ID.to_bytes(),
+            b"",
+        )
+    };
+    let mut delivered = 0u32;
+    // Deliveries until the memory is `pages` pages below the limit. Each
+    // adds 26 bytes on average and grows the memory a page at a time.
+    let mut deliver_until = |s: &mut HyperlaneSession, pages: u64| {
+        let target = DISPATCH_MEMORY_LIMIT - pages * WASM_PAGE;
+        while mailbox_memory(&mut s.session) < target {
+            s.mailbox_process(Vec::new(), filler(delivered))
+                .unwrap_or_else(|e| panic!("delivery {delivered} failed: {e}"));
+            delivered += 1;
+        }
+        assert_eq!(mailbox_memory(&mut s.session), target);
+    };
+
+    let start = mailbox_memory(&mut s.session);
+    assert!(
+        (DISPATCH_MEMORY_LIMIT - 16 * WASM_PAGE..=DISPATCH_MEMORY_LIMIT - 14 * WASM_PAGE)
+            .contains(&start),
+        "starts at {start}"
+    );
+    fund(&mut s, *OWNER_ID, MIN_NEW_PAYER_CREDIT).expect("a new payer while there is room");
+    rt_fund_dispatch_credit(&mut s.session, REDTEAM_ID, 1_000)
+        .expect("a contract funds itself while there is room");
+    assert_eq!(credit(&mut s, REDTEAM_ID.to_bytes()), 1_000);
+
+    // At 13 pages below the limit a new payer's bound still fits.
+    deliver_until(&mut s, 13);
+    assert!(mailbox_memory(&mut s.session) + NEW_CREDIT_MEMORY_BOUND <= DISPATCH_MEMORY_LIMIT);
+    fund(&mut s, payer(1), MIN_NEW_PAYER_CREDIT).expect("a new payer whose bound fits");
+    assert!(mailbox_memory(&mut s.session) <= DISPATCH_MEMORY_LIMIT);
+
+    // At 12 it doesn't: new payers are refused, by either path.
+    deliver_until(&mut s, 12);
+    assert!(mailbox_memory(&mut s.session) + NEW_CREDIT_MEMORY_BOUND > DISPATCH_MEMORY_LIMIT);
+    let balance = s.session.contract_balance(&MAILBOX_ID).unwrap();
+    assert_contract_panic_contains(fund(&mut s, payer(2), MIN_NEW_PAYER_CREDIT), refused);
+    assert_contract_panic_contains(
+        rt_fund_dispatch_credit(&mut s.session, second_attacker, 1_000),
+        refused,
+    );
+    assert_eq!(credit(&mut s, payer(2)), 0);
+    assert_eq!(credit(&mut s, second_attacker.to_bytes()), 0);
+    assert_eq!(s.session.contract_balance(&MAILBOX_ID).unwrap(), balance);
+
+    // Payers with credit are topped up as before, by either path.
+    fund(&mut s, payer(1), 1).expect("a top-up adds no entry");
+    assert_eq!(credit(&mut s, payer(1)), MIN_NEW_PAYER_CREDIT + 1);
+    rt_fund_dispatch_credit(&mut s.session, REDTEAM_ID, 1)
+        .expect("a contract with credit tops it up");
+    assert_eq!(credit(&mut s, REDTEAM_ID.to_bytes()), 1_001);
+
+    // Credit withdrawn to zero leaves no entry, so its payer is new again.
+    s.session
+        .call_public_with_gas_limit::<_, ()>(
+            &OWNER_SK,
+            MAILBOX_ID,
+            "withdraw_dispatch_credit",
+            &(*OWNER_PK, MIN_NEW_PAYER_CREDIT),
+            WITHDRAW_DEFAULT_GAS_LIMIT,
+        )
+        .expect("a payer withdraws its credit");
+    assert_eq!(credit(&mut s, *OWNER_ID), 0);
+    assert_contract_panic_contains(fund(&mut s, *OWNER_ID, MIN_NEW_PAYER_CREDIT), refused);
+
+    // Deliveries go on.
+    deliver_until(&mut s, 11);
+}
+
 /// The Mailbox records a delivered message by the first 16 bytes of its ID.
 /// The same message is refused a second time and distinct messages are
 /// delivered. An ID that shares only the last 16 bytes with a delivered one
