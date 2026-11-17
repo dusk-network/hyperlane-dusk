@@ -296,8 +296,9 @@ wrap a WarpDrc20, and the demo's collateral route wraps the pinned
 canonical DRC20. A token given by ID is a route when it answers `mailbox`,
 as every route does. It counts as none only when the node answers that
 query as it answers a function the token doesn't have, twice, a second
-apart, with the token answering `balance_of` after each; any other answer,
-or none, stops the deploy.
+apart, with the token's `balance_of` returning a balance after each. Any
+other answer, or none, stops the deploy, a `balance_of` that fails or
+returns no balance among them.
 
 `test_warp_drc20_new_holders_and_allowances_stop_at_3_gib` runs the
 deployed token code in a memory that starts 16 pages below the limit,

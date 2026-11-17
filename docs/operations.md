@@ -101,8 +101,10 @@ under 3 GiB. A token without `allowance_count` isn't a WarpDrc20 and has
 neither limit, but a Rusk node answers a query of a function a contract
 doesn't have as it answers every query that fails. So `drc20-approve`
 takes the token as without it only when that answer comes back twice, a
-second apart, with the token answering `allowance` after each; any other
-answer, or none, stops it before it signs.
+second apart, with the token's `allowance` returning an amount after each.
+Any other answer, or none, stops it before it signs: another status or
+body, a reply that isn't the value asked for, or an `allowance` that fails
+or returns no amount, an empty reply among them.
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)

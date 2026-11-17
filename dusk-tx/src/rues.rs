@@ -207,14 +207,16 @@ impl RuesClient {
     /// it answers every query that fails in the VM ([`FAILED_QUERY_BODY`]),
     /// so that answer alone doesn't show the view is missing. It counts as
     /// missing only when it comes back every one of `MISSING_VIEW_TRIES`
-    /// times, a second apart, and the contract answers `control`, a query of
-    /// a view it has with its argument archived, after each: the node runs
-    /// the contract's code, and only this view fails. The caller must ask
-    /// for a view that can't fail on a contract that has it, one that reads
-    /// state with a well-formed argument.
+    /// times, a second apart, and after each the contract answers `control`
+    /// with an amount: `control` is a query of a view it has that returns a
+    /// `u64`, with its argument archived. The node then runs the contract's
+    /// code, and only this view fails. The caller must ask for a view that
+    /// can't fail on a contract that has it, one that reads state with a
+    /// well-formed argument.
     ///
     /// Any other answer is an error: another status or body, no answer in
-    /// time, a value that doesn't decode as `O`, or a control that fails.
+    /// time, a value that doesn't decode as `O`, or a control that fails or
+    /// answers anything but a `u64`, an empty reply among them.
     pub async fn optional_view<I, O>(
         &self,
         contract_id: &[u8; 32],
@@ -241,7 +243,8 @@ impl RuesClient {
                 }
                 QueryReply::Failed => {
                     let (control_method, control_args) = control;
-                    self.raw_contract_query(&hex_id, control_method, control_args)
+                    let amount = self
+                        .raw_contract_query(&hex_id, control_method, control_args)
                         .await
                         .map_err(|error| {
                             format!(
@@ -249,6 +252,12 @@ impl RuesClient {
                                  which it has: {error}"
                             )
                         })?;
+                    rkyv_deserialize::<u64>(&amount).map_err(|error| {
+                        format!(
+                            "Query {hex_id}/{method} failed, and {control_method}, which it has, \
+                             answered, but not with an amount: {error}"
+                        )
+                    })?;
                 }
             }
         }

@@ -2450,10 +2450,15 @@ mod tests {
                     requests.push((path, input));
                     continue;
                 }
+                // A 204 has no body, and so no length.
+                let length = if status == 204 {
+                    String::new()
+                } else {
+                    format!("Content-Length: {}\r\n", body.len())
+                };
                 write!(
                     stream,
-                    "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 {status} Mock\r\n{length}Connection: close\r\n\r\n"
                 )
                 .unwrap();
                 stream.write_all(&body).unwrap();
@@ -3371,9 +3376,9 @@ mod tests {
     }
 
     /// A view's replies as a Rusk node gives them for a contract that
-    /// doesn't export it, with the contract answering `control` after each,
-    /// as many times as `optional_view` asks before it takes the view as
-    /// missing.
+    /// doesn't export it, with the contract's `control` returning the
+    /// archived amount given after each, as many times as `optional_view`
+    /// asks before it takes the view as missing.
     fn missing_view(view: &'static str, control: (&'static str, Vec<u8>)) -> MockReplies {
         let failed = (view, 500, crate::rues::FAILED_QUERY_BODY.to_vec());
         vec![
@@ -3386,14 +3391,16 @@ mod tests {
 
     /// Replies to a view that don't show the contract lacks it: another
     /// failure than the VM's, an answer that doesn't decode, no answer, or
-    /// the VM's failure and then a control that fails too. Each with what
+    /// the VM's failure and then a control that fails too, or answers
+    /// without an amount, at the first try or the second. Each with what
     /// the error says.
     fn unreadable_view(
         view: &'static str,
         control: &'static str,
     ) -> Vec<(MockReplies, &'static str)> {
         let failed = crate::rues::FAILED_QUERY_BODY.to_vec();
-        vec![
+        let no_amount = "answered, but not with an amount";
+        let mut cases = vec![
             (
                 vec![(view, 500, Vec::new())],
                 "failed (500 Internal Server Error)",
@@ -3410,12 +3417,32 @@ mod tests {
                 vec![(view, 200, vec![1, 2, 3])],
                 "answered, but not with the expected value",
             ),
+            (
+                vec![(view, 204, Vec::new())],
+                "answered, but not with the expected value",
+            ),
             (vec![(view, 0, Vec::new())], "HTTP error"),
             (
-                vec![(view, 500, failed.clone()), (control, 500, failed)],
+                vec![(view, 500, failed.clone()), (control, 500, failed.clone())],
                 "and so did",
             ),
-        ]
+        ];
+        for (status, body) in [(200, Vec::new()), (200, vec![1, 2, 3]), (204, Vec::new())] {
+            cases.push((
+                vec![(view, 500, failed.clone()), (control, status, body.clone())],
+                no_amount,
+            ));
+            cases.push((
+                vec![
+                    (view, 500, failed.clone()),
+                    (control, 200, super::rkyv_serialize(&0u64)),
+                    (view, 500, failed.clone()),
+                    (control, status, body),
+                ],
+                no_amount,
+            ));
+        }
+        cases
     }
 
     /// A WarpDrc20 holds an owner to 64 allowances and takes no allowance
@@ -3423,9 +3450,9 @@ mod tests {
     /// past 3 GiB. `drc20-approve` of a new spender checks both before it
     /// signs; an existing spender, or a token that doesn't count
     /// allowances, isn't checked. A token counts as without the count only
-    /// as the node reports a missing view, twice, with the token answering
-    /// `allowance` after each: any other reply, or none, stops the approval
-    /// before it is signed.
+    /// as the node reports a missing view, twice, with the token's
+    /// `allowance` returning an amount after each: any other reply, or
+    /// none, stops the approval before it is signed.
     #[tokio::test]
     async fn drc20_approve_checks_the_cap_and_room_for_a_new_spender() {
         let limit = super::NEW_ENTRY_MEMORY_LIMIT;
@@ -3535,8 +3562,8 @@ mod tests {
     /// `deploy-hyperlane` won't wrap one: not `warp-drc20`, refused before
     /// anything is asked of the node, and not a token ID that turns out to
     /// be a warp route. A token counts as no route only as the node reports
-    /// a missing `mailbox`, twice, with the token answering `balance_of`
-    /// after each: any other reply, or none, stops the deploy.
+    /// a missing `mailbox`, twice, with the token's `balance_of` returning
+    /// a balance after each: any other reply, or none, stops the deploy.
     #[tokio::test]
     async fn collateral_routes_dont_wrap_a_warp_drc20() {
         let deploy = |url: &str, token: &str| {
