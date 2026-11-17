@@ -478,12 +478,16 @@ payment = gas x gas price x token exchange rate / 1e10
 ```
 
 The gas is the message's gas limit, from its hook metadata, plus the
-destination's overhead. The gas price is in the destination's smallest
-unit, and the exchange rate converts that into the origin's, scaled by
-1e10. One ETH is 1e18 wei and buys `ETH_DUSK_PRICE_RATIO` DUSK of 1e9 LUX
-each, so a wei is worth `ETH_DUSK_PRICE_RATIO` x 1e-9 LUX. Neither IGP has
-a markup field, so the operator's margin, `OPERATOR_MARGIN_BPS` / 10,000,
-goes into the exchange rate, rounded up:
+destination's overhead. On Dusk that limit is the metadata's first 8 bytes,
+little-endian, or 50,000 when it has fewer: Dusk's hook metadata is not
+EVM's `StandardHookMetadata`
+([security.md](security.md#deviations-from-solidity-hyperlane)). The gas
+price is in the destination's smallest unit, and the exchange rate converts
+that into the origin's, scaled by 1e10. One ETH is 1e18 wei and buys
+`ETH_DUSK_PRICE_RATIO` DUSK of 1e9 LUX each, so a wei is worth
+`ETH_DUSK_PRICE_RATIO` x 1e-9 LUX. Neither IGP has a markup field, so the
+operator's margin, `OPERATOR_MARGIN_BPS` / 10,000, goes into the exchange
+rate, rounded up:
 
 | | Dusk IGP, on Dusk | EVM IGP, on Sepolia |
 |---|---|---|

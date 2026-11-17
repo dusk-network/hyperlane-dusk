@@ -250,8 +250,11 @@ dusk-tx pay-for-gas --rues-url <node> --keys payer.keys --igp <dusk igp> \
 - `--gas-amount` is the gas to add. The relayer from Dusk requires the gas
   paid for, all payments together, to cover its `gasFraction` (`2/3` by
   default) of its estimate of the delivery (`eth_estimateGas` of
-  `process`). A message without hook metadata has paid for 50,000 gas plus
-  the IGP's overhead; pay for the rest, with some margin.
+  `process`). A message without hook metadata, or with fewer than its 8
+  bytes, has paid for 50,000 gas plus the IGP's overhead; pay for the rest,
+  with some margin. One dispatched with EVM-style `StandardHookMetadata` has
+  paid for 256 gas plus the overhead
+  ([security.md](security.md#deviations-from-solidity-hyperlane)).
 - The IGP charges `gas amount x gas price x exchange rate / 1e10` LUX, with
   no overhead: a dispatch paid for that. It charges its price when the
   transaction runs, from the transaction's deposit, and sends the rest of
