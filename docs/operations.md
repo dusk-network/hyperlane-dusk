@@ -40,8 +40,10 @@ Option 1 is fine for testnet. Mainnet needs an explicit choice.
 
 `dusk-tx` is both the deployment CLI and the agents' transaction helper.
 
-- Consensus key passwords are read from `DUSK_CONSENSUS_PASSWORD_FILE`, then
-  `DUSK_CONSENSUS_PASSWORD`, then `DUSK_CONSENSUS_KEYS_PASS`. Never pass a
+- Consensus key passwords are read from `--password`, then the file
+  `DUSK_CONSENSUS_PASSWORD_FILE` names, then `DUSK_CONSENSUS_PASSWORD`, then
+  `DUSK_CONSENSUS_KEYS_PASS`: the first one set is used. With none of them,
+  `dusk-tx` tries the local demo's password, `password`. Never pass a
   password as a command-line argument outside local demos.
 - A raw BLS secret key goes through `--secret-key-stdin`.
 - An authenticated RPC URL goes through `--rues-url-stdin`, which the agents
@@ -170,13 +172,14 @@ Before they read a price or send anything, `dusk-igp`, `evm-igp`, `claim`
 and `revenue` check that the Dusk node is on `DUSK_EXPECTED_CHAIN_ID` and the
 EVM RPC on `EVM_CHAIN_ID`: the contract IDs and addresses in the state can
 exist on another network, a Dusk ID being derived from the bytecode, the
-deployer key and a nonce. They also check that the recorded contracts are
-the deployment's: the Mailbox at `DUSK_DOMAIN`, the fee contracts called
-from its hooks and taking their calls from what calls them there (the IGP
-is its default hook, the ProtocolFee in its required aggregation hook), the
-Sepolia contracts created as `deploy` recorded, and the Sepolia token bound
-to `EVM_MAILBOX` and the recorded ISM. Each `dusk-tx` command they run is
-bound to the chain too (below).
+deployer key and a nonce. `dusk-igp`, `evm-igp` and `claim` also check that
+the recorded contracts are the deployment's: the Mailbox at `DUSK_DOMAIN`,
+the fee contracts called from its hooks and taking their calls from what
+calls them there (the IGP is its default hook, the ProtocolFee in its
+required aggregation hook), the Sepolia contracts created as `deploy`
+recorded, and the Sepolia token bound to `EVM_MAILBOX` and the recorded
+ISM. `revenue`, which only reads, checks the chains alone. Each `dusk-tx`
+command they run is bound to the chain too (below).
 
 `evm-igp` first checks that the Sepolia IGP reads Dusk's pricing from the
 StorageGasOracle `deploy` recorded, and stops before sending anything when it

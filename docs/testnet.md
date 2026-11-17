@@ -127,8 +127,10 @@ Gas on Dusk:
 ### Dusk keys
 
 `dusk-tx` signs with an encrypted consensus key file, as exported by
-rusk-wallet. It takes the password from `--password`, or else from
-`DUSK_CONSENSUS_PASSWORD`.
+rusk-wallet. It takes the password from the first of these that is set:
+`--password`, the file `DUSK_CONSENSUS_PASSWORD_FILE` names,
+`DUSK_CONSENSUS_PASSWORD`, and `DUSK_CONSENSUS_KEYS_PASS`. With none of
+them it tries the local demo's password, `password`.
 
 To export an account's key file with rusk-wallet (built from `rusk-private`
 with `cargo build --release -p rusk-wallet`):

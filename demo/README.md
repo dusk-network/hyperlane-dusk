@@ -293,12 +293,14 @@ Key overrides:
 The demo and E2E scripts use deterministic local development keys. They are not
 production deployment scripts.
 
-`dusk-tx` resolves encrypted `consensus.keys` passwords in this order:
+`dusk-tx` resolves encrypted `consensus.keys` passwords in this order, and
+uses the first one set:
 
-1. `DUSK_CONSENSUS_PASSWORD_FILE`
-2. `DUSK_CONSENSUS_PASSWORD`
-3. `DUSK_CONSENSUS_KEYS_PASS`
-4. `--password` / the CLI default, intended for local demos only
+1. `--password`, intended for local demos only
+2. the file `DUSK_CONSENSUS_PASSWORD_FILE` names
+3. `DUSK_CONSENSUS_PASSWORD`
+4. `DUSK_CONSENSUS_KEYS_PASS`
+5. the local demo's password, `password`
 
 When a raw BLS secret key is unavoidable, pass it with `--secret-key-stdin` so
 it does not appear in shell history or process argv.
