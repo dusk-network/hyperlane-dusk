@@ -69,15 +69,31 @@ Senders that call the Mailbox's `dispatch` directly (for example
 TestRecipient, or an application contract) pay from credit prepaid to the
 Mailbox. A payer with no credit takes at least 0.01 DUSK (10,000,000 LUX):
 each payer with credit is an entry in the Mailbox's memory for as long as
-its credit lasts, and the minimum is what an entry costs. A payer with
-credit can be topped up by any amount. Credit that reaches zero, spent by
-dispatches or withdrawn, leaves no entry, so funding that payer again takes
-the minimum again. `dusk-tx fund-dispatch` reads the payer's credit and
-refuses less than the minimum for a payer with none before it signs, since
-a failed transaction pays its whole gas limit. Routes fund their own credit
-for each transfer through the transfer contract, which has no minimum. Once
-the Mailbox's memory is near 3 GiB (`memory_bytes`), it takes no new
-payers, as it takes no dispatches; top-ups and withdrawals go on.
+its credit lasts. A payer with credit can be topped up by any amount.
+Credit that reaches zero, spent by dispatches or withdrawn, leaves no
+entry, so funding that payer again takes the minimum again. Routes fund
+their own credit for each transfer through the transfer contract, which
+has no minimum.
+
+Near 3 GiB of memory (`memory_bytes`) the Mailbox takes no new payers, as
+it takes no dispatches; top-ups and withdrawals go on. A new payer's entry
+can allocate 13 pages and a dispatch 4 to 10, so new payers stop first:
+from 13 pages below 3 GiB to about 4 below, about 9 pages or 17,000 to
+22,000 deliveries' worth, payers with credit still dispatch while new ones
+are refused with `Mailbox: storage full, dispatch is closing to new
+payers`. A route's credit goes back to zero after every transfer, so each
+transfer makes it a new payer, and route transfers fail in that window
+with the same message. Standing credit for the route, any amount funded to
+its contract ID with `fund-dispatch`, lets its transfers through until
+dispatch itself closes.
+
+`dusk-tx` checks what the Mailbox would refuse before it signs, since a
+failed transaction pays its whole gas limit: `fund-dispatch` reads the
+payer's credit and refuses less than the minimum for a payer with none, or
+any amount when the Mailbox has no room for a new payer, and
+`transfer-remote` refuses a transfer when the route has no credit and the
+Mailbox no room. `drc20-approve` checks a WarpDrc20's limits the same way
+for a new spender: at most 64 allowances per owner, and room under 3 GiB.
 
 ```bash
 # Prepay credit (anyone can fund; the payer named owns the credit)

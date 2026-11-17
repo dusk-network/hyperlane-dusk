@@ -118,7 +118,7 @@ add to is bounded by what it costs to call, by a fee, or by a cap:
 | Deliveries (`process`) | Only a transaction's own call or a query can deliver, so each delivery is a transaction, about 1.85M gas, and a block holds at most 1,000 | Mailbox 6 |
 | Announcements (`announce`) | The same, about 2.06M gas each | ValidatorAnnounce 3 |
 | Dispatches | The protocol fee, 0.001 DUSK on testnet; dispatch closes at 3 GiB ([below](#the-dispatch-limit)) | Mailbox 5 |
-| Dispatch credit (`fund_dispatch`) | A transaction each, and at least 0.01 DUSK for a payer with no credit; new payers stop at 3 GiB, as dispatch does | Mailbox 6 |
+| Dispatch credit (`fund_dispatch`) | A transaction each, and at least 0.01 DUSK for a payer with no credit, which a dispatch through a hook of the payer's own can take back; new payers stop at 3 GiB, as dispatch does | Mailbox 6 |
 | IGP top-ups (`pay_for_gas`) | A transaction each, and the gas bought; top-ups close at 3 GiB | IGP 4 |
 | Route registrations | Only a claim of escrow registers an account, and escrow only comes from a delivery from the enrolled router: a transfer someone sent, and paid the relaying of, on the remote chain | routes 5, 8, 7 |
 | WarpDrc20 allowances | At most 64 live allowances per owner, and approvals of new spenders stop at 3 GiB ([below](#the-warpdrc20-reserve)) | WarpDrc20 8 |
@@ -152,22 +152,30 @@ transaction's own call.
 `fund_dispatch` takes at least 0.01 DUSK (10,000,000 LUX) for a payer with
 no credit, and any amount for one with credit. Credit that reaches zero,
 spent by dispatches or withdrawn, leaves no entry, so funding that payer
-again takes the minimum again: the minimum is what a new entry costs.
-Withdrawing credit costs about 59M gas, 0.059 DUSK, since the Mailbox
-decodes the recipient's key, so credit that small was never worth taking
-back. A route funds its own credit through the transfer contract for each
-transfer (`receive_dispatch_funding`) with no minimum: only the route can
-fund its own ID that way, and the transfer spends it in the same call.
+again takes the minimum again. The minimum isn't locked, though: one
+dispatch through a hook the payer controls spends all of it but a LUX, the
+protocol fee to the ProtocolFee and the rest to that hook, and the entry
+stays (`known_property_a_new_payers_minimum_comes_back_through_its_own_hook`).
+So a new entry costs the protocol fee and about two transactions, the
+funding and that dispatch, 0.0049 to 0.0067 DUSK, where it cost one
+transaction without the minimum. Withdrawing credit instead costs about
+59M gas, 0.059 DUSK, since the Mailbox decodes the recipient's key. A
+route funds its own credit through the transfer contract for each transfer
+(`receive_dispatch_funding`) with no minimum: only the route can fund its
+own ID that way, and the transfer spends it in the same call.
 
 A payer with no credit is also refused once its entry could take the
-Mailbox past 3 GiB, where dispatch closes (`Mailbox: storage full, credit
-for new payers is closed`), checked before the entry is allocated, by the
+Mailbox past 3 GiB, where dispatch closes (`Mailbox: storage full, dispatch
+is closing to new payers`), checked before the entry is allocated, by the
 dispatch limit's rule: an entry can allocate at most 13 B-tree nodes, each
 under 600 bytes, so at most 13 pages. Credit only pays for dispatches, so
 nothing honest needs a new payer past that point, and the last GiB stays
 for deliveries. Top-ups and withdrawals change an existing entry and go on.
 The same check covers `receive_dispatch_funding`, though each new entry
-there is a contract of its own, a deployment of at least 10 DUSK.
+there is a contract of its own, a deployment of at least 10 DUSK. A route's
+credit is spent to zero by each transfer, so every transfer makes it a new
+payer: route transfers stop about 9 pages before dispatch itself closes
+([operations.md](operations.md#dispatch-fees)).
 
 ### Route registrations
 
@@ -250,10 +258,10 @@ memory:
   `approve` of a new spender with `WarpDrc20: storage full, new allowances
   are closed`, once what they can allocate could take the memory past
   3 GiB. Transfers between holders and changes to existing allowances
-  keep working, and so does the bridge: mints, escrow, and the claims that
-  register an account and mint to it use the last GiB, which holds
-  2.1M to 2.6M new bridged accounts at a registration and a balance
-  each.
+  keep working, and so does the synthetic route's bridge: its mints,
+  escrow, and the claims that register an account and mint to it use the
+  last GiB, which holds 2.1M to 2.6M new bridged accounts at a
+  registration and a balance each.
 
 The check works as the dispatch limit's, before anything is stored. Adding
 a key to a `BTreeMap` allocates at most one node per level of the tree,
@@ -264,7 +272,28 @@ the first node of its own map of spenders. Each node takes under 600
 bytes, and dlmalloc grows memory, when no free block fits, by whole pages,
 so a new balance can grow memory by at most 13 pages and a new allowance
 by 14. A transfer to a new holder is refused once the memory in use plus
-13 pages would pass 3 GiB, an approval of a new spender plus 14.
+13 pages would pass 3 GiB, an approval of a new spender plus 14. The token
+reports its memory (`memory_bytes`) and how many allowances an owner holds
+(`allowance_count`), and `dusk-tx drc20-approve` checks both before it
+signs an approval of a new spender.
+
+Past the limit, a holder can't move its whole balance to a fresh address
+either, though the move takes one entry away as it adds another. Removing
+the sender's balance frees a slot in one node while adding the recipient's
+can split others and allocate new ones, so repeated moves between fresh
+addresses could still grow the memory, past 3 GiB in the end. The check
+stays on every new holder.
+
+A collateral route over a WarpDrc20 gets none of this: it pays out with the
+token's own `transfer`, so once holders have filled the token to its
+reserve, a payout to a registered account with no balance of the token
+reverts, and so the message can't be delivered, and an escrowed transfer to
+a new account can't be claimed
+(`known_limitation_collateral_route_over_warp_drc20_stops_paying_new_holders_at_the_reserve`).
+A collateral route inherits its token's transfer rules, and wrapping a token
+with a holder reserve is unsupported: `dusk-tx deploy-hyperlane` refuses to
+wrap a WarpDrc20, and the demo's collateral route wraps the pinned
+canonical DRC20.
 
 `test_warp_drc20_new_holders_and_allowances_stop_at_3_gib` runs the
 deployed token code in a memory that starts 16 pages below the limit,
@@ -279,10 +308,10 @@ transfer to a new holder is still refused.
 
 This contains the holder path, the cheapest damage anywhere after these
 limits: filling the token's 3 GiB with transfers of one unit to new
-holders costs 2,300 to 2,900 DUSK of gas, from a contract, and 42M to 52M token units, and then nobody can send tokens or
-approvals to a new address on Dusk, but the bridge keeps paying out. A
-dust threshold for new holders, and a price per byte from Rusk, are
-later stages of the plan.
+holders costs 2,300 to 2,900 DUSK of gas, from a contract, and 42M to 52M
+token units. Then nobody can send tokens or approvals to a new address on
+Dusk, but the synthetic route keeps paying out. A dust threshold for new
+holders, and a price per byte from Rusk, are later stages of the plan.
 
 ## The 16-byte delivery key
 
@@ -377,7 +406,7 @@ the ranges run from keys in increasing order to keys in random order
 | Mailbox, deliveries to a recipient that is its own ISM | dispatch closed at 31M, about 991 DUSK; `process` failed at 33.5M, "capacity overflow" in the processed list, about 1,074 DUSK | a transaction each: dispatch closes after 97M to 122M, 179,000 to 225,000 DUSK; `process` fails at 130M to 163M, the full 4 GiB, 239,000 to 301,000 DUSK |
 | Mailbox, dispatches | 33.5M; "capacity overflow"; about 10,500 DUSK, and the 3 GiB limit never fired | about 100M, when dispatch closes at 3 GiB: about 116,000 DUSK with a free hook, 15,500 of it gas and the rest the 0.001 DUSK protocol fee; 1.02M at a 0.01 DUSK fee |
 | Mailbox, both | | dispatches to 3 GiB, then 33M to 41M deliveries for the last GiB: 177,000 to 192,000 DUSK, the cheapest way to make `process` fail |
-| Mailbox, credit for new payers | | 40M to 50M payers to 3 GiB, where new payers stop, at 0.01 DUSK each: 475,000 to 595,000 DUSK |
+| Mailbox, credit for new payers | | 29M to 34M new payers to 3 GiB, where new payers stop, each with a dispatch through its own hook that takes the 0.01 DUSK minimum back: 140,000 to 225,000 DUSK |
 | MerkleTreeHook | 33.5M dispatches, with the Mailbox | 134M; the Mailbox closes dispatch first |
 | IGP | 16.8M payments; about 5,600 DUSK plus IGP fees | about 67M payments. Top-ups close at 3 GiB, about 94,000 DUSK at the testnet pricing; dispatches through the IGP pay 6.001 DUSK each there, about 403 million DUSK to fill it |
 | ValidatorAnnounce, new keys | 3.5M announcements of 1 KiB locations; about 1,257 DUSK | 36M to 40M, a transaction each: 74,000 to 82,000 DUSK with 1-byte locations |
@@ -438,7 +467,7 @@ They need these changes before they can run against these contracts.
 | MerkleTreeHook | 2 | 1 |
 | IGP | 4 | 2 |
 | ValidatorAnnounce | 3 | 1 (2 for this design, before stage 1) |
-| WarpDrc20 | 8 | 6 (7 for this design, before stage 1) |
+| WarpDrc20 | 8 | 6 (7 for this design, before stage 1); 8 also refuses transfers to the zero account and adds `memory_bytes` and `allowance_count` |
 | WarpNative, WarpDrc20Collateral | 5, 7 | 4, 6 |
 
 The agents' chain identity check requires Mailbox 6, MerkleTreeHook 2 and

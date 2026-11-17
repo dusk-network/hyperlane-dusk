@@ -93,7 +93,14 @@ overflow paths listed under known limitations. HIGH-5 and HIGH-6 use the
 `reentrant-hook` contract to attempt the real nested call; HIGH-6's is now
 refused as a contract's call to `process`
 (`test_contracts_cannot_call_process` tries it from a recipient's
-`handle` with a message the Mailbox would otherwise deliver).
+`handle` with a message the Mailbox would otherwise deliver). The replay
+tests assert why each nested call fails, and run as well against a
+test-only Mailbox without that check (`make mailbox-ungated`), where the
+delivery reservation refuses the replay on its own
+(`test_the_delivery_reservation_alone_refuses_a_replay_during_ism_resolution`).
+The recipient also asks the Mailbox, during its ISM lookup, whether the
+message is already recorded delivered, so moving the reservation after any
+external call fails them whatever the caller check does.
 
 ## Second review
 
@@ -163,8 +170,8 @@ In DUSK a registry costs less to fill than the Mailbox, but each of its
 entries also takes a transfer on the remote chain, 9.8M to 12.2M EVM
 transactions in all. The cheapest damage anywhere is to a WarpDrc20's new
 holders, and it stops at a 3 GiB reserve that leaves the bridge working
-([costs.md](costs.md#attack-costs)). Routes don't report their memory use
-yet.
+([costs.md](costs.md#attack-costs)). WarpDrc20 reports its memory
+(`memory_bytes`); WarpNative and WarpDrc20Collateral don't yet.
 
 ## Storage study
 
@@ -259,17 +266,31 @@ bytes a call leaves behind ([storage.md](storage.md#who-can-add-entries)):
 |---|---|---|
 | `process` and `announce` take only a transaction's own call or a query | Mailbox 6, ValidatorAnnounce 3 | No contract can make many deliveries or announcements in one transaction. Filling the Mailbox with deliveries went from about 5,700 DUSK in 4 hours to 239,000 to 301,000 DUSK over 15 to 19 days of full blocks, and ValidatorAnnounce from about 10,100 DUSK to 74,000 to 82,000. A recipient can't call back into `process` (HIGH-6). |
 | Routes register an account only when its escrow is claimed | WarpNative 5, WarpDrc20 8, WarpDrc20Collateral 7 | MEDIUM-10 is fixed: a route's registry fills only with accounts someone sent a transfer to, 9.8M to 12.2M of them. |
-| At most 64 allowances per owner; transfers to new holders and approvals of new spenders stop at 3 GiB | WarpDrc20 8 | Approvals to the reserve cost 79,000 to 99,000 DUSK instead of 3,000 to 3,800 for the whole token. Holders still reach it for 2,300 to 2,900 DUSK and token units, but then only transfers and approvals to new addresses stop; the bridge keeps the last GiB. |
-| `fund_dispatch` takes at least 0.01 DUSK for a payer with no credit, and credit for new payers stops at 3 GiB | Mailbox 6 | Credit for new payers fills the Mailbox's 3 GiB for 475,000 to 595,000 DUSK instead of about 92,200, and can't reach the last GiB, which only deliveries fill. Before, credit at 1 LUX could fill all 4 GiB, and with it stop `process`, for about 98,000 to 123,000 DUSK. |
+| At most 64 allowances per owner; transfers to new holders and approvals of new spenders stop at 3 GiB | WarpDrc20 8 | Approvals to the reserve cost 79,000 to 99,000 DUSK instead of 3,000 to 3,800 for the whole token. Holders still reach it for 2,300 to 2,900 DUSK and token units, but then only transfers and approvals to new addresses stop; the synthetic route keeps the last GiB. A collateral route over a WarpDrc20 would not: it pays out with the token's `transfer`, so it would stop paying accounts with no balance of the token. Wrapping a WarpDrc20 is unsupported, and `dusk-tx deploy-hyperlane` refuses it. |
+| `fund_dispatch` takes at least 0.01 DUSK for a payer with no credit, and credit for new payers stops at 3 GiB | Mailbox 6 | The minimum comes back through one dispatch to a hook of the payer's own, so a new entry costs the protocol fee and about two transactions: credit for new payers, with those dispatches, fills the Mailbox's 3 GiB for about 140,000 to 225,000 DUSK instead of about 92,200, and can't reach the last GiB, which only deliveries fill. Before, credit at 1 LUX could fill all 4 GiB, and with it stop `process`, for about 98,000 to 123,000 DUSK. |
+
+WarpDrc20 8 also refuses a transfer to the zero account, as ERC20 does:
+nobody can spend from it, and its transfer event would read as a burn
+while the supply stays the same.
 
 Each rule has a VM test that fails without it, in `tests/tests/integration.rs`:
 `test_contracts_cannot_call_process`, `test_contracts_cannot_announce`,
 `test_a_funded_key_cannot_register_itself`,
 `test_warp_drc20_owner_holds_at_most_64_allowances`,
-`test_warp_drc20_zeroed_allowances_free_their_entries`,
 `test_warp_drc20_new_holders_and_allowances_stop_at_3_gib`,
-`test_a_new_dispatch_payer_funds_at_least_a_hundredth_of_a_dusk` and
-`test_credit_for_new_payers_stops_at_3_gib`.
+`test_a_new_dispatch_payer_funds_at_least_a_hundredth_of_a_dusk`,
+`test_credit_for_new_payers_stops_at_3_gib` and
+`test_warp_drc20_refuses_transfers_to_the_zero_account`.
+`test_warp_drc20_zeroed_allowances_free_their_entries` pins the removal of
+zeroed allowances, which the cap relies on but which predates it. Two tests
+pin what stage 1 leaves as it is, and fail if it changes:
+`known_limitation_collateral_route_over_warp_drc20_stops_paying_new_holders_at_the_reserve`
+and `known_property_a_new_payers_minimum_comes_back_through_its_own_hook`.
+The VM tests need the private rusk-private checkout, which CI can't fetch,
+so they are a release gate run by hand (`make repro-check`, about 10
+minutes), with `make check-genesis-contracts`, which checks that the
+genesis transfer and stake contracts they run are the ones rusk-private
+ships at `RUSK_COMMIT`.
 `deploy/testnet.sh`, `demo/deploy.sh` and the agents refuse the earlier
 versions. The ranges run from keys in increasing order, which an attacker
 can arrange, to keys in random order ([storage.md](storage.md#key-order)).
@@ -462,6 +483,15 @@ Accepted:
   only a transaction's own call or a query, so no contract can relay a
   message, to itself or for others, and a recipient can't deliver another
   message from its `handle`.
+- **A collateral route inherits its token's transfer rules.** It pays out
+  with the token's `transfer`. Over a WarpDrc20, once holders fill the
+  token to its 3 GiB reserve, a payout to a registered account with no
+  balance of the token reverts, so the message can't be delivered, and
+  escrow for a new account can't be claimed. Wrapping a token with a
+  holder reserve is unsupported: `dusk-tx deploy-hyperlane` refuses a
+  WarpDrc20 as collateral, and the demo wraps the pinned canonical DRC20.
+  Pinned by
+  `known_limitation_collateral_route_over_warp_drc20_stops_paying_new_holders_at_the_reserve`.
 - `dispatch` is permissionless, as in Hyperlane. Security comes from the
   destination ISM.
 - Dispatch credit can only be withdrawn to Moonlight accounts, not to

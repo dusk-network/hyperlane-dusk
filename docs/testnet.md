@@ -615,7 +615,8 @@ Testnet runs on trust choices and tooling that mainnet can't:
   make its `process` fail. Before mainnet: a successor Mailbox that routes
   can move to, a fee on deliveries through ISMs the deployment doesn't
   trust, a dust threshold for new WarpDrc20 holders and the mainnet
-  protocol fee. Only the Mailbox reports its memory.
+  protocol fee. The Mailbox and WarpDrc20 report their memory; WarpNative
+  and WarpDrc20Collateral don't yet.
 - **Upgrades.** The contracts are immutable. Plan how a fix ships: a pause
   limited to `dispatch` and `transfer_remote` (never `process` or claims), a
   redeploy, and a migration of route custody that doesn't depend on forging

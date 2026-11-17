@@ -123,20 +123,20 @@ largest whose transaction fits 64 KiB.
 | WarpNative withdraw_dispatch_credit | 58,699,182 | 56,865,239 | 2 | 4 | 3 | 1,010 | 477 |
 | WarpDrc20 withdraw_dispatch_credit | 58,699,182 | 56,865,239 | 2 | 4 | 3 | 1,010 | 477 |
 | WarpDrc20Collateral withdraw_dispatch_credit | 58,699,737 | 56,865,794 | 2 | 4 | 3 | 1,010 | 477 |
-| WarpDrc20 transfer, to a new holder | 1,874,199 | 41,555 | 0 | 2 | 2 | 1,071 | 461 |
-| WarpDrc20 transfer, to a holder | 1,874,508 | 41,864 | 0 | 2 | 2 | 1,071 | 461 |
-| WarpDrc20 approve, a new spender | 1,873,141 | 40,793 | 0 | 2 | 2 | 1,071 | 460 |
-| WarpDrc20 approve, an existing allowance | 1,873,766 | 41,418 | 0 | 2 | 2 | 1,071 | 460 |
-| WarpDrc20 transfer_from | 1,910,192 | 61,799 | 0 | 2 | 2 | 1,071 | 658 |
+| WarpDrc20 transfer, to a new holder | 1,874,219 | 41,575 | 0 | 2 | 2 | 1,071 | 461 |
+| WarpDrc20 transfer, to a holder | 1,874,528 | 41,884 | 0 | 2 | 2 | 1,071 | 461 |
+| WarpDrc20 approve, a new spender | 1,873,150 | 40,802 | 0 | 2 | 2 | 1,071 | 460 |
+| WarpDrc20 approve, an existing allowance | 1,873,775 | 41,427 | 0 | 2 | 2 | 1,071 | 460 |
+| WarpDrc20 transfer_from | 1,910,212 | 61,819 | 0 | 2 | 2 | 1,071 | 658 |
 | WarpNative claim_pending | 1,868,377 | 52,717 | 1 | 3 | 4 | 1,030 | 258 |
 | WarpNative claim_pending_for | 58,656,559 | 56,824,036 | 1 | 3 | 4 | 1,030 | 462 |
-| WarpNative claim_pending_contract, by the red-team contract | 1,843,049 | 21,155 | 3 | 5 | 3 | 813 | 332 |
+| WarpNative claim_pending_contract, by the red-team contract | 1,843,065 | 21,171 | 3 | 5 | 3 | 813 | 332 |
 | WarpDrc20 claim_pending | 1,874,433 | 58,773 | 0 | 2 | 4 | 1,185 | 258 |
 | WarpDrc20 claim_pending_for | 58,666,842 | 56,834,319 | 0 | 2 | 4 | 1,185 | 462 |
-| WarpDrc20 claim_pending_contract, by the red-team contract | 1,839,334 | 17,440 | 1 | 3 | 3 | 1,135 | 332 |
+| WarpDrc20 claim_pending_contract, by the red-team contract | 1,839,357 | 17,463 | 1 | 3 | 3 | 1,135 | 332 |
 | WarpDrc20Collateral claim_pending | 1,878,103 | 62,506 | 5 | 3 | 4 | 1,185 | 258 |
 | WarpDrc20Collateral claim_pending_for | 58,671,143 | 56,838,620 | 5 | 3 | 4 | 1,185 | 462 |
-| WarpDrc20Collateral claim_pending_contract, by the red-team contract | 1,850,410 | 28,516 | 6 | 4 | 3 | 1,135 | 332 |
+| WarpDrc20Collateral claim_pending_contract, by the red-team contract | 1,850,433 | 28,539 | 6 | 4 | 3 | 1,135 | 332 |
 | IGP pay_for_gas | 1,832,548 | 11,460 | 1 | 3 | 3 | 971 | 312 |
 | IGP pay_for_gas, with a refund | 1,847,771 | 26,683 | 2 | 3 | 4 | 1,230 | 312 |
 
@@ -631,7 +631,7 @@ dispatch through the IGP to the EVM chain pays 6.001 DUSK.
 | Dispatch with a free hook of the sender's | Mailbox | 32 | 154,582, batched | the protocol fee, 0.001 DUSK | 37.8 |
 | Dispatch through the IGP | IGP | 64 | 179,389, batched | 0.001025 DUSK; 6.001 at the testnet pricing | 19.7; 98,323 at the testnet pricing |
 | | MerkleTreeHook | 32 | | | not reachable, see below |
-| Credit for a new payer | Mailbox | 64 | 1,831,142, a transaction | at least 0.01 DUSK, the payer's credit | 193.8 |
+| Credit for a new payer | Mailbox | 64, and 32 for its dispatch | 1,831,142, a transaction, and a dispatch of about 2.0M | the protocol fee; the 0.01 DUSK minimum comes back | 52.8 to 72.8 |
 | Top-up for any message ID | IGP | 64 | 1,832,296, a transaction | at least one gas's price, 37,500 LUX at the testnet pricing | 30.6 |
 | New validator, 1-byte location | ValidatorAnnounce | 108 | 2,061,782, a transaction | none | 20.0 |
 | Transfer to a new holder | WarpDrc20 | 62 | 56,161, batched | a token unit | 0.9 |
@@ -651,10 +651,14 @@ dispatch through the IGP to the EVM chain pays 6.001 DUSK.
   its `process` at one signature, and by the claimant. The attacker pays an
   EVM transfer per entry, and the EVM IGP for the relayer's gas, without
   which the relayer doesn't deliver it.
-- Credit for a new payer locks 0.01 DUSK in the Mailbox, which only the
-  payer can withdraw, for about 59M gas, 0.059 DUSK; so it is spent. New
-  payers stop at 3 GiB, as dispatch does, so credit can't reach the last
-  GiB.
+- Credit for a new payer takes at least 0.01 DUSK, but it isn't locked:
+  one dispatch through a hook the payer controls spends all of it but a
+  LUX, the protocol fee to the ProtocolFee and the rest back to the
+  payer's hook, and the entry stays. So a new entry costs the funding
+  transaction, that dispatch, gas money for the payer's key and the
+  protocol fee: 0.0049 to 0.0067 DUSK, and 96 to 112 bytes with the
+  dispatch's. New payers stop at 3 GiB, as dispatch does, so credit can't
+  reach the last GiB.
 
 What filling each contract costs, with each way in. The ranges are keys
 in increasing order, which an attacker can arrange and which take about
@@ -666,14 +670,14 @@ order.
 |---|---|---:|---|---|
 | Mailbox, dispatch closed at 3 GiB | dispatches with a free hook | about 100M | about 116,000: 15,500 of gas and 100,700 of protocol fees | 1.02M at a 0.01 DUSK protocol fee |
 | Mailbox, dispatch closed at 3 GiB | deliveries to a recipient that is its own ISM | 97M to 122M | 179,000 to 225,000 | 11 to 14 days of full blocks |
-| Mailbox, dispatch closed at 3 GiB | credit for new payers | 40M to 50M | 475,000 to 595,000 | 402,000 to 503,000 of it the credit |
+| Mailbox, dispatch closed at 3 GiB | credit for new payers, each with a dispatch that takes the minimum back | 29M to 34M | 140,000 to 225,000 | still more than dispatches alone |
 | Mailbox, full at 4 GiB | dispatches, then deliveries for the last GiB | 33M to 41M deliveries | 177,000 to 192,000 | 116,000 of it the dispatches; the deliveries take 3.8 to 4.8 days |
 | Mailbox, full at 4 GiB | deliveries alone | 130M to 163M | 239,000 to 301,000 | 15 to 19 days |
 | MerkleTreeHook | dispatches | not reachable |  | the Mailbox closes dispatch first |
 | IGP, top-ups closed at 3 GiB | top-ups for any message ID | 50M | about 94,000: 92,200 of gas and 1,900 of payments at the testnet pricing | dispatches through the IGP still pay |
 | IGP, full at 4 GiB | dispatches through the IGP | 67M | about 403 million at the testnet pricing; 12,000 of gas and 68,800 of fees at the profile's | each pays the protocol fee too |
 | ValidatorAnnounce, full at 4 GiB | new validators, 1-byte locations | 36M to 40M | 74,000 to 82,000 | 4.1 to 4.6 days |
-| WarpDrc20, new holders closed at 3 GiB | transfers to new holders | 42M to 52M | 2,300 to 2,900, plus a token unit each | then nobody can send to a new address; the bridge keeps the last GiB |
+| WarpDrc20, new holders closed at 3 GiB | transfers to new holders | 42M to 52M | 2,300 to 2,900, plus a token unit each | then nobody can send to a new address; the synthetic route keeps the last GiB |
 | WarpDrc20, new allowances closed at 3 GiB | approvals of new spenders | 42M to 52M | 79,000 to 99,000 | 650,000 to 810,000 funded keys; 4.8 to 6.0 days |
 | A route, full at 4 GiB | escrow for new recipients | 48M to 60M | 101,000 to 127,000, the relayer's gas | an EVM transfer each: 6.2 to 7.8 ETH of IGP fees at the default pricing |
 | A route, full at 4 GiB | registrations by claim | 9.8M to 12.2M | 39,000 to 71,000 of Dusk gas | an EVM transfer each: 1.3 to 1.6 ETH of IGP fees; WarpDrc20's claims also mint, 8.3M to 10.3M |
@@ -684,11 +688,15 @@ order.
   set.
 - The cheapest damage is to a WarpDrc20's new holders, and it is
   contained: past 3 GiB, transfers and approvals to new addresses fail,
-  but transfers between holders, mints, escrow and claims go on in the
-  last GiB, which holds 2.1M to 2.6M new bridged accounts at a
-  registration and a balance each ([storage.md](storage.md#the-warpdrc20-reserve)).
-  Pricing new holders of a token whose units are free takes a dust
-  threshold or a price per byte from Rusk, later stages of the plan.
+  but transfers between holders and the synthetic route's mints, escrow
+  and claims go on in the last GiB, which holds 2.1M to 2.6M new bridged
+  accounts at a registration and a balance each
+  ([storage.md](storage.md#the-warpdrc20-reserve)). A collateral route
+  over the token would stop paying new accounts there, since it pays with
+  the token's `transfer`; wrapping a WarpDrc20 is unsupported, and
+  `dusk-tx deploy-hyperlane` refuses it. Pricing new holders of a token
+  whose units are free takes a dust threshold or a price per byte from
+  Rusk, later stages of the plan.
 - The cheapest way to make `process` fail for good, which would mean
   replacing the Mailbox and every route on it, is to close dispatch with
   dispatches and then deliver for the last GiB: about 177,000 DUSK and 4

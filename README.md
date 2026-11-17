@@ -41,14 +41,15 @@ in `rust/main/chains/hyperlane-dusk`.
 | `ism-multisig` | `MessageIdMultisigIsm` | m-of-n ECDSA validator signatures via `secp256k1_recover`. |
 | `validator-announce` | `ValidatorAnnounce` | Registry of validator checkpoint storage locations. |
 | `warp-drc20` | `HypERC20` (synthetic) | Mints and burns a bridged token. |
-| `warp-drc20-collateral` | `HypERC20Collateral` | Locks and unlocks an existing DRC20 token. |
+| `warp-drc20-collateral` | `HypERC20Collateral` | Locks and unlocks an existing DRC20 token. It pays out with the token's own `transfer`, so it inherits the token's rules: wrapping a WarpDrc20, which refuses new holders past its 3 GiB reserve, is unsupported. |
 | `warp-native` | `HypNative` | Bridges native DUSK. |
 
 `test-recipient`, `test-mock` (a pass-through ISM plus a no-op hook),
 `reentrant-hook`, `redteam-attacker` and `callback-fee-token` (a DRC20 that
 takes a fee and calls its sender back) exist for tests and demos only, and
-so does `make warp-drc20-collateral-unguarded`, a build of the collateral
-route without its reentrancy guard.
+so do `make warp-drc20-collateral-unguarded`, a build of the collateral
+route without its reentrancy guard, and `make mailbox-ungated`, a build of
+the Mailbox without the caller check in `process`.
 
 Routing, Aggregation and CCIP-read ISMs and rate-limited hooks or ISMs are not
 implemented. The agents return an explicit error if a deployment points at one.
