@@ -408,8 +408,9 @@ takes the same number of transactions as before: a claim where a
 registration used to be.
 
 **Undeliverable messages.** Some transfers can never be delivered. A
-transfer to the zero recipient is one example, and so is anything that
-makes the destination's `handle` revert. The relayer simulates each
+transfer to the zero recipient is one example, a transfer of 0 from Sepolia
+another (Dusk's routes refuse a transfer of nothing), and so is anything
+that makes the destination's `handle` revert. The relayer simulates each
 delivery first, finds that it would fail, and retries it with backoff
 without paying for it. The tokens stay where they are: burned on Sepolia,
 or locked in the Dusk route. Add such messages to the relayer's denylist to

@@ -417,10 +417,31 @@ Accepted:
   fill the supply cap by escrowing transfers to a recipient nobody can claim,
   freezing inbound transfers for everyone. Synthetic routes must therefore
   carry at most 9 decimals on Dusk, with the EVM side scaling (HypERC20's
-  scale parameters). The native DUSK route is not affected: both sides use 9
-  decimals and supply is bounded by DUSK custody. The demo's 18-decimal
-  synthetic with a 10-token supply is a demo only. Tests:
-  `redteam_synthetic_*` (ignored).
+  scale parameters). That is a rule for whoever deploys one, not a check:
+  `deploy-hyperlane --warp-decimals` takes any value, and the route keeps
+  and reports the decimals it was given, whatever the EVM side's scale. The
+  native DUSK route is not affected: both sides use 9 decimals and supply is
+  bounded by DUSK custody. The demo's 18-decimal synthetic with a 10-token
+  supply is a demo only. Tests: `redteam_synthetic_*` (ignored).
+- **Scaling rounds small amounts away.** An EVM route that carries its
+  token with fewer decimals on Dusk, such as an 18-decimal token bridged as
+  9 (HypERC20's scale of 1/10^9), rounds each amount down as it sends it.
+  Only whole units on Dusk arrive: the smallest amount that does is
+  10^(EVM decimals - Dusk decimals) of the EVM token's units, in general
+  `scaleDenominator / scaleNumerator` rounded up, and the rest of any
+  amount is kept by the EVM side, burned or locked. An amount below that
+  smallest one becomes 0, every Dusk route refuses a transfer of 0, and the
+  message is never delivered: the sender loses all of it. The testnet's
+  native route doesn't scale, so every amount but 0 arrives.
+- **Routers can't be removed.** Routes have no `unenroll_remote_router`,
+  and refuse a zero router. To stop a route taking messages from a domain,
+  for example after the remote side is compromised, its owner enrolls in
+  place of the old router one that nothing on that chain can send from: for
+  an EVM chain, any value whose first 12 bytes aren't zero, such as 32
+  bytes of `0xff`, matches no address. The route then refuses every message
+  from that domain. Transfers to that domain still go out, to that router,
+  and are never delivered, so what they take stays locked in the route, or
+  burned on a synthetic one. Tell users before doing it.
 - **Contract IDs are predictable during deployment.** A contract ID depends on
   bytecode, owner key and nonce, and Rusk doesn't check that the owner signed
   the deploy. Some contracts are initialised with the IDs of contracts
