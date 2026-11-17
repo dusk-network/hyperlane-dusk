@@ -3427,7 +3427,16 @@ mod tests {
                 "and so did",
             ),
         ];
-        for (status, body) in [(200, Vec::new()), (200, vec![1, 2, 3]), (204, Vec::new())] {
+        // Bodies longer than an amount whose last 8 bytes would decode as
+        // one: text, and an amount behind 8 bytes of anything.
+        let padded = [vec![0xff; 8], super::rkyv_serialize(&0u64)].concat();
+        for (status, body) in [
+            (200, Vec::new()),
+            (200, vec![1, 2, 3]),
+            (204, Vec::new()),
+            (200, b"upstream failure".to_vec()),
+            (200, padded),
+        ] {
             cases.push((
                 vec![(view, 500, failed.clone()), (control, status, body.clone())],
                 no_amount,

@@ -252,7 +252,15 @@ impl RuesClient {
                                  which it has: {error}"
                             )
                         })?;
-                    rkyv_deserialize::<u64>(&amount).map_err(|error| {
+                    // An archived u64 is exactly its 8 bytes. rkyv reads a
+                    // root from the end of its buffer, so a longer reply
+                    // would decode its last 8 bytes; it isn't an amount.
+                    let decoded = if amount.len() == core::mem::size_of::<u64>() {
+                        rkyv_deserialize::<u64>(&amount)
+                    } else {
+                        Err(format!("{} bytes, not 8", amount.len()))
+                    };
+                    decoded.map_err(|error| {
                         format!(
                             "Query {hex_id}/{method} failed, and {control_method}, which it has, \
                              answered, but not with an amount: {error}"
