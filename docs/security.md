@@ -296,6 +296,27 @@ rusk-private ships at `RUSK_COMMIT`.
 versions. The ranges run from keys in increasing order, which an attacker
 can arrange, to keys in random order ([storage.md](storage.md#key-order)).
 
+## Foundations review
+
+A review of the parts stage 1 doesn't change, before the public testnet,
+found these in this repository. Each fix has a test that fails without it.
+
+| ID | Issue | Status |
+|---|---|---|
+| MEDIUM-24 | Nothing read back what `dusk-tx deploy-hyperlane` deployed: it took each deploy that executed as done, and `deploy/testnet.sh` recorded and used the contracts it reported. A contract someone else deployed or initialized first, front-running ours, has their owner and bindings, and nothing would have noticed: the script checked the domains, the state versions, the fee contracts' bindings, the route's ISM and the IGP's pricing, but no owner, nor the Mailbox's hooks, nor the Merkle hook's, ValidatorAnnounce's or the route's Mailbox. The Mailbox's or the ISM's owner controls every route's custody. | Fixed. Once every contract is deployed, `deploy-hyperlane` reads each one back, the owner Rusk records for it, its owner, each binding its `init` set and its `state_version`, and fails, reporting none of them, when one isn't what it sent (`dusk-tx/src/deployment.rs`). `deploy/testnet.sh` reads them again against the settings before it records them, records the owner it read, and reads them back before any command uses them; a deployment recorded without that owner is refused ([testnet.md](testnet.md#reading-back-the-dusk-contracts)). Routes have no view that lists their routers, so only the routers for the domains the deployment knows are read. A `dusk-tx` test changes each value read back in turn, and runs `deploy-hyperlane` against a node whose replies differ; `scripts/test-deploy-scripts.py` does the same to a new and a recorded deployment. |
+| LOW-20 | `deploy` enrolled the EVM token on the Dusk route whenever the route's router for the EVM chain wasn't the recorded token, replacing any other router, where the EVM side refuses to. Run again after the token record changed, it cut the old token's holders off from the DUSK that backs their tokens. | Fixed. `deploy` enrolls the token only where the route has no router for the EVM chain, reading it right before each write, and refuses to replace another; enrolling the same one again is a no-op. Every command refuses a route enrolled with another router than the recorded token. |
+
+The same review corrected the docs: deliveries to Dusk are capped at the
+relayer's gas limit whatever a message paid for
+([costs.md](costs.md#what-stays-uncovered)); what the 16-byte delivery key
+lets an attacker block ([storage.md](storage.md#the-16-byte-delivery-key));
+owners can reprice dispatches paid from credit
+([Owner powers](#owner-powers)); Dusk's hook metadata isn't EVM's
+`StandardHookMetadata` ([Deviations](#deviations-from-solidity-hyperlane));
+amounts that scaling rounds away, removing a router, and the synthetic
+decimals rule ([Known limitations](#known-limitations)); and the password
+order, what `revenue` checks and the EVM owner's fee powers.
+
 ## Owner powers
 
 `dusk-tx deploy-hyperlane` makes the deployer key the owner, fee beneficiary
@@ -452,9 +473,17 @@ Accepted:
   bytecode, owner key and nonce, and Rusk doesn't check that the owner signed
   the deploy. Some contracts are initialised with the IDs of contracts
   deployed after them. Anyone who sees the deployer's first transaction can
-  deploy at the later IDs first; `dusk-tx` then aborts, and a new key can be
-  front-run the same way. A denial of service, not a theft. The fix for
-  mainnet is an owner-signed check in every `init`.
+  deploy at the later IDs first, or front-run a contract's `init`, and
+  choose its owner and bindings. `dusk-tx deploy-hyperlane` reads every
+  contract back once it has deployed them, and `deploy/testnet.sh` again
+  before it records them and before any later command uses them: an owner,
+  binding or state version that isn't what was sent stops them
+  (MEDIUM-24). A front-run then denies the deployment, and a new key can be
+  front-run the same way. Routes have no view that lists their routers, so
+  a router a front-run `init` enrolled for another domain than those read
+  would go unseen; the route would take that domain's messages that the
+  Mailbox's ISM verifies. The fix for mainnet is an owner-signed check in
+  every `init`.
 - **Undeliverable messages lock funds.** A transfer whose delivery always
   fails stays undelivered, as in Solidity Hyperlane. Examples: an EVM-side
   transfer to the zero recipient; a Dusk-side transfer to a 32-byte recipient

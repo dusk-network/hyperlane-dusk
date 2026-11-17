@@ -178,7 +178,9 @@ the fee contracts called from its hooks and taking their calls from what
 calls them there (the IGP is its default hook, the ProtocolFee in its
 required aggregation hook), the Sepolia contracts created as `deploy`
 recorded, and the Sepolia token bound to `EVM_MAILBOX` and the recorded
-ISM. `revenue`, which only reads, checks the chains alone. Each `dusk-tx`
+ISM. `dusk-igp` and `claim` read the Dusk contracts back first, as `deploy`
+left them ([testnet.md](testnet.md#reading-back-the-dusk-contracts)).
+`revenue`, which only reads, checks the chains alone. Each `dusk-tx`
 command they run is bound to the chain too (below).
 
 `evm-igp` first checks that the Sepolia IGP reads Dusk's pricing from the

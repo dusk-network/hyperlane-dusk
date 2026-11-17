@@ -235,6 +235,9 @@ transfer pays for. `fees` prints what they come to.
 - the keys and validator settings are present and consistent;
 - a deployment already recorded under `deploy/out/<DEPLOY_NAME>/` is on this
   chain, and its contracts are at this checkout's `state_version`s;
+- the recorded Dusk contracts read back as `deploy` left them, owned by
+  `DUSK_KEYS`'s account
+  ([Reading back the Dusk contracts](#reading-back-the-dusk-contracts));
 - the ISM the recorded route uses on chain, its own or else the Mailbox's
   default, is a MessageIdMultisig ISM whose validators and threshold are
   `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`, each validator listed
@@ -246,7 +249,10 @@ transfer pays for. `fees` prints what they come to.
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
 skips steps already recorded there. If it stops halfway, fix the cause and run
-it again. Router enrollment is re-checked on chain each time. If the recorded
+it again. Router enrollment is re-checked on chain each time: on either
+side, `deploy` enrolls a router only where there is none, reading it right
+before each write, and refuses another rather than replace it, since that
+router's holders would be cut off from what backs their tokens. If the recorded
 contracts aren't on chain, for example after a testnet reset, or a recorded
 contract reports another `state_version` than this checkout's (Mailbox 6,
 MerkleTreeHook 2, IGP 4, ValidatorAnnounce 3, native route 5), `deploy`
@@ -262,6 +268,49 @@ initialized them in a second transaction that anyone could send first
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
+
+### Reading back the Dusk contracts
+
+Someone can deploy at our contract IDs first, or front-run a contract's
+`init`, and choose its owner and bindings ([Before mainnet](#before-mainnet)).
+So `dusk-tx deploy-hyperlane` reads every contract back once it has deployed
+them all: the owner Rusk records for each, its owner, each binding its
+`init` set and its `state_version`. When one isn't what it sent, or can't
+be read, it fails and reports none of them. `deploy` then reads them again,
+against the settings, before it records them:
+
+- every owner is `DUSK_KEYS`'s account;
+- the Mailbox is at `DUSK_DOMAIN`, its default ISM is the MessageIdMultisig
+  ISM deployed with it, with `EVM_ORIGIN_VALIDATORS` and
+  `EVM_ORIGIN_THRESHOLD`, its required hook is the aggregation hook and its
+  default hook the IGP;
+- the aggregation hook takes its calls from the Mailbox and calls the
+  Merkle hook, then the ProtocolFee, which take theirs from it; the IGP,
+  ValidatorAnnounce and the route take theirs from the Mailbox;
+- the IGP and the ProtocolFee pay the deployer, the ProtocolFee charges
+  0.001 DUSK and at most 0.1, and the IGP charges what the settings say;
+- the route has no ISM or hook of its own and no router yet, and
+  TestRecipient no ISM of its own;
+- every contract is at this checkout's `state_version`.
+
+When one isn't, `deploy` stops, names it, and records nothing. Don't use
+those contracts: their IDs are taken, so move `deploy/out/<DEPLOY_NAME>/`
+aside and deploy again with another `DUSK_KEYS`. If `deploy` stopped after
+`deploy-hyperlane` reported its contracts, for example because a read
+failed, running it again reads back the contracts in `dusk-deploy.json`
+instead of deploying again.
+
+`deploy` records the owner it read (`.dusk_owner`). Every command that uses
+the recorded contracts reads them back first: `preflight` and `deploy`
+against `DUSK_KEYS`'s account, the others against that owner. A deployment
+recorded without one, by an older version of this script, is refused.
+These later reads leave out what the owner may change on purpose: the
+Mailbox's default ISM, the ISM's validators and threshold, the
+beneficiaries, the ProtocolFee's fee, the IGP's pricing and the route's
+ISM. The ISM the route uses and the IGP's pricing are held to the settings
+instead, and the route's router for the EVM chain must be the recorded
+token, or none yet. Routes have no view that lists their routers, so only
+their routers for Dusk and the EVM chain are read.
 
 ## Run the agents
 
@@ -605,7 +654,10 @@ Testnet runs on trust choices and tooling that mainnet can't:
   deploy. Anyone watching the mempool can deploy at our IDs first, and can
   repeat that for a fresh key. Each contract's `init` should require that the
   transaction signer is the owner, so such a deploy fails and leaves the ID
-  free.
+  free. Until then, `deploy` reads every contract back and stops on a deploy
+  or `init` someone else front-ran
+  ([Reading back the Dusk contracts](#reading-back-the-dusk-contracts)), but
+  their IDs are taken by then.
 - **Validator set.** Sepolia → Dusk trusts one Abacus Works validator. Mainnet
   needs a deliberately chosen set for both directions.
 - **Gas payments.** Both IGPs are priced and the relayer enforces payment
