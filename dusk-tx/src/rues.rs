@@ -168,6 +168,18 @@ impl RuesClient {
         rkyv_deserialize(&response)
     }
 
+    /// A contract query with an argument already archived, and its reply as
+    /// the node sends it: the archived value the method returned.
+    pub async fn contract_query_raw(
+        &self,
+        contract_id: &[u8; 32],
+        method: &str,
+        args: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.raw_contract_query(&hex::encode(contract_id), method, args)
+            .await
+    }
+
     /// Preverify then propagate a serialized transaction.
     ///
     /// With `queue_future_nonce`, preverify refusing the transaction only

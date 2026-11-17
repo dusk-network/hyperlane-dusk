@@ -49,6 +49,7 @@ use rkyv::ser::Serializer;
 use rkyv::Serialize;
 use serde_json::json;
 
+mod deployment;
 mod keys;
 mod multicall;
 mod rues;
@@ -114,6 +115,10 @@ const WARP_DRC20_COLLATERAL_REFUSED: &str = "a collateral route pays out with it
      `transfer`, and a WarpDrc20 refuses transfers to new holders once its memory nears its 3 GiB \
      reserve, so the route would stop paying new accounts (docs/security.md). Wrap a plain DRC20, \
      such as the pinned canonical one (`--warp-collateral-token canonical-drc20`)";
+/// The ProtocolFee `deploy-hyperlane` deploys: 0.001 DUSK a dispatch, which
+/// its owner can raise to at most 0.1 DUSK.
+const PROTOCOL_FEE: u64 = 1_000_000;
+const MAX_PROTOCOL_FEE: u64 = 100_000_000;
 /// The hook types the fee contracts report (Hyperlane's HookType).
 const IGP_HOOK_TYPE: u8 = 4;
 const PROTOCOL_FEE_HOOK_TYPE: u8 = 6;
@@ -221,7 +226,10 @@ enum Command {
         #[arg(long)]
         ack_before_send: bool,
     },
-    /// Deploy the full Hyperlane contract stack.
+    /// Deploy the full Hyperlane contract stack, then read every contract
+    /// back: the owner Rusk records for it, its owner, each binding its init
+    /// set and its state version must be what was sent, or the command fails
+    /// and reports none of the contracts as deployed.
     DeployHyperlane {
         #[arg(long, default_value = "http://localhost:8080/")]
         rues_url: String,
@@ -3741,6 +3749,217 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// `deploy-hyperlane` as `deploy/testnet.sh` runs it, against a node that
+    /// takes every deploy: the read-back is the last thing it asks, and
+    /// replies that differ from what it sent make it fail instead of
+    /// reporting the deployment. `tamper` changes the reply to one view of
+    /// one contract. Returns the command's result and the requests made.
+    async fn deploy_hyperlane_with(
+        tamper: Option<(&'static str, &'static str, super::deployment::Value)>,
+    ) -> (Result<(), String>, MockRequests) {
+        use dusk_core::transfer::moonlight::AccountData;
+        let dir = std::env::temp_dir().join(format!(
+            "dusk-tx-deploy-hyperlane-{}-{}",
+            std::process::id(),
+            tamper.is_some()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // In the order deploy-hyperlane deploys them, which gives each its
+        // deploy nonce.
+        let names = [
+            "test_mock",
+            "test_recipient",
+            "merkle_tree_hook",
+            "ism_multisig",
+            "protocol_fee",
+            "aggregation_hook",
+            "mailbox",
+            "validator_announce",
+            "igp",
+            "warp_native",
+        ];
+        let secret = "11".repeat(32);
+        let (_, pk) = crate::keys::load_from_hex(&secret).unwrap();
+        let pk_bytes = pk.to_bytes();
+        let mut ids = std::collections::HashMap::new();
+        for (nonce, name) in names.iter().enumerate() {
+            let wasm = [b"\0asm\x01\0\0\0".as_slice(), name.as_bytes()].concat();
+            std::fs::write(dir.join(format!("hyperlane_dusk_{name}.wasm")), &wasm).unwrap();
+            ids.insert(
+                *name,
+                super::gen_contract_id(&wasm, nonce as u64, &pk_bytes),
+            );
+        }
+        let (a, b) = (super::EthAddress([0x22; 20]), super::EthAddress([0x11; 20]));
+        let pricing = super::DomainGasConfig {
+            gas_overhead: 110_000,
+            token_exchange_rate: 375_000,
+            gas_price: 1_000_000_000,
+        };
+        let sent = super::deployment::Sent {
+            owner_key: pk_bytes.to_vec(),
+            owner: hyperlane_dusk_types::message::keccak256(&pk_bytes),
+            domain: 1_146_442_572,
+            test_mock: ids["test_mock"],
+            test_recipient: ids["test_recipient"],
+            merkle_tree_hook: ids["merkle_tree_hook"],
+            ism: Some((ids["ism_multisig"], vec![b, a], 2)),
+            protocol_fee: (ids["protocol_fee"], 1_000_000, 100_000_000),
+            aggregation_hook: ids["aggregation_hook"],
+            mailbox: ids["mailbox"],
+            validator_announce: ids["validator_announce"],
+            igp: (ids["igp"], vec![(11_155_111, pricing)]),
+            warp_drc20: None,
+            warp_native: Some(ids["warp_native"]),
+            canonical_token: None,
+            warp_collateral: None,
+        };
+
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let executed =
+            br#"{"data":{"tx":{"err":null,"gasSpent":18700000,"blockHeight":9}}}"#.to_vec();
+        let accepted =
+            br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Accepted"}}}"#.to_vec();
+        let mut replies = vec![
+            ("/chain_id", 200, vec![2]),
+            (
+                "/account",
+                200,
+                super::rkyv_serialize(&AccountData {
+                    nonce: 0,
+                    balance: 1_000_000_000_000_000,
+                }),
+            ),
+        ];
+        // No contract has any of the IDs yet.
+        for name in [
+            "test_mock",
+            "test_recipient",
+            "merkle_tree_hook",
+            "ism_multisig",
+            "mailbox",
+            "validator_announce",
+            "protocol_fee",
+            "aggregation_hook",
+            "igp",
+            "warp_native",
+        ] {
+            let id = hex::encode(ids[name].to_bytes());
+            replies.push((
+                leak(format!("{id}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ));
+        }
+        for _ in names {
+            replies.extend([
+                ("/on/transactions/preverify", 200, Vec::new()),
+                ("/on/transactions/propagate", 200, Vec::new()),
+                ("/graphql", 200, executed.clone()),
+            ]);
+        }
+        replies.push(("/graphql", 200, accepted));
+        // Then the read-back: the owners Rusk records, then each view.
+        for (_, contract) in sent.contracts() {
+            let id = hex::encode(contract.to_bytes());
+            replies.push((leak(format!("{id}/owner")), 200, pk_bytes.to_vec()));
+        }
+        for check in super::deployment::checks(&sent) {
+            let mut reply = check.expected.encode();
+            if let Some((name, method, value)) = &tamper {
+                if check.name == *name && check.method == *method {
+                    reply = value.encode();
+                }
+            }
+            let path = format!("{}/{}", hex::encode(check.contract), check.method);
+            replies.push((leak(path), 200, reply));
+        }
+
+        let (url, server) = mock_rues(replies);
+        let command = Cli::try_parse_from([
+            "dusk-tx",
+            "deploy-hyperlane",
+            "--rues-url",
+            &url,
+            "--secret-key",
+            &secret,
+            "--domain",
+            "1146442572",
+            "--wasm-dir",
+            dir.to_str().unwrap(),
+            "--deploy-warp-native",
+            "--default-ism",
+            "messageIdMultisig",
+            "--multisig-validators",
+            &format!("0x{},0x{}", hex::encode(a.0), hex::encode(b.0)),
+            "--multisig-threshold",
+            "2",
+            "--igp-domain-config",
+            "11155111:110000:375000:1000000000",
+            "--expected-chain-id",
+            "2",
+        ])
+        .unwrap()
+        .command;
+        let result = super::run(command).await;
+        let requests = server.join().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        (result, requests)
+    }
+
+    /// An honest deployment is read back whole before it is reported, and
+    /// one whose Mailbox someone else initialized, or whose route came with
+    /// a router enrolled, is not reported at all.
+    #[tokio::test]
+    async fn deploy_hyperlane_reports_only_a_deployment_that_reads_back_as_sent() {
+        use super::deployment::Value;
+        let (result, requests) = deploy_hyperlane_with(None).await;
+        result.unwrap();
+        // 2 + 10 + 30 + 1 before the read-back: its 10 owners and 40 views.
+        assert_eq!(requests.len(), 93, "{requests:?}");
+        assert!(requests[43..]
+            .iter()
+            .all(|(path, _)| !path.contains("/transactions/")));
+
+        let attacker = [0xee; 32];
+        for (name, method, value, expected) in [
+            (
+                "Mailbox",
+                "owner",
+                Value::Owner(Some(attacker)),
+                "owner is the account with hash eeee",
+            ),
+            (
+                "WarpNative",
+                "enrolled_router",
+                Value::Bytes32(attacker),
+                "enrolled_router(1146442572) is eeee",
+            ),
+            (
+                "IsmMultisig",
+                "validators_and_threshold",
+                Value::Validators(vec![super::EthAddress([0x11; 20])], 1),
+                "validators_and_threshold is 1 of [0x1111",
+            ),
+            (
+                "IGP",
+                "beneficiary",
+                Value::Bytes32(attacker),
+                "beneficiary is eeee",
+            ),
+        ] {
+            let (result, requests) = deploy_hyperlane_with(Some((name, method, value))).await;
+            let error = result.unwrap_err();
+            assert!(
+                error.contains("reports none of them as deployed"),
+                "{error}"
+            );
+            assert!(error.contains(&format!("{name} ")), "{error}");
+            assert!(error.contains(expected), "{expected}: {error}");
+            assert_eq!(requests.len(), 93);
+        }
+    }
+
     /// `top_up_quote` is the IGP's `quote_pay_for_gas`: gas x price x rate
     /// / 1e10, rounded down, with no overhead, and refuses what it refuses.
     #[test]
@@ -5199,6 +5418,7 @@ async fn cmd_deploy_hyperlane(
         .as_ref()
         .map(|(id, _)| *id)
         .or(explicit_collateral_token);
+    let deployed_canonical_token = canonical_token_id.as_ref().map(|(id, _)| *id);
     let warp_collateral_id = warp_collateral_bytes.map(|warp_bytes| {
         let id = gen_contract_id(&warp_bytes, nonce_counter, &pk_bytes);
         (id, warp_bytes)
@@ -5389,11 +5609,11 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     .await?;
 
     // 4. Optional: MessageIdMultisigISM
+    let mut validators = multisig_validators;
+    validators.sort();
     if let Some(ism_multisig_bytes) = ism_multisig_bytes {
         let _ism_multisig_id = ism_multisig_id.expect("ISM ID missing");
-        let mut validators = multisig_validators;
-        validators.sort();
-        let init = rkyv_serialize(&(owner_h256, validators, multisig_threshold));
+        let init = rkyv_serialize(&(owner_h256, validators.clone(), multisig_threshold));
         deploy_one(
             &client,
             &sk,
@@ -5413,8 +5633,8 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
 
     // 5. ProtocolFee: funded through the aggregation hook.
     let pf_init = rkyv_serialize(&(
-        1_000_000u64,
-        100_000_000u64,
+        PROTOCOL_FEE,
+        MAX_PROTOCOL_FEE,
         aggregation_hook_id,
         owner_h256,
         owner_h256,
@@ -5642,6 +5862,44 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
         eprintln!("  Every deploy is in a final block");
     }
 
+    // Nothing is reported as deployed until every contract reads back as
+    // what was sent: a deploy or an init someone else front-ran would have
+    // chosen another owner or other bindings (deployment.rs).
+    let sent = deployment::Sent {
+        owner_key: pk_bytes.to_vec(),
+        owner: owner_h256,
+        domain,
+        test_mock: test_mock_id,
+        test_recipient: test_recipient_id,
+        merkle_tree_hook: merkle_tree_hook_id,
+        ism: ism_multisig_id.map(|id| (id, validators.clone(), multisig_threshold)),
+        protocol_fee: (protocol_fee_id, PROTOCOL_FEE, MAX_PROTOCOL_FEE),
+        aggregation_hook: aggregation_hook_id,
+        mailbox: mailbox_id,
+        validator_announce: va_id,
+        igp: (igp_id, igp_domain_configs.clone()),
+        warp_drc20: deployed_warp_drc20.map(|id| {
+            (
+                id,
+                warp_name.to_string(),
+                warp_symbol.to_string(),
+                warp_decimals,
+            )
+        }),
+        warp_native: deployed_warp_native,
+        canonical_token: deployed_canonical_token.map(|id| deployment::CanonicalToken {
+            id,
+            holder: rkyv_serialize(&Drc20BalanceOf {
+                account: Drc20Account::moonlight(&pk),
+            }),
+            supply: collateral_token_supply,
+        }),
+        warp_collateral: deployed_warp_collateral
+            .map(|id| (id, collateral_token.expect("collateral token missing"))),
+    };
+    let read_back = deployment::read_back(&client, &sent).await?;
+    eprintln!("  Read back {read_back} values: every contract holds what was sent");
+
     let mut contracts = json!({
         "test_mock": hex::encode(test_mock_id.to_bytes()),
         "test_recipient": hex::encode(test_recipient_id.to_bytes()),
@@ -5679,6 +5937,8 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             "gas_price": config.gas_price,
         })).collect::<Vec<_>>(),
         "contracts": contracts,
+        // How many values were read back, each as sent.
+        "read_back": read_back,
         // Every deploy is final once the last one is.
         "last_tx_id": deployed.last().map(|(tx_id, _)| tx_id),
         "last_block_height": confirmation.inclusion.block_height,
