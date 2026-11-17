@@ -1534,7 +1534,7 @@ check_state_versions() {
         [ -n "$contract" ] || continue
         if [[ " $ROUTE_STATE_VERSIONS " == *" $entry "* ]]; then
             kind="route"
-            older="Older routes have bugs this checkout fixes (docs/security.md, CRITICAL-1 and MEDIUM-13)."
+            older="Older routes have bugs this checkout fixes (docs/security.md, CRITICAL-1 and MEDIUM-13), register any key that asks (MEDIUM-10), and WarpDrc20s before 8 have no allowance cap or holder reserve (docs/storage.md)."
         elif [ "$name" = igp ]; then
             kind="contract"
             older="An IGP before it takes no top-ups (pay_for_gas), so a message that paid it too little is never relayed (docs/operations.md)."
