@@ -324,9 +324,16 @@ change their code. Their implementations, deployed first, are never
 initialized or used; anyone may initialize one, which changes nothing about
 the proxies.
 
-They can't touch users' own dispatch credit, pending escrow, or existing
-WarpDrc20 balances. On testnet one deployer key on each side is acceptable.
-Mainnet needs the owner role on a multisig or equivalent custody.
+They can't withdraw users' dispatch credit, or touch pending escrow or
+existing WarpDrc20 balances. They do set what a dispatch paid from credit
+costs, and `dispatch` takes no cap on it: the Mailbox's owner chooses its
+hooks, the IGP's owner its prices, and the ProtocolFee's owner its fee, up
+to its maximum of 0.1 DUSK. A price raised between signing a dispatch and
+its inclusion is paid from the sender's credit, up to all of it. Only
+withdrawals are beyond the owners' reach. A warp transfer pays its exact
+quote from its deposit, so a repriced one fails instead of paying more. On
+testnet one deployer key on each side is acceptable. Mainnet needs the
+owner role on a multisig or equivalent custody.
 
 ## Design decisions
 
@@ -335,7 +342,8 @@ Accepted:
 - **Dispatch credit belongs to the payer.** Anyone can fund credit, but only
   the effective payer can withdraw it, and only to a Moonlight account. Warp
   routes expose an owner-only withdrawal of their own credit. There is no
-  global drain by the Mailbox owner.
+  global drain by the Mailbox owner, but the owners set the prices a
+  dispatch pays from credit, with no cap ([Owner powers](#owner-powers)).
 - **No admin recovery of escrow.** Pending transfers are only ever paid to
   the matching BLS key, though anyone can pay the gas to claim them for it.
   If a user loses that key, the funds stay locked. An admin drain would add
