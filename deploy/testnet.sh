@@ -3050,7 +3050,13 @@ cmd_evm_igp() {
     # An update an earlier --apply sent is settled before the pricing is
     # read: one still pending could land after this run found the pricing
     # as the settings say, and leave it as it said.
-    if [ -n "$apply" ] && [ -n "$(state_get '.evm_sending')" ]; then
+    # Only the two pricing steps' own sends matter here: another step's
+    # pending send (a claim, say) is settled by that step.
+    local oracle_step igp_step
+    oracle_step="$(evm_call_step "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])")"
+    igp_step="$(evm_call_step "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])")"
+    if [ -n "$apply" ] && [ -n "$(state_json | jq -r --arg a "$oracle_step" --arg b "$igp_step" \
+        '(.evm_sending // {}) | with_entries(select(.key == $a or .key == $b)) | keys[0] // empty')" ]; then
         require EVM_DEPLOYER_KEY
         evm_settle_call "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])"
         evm_settle_call "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])"

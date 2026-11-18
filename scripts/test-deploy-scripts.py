@@ -2851,6 +2851,24 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], prices)
         self.assertNotIn("evm_sending", self.state())
 
+    def test_evm_igp_apply_leaves_another_steps_pending_send_alone(self):
+        # Another step's send still pending (a claim()) is that step's to
+        # settle: an --apply whose pricing already matches needs no key and
+        # sends nothing, and the claim's entry stays.
+        state = self.state()
+        claim_step = f"call claim() on {self.state()['evm']['igp'].lower()}"
+        state["evm_sending"] = {claim_step: {"step": claim_step, "nonce": 7, "to": state["evm"]["igp"],
+                                             "input": "0x4e71d92d", "label": "claim", "from_block": 1}}
+        # A deploy records who deployed, so commands that only check run
+        # without the key.
+        state["evm"].setdefault("deployer", DEPLOYER)
+        self.write_state(state)
+        result = self.run_script("evm-igp", "--apply", EVM_DEPLOYER_KEY="")
+        self.assert_ok(result)
+        self.assertIn("already charges what the settings say", result.stderr)
+        self.assertEqual(self.traced("cast send"), [])
+        self.assertEqual(list(self.state()["evm_sending"]), [claim_step])
+
     def test_evm_igp_apply_changes_the_overhead(self):
         self.settings.update(EVM_IGP_GAS_OVERHEAD=2390000, EVM_ORIGIN_THRESHOLD=2,
                              EVM_ORIGIN_VALIDATORS=",".join(validators(2)))
