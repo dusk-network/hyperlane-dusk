@@ -9,8 +9,8 @@ what you need first, and how to run and check it.
 
 | Where | What |
 |---|---|
-| Dusk testnet | The full contract set (Mailbox, Merkle hook, ProtocolFee, AggregationHook, IGP, ValidatorAnnounce, MessageIdMultisig ISM, TestRecipient, TestMock) and a native DUSK warp route (`warp-native`). |
-| Sepolia | A synthetic DUSK token (`HypERC20`, 9 decimals so one unit is one LUX), a MessageIdMultisig ISM for messages from Dusk, an InterchainGasPaymaster with its own StorageGasOracle that charges for delivery to Dusk, and the token's hook: a StaticAggregationHook of Hyperlane's Sepolia MerkleTreeHook and that IGP, from Hyperlane's factory. The token and the IGP are each an `ERC1967Proxy` whose constructor initializes them, so the transaction that creates them also sets their owner, and nobody can initialize them first; the proxies have no admin, so they can't be upgraded. Everything else is Hyperlane's own Sepolia deployment. |
+| Dusk testnet | The full contract set (Mailbox, Merkle hook, ProtocolFee, AggregationHook, IGP, ValidatorAnnounce, MessageIdMultisig ISM, TestRecipient, TestMock) and a native DUSK warp route (`warp-native`). For each token route `TOKEN_ROUTES` lists, EURd and USDd by default ([Tokens issued on Dusk](#tokens-issued-on-dusk)): the token, the pinned canonical DRC20, and a collateral route that locks it (`warp-drc20-collateral`). |
+| Sepolia | A synthetic DUSK token (`HypERC20`, 9 decimals so one unit is one LUX), a synthetic token for each token route (`HypERC20`, with the token's name, symbol and decimals), a MessageIdMultisig ISM for messages from Dusk, an InterchainGasPaymaster with its own StorageGasOracle that charges for delivery to Dusk, and the tokens' hook: a StaticAggregationHook of Hyperlane's Sepolia MerkleTreeHook and that IGP, from Hyperlane's factory. The tokens and the IGP are each an `ERC1967Proxy` whose constructor initializes them, so the transaction that creates them also sets their owner, and nobody can initialize them first; the proxies have no admin, so they can't be upgraded. Everything else is Hyperlane's own Sepolia deployment. |
 
 How each direction is secured:
 
@@ -30,11 +30,16 @@ between the two chains, from any sender, once it is paid for
 ([costs.md](costs.md#fee-coverage)):
 
 - **Dusk → Sepolia.** The Dusk IGP, the Dusk Mailbox's default hook, charges
-  DUSK for the Sepolia gas a delivery takes: 6 DUSK for a transfer at the
-  default prices. The ProtocolFee adds 0.001 DUSK for its beneficiary.
+  DUSK for the Sepolia gas a delivery takes: 17.0625 DUSK for a transfer at
+  the default prices, for 455,000 gas. Sepolia charges about 111,000 gas
+  for each storage slot a delivery creates, so a delivery takes 218,195 to
+  424,972 gas there ([costs.md](costs.md#pricing)). The ProtocolFee adds
+  0.001 DUSK for its beneficiary.
 - **Sepolia → Dusk.** Our IGP on Sepolia charges ETH for the Dusk gas a
-  delivery takes: 1.302e11 wei for a transfer at the default prices, on top
-  of Hyperlane's 1 wei protocol fee. Hyperlane's own Sepolia IGP has no
+  delivery takes: 1.32e11 wei for a transfer at the default prices, for
+  2,200,000 gas, on top of Hyperlane's 1 wei protocol fee. It charges every
+  route the same, so it is priced for the costliest delivery the deployment
+  has, a token route's payout. Hyperlane's own Sepolia IGP has no
   pricing for Dusk, and its Mailbox's default hook falls back to plain
   Merkle insertion for Dusk, so a message sent the default way pays us
   nothing.
@@ -73,8 +78,8 @@ without a type.
 
 | Key | Network | Needs | Used for |
 |---|---|---|---|
-| Deployer | Dusk testnet | about 400 DUSK | Contract deploys, about 220 DUSK (a local rehearsal spent 207.4 DUSK on 11 transactions; the native route has since grown by 48 KB, about 10 DUSK). Each deploy also needs its gas limit times the deploy gas price, 100 DUSK, in the balance when it is submitted. `preflight` checks the balance. |
-| Deployer | Sepolia | about 0.1 ETH | ISM, IGP, gas oracle, hook, token and enrollment transactions: 10.4M gas in 10 transactions against the local rehearsal's core, which deploys its ISM from source; less with Hyperlane's ISM factory. The IGP and the token are each an implementation and a proxy that initializes it, 211,323 and 294,652 gas. |
+| Deployer | Dusk testnet | about 400 DUSK, and 95 more a token route | Contract deploys, about 220 DUSK (a local rehearsal spent 207.4 DUSK on 11 transactions; the native route has since grown by 48 KB, about 10 DUSK). A token route's two deploys took 47.5M gas in a local rehearsal, 95 DUSK: 28.1M for its token's 262 KB of Wasm, 19.5M for its route's 176 KB. Each deploy also needs its gas limit times the deploy gas price, 100 DUSK, in the balance when it is submitted. `preflight` checks the balance, for the token routes deploy has yet to deploy too. |
+| Deployer | Sepolia | about 0.1 ETH | ISM, IGP, gas oracle, hook, token and enrollment transactions: 10.4M gas in 10 transactions against the local rehearsal's core, on Anvil, which deploys its ISM from source; less with Hyperlane's ISM factory. Sepolia charges far more for new code and storage than Anvil: the live DUSK token's implementation took 25.06M gas there. Each token route's token takes about 27M: its implementation, 25.3M, the proxy that initializes it, 1.3M, and the enrollment of its Dusk route, 0.37M (Sepolia's estimates; 3.9M in all on Anvil). |
 | Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each, and 0.005 DUSK for one that fails. Senders pay it back to the Sepolia IGP. |
 | Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. Senders pay it back to the Dusk IGP. |
 | Each Dusk-origin validator | EVM key, no funds | | Signing checkpoints. Its address goes in `DUSK_ORIGIN_VALIDATORS`. |
@@ -106,8 +111,11 @@ Gas on Dusk:
   6: `test_relayed_process_at_threshold_6_fits_a_5m_gas_limit` delivers to
   every route at threshold 6 in a transaction whose limit is 5M, and the
   costliest, a payout from a collateral route locking the upstream DRC20,
-  takes 3.27M. `preflight` and `agent-configs` refuse a limit below 1.5
-  times the cost at `EVM_ORIGIN_THRESHOLD`. Once the contracts are
+  takes 3.27M. With token routes the script prices a delivery at 1.98M
+  plus 0.22M per signature, which covers that payout at every threshold
+  (`test_relayed_deliveries_cost_no_more_than_deploy_testnet_sh_prices`).
+  `preflight` and `agent-configs` refuse a limit below 1.5 times the cost
+  at `EVM_ORIGIN_THRESHOLD`. Once the contracts are
   deployed, they also stop unless the ISM the route uses on chain has
   exactly that threshold (see below), so the limit is checked against what
   the chain enforces. The owner can raise the threshold after deploying;
@@ -242,7 +250,11 @@ transfer pays for. `fees` prints what they come to.
 - the recorded Dusk contracts read back as `deploy` left them, owned by
   `DUSK_KEYS`'s account
   ([Reading back the Dusk contracts](#reading-back-the-dusk-contracts));
-- the ISM the recorded route uses on chain, its own or else the Mailbox's
+- `TOKEN_ROUTES` is well formed, and a token route the record has keeps
+  its line there; each recorded token route reads back on Dusk, and its
+  Sepolia token as the DUSK token does, with the route's name, symbol and
+  decimals and no scaling ([Tokens issued on Dusk](#tokens-issued-on-dusk));
+- the ISM each recorded route uses on chain, its own or else the Mailbox's
   default, is a MessageIdMultisig ISM whose validators and threshold are
   `EVM_ORIGIN_VALIDATORS` and `EVM_ORIGIN_THRESHOLD`, each validator listed
   once. `deploy` checks it again when it finishes, and `agent-configs`
@@ -278,6 +290,15 @@ be topped up (LOW-15), so `agent-configs` refuses them too. So is a
 Sepolia IGP or token recorded by an older version of this script, which
 initialized them in a second transaction that anyone could send first
 ([security notes](security.md#fourth-review), HIGH-8).
+
+Every transaction `deploy` sends on Sepolia carries its nonce: the highest
+of three reads of the deployer's pending nonce, as the nodes behind a public
+endpoint can each be behind. A node that answers one with "nonce too low"
+doesn't show it was refused: a gateway that sent it on answers a replay of
+the request so too. So nothing is sent again. A contract creation is taken
+if the deployer's transaction with its nonce is that very creation,
+executed; any other transaction answered so stops `deploy`, which, run
+again, reads the chain afresh and sends only what isn't done.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
@@ -416,7 +437,7 @@ DUSK=https://testnet.nodes.dusk.network/; EVM_RPC=https://ethereum-sepolia.publi
 export DUSK_CONSENSUS_PASSWORD=...
 
 # Dusk -> Sepolia: lock 1 DUSK (1e9 LUX), mint 1 DUSK on Sepolia. The
-# deposit is the amount plus the quoted dispatch fee, 6.001 DUSK at the
+# deposit is the amount plus the quoted dispatch fee, 17.0635 DUSK at the
 # default prices; dusk-tx adds the fee.
 target/release/dusk-tx transfer-remote --native --rues-url $DUSK --keys my.keys \
   --warp-contract $ROUTE --destination 11155111 \
@@ -437,7 +458,7 @@ target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-cont
 ```
 
 `quoteGasPayment` on the token is what a transfer to Dusk pays: our IGP's
-fee and Hyperlane's 1 wei protocol fee, 130,200,000,001 wei at the default
+fee and Hyperlane's 1 wei protocol fee, 132,000,000,001 wei at the default
 prices. Sending less reverts; the token's hook refunds anything above it.
 
 Every `dusk-tx` command that sends a transaction takes the chain it is for
@@ -497,7 +518,7 @@ from Sepolia can still be paid for, by anyone, for at least
 `EVM_IGP_GAS_OVERHEAD` gas in all:
 
 ```bash
-IGP=$(jq -r .evm.igp $S); GAS=2170000
+IGP=$(jq -r .evm.igp $S); GAS=2200000
 FEE=$(cast call $IGP "quoteGasPayment(uint32,uint256)(uint256)" 1146442572 $GAS --rpc-url $EVM_RPC | awk '{print $1}')
 cast send $IGP "payForGas(bytes32,uint32,uint256,address)" <message id> 1146442572 $GAS <refund address> \
   --value $FEE --rpc-url $EVM_RPC --private-key <your key>
@@ -515,6 +536,144 @@ dusk-tx pay-for-gas --rues-url $DUSK_RUES_URL --igp $IGP --nonce <nonce> --gas-a
 dusk-tx pay-for-gas --rues-url $DUSK_RUES_URL --keys <your keys> --igp $IGP --nonce <nonce> --gas-amount <gas> \
   --expected-chain-id 2
 ```
+
+## Tokens issued on Dusk
+
+`TOKEN_ROUTES` lists tokens issued on Dusk that get a route to Sepolia,
+one a line, `SYMBOL|NAME|DECIMALS|SUPPLY`. By default they are two test
+stablecoins:
+
+| Symbol | Name | Decimals | Initial supply |
+|---|---|---:|---|
+| EURd | Dusk Euro (testnet) | 6 | 1,000,000 EURd (1e12 units) |
+| USDd | Dusk Dollar (testnet) | 6 | 1,000,000 USDd (1e12 units) |
+
+For each, `deploy` deploys:
+
+- on Dusk, the token: the pinned canonical DRC20 (`drc20-roles-pausable`
+  from dusk-network/contracts, `make canonical-drc20-fixture`), with
+  `DUSK_KEYS`'s account as its admin, holding the admin, minter and pauser
+  roles and the whole initial supply, with no cap; and a WarpDrc20Collateral
+  bound to the deployment's Mailbox that locks it. A transfer to Sepolia
+  locks the tokens in the route, and one from Sepolia pays them out of it;
+- on Sepolia, a synthetic `HypERC20` with the token's name, symbol and
+  decimals, created as the DUSK token is, with the same hook and ISM.
+
+Both sides move amounts in the token's smallest unit, as they are: the Dusk
+route puts the amount in the message unchanged, and the Sepolia token's
+scale is 1/1, so an amount of EURd is the same number of units, a millionth
+of a euro each, on both chains, with nothing rounded. Every command that
+reads back the deployment checks the Sepolia token's decimals and scale.
+
+`deploy` plans each route's deploy nonces, from 10, two a route, and
+records them before it sends anything; `dusk-tx deploy-token-route` then
+deploys the token and the route at them. It writes each deploy transaction
+to `deploy/out/<DEPLOY_NAME>/dusk-route-<SYMBOL>.txs` before it sends it,
+and `deploy` records them. A run that stops anywhere resumes at the same
+contract IDs, and takes a contract already at a planned ID only if one of
+those transactions created it, in a final block. A contract there any other
+way may come from a deploy or `init` someone front-ran, and reading it back
+can't rule that out: the token doesn't list who holds its roles, so an
+`init` that gave someone a role besides the deployer would read back the
+same. So `deploy` leaves that pair of nonces, before anything else is sent,
+and plans and deploys the next two. A plan also skips nonces whose IDs are
+taken already.
+Both contracts are read back, by `dusk-tx` and again by `deploy`, before
+the route is recorded as deployed: the route's owner, Mailbox, token, hook,
+ISM and routers, and the token's name, symbol, decimals, supply, cap and
+pause, and that the deployer holds every role. Every later command reads
+back the route's bindings and the token's name, symbol and decimals and
+admin, but not its supply or its minter and pauser roles, which the admin
+may change. Its routers are enrolled both ways as the DUSK route's are,
+never replacing one that is there.
+
+### Adding them to a deployment
+
+A deployment made before `TOKEN_ROUTES` existed has the core and the DUSK
+route, as the first testnet deployment does. `deploy` adds the token routes
+to it and leaves the rest as it is: it deploys only their contracts and
+enrolls only their routers. To add them:
+
+1. Build the token's and the route's Wasms and dusk-tx:
+   `make all canonical-drc20-fixture dusk-tx`.
+2. Add `TOKEN_ROUTES` to `deploy/testnet.env`, as in
+   `deploy/testnet.env.example`. A route the record has keeps its line,
+   which can't change.
+3. Raise `EVM_IGP_GAS_OVERHEAD` to 2,200,000. A token route's payout costs
+   more Dusk gas than the native route's, and the Sepolia IGP prices every
+   message to Dusk the same ([costs.md](costs.md#pricing)); `fees` and
+   `preflight` refuse less once the deployment has a token route.
+4. Price the Sepolia IGP for it, deploy, and write the agent configs again:
+   the relayer's requirement for messages from Sepolia follows the
+   overhead.
+
+   ```bash
+   bash deploy/testnet.sh evm-igp            # what changes; sends nothing
+   bash deploy/testnet.sh evm-igp --apply
+   bash deploy/testnet.sh preflight
+   bash deploy/testnet.sh deploy
+   bash deploy/testnet.sh agent-configs
+   ```
+
+The agents need nothing per route: the relayer relays any message between
+the two chains once it is paid for, and the validators sign the Mailbox's
+tree. Restart the relayer with the new `relayer.json`; until then it
+requires the old overhead's gas, which the routes' transfers pay too. A
+message from Sepolia that paid for the old overhead and isn't delivered by
+then waits until someone pays for the 30,000 gas more
+([operations.md](operations.md#topping-up-a-message)).
+
+### Minting more
+
+The deployer's account is each token's admin and minter:
+
+```bash
+S=deploy/out/<DEPLOY_NAME>/deployment.json
+EURD=$(jq -r '.token_routes.EURd.dusk.token' $S)
+target/release/dusk-tx drc20-mint --rues-url $DUSK --keys $DUSK_KEYS --token $EURD \
+  --to <base58 address> --amount 250000000000 --expected-chain-id 2   # 250,000 EURd
+target/release/dusk-tx drc20-info --rues-url $DUSK --token $EURD --account <base58 address>
+```
+
+`drc20-mint` checks that the signer holds the minter role, that the token
+isn't paused, and that its cap (none) and a u64 allow the amount, before it
+signs; `--to` defaults to the signer. A token minted on Dusk is backed by
+nothing on Sepolia until it is bridged: a transfer locks it in the route and
+mints as many there.
+
+### Bridging EURd
+
+Dusk → Sepolia: let the route take the tokens, then transfer them. The
+deposit is only the dispatch fee, 17.0635 DUSK at the default prices;
+`dusk-tx` adds it.
+
+```bash
+ROUTE=$(jq -r '.token_routes.EURd.dusk.route' $S); EURD_EVM=$(jq -r '.token_routes.EURd.evm.token' $S)
+target/release/dusk-tx drc20-approve --rues-url $DUSK --keys my.keys --token $EURD --spender $ROUTE \
+  --amount 25000000 --expected-chain-id 2                                # 25 EURd
+target/release/dusk-tx transfer-remote --rues-url $DUSK --keys my.keys --warp-contract $ROUTE \
+  --destination 11155111 --recipient <your sepolia address> --amount 25000000 --expected-chain-id 2
+cast call $EURD_EVM "balanceOf(address)(uint256)" <your sepolia address> --rpc-url $EVM_RPC
+```
+
+Sepolia → Dusk: burn on Sepolia, paid out of the route on Dusk. As with
+DUSK, the route holds the first transfer to an account in escrow until it
+is claimed:
+
+```bash
+H=$(target/release/dusk-tx account --offline --keys my.keys | jq -r .account_h256)
+FEE=$(cast call $EURD_EVM "quoteGasPayment(uint32)(uint256)" 1146442572 --rpc-url $EVM_RPC | awk '{print $1}')
+cast send $EURD_EVM "transferRemote(uint32,bytes32,uint256)" 1146442572 0x$H 10000000 \
+  --value $FEE --rpc-url $EVM_RPC --private-key <your key>                # 10 EURd
+target/release/dusk-tx account --rues-url $DUSK --keys my.keys --warp-contract $ROUTE
+target/release/dusk-tx claim-pending --rues-url $DUSK --keys my.keys --warp-contract $ROUTE --expected-chain-id 2
+target/release/dusk-tx drc20-info --rues-url $DUSK --token $EURD --account <your base58 address>
+```
+
+USDd works the same, with `.token_routes.USDd`. A transfer of either pays
+what one of DUSK does in each direction: the Sepolia tokens are all
+HypERC20s, which cost the same to deliver to, and the Sepolia IGP prices
+every message to Dusk for the costliest route.
 
 ## Reproduce the contracts
 
@@ -547,7 +706,11 @@ check a deployed contract by rebuilding its WASM:
    `deploy/testnet.sh` deploys with `dusk-tx deploy-hyperlane`, which uses
    nonces 0 to 9 in this order: TestMock, TestRecipient, MerkleTreeHook,
    the MessageIdMultisig ISM, ProtocolFee, AggregationHook, Mailbox,
-   ValidatorAnnounce, IGP and WarpNative.
+   ValidatorAnnounce, IGP and WarpNative. A token route's token takes the
+   deploy nonce `deployment.json` records for it,
+   `.token_routes.<SYMBOL>.dusk.deploy_nonce`, from 10 on, and its route the
+   next; the token's Wasm is `make canonical-drc20-fixture`'s
+   `canonical_drc20_roles_pausable.wasm`.
 4. Check that the owner the node records for each contract is the
    deployer's key, the same 96 bytes you hashed:
 
@@ -600,14 +763,17 @@ for isn't delivered either, nor once `dusk-tx pay-for-gas` has paid half of
 what it lacks, and is once the rest is paid, and claims the fees on both
 chains. It takes about fifteen minutes.
 
-The deploy takes about four minutes. Then run the commands from
+The deploy takes about six minutes with the two token routes. Then run the
+commands from
 [Check it works](#check-it-works) with the local values: Dusk at
 `http://localhost:8080/`, Anvil at `http://localhost:8545`, Anvil's domain
 `31338`, the rehearsal's keys (`rusk-private/examples/consensus.keys`,
 password `password`) and Anvil account #0 as the EVM user. Transfers arrive
 in about 30 seconds.
 
-The rehearsal deploys a MessageIdMultisig ISM, as on testnet. A route or
+The rehearsal deploys a MessageIdMultisig ISM, as on testnet, and the
+token routes `deploy/testnet.env.example` lists, EURd and USDd, with the
+canonical DRC20 `make canonical-drc20-fixture` builds. A route or
 Mailbox pointed at TestMock instead is refused unless
 `LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1` is set, and `deploy/testnet.sh` only
 honours that when `DUSK_RUES_URL` and `EVM_RPC` are both local.

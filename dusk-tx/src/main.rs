@@ -4,12 +4,15 @@
 //!   call               Call a contract method via Moonlight TX
 //!   deploy-hyperlane   Deploy the full Hyperlane contract stack
 //!   deploy-wasm        Deploy one contract, at the ID its Wasm, nonce and owner give
+//!   deploy-token-route Deploy a token issued on Dusk and a collateral route for it
 //!   query              Query contract state via RUES
 //!   dispatch           Dispatch a message via TestRecipient proxy
 //!   process            Process an inbound message on the Mailbox
 //!   encode-message     Encode a Hyperlane message (no TX, pure encoding)
 //!   enroll-router      Enroll a remote router on a warp route
 //!   transfer-remote    Send tokens or native DUSK through a warp route
+//!   drc20-mint         Mint a canonical DRC20 (its minter)
+//!   drc20-info         Show a canonical DRC20, and an account's balance and roles
 //!   set-igp-config     Set an IGP's pricing for a destination (owner)
 //!   set-beneficiary    Set who can claim a fee contract's fees (owner)
 //!   claim-fees         Claim a ProtocolFee's or IGP's fees (beneficiary)
@@ -49,6 +52,7 @@ use rkyv::ser::Serializer;
 use rkyv::Serialize;
 use serde_json::json;
 
+mod canonical_drc20;
 mod deployment;
 mod keys;
 mod multicall;
@@ -122,6 +126,13 @@ const MAX_PROTOCOL_FEE: u64 = 100_000_000;
 /// The hook types the fee contracts report (Hyperlane's HookType).
 const IGP_HOOK_TYPE: u8 = 4;
 const PROTOCOL_FEE_HOOK_TYPE: u8 = 6;
+/// Default gas limit for `drc20-mint`. A mint of the canonical DRC20 takes
+/// about 1.9M gas (docs/costs.md); a failed one pays its whole limit, so it
+/// stays low.
+const MINT_GAS_LIMIT: u64 = 3_000_000;
+/// The deploy nonce `deploy-token-route` can't use for its token: the route
+/// takes the next one.
+const LAST_TOKEN_ROUTE_NONCE: u64 = u64::MAX - 1;
 /// Default gas limit for `withdraw-dispatch`: the Mailbox decodes the
 /// recipient's key before paying it, which costs about 57M gas, so a
 /// withdrawal takes about 59M, directly or through a route's owner-only
@@ -275,12 +286,8 @@ enum Command {
         /// 3 GiB reserve.
         #[arg(long)]
         warp_collateral_token: Option<String>,
-        /// What the canonical DRC20 of `--warp-collateral-token
-        /// canonical-drc20` mints to the deployer, in its smallest unit; it
-        /// has --warp-decimals. The default, 5 tokens at 18 decimals, fits a
-        /// signed 64-bit integer, so shell scripts can do arithmetic on it.
-        #[arg(long, default_value = "5000000000000000000")]
-        collateral_token_supply: u64,
+        #[command(flatten)]
+        canonical_token: CanonicalTokenArgs,
         /// Token name for WarpDrc20.
         #[arg(long, default_value = "Wrapped Ether")]
         warp_name: String,
@@ -373,6 +380,26 @@ enum Command {
         #[arg(long, default_value = "2000")]
         gas_price: u64,
     },
+    /// Deploy a token issued on Dusk and a collateral route that locks it,
+    /// for an existing Mailbox: the pinned canonical DRC20
+    /// (`canonical_drc20_roles_pausable.wasm` in the WASM directory, `make
+    /// canonical-drc20-fixture`), with the signer its admin, holding every
+    /// role and the whole initial supply and no cap, and a
+    /// WarpDrc20Collateral that locks it, bound to the Mailbox with no
+    /// router yet. The token gets --deploy-nonce and the route the next
+    /// nonce, so both IDs are known before anything is sent. Each deploy
+    /// transaction goes to --tx-log before it is sent. A contract already
+    /// at either ID isn't deployed again, and is taken only if the
+    /// transaction an earlier run recorded for it (--token-tx, --route-tx)
+    /// created it, in a final block; any other contract there is someone
+    /// else's, whatever it reads back, and the command stops, sending
+    /// nothing more, with "taken" naming it. Then both are read
+    /// back, as deploy-hyperlane reads back its own: the owner Rusk records,
+    /// the token's settings, supply and roles, and the route's owner and
+    /// bindings; when one isn't what was sent, or can't be read, the command
+    /// fails and reports neither. With --plan it prints the IDs, and whether
+    /// a contract is at each, and sends nothing.
+    DeployTokenRoute(TokenRouteArgs),
     /// Query contract state via RUES (read-only, no transaction).
     Query {
         #[arg(long, default_value = "http://localhost:8080/")]
@@ -881,6 +908,16 @@ enum Command {
         #[arg(long)]
         account_contract: Option<String>,
     },
+    /// Mint a canonical DRC20 to an account. The signer must hold the
+    /// token's minter role, as the admin `deploy-token-route` sets up does.
+    /// The role, whether the token is paused and its cap are checked before
+    /// anything is signed, since a failed transaction pays its whole gas
+    /// limit.
+    Drc20Mint(Drc20MintArgs),
+    /// Show a canonical DRC20: its name, symbol, decimals, supply and cap,
+    /// and whether it is paused; with --account, the account's balance and
+    /// which of the token's roles it holds.
+    Drc20Info(Drc20InfoArgs),
     /// Call transfer_remote on a warp route. The quoted dispatch fee is
     /// attached as a native DUSK deposit.
     TransferRemote {
@@ -1062,7 +1099,7 @@ async fn run(command: Command) -> Result<(), String> {
             deploy_warp_drc20,
             deploy_warp_native,
             warp_collateral_token,
-            collateral_token_supply,
+            canonical_token,
             warp_name,
             warp_symbol,
             warp_decimals,
@@ -1085,7 +1122,14 @@ async fn run(command: Command) -> Result<(), String> {
                 deploy_warp_drc20,
                 deploy_warp_native,
                 warp_collateral_token.as_deref(),
-                collateral_token_supply,
+                CollateralTokenSettings {
+                    name: canonical_token.collateral_token_name,
+                    symbol: canonical_token.collateral_token_symbol,
+                    decimals: canonical_token
+                        .collateral_token_decimals
+                        .unwrap_or(warp_decimals),
+                    supply: canonical_token.collateral_token_supply,
+                },
                 &warp_name,
                 &warp_symbol,
                 warp_decimals,
@@ -1129,6 +1173,8 @@ async fn run(command: Command) -> Result<(), String> {
             )
             .await
         }
+        // Boxed: its future is large, and `run`'s would otherwise be as large.
+        Command::DeployTokenRoute(args) => Box::pin(cmd_deploy_token_route(args)).await,
         Command::Query {
             rues_url,
             contract,
@@ -1506,6 +1552,30 @@ async fn run(command: Command) -> Result<(), String> {
                 account_contract.as_deref(),
             )
             .await
+        }
+        Command::Drc20Mint(args) => {
+            let output = drc20_mint(
+                &args.rues_url,
+                args.keys,
+                args.password.as_deref().unwrap_or_default(),
+                args.secret_key,
+                args.secret_key_stdin,
+                &args.token,
+                args.to.as_deref(),
+                args.amount,
+                args.expected_chain_id,
+                args.gas_limit,
+                args.gas_price,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            Ok(())
+        }
+        Command::Drc20Info(args) => {
+            let output =
+                drc20_info_output(&args.rues_url, &args.token, args.account.as_deref()).await?;
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            Ok(())
         }
         Command::TransferRemote {
             rues_url,
@@ -2930,6 +3000,21 @@ mod tests {
             ],
             vec!["deploy-wasm", "--wasm", wasm],
             vec![
+                "deploy-token-route",
+                "--mailbox",
+                &id,
+                "--token-name",
+                "Dusk Euro (testnet)",
+                "--token-symbol",
+                "EURd",
+                "--token-decimals",
+                "6",
+                "--token-supply",
+                "1000000000000",
+                "--deploy-nonce",
+                "10",
+            ],
+            vec![
                 "fund-dispatch",
                 "--mailbox",
                 &id,
@@ -2996,6 +3081,7 @@ mod tests {
                 "--amount",
                 "1",
             ],
+            vec!["drc20-mint", "--token", &id, "--amount", "1"],
             vec![
                 "transfer-remote",
                 "--warp-contract",
@@ -3016,8 +3102,9 @@ mod tests {
 
     /// Every command that sends a transaction signs only for the chain the
     /// caller names, as `withdraw-dispatch` always has: none runs without
-    /// `--expected-chain-id`, except `pay-for-gas --quote-only`, which signs
-    /// nothing. Every other command only reads.
+    /// `--expected-chain-id`, except `pay-for-gas --quote-only` and
+    /// `deploy-token-route --plan`, which sign nothing. Every other command
+    /// only reads.
     #[test]
     fn every_command_that_signs_requires_an_expected_chain_id() {
         use clap::CommandFactory;
@@ -3044,12 +3131,18 @@ mod tests {
             .find(|args| args[0] == "pay-for-gas")
             .unwrap();
         assert!(parse(pay_for_gas, &["--quote-only"]).is_ok());
+        let token_route = commands
+            .iter()
+            .find(|args| args[0] == "deploy-token-route")
+            .unwrap();
+        assert!(parse(token_route, &["--plan"]).is_ok());
 
         let signing: Vec<&str> = commands.iter().map(|args| args[0].as_str()).collect();
         let reads = [
             "query",
             "encode-message",
             "drc20-balance",
+            "drc20-info",
             "dispatched-message",
             "account",
             "export-signer-key",
@@ -4129,6 +4222,1009 @@ mod tests {
         }
     }
 
+    /// Stand-in Wasms for a token route, in a directory of their own.
+    fn token_route_wasms(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dusk-tx-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(super::CANONICAL_DRC20_WASM),
+            b"\0asm\x01\0\0\0token",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("hyperlane_dusk_warp_drc20_collateral.wasm"),
+            b"\0asm\x01\0\0\0route",
+        )
+        .unwrap();
+        dir
+    }
+
+    /// `deploy-token-route` as `deploy/testnet.sh` runs it for EURd: the
+    /// Mailbox `a1…`, nonce 10, Sepolia as the remote domain.
+    fn token_route_args(url: &str, dir: &std::path::Path, extra: &[&str]) -> super::TokenRouteArgs {
+        let secret = "11".repeat(32);
+        let mailbox = "a1".repeat(32);
+        let args = [
+            "dusk-tx",
+            "deploy-token-route",
+            "--rues-url",
+            url,
+            "--secret-key",
+            &secret,
+            "--mailbox",
+            &mailbox,
+            "--token-name",
+            "Dusk Euro (testnet)",
+            "--token-symbol",
+            "EURd",
+            "--token-decimals",
+            "6",
+            "--token-supply",
+            "1000000000000",
+            "--deploy-nonce",
+            "10",
+            "--remote-domain",
+            "11155111",
+            "--wasm-dir",
+            dir.to_str().unwrap(),
+        ];
+        match Cli::try_parse_from(args.iter().chain(extra).copied())
+            .unwrap()
+            .command
+        {
+            super::Command::DeployTokenRoute(args) => args,
+            _ => unreachable!("parsed deploy-token-route"),
+        }
+    }
+
+    /// The token route of `token_route_args`, as an honest node holds it.
+    fn token_route_sent(dir: &std::path::Path) -> super::deployment::TokenRoute {
+        let (_, pk) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let token_wasm = std::fs::read(dir.join(super::CANONICAL_DRC20_WASM)).unwrap();
+        let route_wasm =
+            std::fs::read(dir.join("hyperlane_dusk_warp_drc20_collateral.wasm")).unwrap();
+        let (token, route) = super::token_route_ids(&token_wasm, &route_wasm, 10, &pk).unwrap();
+        let settings = super::CollateralTokenSettings {
+            name: "Dusk Euro (testnet)".into(),
+            symbol: "EURd".into(),
+            decimals: 6,
+            supply: 1_000_000_000_000,
+        };
+        super::deployment::TokenRoute {
+            owner_key: pk.to_bytes().to_vec(),
+            owner: hyperlane_dusk_types::message::keccak256(&pk.to_bytes()),
+            mailbox: super::ContractId::from_bytes([0xa1; 32]),
+            router_domains: vec![1_146_442_572, 11_155_111],
+            token: settings.sent(token, super::Drc20Account::moonlight(&pk)),
+            route,
+        }
+    }
+
+    /// The replies of a node that takes the token route's deploys, with the
+    /// token and the route already there as `existing` says, and the
+    /// read-back's replies, one of them tampered with.
+    fn token_route_replies(
+        sent: &super::deployment::TokenRoute,
+        existing: (bool, bool),
+        tamper: Option<(&'static str, &'static str, super::deployment::Value)>,
+    ) -> MockReplies {
+        use super::deployment::Deployed;
+        use dusk_core::transfer::moonlight::AccountData;
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let owner = |exists: bool, id: super::ContractId| {
+            let path = leak(format!("{}/owner", hex::encode(id.to_bytes())));
+            if exists {
+                (path, 200, sent.owner_key.clone())
+            } else {
+                (path, 404, b"Contract owner not found".to_vec())
+            }
+        };
+        let mut replies = vec![
+            ("/chain_id", 200, vec![2]),
+            owner(existing.0, sent.token.id),
+            owner(existing.1, sent.route),
+            (
+                "/local_domain",
+                200,
+                super::rkyv_serialize(&1_146_442_572u32),
+            ),
+        ];
+        // A contract that is there was created by the transaction recorded
+        // for it (token_route_recorded), in a final block.
+        for _ in 0..usize::from(existing.0) + usize::from(existing.1) {
+            replies.extend(recorded_deploy_replies());
+        }
+        let deploys = usize::from(!existing.0) + usize::from(!existing.1);
+        if deploys > 0 {
+            replies.push((
+                "/account",
+                200,
+                super::rkyv_serialize(&AccountData {
+                    nonce: 4,
+                    balance: 1_000_000_000_000_000,
+                }),
+            ));
+            for _ in 0..deploys {
+                replies.extend([
+                    ("/on/transactions/preverify", 200, Vec::new()),
+                    ("/on/transactions/propagate", 200, Vec::new()),
+                    (
+                        "/graphql",
+                        200,
+                        br#"{"data":{"tx":{"err":null,"gasSpent":26400000,"blockHeight":9}}}"#
+                            .to_vec(),
+                    ),
+                ]);
+            }
+            replies.push((
+                "/graphql",
+                200,
+                br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Accepted"}}}"#.to_vec(),
+            ));
+        }
+        for (_, contract) in sent.contracts() {
+            replies.push(owner(true, contract));
+        }
+        for check in sent.checks() {
+            let mut reply = check.expected.encode();
+            if let Some((name, method, value)) = &tamper {
+                if check.name == *name && check.method == *method {
+                    reply = value.encode();
+                }
+            }
+            replies.push((
+                leak(format!("{}/{}", hex::encode(check.contract), check.method)),
+                200,
+                reply,
+            ));
+        }
+        replies
+    }
+
+    /// The node's replies about a recorded deploy transaction that executed
+    /// in block 9, which is final: its status, then the finality wait's.
+    fn recorded_deploy_replies() -> MockReplies {
+        let executed = br#"{"data":{"tx":{"err":null,"gasSpent":26400000,"blockHeight":9}}}"#;
+        vec![
+            ("/graphql", 200, executed.to_vec()),
+            ("/graphql", 200, executed.to_vec()),
+            (
+                "/graphql",
+                200,
+                br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Final"}}}"#.to_vec(),
+            ),
+            ("/graphql", 200, executed.to_vec()),
+        ]
+    }
+
+    /// The arguments that name the transactions an earlier run recorded for
+    /// the contracts `existing` says are there.
+    fn token_route_recorded(existing: (bool, bool)) -> Vec<String> {
+        let mut args = Vec::new();
+        if existing.0 {
+            args.extend([
+                "--token-tx".into(),
+                "7a".repeat(32),
+                "--token-tx-nonce".into(),
+                "5".into(),
+            ]);
+        }
+        if existing.1 {
+            args.extend([
+                "--route-tx".into(),
+                "7b".repeat(32),
+                "--route-tx-nonce".into(),
+                "6".into(),
+            ]);
+        }
+        args
+    }
+
+    /// `deploy-token-route --plan` prints the IDs the Wasms, the nonces and
+    /// the key give, the token's at the nonce and the route's at the next,
+    /// and whether a contract is at each, and signs nothing; it needs no
+    /// chain ID.
+    #[tokio::test]
+    async fn deploy_token_route_plans_the_ids_and_sends_nothing() {
+        let dir = token_route_wasms("token-route-plan");
+        let sent = token_route_sent(&dir);
+        let (token, route) = (
+            hex::encode(sent.token.id.to_bytes()),
+            hex::encode(sent.route.to_bytes()),
+        );
+        // Worked out independently: BLAKE2b-256 of the Wasm, the nonce as 8
+        // bytes LE and the key.
+        let (_, pk) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let blake = |wasm: &[u8], nonce: u64| {
+            let mut state = blake2b_simd::Params::new().hash_length(32).to_state();
+            state
+                .update(wasm)
+                .update(&nonce.to_le_bytes())
+                .update(&pk.to_bytes());
+            hex::encode(state.finalize().as_bytes())
+        };
+        assert_eq!(token, blake(b"\0asm\x01\0\0\0token", 10));
+        assert_eq!(route, blake(b"\0asm\x01\0\0\0route", 11));
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let (url, server) = mock_rues(vec![
+            (leak(format!("{token}/owner")), 200, sent.owner_key.clone()),
+            (
+                leak(format!("{route}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+        ]);
+        let output = super::deploy_token_route(token_route_args(&url, &dir, &["--plan"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            output,
+            serde_json::json!({
+                "success": true,
+                "deploy_nonce": 10,
+                "contracts": {"token": token, "route": route},
+                "exists": {"token": true, "route": false},
+            })
+        );
+        assert_eq!(server.join().unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// IDs other than the planned ones, as a rebuilt Wasm gives, stop the
+    /// command before it asks the node anything but the chain ID.
+    #[tokio::test]
+    async fn deploy_token_route_refuses_ids_other_than_planned() {
+        let dir = token_route_wasms("token-route-planned");
+        let sent = token_route_sent(&dir);
+        let other = "ee".repeat(32);
+        let token = hex::encode(sent.token.id.to_bytes());
+        for extra in [
+            [
+                "--expected-token",
+                other.as_str(),
+                "--expected-chain-id",
+                "2",
+            ],
+            [
+                "--expected-route",
+                other.as_str(),
+                "--expected-chain-id",
+                "2",
+            ],
+        ] {
+            let (url, server) = mock_rues(vec![("/chain_id", 200, vec![2])]);
+            let mut args = token_route_args(&url, &dir, &extra);
+            args.expected_token = args.expected_token.or(Some(token.clone()));
+            let error = super::deploy_token_route(args).await.unwrap_err();
+            assert!(
+                error.contains(&format!("not {other}, which was planned: nothing was sent")),
+                "{error}"
+            );
+            assert_eq!(server.join().unwrap().len(), 1);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A token route deploys the token, then the route, each at its
+    /// planned ID, and reports them only once both read back: the token's
+    /// settings, supply and roles, the route's owner and bindings. On a
+    /// resumed run it deploys only what isn't there; a contract that is
+    /// there and doesn't read back stops it.
+    #[tokio::test]
+    async fn deploy_token_route_reports_only_a_route_that_reads_back_as_sent() {
+        use super::deployment::Value;
+        let dir = token_route_wasms("token-route-deploy");
+        let sent = token_route_sent(&dir);
+        let planned = [
+            "--expected-token",
+            &hex::encode(sent.token.id.to_bytes()),
+            "--expected-route",
+            &hex::encode(sent.route.to_bytes()),
+            "--expected-chain-id",
+            "2",
+        ]
+        .map(String::from);
+        let planned: Vec<&str> = planned.iter().map(String::as_str).collect();
+        for (existing, deploys) in [((false, false), 2), ((true, false), 1), ((true, true), 0)] {
+            let (url, server) = mock_rues(token_route_replies(&sent, existing, None));
+            let recorded = token_route_recorded(existing);
+            let args: Vec<&str> = planned
+                .iter()
+                .copied()
+                .chain(recorded.iter().map(String::as_str))
+                .collect();
+            let output = super::deploy_token_route(token_route_args(&url, &dir, &args))
+                .await
+                .unwrap_or_else(|e| panic!("{existing:?}: {e}"));
+            assert_eq!(
+                output["contracts"]["token"],
+                hex::encode(sent.token.id.to_bytes())
+            );
+            assert_eq!(
+                output["contracts"]["route"],
+                hex::encode(sent.route.to_bytes())
+            );
+            assert_eq!(
+                output["deployed"],
+                serde_json::json!({"token": !existing.0, "route": !existing.1})
+            );
+            assert_eq!(
+                output["token"],
+                serde_json::json!({"name": "Dusk Euro (testnet)", "symbol": "EURd", "decimals": 6,
+                                   "supply": "1000000000000"})
+            );
+            assert_eq!(
+                output["router_domains"],
+                serde_json::json!([1_146_442_572, 11_155_111])
+            );
+            let requests = server.join().unwrap();
+            let sends: Vec<&(String, Vec<u8>)> = requests
+                .iter()
+                .filter(|(path, _)| path.ends_with("/propagate"))
+                .collect();
+            assert_eq!(sends.len(), deploys, "{existing:?}");
+            // Each deploy is at its own nonce, with the token's init.
+            for (send, (nonce, contract)) in sends.iter().zip(
+                [(10u64, "Token"), (11, "WarpCollateral")]
+                    .into_iter()
+                    .skip(usize::from(existing.0)),
+            ) {
+                let tx = dusk_core::transfer::Transaction::from_slice(&send.1).unwrap();
+                let dusk_core::transfer::Transaction::Moonlight(moonlight) = &tx else {
+                    panic!("a Moonlight transaction");
+                };
+                let Some(dusk_core::transfer::data::TransactionData::Deploy(deploy)) =
+                    moonlight.data()
+                else {
+                    panic!("{contract}: a deploy");
+                };
+                assert_eq!(deploy.nonce, nonce, "{contract}");
+                if contract == "Token" {
+                    let (_, pk) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+                    let init = super::canonical_drc20::init(
+                        super::Drc20Account::moonlight(&pk),
+                        "Dusk Euro (testnet)",
+                        "EURd",
+                        6,
+                        1_000_000_000_000,
+                    );
+                    assert_eq!(deploy.init_args, Some(super::rkyv_serialize(&init)));
+                }
+            }
+        }
+        // This deployment's own contracts that don't read back as sent: a
+        // token without the deployer as admin, or with the supply held
+        // elsewhere; a route bound to another Mailbox, or with a router.
+        let attacker = [0xee; 32];
+        for (existing, name, method, value, expected) in [
+            (
+                (true, false),
+                "Token",
+                "has_role",
+                Value::Bool(false),
+                "has_role(admin, the deployer) is false, not true",
+            ),
+            (
+                (true, true),
+                "Token",
+                "balance_of",
+                Value::U64(1),
+                "balance_of(the deployer) is 1, not 1000000000000",
+            ),
+            (
+                (false, true),
+                "WarpCollateral",
+                "mailbox",
+                Value::Bytes32(attacker),
+                "mailbox is eeee",
+            ),
+            (
+                (false, false),
+                "WarpCollateral",
+                "enrolled_router",
+                Value::Bytes32(attacker),
+                "enrolled_router(1146442572) is eeee",
+            ),
+        ] {
+            let (url, server) = mock_rues(token_route_replies(
+                &sent,
+                existing,
+                Some((name, method, value)),
+            ));
+            let recorded = token_route_recorded(existing);
+            let args: Vec<&str> = planned
+                .iter()
+                .copied()
+                .chain(recorded.iter().map(String::as_str))
+                .collect();
+            let error = super::deploy_token_route(token_route_args(&url, &dir, &args))
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains("reports none of them as deployed"),
+                "{error}"
+            );
+            assert!(error.contains(expected), "{expected}: {error}");
+            server.join().unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A contract at a planned ID that no transaction this deployment
+    /// recorded created is someone else's, even if it would read back as
+    /// sent: someone who deployed there first chose its init, and could
+    /// hold roles besides the deployer's, which the token can't list. The
+    /// command sends nothing and names it; one recorded transaction that
+    /// failed, or isn't in the ledger, proves nothing either.
+    #[tokio::test]
+    async fn deploy_token_route_refuses_contracts_its_transactions_didnt_create() {
+        let dir = token_route_wasms("token-route-taken");
+        let sent = token_route_sent(&dir);
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let (token, route) = (
+            hex::encode(sent.token.id.to_bytes()),
+            hex::encode(sent.route.to_bytes()),
+        );
+        let owner = |id: &str, exists: bool| {
+            let path = leak(format!("{id}/owner"));
+            if exists {
+                (path, 200, sent.owner_key.clone())
+            } else {
+                (path, 404, b"Contract owner not found".to_vec())
+            }
+        };
+        let failed = br#"{"data":{"tx":{"err":"Panic: contract already exists","gasSpent":2000000,"blockHeight":9}}}"#;
+        for (existing, recorded, status, taken) in [
+            ((true, false), vec![], None, "token"),
+            ((false, true), vec![], None, "route"),
+            (
+                (true, true),
+                vec![
+                    "--token-tx",
+                    "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+                ],
+                Some(failed.to_vec()),
+                "token",
+            ),
+            (
+                (true, false),
+                vec![
+                    "--token-tx",
+                    "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+                ],
+                Some(br#"{"data":{"tx":null}}"#.to_vec()),
+                "token",
+            ),
+        ] {
+            let mut replies = vec![
+                ("/chain_id", 200, vec![2]),
+                owner(&token, existing.0),
+                owner(&route, existing.1),
+                (
+                    "/local_domain",
+                    200,
+                    super::rkyv_serialize(&1_146_442_572u32),
+                ),
+            ];
+            if let Some(status) = status {
+                replies.push(("/graphql", 200, status));
+            }
+            let (url, server) = mock_rues(replies);
+            let mut args = vec!["--expected-chain-id", "2"];
+            args.extend(recorded);
+            let output = super::deploy_token_route(token_route_args(&url, &dir, &args))
+                .await
+                .unwrap();
+            assert_eq!(output["success"], false, "{output}");
+            assert_eq!(output["taken"], taken, "{output}");
+            assert!(
+                output["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("isn't this deployment's"),
+                "{output}"
+            );
+            let requests = server.join().unwrap();
+            assert!(
+                requests
+                    .iter()
+                    .all(|(path, _)| !path.ends_with("/propagate")),
+                "nothing is sent"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Each deploy transaction goes to the tx log before it is sent. A
+    /// deploy that fails because a contract got to the ID between the plan
+    /// and the send leaves the ID to it: nothing more is sent, and the
+    /// output names it for the caller to plan other IDs.
+    #[tokio::test]
+    async fn deploy_token_route_logs_each_deploy_and_gives_up_an_id_taken_before_it() {
+        use dusk_core::transfer::moonlight::AccountData;
+        let dir = token_route_wasms("token-route-log");
+        let sent = token_route_sent(&dir);
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let (token, route) = (
+            hex::encode(sent.token.id.to_bytes()),
+            hex::encode(sent.route.to_bytes()),
+        );
+        let log = dir.join("route.txs");
+        let failed = br#"{"data":{"tx":{"err":"Panic: contract already exists","gasSpent":2000000,"blockHeight":9}}}"#;
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            (
+                leak(format!("{token}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+            (
+                leak(format!("{route}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+            (
+                "/local_domain",
+                200,
+                super::rkyv_serialize(&1_146_442_572u32),
+            ),
+            (
+                "/account",
+                200,
+                super::rkyv_serialize(&AccountData {
+                    nonce: 4,
+                    balance: 1_000_000_000_000_000,
+                }),
+            ),
+            ("/on/transactions/preverify", 200, Vec::new()),
+            ("/on/transactions/propagate", 200, Vec::new()),
+            ("/graphql", 200, failed.to_vec()),
+            ("/graphql", 200, failed.to_vec()),
+            // Someone else's token got there first.
+            (leak(format!("{token}/owner")), 200, vec![0xee; 96]),
+        ]);
+        let args = [
+            "--expected-chain-id",
+            "2",
+            "--tx-log",
+            log.to_str().unwrap(),
+        ];
+        let output = super::deploy_token_route(token_route_args(&url, &dir, &args))
+            .await
+            .unwrap();
+        assert_eq!(output["success"], false, "{output}");
+        assert_eq!(output["taken"], "token", "{output}");
+        assert!(
+            output["error"]
+                .as_str()
+                .unwrap()
+                .contains("got to its ID first"),
+            "{output}"
+        );
+        let requests = server.join().unwrap();
+        let sends: Vec<_> = requests
+            .iter()
+            .filter(|(path, _)| path.ends_with("/propagate"))
+            .collect();
+        assert_eq!(sends.len(), 1, "the route isn't sent");
+        let tx = dusk_core::transfer::Transaction::from_slice(&sends[0].1).unwrap();
+        let logged: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            logged,
+            vec![serde_json::json!({"contract": "token", "id": token,
+                                    "tx": hex::encode(tx.hash().to_bytes()), "nonce": 5})]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A recorded transaction that isn't in the ledger, for an ID nothing is
+    /// at, is sent again only once the signer's nonce has passed its own:
+    /// until then it may still execute.
+    #[tokio::test]
+    async fn deploy_token_route_waits_out_a_recorded_transaction_that_may_still_execute() {
+        use dusk_core::transfer::moonlight::AccountData;
+        let dir = token_route_wasms("token-route-pending");
+        let sent = token_route_sent(&dir);
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let (token, route) = (
+            hex::encode(sent.token.id.to_bytes()),
+            hex::encode(sent.route.to_bytes()),
+        );
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            (
+                leak(format!("{token}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+            (
+                leak(format!("{route}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+            (
+                "/local_domain",
+                200,
+                super::rkyv_serialize(&1_146_442_572u32),
+            ),
+            ("/graphql", 200, br#"{"data":{"tx":null}}"#.to_vec()),
+            (
+                "/account",
+                200,
+                super::rkyv_serialize(&AccountData {
+                    nonce: 4,
+                    balance: 1_000_000_000_000_000,
+                }),
+            ),
+        ]);
+        let recorded = "7a".repeat(32);
+        let args = [
+            "--expected-chain-id",
+            "2",
+            "--token-tx",
+            &recorded,
+            "--token-tx-nonce",
+            "5",
+        ];
+        let error = super::deploy_token_route(token_route_args(&url, &dir, &args))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("may still execute: nothing was sent"),
+            "{error}"
+        );
+        let requests = server.join().unwrap();
+        assert!(requests
+            .iter()
+            .all(|(path, _)| !path.ends_with("/propagate")));
+        // Once the signer's nonce has passed it, the ID is free again.
+        let account = |nonce| {
+            super::rkyv_serialize(&AccountData {
+                nonce,
+                balance: 1_000_000_000_000_000,
+            })
+        };
+        let (url, server) = mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            (
+                leak(format!("{token}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+            (
+                leak(format!("{route}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+            (
+                "/local_domain",
+                200,
+                super::rkyv_serialize(&1_146_442_572u32),
+            ),
+            ("/graphql", 200, br#"{"data":{"tx":null}}"#.to_vec()),
+            ("/account", 200, account(5)),
+            ("/account", 200, account(5)),
+            ("/on/transactions/preverify", 200, Vec::new()),
+            ("/on/transactions/propagate", 200, Vec::new()),
+            // What matters here is that it was sent: it then fails, with
+            // nothing at the ID.
+            (
+                "/graphql",
+                200,
+                br#"{"data":{"tx":{"err":"Out of gas","gasSpent":1,"blockHeight":9}}}"#.to_vec(),
+            ),
+            (
+                "/graphql",
+                200,
+                br#"{"data":{"tx":{"err":"Out of gas","gasSpent":1,"blockHeight":9}}}"#.to_vec(),
+            ),
+            (
+                leak(format!("{token}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            ),
+        ]);
+        let error = super::deploy_token_route(token_route_args(&url, &dir, &args))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Failed to deploy Token") && error.contains("Out of gas"),
+            "{error}"
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(path, _)| path.ends_with("/propagate"))
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `drc20-mint` refuses before it signs what the token would refuse.
+    #[test]
+    fn mints_the_token_would_refuse_are_refused_before_signing() {
+        let info = |paused, total_supply, cap, remaining_mintable| super::Drc20Info {
+            name: "Dusk Euro (testnet)".into(),
+            symbol: "EURd".into(),
+            decimals: 6,
+            total_supply,
+            cap,
+            remaining_mintable,
+            paused,
+        };
+        let open = info(false, 1_000_000_000_000, 0, u64::MAX);
+        assert!(super::check_mint(&open, true, 5).is_ok());
+        for (info, minter, amount, expected) in [
+            (
+                open.clone(),
+                false,
+                5,
+                "doesn't hold the token's minter role",
+            ),
+            (open.clone(), true, 0, "more than zero"),
+            (info(true, 1, 0, u64::MAX), true, 5, "is paused"),
+            (
+                info(false, 90, 100, 10),
+                true,
+                11,
+                "cap is 100, and 10 of it is left to mint: not 11",
+            ),
+            (
+                info(false, u64::MAX - 1, 0, u64::MAX),
+                true,
+                2,
+                "would overflow a u64",
+            ),
+        ] {
+            let error = super::check_mint(&info, minter, amount).unwrap_err();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
+    /// `drc20-mint` mints with the token's own `MintCall`, to the signer by
+    /// default, once the token says the signer may.
+    #[tokio::test]
+    async fn drc20_mint_sends_the_tokens_mint_call() {
+        use dusk_core::transfer::moonlight::AccountData;
+        let token = "f1".repeat(32);
+        let (_, pk) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let views = |minter: bool| -> MockReplies {
+            vec![
+                ("/chain_id", 200, vec![2]),
+                (
+                    "/name",
+                    200,
+                    super::rkyv_serialize(&String::from("Dusk Euro (testnet)")),
+                ),
+                ("/symbol", 200, super::rkyv_serialize(&String::from("EURd"))),
+                ("/decimals", 200, super::rkyv_serialize(&6u8)),
+                (
+                    "/total_supply",
+                    200,
+                    super::rkyv_serialize(&1_000_000_000_000u64),
+                ),
+                ("/cap", 200, super::rkyv_serialize(&0u64)),
+                ("/remaining_mintable", 200, super::rkyv_serialize(&u64::MAX)),
+                ("/paused", 200, super::rkyv_serialize(&false)),
+                ("/has_role", 200, super::rkyv_serialize(&minter)),
+            ]
+        };
+        let mint = |url: String| async move {
+            super::drc20_mint(
+                &url,
+                None,
+                "",
+                Some("11".repeat(32)),
+                false,
+                &"f1".repeat(32),
+                None,
+                250_000_000,
+                2,
+                super::MINT_GAS_LIMIT,
+                1,
+            )
+            .await
+        };
+        let (url, server) = mock_rues(views(false));
+        let error = mint(url).await.unwrap_err();
+        assert!(error.contains("minter role"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 9);
+
+        let mut replies = views(true);
+        replies.extend([
+            (
+                "/account",
+                200,
+                super::rkyv_serialize(&AccountData {
+                    nonce: 4,
+                    balance: 1_000_000_000_000,
+                }),
+            ),
+            ("/on/transactions/preverify", 200, Vec::new()),
+            ("/on/transactions/propagate", 200, Vec::new()),
+            (
+                "/graphql",
+                200,
+                br#"{"data":{"tx":{"err":null,"gasSpent":1900000,"blockHeight":9}}}"#.to_vec(),
+            ),
+            (
+                "/graphql",
+                200,
+                br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Accepted"}}}"#.to_vec(),
+            ),
+        ]);
+        let (url, server) = mock_rues(replies);
+        let output = mint(url).await.unwrap();
+        assert_eq!(output["total_supply"], "1000250000000");
+        assert_eq!(output["to"], super::account_identity(&pk)["address"]);
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests[8].1,
+            super::rkyv_serialize(&super::canonical_drc20::RoleQuery {
+                role: super::canonical_drc20::MINTER_ROLE,
+                account: super::Drc20Account::moonlight(&pk),
+            })
+        );
+        let tx = dusk_core::transfer::Transaction::from_slice(&requests[11].1).unwrap();
+        let dusk_core::transfer::Transaction::Moonlight(moonlight) = &tx else {
+            panic!("a Moonlight transaction");
+        };
+        assert_eq!(moonlight.nonce(), 5);
+        assert_eq!(moonlight.gas_limit(), super::MINT_GAS_LIMIT);
+        let Some(dusk_core::transfer::data::TransactionData::Call(call)) = moonlight.data() else {
+            panic!("a call");
+        };
+        assert_eq!(
+            call.contract.to_bytes(),
+            super::parse_bytes32(&token).unwrap()
+        );
+        assert_eq!(call.fn_name, "mint");
+        assert_eq!(
+            call.fn_args,
+            super::rkyv_serialize(&super::canonical_drc20::MintCall {
+                to: super::Drc20Account::moonlight(&pk),
+                amount: 250_000_000,
+                authorization: None,
+            })
+        );
+    }
+
+    /// `drc20-info` shows the token, and an account's balance and roles.
+    #[tokio::test]
+    async fn drc20_info_shows_the_token_and_an_accounts_roles() {
+        let (_, pk) = crate::keys::load_from_hex(&"11".repeat(32)).unwrap();
+        let account = hex::encode(pk.to_bytes());
+        let (url, server) = mock_rues(vec![
+            (
+                "/name",
+                200,
+                super::rkyv_serialize(&String::from("Dusk Dollar (testnet)")),
+            ),
+            ("/symbol", 200, super::rkyv_serialize(&String::from("USDd"))),
+            ("/decimals", 200, super::rkyv_serialize(&6u8)),
+            ("/total_supply", 200, super::rkyv_serialize(&7u64)),
+            ("/cap", 200, super::rkyv_serialize(&0u64)),
+            ("/remaining_mintable", 200, super::rkyv_serialize(&u64::MAX)),
+            ("/paused", 200, super::rkyv_serialize(&false)),
+            ("/balance_of", 200, super::rkyv_serialize(&5u64)),
+            ("/has_role", 200, super::rkyv_serialize(&true)),
+            ("/has_role", 200, super::rkyv_serialize(&true)),
+            ("/has_role", 200, super::rkyv_serialize(&false)),
+        ]);
+        let output = super::drc20_info_output(&url, &"f2".repeat(32), Some(&account))
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(output["symbol"], "USDd");
+        assert_eq!(output["total_supply"], "7");
+        assert_eq!(output["paused"], false);
+        assert_eq!(output["account"]["balance"], "5");
+        assert_eq!(
+            (
+                &output["account"]["admin"],
+                &output["account"]["minter"],
+                &output["account"]["pauser"]
+            ),
+            (
+                &serde_json::json!(true),
+                &serde_json::json!(true),
+                &serde_json::json!(false)
+            )
+        );
+        for (request, role) in requests[8..].iter().zip([
+            super::canonical_drc20::DEFAULT_ADMIN_ROLE,
+            super::canonical_drc20::MINTER_ROLE,
+            super::canonical_drc20::PAUSER_ROLE,
+        ]) {
+            assert_eq!(
+                request.1,
+                super::rkyv_serialize(&super::canonical_drc20::RoleQuery {
+                    role,
+                    account: super::Drc20Account::moonlight(&pk),
+                })
+            );
+        }
+    }
+
+    /// `deploy-hyperlane`'s canonical DRC20 takes its name, symbol and
+    /// decimals from the command line; without them it is the demo's.
+    #[test]
+    fn the_canonical_drc20s_settings_come_from_the_command_line() {
+        let parse = |extra: &[&str]| {
+            let args = [
+                "dusk-tx",
+                "deploy-hyperlane",
+                "--default-ism",
+                "testMock",
+                "--igp-domain-config",
+                "1:0:10000000000:1",
+                "--warp-collateral-token",
+                "canonical-drc20",
+                "--expected-chain-id",
+                "2",
+            ];
+            match Cli::try_parse_from(args.iter().chain(extra).copied())
+                .unwrap()
+                .command
+            {
+                super::Command::DeployHyperlane {
+                    canonical_token,
+                    warp_decimals,
+                    ..
+                } => (
+                    canonical_token.collateral_token_name,
+                    canonical_token.collateral_token_symbol,
+                    canonical_token
+                        .collateral_token_decimals
+                        .unwrap_or(warp_decimals),
+                    canonical_token.collateral_token_supply,
+                ),
+                _ => unreachable!("parsed deploy-hyperlane"),
+            }
+        };
+        assert_eq!(
+            parse(&[]),
+            (
+                "Canonical DRC20".into(),
+                "CDRC20".into(),
+                18,
+                5_000_000_000_000_000_000
+            )
+        );
+        assert_eq!(
+            parse(&[
+                "--collateral-token-name",
+                "Dusk Dollar (testnet)",
+                "--collateral-token-symbol",
+                "USDd",
+                "--collateral-token-decimals",
+                "6",
+                "--collateral-token-supply",
+                "1000000000000",
+            ]),
+            (
+                "Dusk Dollar (testnet)".into(),
+                "USDd".into(),
+                6,
+                1_000_000_000_000
+            )
+        );
+        assert_eq!(parse(&["--warp-decimals", "9"]).2, 9);
+        let unnamed = super::CollateralTokenSettings {
+            name: " ".into(),
+            symbol: "USDd".into(),
+            decimals: 6,
+            supply: 1,
+        };
+        assert!(unnamed.check().unwrap_err().contains("a name and a symbol"));
+    }
+
     /// `top_up_quote` is the IGP's `quote_pay_for_gas`: gas x price x rate
     /// / 1e10, rounded down, with no overhead, and refuses what it refuses.
     #[test]
@@ -5005,30 +6101,60 @@ fn parse_account_public_key(value: &str) -> Result<BlsPublicKey, String> {
     Ok(recipient)
 }
 
-/// The pinned canonical DRC20's init argument: `drc20-roles-pausable` from
-/// dusk-network/contracts at the revision
-/// `scripts/build-canonical-drc20-fixture.sh` pins.
-#[derive(rkyv::Archive, rkyv::Serialize)]
-struct CanonicalDrc20Init {
-    admin: Drc20Account,
-    token: CanonicalDrc20Token,
-    cap: u64,
-}
-
-/// The canonical DRC20's token settings.
-#[derive(rkyv::Archive, rkyv::Serialize)]
-struct CanonicalDrc20Token {
+/// A canonical DRC20 to deploy: its name, symbol and decimals, and what its
+/// `init` mints to the deployer, its admin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CollateralTokenSettings {
     name: String,
     symbol: String,
     decimals: u8,
-    initial_balances: Vec<CanonicalDrc20Balance>,
+    supply: u64,
 }
 
-/// One balance the canonical DRC20 mints at its init.
-#[derive(rkyv::Archive, rkyv::Serialize)]
-struct CanonicalDrc20Balance {
-    account: Drc20Account,
-    amount: u64,
+impl CollateralTokenSettings {
+    /// Refuse a token nobody could tell apart: one without a name or a
+    /// symbol.
+    fn check(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() || self.symbol.trim().is_empty() {
+            return Err("The token needs a name and a symbol".into());
+        }
+        Ok(())
+    }
+
+    /// The token's `init` argument, with `deployer` its admin.
+    fn init(&self, deployer: Drc20Account) -> canonical_drc20::Init {
+        canonical_drc20::init(
+            deployer,
+            &self.name,
+            &self.symbol,
+            self.decimals,
+            self.supply,
+        )
+    }
+
+    /// What the read-back expects of the token at `id`, deployed by
+    /// `deployer`.
+    fn sent(&self, id: ContractId, deployer: Drc20Account) -> deployment::CanonicalToken {
+        let role = |role| {
+            rkyv_serialize(&canonical_drc20::RoleQuery {
+                role,
+                account: deployer,
+            })
+        };
+        deployment::CanonicalToken {
+            id,
+            name: self.name.clone(),
+            symbol: self.symbol.clone(),
+            decimals: self.decimals,
+            holder: rkyv_serialize(&Drc20BalanceOf { account: deployer }),
+            supply: self.supply,
+            roles: vec![
+                ("admin", role(canonical_drc20::DEFAULT_ADMIN_ROLE)),
+                ("minter", role(canonical_drc20::MINTER_ROLE)),
+                ("pauser", role(canonical_drc20::PAUSER_ROLE)),
+            ],
+        }
+    }
 }
 
 fn rkyv_serialize<T>(value: &T) -> Vec<u8>
@@ -5424,7 +6550,7 @@ async fn cmd_deploy_hyperlane(
     deploy_warp_drc20: bool,
     deploy_warp_native: bool,
     warp_collateral_token: Option<&str>,
-    collateral_token_supply: u64,
+    canonical_token: CollateralTokenSettings,
     warp_name: &str,
     warp_symbol: &str,
     warp_decimals: u8,
@@ -5438,6 +6564,9 @@ async fn cmd_deploy_hyperlane(
         return Err(format!(
             "--warp-collateral-token warp-drc20 is refused: {WARP_DRC20_COLLATERAL_REFUSED}"
         ));
+    }
+    if warp_collateral_token == Some(CANONICAL_DRC20) {
+        canonical_token.check()?;
     }
     let igp_domain_configs = parse_igp_domain_configs(igp_domain_config_args)?;
     let default_ism = parse_default_ism(default_ism)?;
@@ -5974,20 +7103,7 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     // 12. Optional: the pinned canonical DRC20 the collateral route wraps,
     // its whole supply minted to the deployer.
     if let Some((_, token_bytes)) = canonical_token_id {
-        let deployer = Drc20Account::moonlight(&pk);
-        let token_init = rkyv_serialize(&CanonicalDrc20Init {
-            admin: deployer,
-            token: CanonicalDrc20Token {
-                name: String::from("Canonical DRC20"),
-                symbol: String::from("CDRC20"),
-                decimals: warp_decimals,
-                initial_balances: vec![CanonicalDrc20Balance {
-                    account: deployer,
-                    amount: collateral_token_supply,
-                }],
-            },
-            cap: 0,
-        });
+        let token_init = rkyv_serialize(&canonical_token.init(Drc20Account::moonlight(&pk)));
         deploy_one(
             &client,
             &sk,
@@ -6065,13 +7181,8 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
             )
         }),
         warp_native: deployed_warp_native,
-        canonical_token: deployed_canonical_token.map(|id| deployment::CanonicalToken {
-            id,
-            holder: rkyv_serialize(&Drc20BalanceOf {
-                account: Drc20Account::moonlight(&pk),
-            }),
-            supply: collateral_token_supply,
-        }),
+        canonical_token: deployed_canonical_token
+            .map(|id| canonical_token.sent(id, Drc20Account::moonlight(&pk))),
         warp_collateral: deployed_warp_collateral
             .map(|id| (id, collateral_token.expect("collateral token missing"))),
     };
@@ -6124,6 +7235,634 @@ Restart rusk with a fresh state (stop-env/start-env), or use a different deploye
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
+}
+
+// ── cmd_deploy_token_route ──────────────────────────────────────────────────
+
+/// The canonical DRC20 `deploy-hyperlane --warp-collateral-token
+/// canonical-drc20` deploys.
+#[derive(clap::Args)]
+struct CanonicalTokenArgs {
+    /// What the canonical DRC20 of `--warp-collateral-token
+    /// canonical-drc20` mints to the deployer, in its smallest unit. The
+    /// default, 5 tokens at 18 decimals, fits a signed 64-bit integer,
+    /// so shell scripts can do arithmetic on it.
+    #[arg(long, default_value = "5000000000000000000")]
+    collateral_token_supply: u64,
+    /// The name of the canonical DRC20 of `--warp-collateral-token
+    /// canonical-drc20`.
+    #[arg(long, default_value = "Canonical DRC20")]
+    collateral_token_name: String,
+    /// Its symbol.
+    #[arg(long, default_value = "CDRC20")]
+    collateral_token_symbol: String,
+    /// Its decimals. Defaults to --warp-decimals.
+    #[arg(long)]
+    collateral_token_decimals: Option<u8>,
+}
+
+/// `drc20-mint`'s arguments.
+#[derive(clap::Args)]
+struct Drc20MintArgs {
+    #[arg(long, default_value = "http://localhost:8080/")]
+    rues_url: String,
+    /// Path to encrypted consensus.keys file.
+    #[arg(long)]
+    keys: Option<PathBuf>,
+    /// Password for consensus.keys. Takes precedence over
+    /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+    #[arg(long)]
+    password: Option<String>,
+    /// Raw BLS secret key hex (alternative to --keys).
+    #[arg(long)]
+    secret_key: Option<String>,
+    /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+    #[arg(long)]
+    secret_key_stdin: bool,
+    /// The token (64 hex chars).
+    #[arg(long)]
+    token: String,
+    /// The account to mint to: a base58 Moonlight address or a 96-byte
+    /// public key in hex. Defaults to the signer.
+    #[arg(long)]
+    to: Option<String>,
+    /// The amount, in the token's smallest unit.
+    #[arg(long)]
+    amount: u64,
+    /// Expected native Dusk chain ID. The endpoint must report it before
+    /// anything is queried, the signer is read or a transaction is
+    /// constructed.
+    #[arg(long)]
+    expected_chain_id: u8,
+    /// Gas limit. A mint takes about 1.9M gas.
+    #[arg(long, default_value_t = MINT_GAS_LIMIT)]
+    gas_limit: u64,
+    /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+    #[arg(long, default_value = "1")]
+    gas_price: u64,
+}
+
+/// `drc20-info`'s arguments.
+#[derive(clap::Args)]
+struct Drc20InfoArgs {
+    #[arg(long, default_value = "http://localhost:8080/")]
+    rues_url: String,
+    /// The token (64 hex chars).
+    #[arg(long)]
+    token: String,
+    /// An account to show: a base58 Moonlight address or a 96-byte
+    /// public key in hex.
+    #[arg(long)]
+    account: Option<String>,
+}
+
+/// `deploy-token-route`'s arguments.
+#[derive(clap::Args)]
+struct TokenRouteArgs {
+    #[arg(long, default_value = "http://localhost:8080/")]
+    rues_url: String,
+    /// Path to encrypted consensus.keys file.
+    #[arg(long)]
+    keys: Option<PathBuf>,
+    /// Password for consensus.keys. Takes precedence over
+    /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+    #[arg(long)]
+    password: Option<String>,
+    /// Raw BLS secret key hex (alternative to --keys).
+    #[arg(long)]
+    secret_key: Option<String>,
+    /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+    #[arg(long)]
+    secret_key_stdin: bool,
+    /// The Mailbox the route sends and takes its messages through (64
+    /// hex chars).
+    #[arg(long)]
+    mailbox: String,
+    /// The token's name.
+    #[arg(long)]
+    token_name: String,
+    /// The token's symbol.
+    #[arg(long)]
+    token_symbol: String,
+    /// The token's decimals. A route moves amounts in the token's
+    /// smallest unit, unscaled, so its remote token needs the same.
+    #[arg(long)]
+    token_decimals: u8,
+    /// What the token mints to the signer at its init, in its smallest
+    /// unit. The signer can mint more (`drc20-mint`).
+    #[arg(long)]
+    token_supply: u64,
+    /// The token's deploy nonce, part of its ID; the route's is the next
+    /// one. A deployer's contracts of one Wasm need nonces of their own.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(..=LAST_TOKEN_ROUTE_NONCE))]
+    deploy_nonce: u64,
+    /// A remote domain the route must have no router for yet, besides
+    /// the Mailbox's own. Repeat for each.
+    #[arg(long = "remote-domain")]
+    remote_domains: Vec<u32>,
+    /// The ID the token must get (64 hex chars), as --plan printed it.
+    /// Nothing is sent if the Wasm, the nonce and the key give another.
+    #[arg(long)]
+    expected_token: Option<String>,
+    /// The ID the route must get, likewise.
+    #[arg(long)]
+    expected_route: Option<String>,
+    /// Print the IDs and whether a contract is at each; sign nothing.
+    #[arg(long)]
+    plan: bool,
+    /// A file each deploy transaction is appended to, as a JSON line
+    /// ({"contract", "id", "tx", "nonce"}) written to disk before the
+    /// transaction is sent, for the caller to record: a later run takes a
+    /// contract at a planned ID only if one of these created it.
+    #[arg(long)]
+    tx_log: Option<PathBuf>,
+    /// The transaction an earlier run sent to deploy the token, as the tx
+    /// log recorded it. A contract at the token's ID is taken as this
+    /// deployment's only if this transaction created it: it executed, in a
+    /// final block. Without it, a contract at the ID is someone else's.
+    #[arg(long)]
+    token_tx: Option<String>,
+    /// The nonce --token-tx is signed with: once the signer's nonce has
+    /// passed it, a transaction that isn't in the ledger can't execute.
+    #[arg(long, requires = "token_tx")]
+    token_tx_nonce: Option<u64>,
+    /// The transaction an earlier run sent to deploy the route, likewise.
+    #[arg(long)]
+    route_tx: Option<String>,
+    /// The nonce --route-tx is signed with.
+    #[arg(long, requires = "route_tx")]
+    route_tx_nonce: Option<u64>,
+    /// Directory with compiled WASM contracts.
+    #[arg(long)]
+    wasm_dir: Option<PathBuf>,
+    /// Gas limit per deploy. The token's Wasm is about 262 KB, which
+    /// costs 26.2M gas to deploy.
+    #[arg(long, default_value = "50000000")]
+    gas_limit: u64,
+    /// Gas price in LUX per unit of gas. Deploys must pay at least the
+    /// network's minimum deployment gas price (2000 on testnet and mainnet).
+    #[arg(long, default_value = "2000")]
+    gas_price: u64,
+    /// Expected native Dusk chain ID. The endpoint must report it before
+    /// anything is queried, the signer is read or a transaction is
+    /// constructed. Optional with --plan, which signs nothing.
+    #[arg(long, required_unless_present = "plan")]
+    expected_chain_id: Option<u8>,
+}
+
+impl TokenRouteArgs {
+    /// The token to deploy.
+    fn token(&self) -> CollateralTokenSettings {
+        CollateralTokenSettings {
+            name: self.token_name.clone(),
+            symbol: self.token_symbol.clone(),
+            decimals: self.token_decimals,
+            supply: self.token_supply,
+        }
+    }
+}
+
+/// The IDs a token route of `token_wasm` and `route_wasm` gets with
+/// `deploy_nonce` and the deployer `owner`: the token at the nonce, the
+/// route at the next one.
+fn token_route_ids(
+    token_wasm: &[u8],
+    route_wasm: &[u8],
+    deploy_nonce: u64,
+    owner: &BlsPublicKey,
+) -> Result<(ContractId, ContractId), String> {
+    let route_nonce = deploy_nonce
+        .checked_add(1)
+        .ok_or("The route's deploy nonce, the token's plus one, overflows")?;
+    let owner = owner.to_bytes();
+    Ok((
+        gen_contract_id(token_wasm, deploy_nonce, &owner),
+        gen_contract_id(route_wasm, route_nonce, &owner),
+    ))
+}
+
+/// An ID the planned one must be: refuse to go on when the Wasm, the nonce
+/// and the key give another.
+fn check_planned_id(what: &str, id: ContractId, expected: Option<&str>) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let expected = parse_bytes32(expected)?;
+    if id.to_bytes() != expected {
+        return Err(format!(
+            "The {what}'s Wasm, deploy nonce and the key give the ID {}, not {}, which was planned: \
+             nothing was sent. Was the Wasm rebuilt from other sources?",
+            hex::encode(id.to_bytes()),
+            hex::encode(expected)
+        ));
+    }
+    Ok(())
+}
+
+async fn cmd_deploy_token_route(args: TokenRouteArgs) -> Result<(), String> {
+    let output = deploy_token_route(args).await?;
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    if output["success"] != json!(true) {
+        // A planned ID that isn't this deployment's: the output says which.
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// How long a resumed run waits for the block of a recorded deploy
+/// transaction to be final, without --wait-finality.
+const RECORDED_DEPLOY_FINALITY_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Whose a token route's contract at its planned ID is.
+#[derive(Debug, PartialEq, Eq)]
+enum Provenance {
+    /// Nothing is at the ID: deploy it.
+    Free,
+    /// This deployment's own recorded transaction created it, and executed
+    /// in a final block, with the init this command sends.
+    Ours,
+    /// Someone else's contract is at the ID, or one no transaction of this
+    /// deployment's is known to have created: the reason.
+    Taken(String),
+}
+
+/// Whose the contract at a planned ID is, from whether one `exists` there
+/// and the transaction an earlier run `recorded` as deploying it, with its
+/// nonce. A deploy to an ID that holds a contract fails, so a recorded
+/// transaction that executed created the contract that is there, with the
+/// init it carries. Without one, or with one that failed or isn't in the
+/// ledger, a contract at the ID was deployed by someone else: its init, and
+/// who holds what in it, are theirs, whatever it reads back.
+async fn provenance(
+    client: &RuesClient,
+    what: &str,
+    exists: bool,
+    recorded: Option<(&str, Option<u64>)>,
+    pk: &BlsPublicKey,
+) -> Result<Provenance, String> {
+    let Some((tx_id, tx_nonce)) = recorded else {
+        return Ok(if exists {
+            Provenance::Taken(
+                "a contract is at its planned ID that no transaction of this deployment's created"
+                    .to_string(),
+            )
+        } else {
+            Provenance::Free
+        });
+    };
+    let status = client.query_transaction_status(tx_id).await.map_err(|e| {
+        format!("Can't read transaction {tx_id}, recorded as deploying the {what}: {e}")
+    })?;
+    match status {
+        TransactionStatus::Executed(_) => {
+            if !exists {
+                return Err(format!(
+                    "Transaction {tx_id}, recorded as deploying the {what}, executed, but no \
+                     contract is at the {what}'s ID: nothing was sent"
+                ));
+            }
+            let timeout = finality_wait().unwrap_or(RECORDED_DEPLOY_FINALITY_TIMEOUT);
+            wait_for_finality(client, tx_id, timeout).await?;
+            Ok(Provenance::Ours)
+        }
+        TransactionStatus::Failed { error, .. } => Ok(if exists {
+            Provenance::Taken(format!(
+                "this deployment's transaction {tx_id} deploying it failed ({error}), and \
+                 another contract is at its planned ID"
+            ))
+        } else {
+            Provenance::Free
+        }),
+        TransactionStatus::NotFound if exists => Ok(Provenance::Taken(format!(
+            "a contract is at its planned ID, and this deployment's transaction {tx_id} \
+             deploying it isn't in the ledger"
+        ))),
+        TransactionStatus::NotFound => {
+            // Nothing is there, and the recorded transaction never executed.
+            // It can't any more once the signer's nonce has passed its own.
+            let (account_nonce, _) = client.query_account(pk).await?;
+            match tx_nonce {
+                Some(nonce) if account_nonce >= nonce => Ok(Provenance::Free),
+                _ => Err(format!(
+                    "Transaction {tx_id}, recorded as deploying the {what}, isn't in the ledger \
+                     and may still execute: nothing was sent. Run again once it is in a final \
+                     block, or a later transaction of the signer's is."
+                )),
+            }
+        }
+    }
+}
+
+/// Append a deploy transaction to the tx log, on disk, before it is sent.
+fn append_tx_log(path: &std::path::Path, entry: &serde_json::Value) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            writeln!(file, "{entry}")?;
+            Ok(file)
+        })
+        .map_err(|e| format!("Can't write the tx log {}: {e}", path.display()))?;
+    file.flush()
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("Can't write the tx log {}: {e}", path.display()))
+}
+
+/// Deploy one of a token route's contracts, after appending its transaction
+/// to `tx_log`, and wait until it is included. Returns the transaction's
+/// hash and its outcome: its inclusion, or the error it failed with.
+#[allow(clippy::too_many_arguments)]
+async fn deploy_logged(
+    client: &RuesClient,
+    sk: &BlsSecretKey,
+    pk: &BlsPublicKey,
+    bytecode: Vec<u8>,
+    init_args: Vec<u8>,
+    moonlight_nonce: &mut u64,
+    deploy_nonce: u64,
+    gas_limit: u64,
+    gas_price: u64,
+    chain_id: u8,
+    name: &str,
+    logged: (&str, &str, Option<&std::path::Path>),
+) -> Result<(String, Result<Inclusion, String>), String> {
+    let (what, id_hex, tx_log) = logged;
+    eprintln!("  Deploying {name} ({} bytes)...", bytecode.len());
+    *moonlight_nonce = next_moonlight_nonce(*moonlight_nonce)?;
+    let tx = moonlight_deployment(
+        sk,
+        bytecode,
+        pk,
+        init_args,
+        gas_limit,
+        gas_price,
+        *moonlight_nonce,
+        deploy_nonce,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let tx_bytes = tx.to_var_bytes();
+    if let Some(path) = tx_log {
+        append_tx_log(
+            path,
+            &json!({"contract": what, "id": id_hex, "tx": tx_id, "nonce": *moonlight_nonce}),
+        )?;
+    }
+    propagate(client, &tx_id, &tx_bytes)
+        .await
+        .map_err(|e| format!("Failed to deploy {name}: {e}"))?;
+    match wait_for_inclusion(client, &tx_id).await {
+        Ok(inclusion) => {
+            eprintln!("  {name} TX {tx_id} executed");
+            Ok((tx_id, Ok(inclusion)))
+        }
+        Err(error) => match client.query_transaction_status(&tx_id).await {
+            Ok(TransactionStatus::Failed { error, .. }) => Ok((tx_id, Err(error))),
+            _ => Err(format!("Failed to deploy {name}: {error}")),
+        },
+    }
+}
+
+/// `deploy-token-route`'s output for a planned ID that isn't this
+/// deployment's: nothing more is sent, and the caller plans other IDs.
+fn taken_output(mut output: serde_json::Value, what: &str, reason: &str) -> serde_json::Value {
+    let id = output["contracts"][what]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    output["success"] = json!(false);
+    output["taken"] = json!(what);
+    output["error"] = json!(format!(
+        "The {what}'s planned ID {id} isn't this deployment's: {reason}. Nothing more was sent: \
+         plan the route at other deploy nonces."
+    ));
+    output
+}
+
+/// Plan or deploy a token route, and return `deploy-token-route`'s output.
+async fn deploy_token_route(args: TokenRouteArgs) -> Result<serde_json::Value, String> {
+    let token_settings = args.token();
+    token_settings.check()?;
+    let mailbox_bytes = parse_bytes32(&args.mailbox)?;
+    let mailbox = ContractId::from_bytes(mailbox_bytes);
+    for expected in [
+        &args.expected_token,
+        &args.expected_route,
+        &args.token_tx,
+        &args.route_tx,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        parse_bytes32(expected)?;
+    }
+    let client = RuesClient::new(&args.rues_url)?;
+    // The chain every deploy is signed for, before the key is read. A plan
+    // signs nothing.
+    let chain_id = match args.expected_chain_id {
+        Some(expected) if !args.plan => Some(bind_chain_id(&client, expected).await?),
+        _ => None,
+    };
+    let (sk, pk) = load_keys(
+        args.keys,
+        args.password.as_deref().unwrap_or_default(),
+        args.secret_key,
+        args.secret_key_stdin,
+    )?;
+    let wasm_dir = args.wasm_dir.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/contract/wasm32-unknown-unknown/release")
+    });
+    let read = |name: &str, hint: &str| {
+        let path = wasm_dir.join(name);
+        fs::read(&path).map_err(|e| format!("Failed to read {} ({hint}): {e}", path.display()))
+    };
+    let token_wasm = read(
+        CANONICAL_DRC20_WASM,
+        "make canonical-drc20-fixture builds it",
+    )?;
+    let route_wasm = read(
+        "hyperlane_dusk_warp_drc20_collateral.wasm",
+        "make all builds it",
+    )?;
+    let (token, route) = token_route_ids(&token_wasm, &route_wasm, args.deploy_nonce, &pk)?;
+    check_planned_id("token", token, args.expected_token.as_deref())?;
+    check_planned_id("route", route, args.expected_route.as_deref())?;
+    let (token_hex, route_hex) = (hex::encode(token.to_bytes()), hex::encode(route.to_bytes()));
+    let exists = |owner: Option<Vec<u8>>| owner.is_some();
+    let token_exists = exists(client.contract_owner(&token_hex).await?);
+    let route_exists = exists(client.contract_owner(&route_hex).await?);
+    let mut output = json!({
+        "success": true,
+        "deploy_nonce": args.deploy_nonce,
+        "contracts": {"token": token_hex, "route": route_hex},
+        "exists": {"token": token_exists, "route": route_exists},
+    });
+    if args.plan {
+        return Ok(output);
+    }
+    let chain_id = chain_id.ok_or("--expected-chain-id is required without --plan")?;
+
+    // The route's bindings are read back for the Mailbox's own domain too,
+    // which a Mailbox must answer.
+    let domain: u32 = client
+        .contract_query(&mailbox_bytes, "local_domain", &())
+        .await
+        .map_err(|e| {
+            format!(
+                "Can't read the local domain of the Mailbox {}: {e}",
+                args.mailbox
+            )
+        })?;
+    let mut router_domains = vec![domain];
+    for remote in &args.remote_domains {
+        if !router_domains.contains(remote) {
+            router_domains.push(*remote);
+        }
+    }
+
+    eprintln!(
+        "Deploying the token {} ({}) and its collateral route, at deploy nonces {} and {}",
+        token_settings.symbol,
+        token_settings.name,
+        args.deploy_nonce,
+        args.deploy_nonce + 1
+    );
+    // A contract already at a planned ID is this deployment's only if a
+    // transaction an earlier run recorded created it. Both are settled
+    // before anything is sent.
+    let token_state = provenance(
+        &client,
+        "token",
+        token_exists,
+        args.token_tx.as_deref().map(|tx| (tx, args.token_tx_nonce)),
+        &pk,
+    )
+    .await?;
+    let route_state = provenance(
+        &client,
+        "route",
+        route_exists,
+        args.route_tx.as_deref().map(|tx| (tx, args.route_tx_nonce)),
+        &pk,
+    )
+    .await?;
+    for (what, state) in [("token", &token_state), ("route", &route_state)] {
+        if let Provenance::Taken(reason) = state {
+            return Ok(taken_output(output, what, reason));
+        }
+    }
+    let shown = |state: &Provenance| match state {
+        Provenance::Ours => " (already there, deployed by this deployment's recorded transaction)",
+        _ => "",
+    };
+    eprintln!("  Token: {token_hex}{}", shown(&token_state));
+    eprintln!("  Route: {route_hex}{}", shown(&route_state));
+    let deployer = Drc20Account::moonlight(&pk);
+    let owner_h256 = hyperlane_dusk_types::message::keccak256(&pk.to_bytes());
+    let token_free = token_state == Provenance::Free;
+    let route_free = route_state == Provenance::Free;
+    let mut moonlight_nonce = if token_free || route_free {
+        client.query_account(&pk).await?.0
+    } else {
+        0
+    };
+    let mut deployed = Vec::new();
+    let tx_log = args.tx_log.as_deref();
+    // The token first: the route's init names it. Each deploy waits for the
+    // one before, as deploy-hyperlane's do. A deploy that fails because a
+    // contract got to its ID first leaves that ID to someone else.
+    let route_init = rkyv_serialize(&(token, mailbox, owner_h256, Vec::<(u32, [u8; 32])>::new()));
+    for (what, free, id_hex, wasm, init, nonce, name) in [
+        (
+            "token",
+            token_free,
+            &token_hex,
+            token_wasm,
+            rkyv_serialize(&token_settings.init(deployer)),
+            args.deploy_nonce,
+            "Token",
+        ),
+        (
+            "route",
+            route_free,
+            &route_hex,
+            route_wasm,
+            route_init,
+            args.deploy_nonce + 1,
+            "WarpCollateral",
+        ),
+    ] {
+        if !free {
+            continue;
+        }
+        let (tx_id, outcome) = deploy_logged(
+            &client,
+            &sk,
+            &pk,
+            wasm,
+            init,
+            &mut moonlight_nonce,
+            nonce,
+            args.gas_limit,
+            args.gas_price,
+            chain_id,
+            name,
+            (what, id_hex, tx_log),
+        )
+        .await?;
+        match outcome {
+            Ok(inclusion) => deployed.push((tx_id, inclusion)),
+            Err(error) if client.contract_owner(id_hex).await?.is_some() => {
+                return Ok(taken_output(
+                    output,
+                    what,
+                    &format!(
+                        "this deployment's transaction {tx_id} deploying it failed ({error}): \
+                         another contract got to its ID first"
+                    ),
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Failed to deploy {name}: Transaction {tx_id} failed: {error}"
+                ))
+            }
+        }
+    }
+    if !deployed.is_empty() {
+        let confirmation = confirm_in_order(&client, &deployed).await?;
+        output["last_tx_id"] = json!(deployed.last().map(|(tx_id, _)| tx_id));
+        output["last_block_height"] = json!(confirmation.inclusion.block_height);
+        output["finalized"] = json!(confirmation.final_block_hash.is_some());
+    }
+
+    // Nothing is reported until both read back as what this command sent.
+    let sent = deployment::TokenRoute {
+        owner_key: pk.to_bytes().to_vec(),
+        owner: owner_h256,
+        mailbox,
+        router_domains: router_domains.clone(),
+        token: token_settings.sent(token, deployer),
+        route,
+    };
+    let read_back = deployment::read_back(&client, &sent).await?;
+    eprintln!("  Read back {read_back} values: both contracts hold what was sent");
+    output["chain_id"] = json!(chain_id);
+    output["mailbox"] = json!(hex::encode(mailbox_bytes));
+    output["domain"] = json!(domain);
+    output["router_domains"] = json!(router_domains);
+    output["deployed"] = json!({"token": token_free, "route": route_free});
+    output["token"] = json!({
+        "name": token_settings.name,
+        "symbol": token_settings.symbol,
+        "decimals": token_settings.decimals,
+        "supply": token_settings.supply.to_string(),
+    });
+    output["read_back"] = json!(read_back);
+    Ok(output)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8211,6 +9950,197 @@ async fn cmd_drc20_balance(
         .unwrap()
     );
     Ok(())
+}
+
+/// What a canonical DRC20 holds: its settings, supply and cap, and whether
+/// it is paused.
+#[derive(Debug, Clone)]
+struct Drc20Info {
+    name: String,
+    symbol: String,
+    decimals: u8,
+    total_supply: u64,
+    cap: u64,
+    remaining_mintable: u64,
+    paused: bool,
+}
+
+async fn drc20_info(client: &RuesClient, token: &[u8; 32]) -> Result<Drc20Info, String> {
+    Ok(Drc20Info {
+        name: drc20_view(client, token, "name").await?,
+        symbol: drc20_view(client, token, "symbol").await?,
+        decimals: drc20_view(client, token, "decimals").await?,
+        total_supply: drc20_view(client, token, "total_supply").await?,
+        cap: drc20_view(client, token, "cap").await?,
+        remaining_mintable: drc20_view(client, token, "remaining_mintable").await?,
+        paused: drc20_view(client, token, "paused").await?,
+    })
+}
+
+/// A view of a canonical DRC20 that takes no argument.
+async fn drc20_view<O>(client: &RuesClient, token: &[u8; 32], method: &str) -> Result<O, String>
+where
+    O: rkyv::Archive,
+    O::Archived: rkyv::Deserialize<O, rkyv::Infallible>
+        + for<'b> rkyv::CheckBytes<rkyv::validation::validators::DefaultValidator<'b>>,
+{
+    client
+        .contract_query(token, method, &())
+        .await
+        .map_err(|e| format!("Can't read the token's {method} (is it a canonical DRC20?): {e}"))
+}
+
+/// Whether `account` holds `role` on the canonical DRC20 `token`.
+async fn drc20_has_role(
+    client: &RuesClient,
+    token: &[u8; 32],
+    role: canonical_drc20::Role,
+    account: Drc20Account,
+) -> Result<bool, String> {
+    client
+        .contract_query(
+            token,
+            "has_role",
+            &canonical_drc20::RoleQuery { role, account },
+        )
+        .await
+        .map_err(|e| format!("Can't ask the token whether the account holds a role: {e}"))
+}
+
+/// `drc20-info`'s output.
+async fn drc20_info_output(
+    rues_url: &str,
+    token_hex: &str,
+    account_arg: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let token = parse_bytes32(token_hex)?;
+    let account = account_arg.map(parse_account_arg).transpose()?;
+    let client = RuesClient::new(rues_url)?;
+    let info = drc20_info(&client, &token).await?;
+    let mut output = json!({
+        "success": true,
+        "token": hex::encode(token),
+        "name": info.name,
+        "symbol": info.symbol,
+        "decimals": info.decimals,
+        "total_supply": info.total_supply.to_string(),
+        "cap": info.cap.to_string(),
+        "paused": info.paused,
+    });
+    if let Some(pk) = account {
+        let principal = Drc20Account::moonlight(&pk);
+        let balance: u64 = client
+            .contract_query(&token, "balance_of", &Drc20BalanceOf { account: principal })
+            .await
+            .map_err(|e| format!("Can't read the account's balance: {e}"))?;
+        let mut entry = account_identity(&pk);
+        entry["balance"] = json!(balance.to_string());
+        for (name, role) in [
+            ("admin", canonical_drc20::DEFAULT_ADMIN_ROLE),
+            ("minter", canonical_drc20::MINTER_ROLE),
+            ("pauser", canonical_drc20::PAUSER_ROLE),
+        ] {
+            entry[name] = json!(drc20_has_role(&client, &token, role, principal).await?);
+        }
+        output["account"] = entry;
+    }
+    Ok(output)
+}
+
+/// What `drc20-mint` checks before it signs: the token would refuse a
+/// signer without the minter role, a mint while it is paused, and one past
+/// its cap or a u64 of supply.
+fn check_mint(info: &Drc20Info, minter: bool, amount: u64) -> Result<(), String> {
+    if amount == 0 {
+        return Err("The amount must be more than zero".into());
+    }
+    if !minter {
+        return Err(
+            "The signer doesn't hold the token's minter role, so the token would refuse the mint"
+                .into(),
+        );
+    }
+    if info.paused {
+        return Err("The token is paused, and mints nothing until it is unpaused".into());
+    }
+    if amount > info.remaining_mintable {
+        return Err(format!(
+            "The token's cap is {}, and {} of it is left to mint: not {amount}",
+            info.cap, info.remaining_mintable
+        ));
+    }
+    if info.total_supply.checked_add(amount).is_none() {
+        return Err(format!(
+            "The token's supply is {}, and {amount} more would overflow a u64",
+            info.total_supply
+        ));
+    }
+    Ok(())
+}
+
+/// Mint, and return `drc20-mint`'s output.
+#[allow(clippy::too_many_arguments)]
+async fn drc20_mint(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    token_hex: &str,
+    to_arg: Option<&str>,
+    amount: u64,
+    expected_chain_id: u8,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<serde_json::Value, String> {
+    // Reject malformed public inputs before reading signer material.
+    let token_bytes = parse_bytes32(token_hex)?;
+    let to = to_arg.map(parse_account_arg).transpose()?;
+    if amount == 0 {
+        return Err("The amount must be more than zero".into());
+    }
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let to = to.unwrap_or(pk);
+    let info = drc20_info(&client, &token_bytes).await?;
+    let minter = drc20_has_role(
+        &client,
+        &token_bytes,
+        canonical_drc20::MINTER_ROLE,
+        Drc20Account::moonlight(&pk),
+    )
+    .await?;
+    check_mint(&info, minter, amount)?;
+    let args = rkyv_serialize(&canonical_drc20::MintCall {
+        to: Drc20Account::moonlight(&to),
+        amount,
+        authorization: None,
+    });
+    let (nonce, _) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        ContractId::from_bytes(token_bytes),
+        "mint",
+        args,
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let mut output = json!({
+        "success": true,
+        "token": hex::encode(token_bytes),
+        "symbol": info.symbol,
+        "to": account_identity(&to)["address"].clone(),
+        "amount": amount.to_string(),
+        "total_supply": (info.total_supply + amount).to_string(),
+        "tx_id": tx_id,
+    });
+    confirmation.record(&mut output);
+    Ok(output)
 }
 
 // ── cmd_transfer_remote ───────────────────────────────────────────────────

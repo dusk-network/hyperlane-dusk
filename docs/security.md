@@ -410,7 +410,7 @@ Accepted:
 - **Top-ups close at 3 GiB.** A top-up takes a transaction, about 1.83M
   gas, for its 64-byte record, but pays no fee beyond the gas it buys, so
   at the testnet pricing it is a cheaper way to fill the IGP than a
-  dispatch, which also pays 6 DUSK of IGP fees and the protocol fee.
+  dispatch, which also pays 17.0625 DUSK of IGP fees and the protocol fee.
   `pay_for_gas` refuses a top-up that could take the IGP's memory past
   3 GiB, as `dispatch` does the Mailbox's, so the last GiB stays for the
   payments dispatches make: filling the IGP to the point where dispatches
@@ -501,7 +501,7 @@ Accepted:
   simulation and fail the real delivery, costing the relayer the
   transaction's gas limit (5M), as gas estimation can be fooled on EVM. The
   relayer only delivers a message that paid our Sepolia IGP for at least a
-  relayed `process` (2.17M gas at threshold 1, with the margin worth 3.26M),
+  relayed `process` (2.2M gas at threshold 1, with the margin worth 3.3M),
   and doesn't try it again until more is paid, so each such message costs
   its sender that payment and the relayer at most the rest of the 5M
   ([costs.md](costs.md#what-stays-uncovered)).

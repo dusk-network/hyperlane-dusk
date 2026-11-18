@@ -19,7 +19,9 @@ in `rust/main/chains/hyperlane-dusk`.
   (pinned in [`RUSK_VERSION`](RUSK_VERSION)). Both networks have the
   `keccak256` and `secp256k1_recover` host queries the contracts need.
 - Not yet deployed to Dusk testnet or mainnet. [docs/testnet.md](docs/testnet.md)
-  covers deploying to testnet and connecting to Sepolia.
+  covers deploying to testnet and connecting to Sepolia: the native DUSK
+  route, and routes for tokens issued on Dusk, by default two test
+  stablecoins, EURd and USDd.
 - Relaying is paid for in both directions: each side's IGP charges the
   sender for the destination gas, with the operator's margin, and the
   generated relayer config relays any message once it is paid for

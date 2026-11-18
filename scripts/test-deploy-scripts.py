@@ -71,8 +71,12 @@ QUOTE_SIGNER_ADDED = "0x1999e59a6c4f2d603b5236b4b6a9ab4caecb598d4a59fe663b6eae45
 QUOTE_SIGNER_REMOVED = "0xf1e7459dfbea75ed7b558903ed9cf48b6c71a30d598a87ca5335d87663a2f70a"
 
 # What deploy/testnet.env.example's defaults charge (docs/costs.md).
-DEFAULT_DUSK_IGP = {"gas_overhead": "110000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
-DEFAULT_EVM_IGP = {"gas_overhead": "2170000", "token_exchange_rate": "600000000000000", "gas_price": "1"}
+DEFAULT_DUSK_IGP = {"gas_overhead": "405000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
+DEFAULT_EVM_IGP = {"gas_overhead": "2200000", "token_exchange_rate": "600000000000000", "gas_price": "1"}
+# The deployer's public key, as the dusk-tx stub has it.
+DEPLOYER_KEY_HEX = "d1" * 96
+# deploy/testnet.env.example's token routes.
+EXAMPLE_TOKEN_ROUTES = "EURd|Dusk Euro (testnet)|6|1000000000000\nUSDd|Dusk Dollar (testnet)|6|1000000000000"
 
 
 def validators(count):
@@ -117,7 +121,7 @@ def quote_signer_history(evm, igp, signer, block):
 # path, "content": text}, writes the file at path the first time that key
 # is read, as a process that doesn't take the deployment's lock could.
 DUSK_TX_STUB = r'''#!/usr/bin/env python3
-import json, os, sys
+import hashlib, json, os, sys
 args = sys.argv[1:]
 with open(os.environ["FIXTURE_TRACE"], "a") as trace:
     trace.write("dusk-tx " + " ".join(args) + "\n")
@@ -140,8 +144,16 @@ def set_pricing(igp, config):
 # refuses an endpoint on another chain (FIXTURE_DUSK_CHAIN_ID, or 2).
 SIGNING = ("call", "deploy-hyperlane", "deploy-wasm", "fund-dispatch", "withdraw-dispatch", "dispatch",
            "process", "enroll-router", "claim-pending", "set-igp-config",
-           "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote")
-if args[0] in SIGNING and "--quote-only" not in args:
+           "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote",
+           "deploy-token-route", "drc20-mint")
+# FIXTURE_CHAIN's "fail", {command: n}, makes the next n runs of a command
+# fail, as one the node refuses does, sending nothing.
+failing = chain.get("fail") or {}
+if failing.get(args[0], 0) > 0 and "--plan" not in args:
+    failing[args[0]] -= 1
+    save()
+    out({"success": False, "error": f"stub dusk-tx: {args[0]} failed, as the fixture asked"}, 1)
+if args[0] in SIGNING and "--quote-only" not in args and "--plan" not in args:
     expected, endpoint = opt("--expected-chain-id"), os.environ.get("FIXTURE_DUSK_CHAIN_ID", "2")
     if expected is None:
         out({"success": False, "error": f"stub dusk-tx: {args[0]} needs --expected-chain-id"}, 2)
@@ -177,11 +189,20 @@ if args[0] == "query":
         error = (entry or {}).get("error", f"Query {key} failed (500): ContractDoesNotExist")
         out({"success": False, "error": error}, 1)
     out({"success": True, "value": entry["value"]})
+def account_hash(text):
+    return hashlib.sha256(text.encode()).hexdigest()
 if args[0] == "account":
     if "--offline" in args:
-        out({"success": True, "account_h256": chain.get("deployer_h256")})
-    out({"success": True, "address": "fixture-deployer", "balance": "500000000000",
-         "balance_dusk": "500.000000000"})
+        if opt("--public-key") is not None:
+            key = opt("--public-key")
+            out({"success": True, "public_key": key,
+                 "account_h256": chain.get("deployer_h256") if key == chain.get("deployer_key") else account_hash(key)})
+        if opt("--address") is not None:
+            out({"success": True, "address": opt("--address"), "account_h256": account_hash(opt("--address"))})
+        out({"success": True, "account_h256": chain.get("deployer_h256"), "public_key": chain.get("deployer_key")})
+    balance = int(chain.get("balance", 1000 * 10**9))
+    out({"success": True, "address": "fixture-deployer", "balance": str(balance),
+         "balance_dusk": f"{balance // 10**9}.{balance % 10**9:09d}"})
 if args[0] == "deploy-hyperlane":
     contracts = chain["deploy"]
     set_pricing(contracts["igp"], opt("--igp-domain-config"))
@@ -202,9 +223,115 @@ if args[0] == "set-igp-config":
     save()
     out({"success": True, "tx_id": "cd" * 32, "block_height": 7})
 if args[0] == "set-beneficiary":
-    queries[f"{opt('--contract')}/beneficiary"] = {"value": "be" * 32}
+    queries[f"{opt('--contract')}/beneficiary"] = {"value": account_hash(opt("--beneficiary"))}
     save()
     out({"success": True, "tx_id": "ce" * 32})
+# A token route's token and route, at IDs the deploy nonce gives. A token
+# exists when FIXTURE_CHAIN's "tokens" has it, a route when a query names it.
+tokens = chain.setdefault("tokens", {})
+def route_ids(nonce):
+    return (hashlib.sha256(f"token:{nonce}".encode()).hexdigest(),
+            hashlib.sha256(f"route:{nonce}".encode()).hexdigest())
+def route_exists(route):
+    return any(key.startswith(route + "/") for key in queries)
+if args[0] == "deploy-token-route":
+    nonce = int(opt("--deploy-nonce"))
+    token, route = route_ids(nonce)
+    exists = {"token": token in tokens, "route": route_exists(route)}
+    contracts = {"token": token, "route": route}
+    if "--plan" in args:
+        out({"success": True, "deploy_nonce": nonce, "contracts": contracts, "exists": exists})
+    for flag, value in (("--expected-token", token), ("--expected-route", route)):
+        if opt(flag) is not None and opt(flag) != value:
+            out({"success": False, "error": f"The Wasm gives {value}, not {opt(flag)}, which was planned: nothing was sent"}, 1)
+    supply = opt("--token-supply")
+    # FIXTURE_CHAIN's "txs" is the ledger of the stub's deploy transactions,
+    # {hash: {"id": contract, "executed": bool}}. A contract at a planned ID
+    # is this deployment's only if --token-tx or --route-tx names one that
+    # executed: deploy-token-route refuses any other, sending nothing more,
+    # and names it as "taken".
+    txs = chain.setdefault("txs", {})
+    def taken(what, reason):
+        save()
+        out({"success": False, "taken": what, "deploy_nonce": nonce, "contracts": contracts,
+             "error": f"The {what}'s planned ID {contracts[what]} isn't this deployment's: {reason}. "
+                      "Nothing more was sent: plan the route at other deploy nonces."}, 1)
+    ours = {}
+    for what in ("token", "route"):
+        recorded = txs.get(opt(f"--{what}-tx") or "")
+        ours[what] = bool(recorded and recorded["executed"] and recorded["id"] == contracts[what])
+        if exists[what] and not ours[what]:
+            taken(what, "a contract is at its planned ID that no transaction of this deployment's created")
+    def occupy(what):
+        # Someone else's contract, as deploy-token-route would have made it
+        # but with another admin.
+        if what == "token":
+            tokens[token] = {"name": opt("--token-name"), "symbol": opt("--token-symbol"),
+                             "decimals": int(opt("--token-decimals")), "total_supply": supply, "cap": "0",
+                             "paused": False, "accounts": {"ee" * 96: {
+                                 "balance": supply, "admin": True, "minter": True, "pauser": True}}}
+        else:
+            queries[f"{route}/owner"] = {"value": "ee" * 32}
+    def send(what):
+        # The transaction goes to --tx-log before it is sent. FIXTURE_CHAIN's
+        # "front_run_deploy", [id, ...], lands someone else's contract at
+        # each of those IDs right before this deployment's deploy to it,
+        # which then fails.
+        chain["deploys_sent"] = chain.get("deploys_sent", 0) + 1
+        tx = hashlib.sha256(f"deploy:{chain['deploys_sent']}".encode()).hexdigest()
+        if opt("--tx-log"):
+            with open(opt("--tx-log"), "a") as log:
+                log.write(json.dumps({"contract": what, "id": contracts[what], "tx": tx,
+                                      "nonce": chain["deploys_sent"]}) + "\n")
+        front = chain.get("front_run_deploy") or []
+        if contracts[what] in front:
+            front.remove(contracts[what])
+            occupy(what)
+            txs[tx] = {"id": contracts[what], "executed": False}
+            taken(what, f"this deployment's transaction {tx} deploying it failed (contract already exists): "
+                        "another contract got to its ID first")
+        txs[tx] = {"id": contracts[what], "executed": True}
+    if not exists["token"]:
+        send("token")
+        tokens[token] = {"name": opt("--token-name"), "symbol": opt("--token-symbol"),
+                         "decimals": int(opt("--token-decimals")), "total_supply": supply, "cap": "0",
+                         "paused": False, "accounts": {chain["deployer_key"]: {
+                             "balance": supply, "admin": True, "minter": True, "pauser": True}}}
+        # FIXTURE_CHAIN's "stop_after_token" plays a run that stops once the
+        # token is deployed, before the route is sent.
+        if chain.pop("stop_after_token", False):
+            save()
+            out({"success": False, "error": "stub dusk-tx: stopped after the token, as the fixture asked"}, 1)
+    if not exists["route"]:
+        send("route")
+        for method, value in (("state_version", 7), ("owner", chain["deployer_h256"]), ("mailbox", opt("--mailbox")),
+                              ("wrapped_token", token), ("hook", "00" * 32),
+                              ("interchain_security_module", "00" * 32), ("pending_total", 0)):
+            queries[f"{route}/{method}"] = {"value": value}
+    # FIXTURE_CHAIN's "tamper", {"token": {...}, "route": {...}}, leaves the
+    # contracts at the IDs reading back otherwise than as sent: token
+    # fields, and route queries by method, that differ.
+    tamper = chain.pop("tamper", None) or {}
+    for key, value in tamper.get("token", {}).items():
+        if key.startswith("account."):
+            tokens[token]["accounts"][chain["deployer_key"]][key[len("account."):]] = value
+        else:
+            tokens[token][key] = value
+    for method, value in tamper.get("route", {}).items():
+        queries[f"{route}/{method}"] = value
+    save()
+    out({"success": True, "chain_id": int(opt("--expected-chain-id")), "deploy_nonce": nonce, "contracts": contracts,
+         "deployed": {"token": not exists["token"], "route": not exists["route"]}, "read_back": 25})
+if args[0] == "drc20-info":
+    info = tokens.get(opt("--token"))
+    if info is None or "error" in info:
+        out({"success": False, "error": (info or {}).get("error", "Can't read the token's name (is it a canonical DRC20?)")}, 1)
+    result = {"success": True, "token": opt("--token"), **{key: info[key] for key in
+              ("name", "symbol", "decimals", "total_supply", "cap", "paused")}}
+    if opt("--account") is not None:
+        result["account"] = info["accounts"].get(opt("--account"), {
+            "balance": "0", "admin": False, "minter": False, "pauser": False})
+    out(result)
 if args[0] == "claim-fees":
     key = f"{opt('--contract')}/claimable_fees"
     claimed = queries[key]["value"]
@@ -235,6 +362,10 @@ else:
 # OpenZeppelin's ERC1967Proxy. Every transaction leaves a receipt with the
 # events the scripts look for. `cast calldata` and `cast abi-encode` encode
 # as hex of JSON, which only this fake reads back.
+#
+# FIXTURE_EVM's "lag", "stale_latest", "pinned_misses" and "nonce_refusals"
+# play a load-balanced endpoint whose nodes are a block or two apart, as the
+# public Sepolia endpoints are (went_stale and the reads below).
 #
 # FIXTURE_EVM's "front_run" plays an attacker whose transaction lands right
 # after the deployer creates a bare IGP or HypERC20, before anything else the
@@ -307,7 +438,7 @@ def split(args):
     while i < len(args):
         arg = args[i]
         if arg in ("--rpc-url", "--private-key", "--value", "--from", "--create", "--gas-limit",
-                   "--from-block", "--to-block", "--address"):
+                   "--from-block", "--to-block", "--address", "--block", "--nonce"):
             options[arg] = args[i + 1]
             i += 2
         elif arg == "--constructor-args":
@@ -436,6 +567,12 @@ def call(state, address, signature, args, sender):
         return "[" + ", ".join(c["validators"]) + "]\n" + str(c["threshold"])
     if name == "totalSupply":
         return num(c.get("supply", 0))
+    if name in ("name", "symbol") and c["type"] == "token":
+        return ("string", c.get(name, ""))
+    if name == "decimals" and c["type"] == "token":
+        return str(c.get("decimals", 18))
+    if name in ("scaleNumerator", "scaleDenominator") and c["type"] == "token":
+        return str(c.get("scale", [1, 1])[0 if name == "scaleNumerator" else 1])
     die(f"stub cast: unexpected call {signature} on a {c['type']}")
 
 def only_owner(c, sender):
@@ -454,7 +591,7 @@ def initialize(c, address, sender, args):
     elif c["type"] == "token":
         c["supply"] = c.get("supply", 0) + int(args[0])
         c["holders"] = {sender.lower(): int(args[0])} if int(args[0]) else {}
-        c.update(hook=args[3].lower(), ism=args[4].lower(), owner=args[5].lower())
+        c.update(name=args[1], symbol=args[2], hook=args[3].lower(), ism=args[4].lower(), owner=args[5].lower())
         logs.append(log(address, OWNERSHIP_TRANSFERRED, word(sender), word(c["owner"])))
     else:
         die(f"stub cast: unexpected initialize of a {c['type']}")
@@ -506,15 +643,56 @@ def send(state, address, signature, args, sender):
         die(f"stub cast: unexpected send {signature} to a {c['type']}")
     return logs
 
-def receipt(state, sender, to=None, created=None, logs=()):
+def receipt(state, sender, to=None, created=None, logs=(), data="0x"):
     state["txs"] = state.get("txs", 0) + 1
     tx = "0x" + hashlib.sha256(f"tx:{state['txs']}".encode()).hexdigest()
+    nonces = state.setdefault("account_nonces", {})
+    nonce = nonces.get(sender.lower(), 0)
+    nonces[sender.lower()] = nonce + 1
     state.setdefault("receipts", {})[tx] = {
         "transactionHash": tx, "status": "0x1", "from": sender.lower(),
         "to": to.lower() if to else None, "contractAddress": created,
-        "blockNumber": hex(state["block"]), "logs": list(logs)}
+        "blockNumber": hex(state["block"]), "logs": list(logs), "nonce": nonce, "input": data}
     state["block"] += 1
     return tx
+
+def check_nonce(state, sender, options):
+    # A transaction sent with --nonce: refused below the sender's next one,
+    # as a node does.
+    if "--nonce" not in options:
+        return
+    expected = state.get("account_nonces", {}).get(sender.lower(), 0)
+    given = int(options["--nonce"])
+    if given < expected:
+        die(f"Error: server returned an error response: error code -32000: nonce too low: next nonce {expected}, tx nonce {given}")
+    if given > expected:
+        die(f"Error: server returned an error response: error code -32000: nonce too high: next nonce {expected}, tx nonce {given}")
+
+def accept_then_refuse(state):
+    # "accept_then_refuse", n: the next n transactions sent, after the first
+    # "accept_then_refuse_skip", are taken and mined, but answered with
+    # "nonce too low", as a gateway that sent one on answers a replay of the
+    # request.
+    if state.get("accept_then_refuse_skip", 0) > 0:
+        state["accept_then_refuse_skip"] -= 1
+        return False
+    if state.get("accept_then_refuse", 0) > 0:
+        state["accept_then_refuse"] -= 1
+        return True
+    return False
+
+# What `forge inspect` gives as the creation code and constructor of the
+# contracts the scripts create with forge create.
+CONSTRUCTOR_TYPES = {"HypERC20": "uint8,uint256,uint256,address",
+                     "StorageMessageIdMultisigIsm": "address[],uint8"}
+
+def creation_code(name):
+    return "0x" + name.encode().hex()
+
+def creation_input(name, args):
+    if not args:
+        return creation_code(name)
+    return creation_code(name) + encode({"sig": f"constructor({CONSTRUCTOR_TYPES[name]})", "args": args})[2:]
 
 def new_address(state, sender):
     state["nonce"] += 1
@@ -530,7 +708,7 @@ CREATED = {
     # initialize open.
     "HypERC20": lambda sender, args: {
         "type": "token", "mailbox": args[3].lower(), "hook": ZERO, "ism": ZERO, "owner": sender,
-        "routers": {}, "supply": 0},
+        "routers": {}, "supply": 0, "decimals": int(args[0]), "scale": [int(args[1]), int(args[2])]},
     "StorageMessageIdMultisigIsm": lambda sender, args: multisig(args),
 }
 
@@ -554,7 +732,7 @@ def front_run(state, deployer, address, c):
         logs = initialize(c, address, attacker, [10**30, "Dusk", "DUSK", ZERO, attacker, attacker])
     else:
         die(f"fake EVM: unknown front_run {mode} for a {c['type']}")
-    receipt(state, attacker, to=address, logs=logs)
+    return receipt(state, attacker, to=address, logs=logs)
 
 def create_proxy(state, sender, data):
     if not data.startswith(PROXY_CODE):
@@ -565,22 +743,34 @@ def create_proxy(state, sender, data):
     # The proxy's own storage: nothing set yet but the implementation's
     # immutables.
     proxy = CREATED[{"igp": "InterchainGasPaymaster", "token": "HypERC20"}[impl["type"]]](
-        sender, [9, 1, 1, impl.get("mailbox", ZERO)])
+        sender, [impl.get("decimals", 18), *impl.get("scale", [1, 1]), impl.get("mailbox", ZERO)])
     proxy.update(owner=ZERO, implementation=implementation.lower(), created_at=state["block"])
     logs = [log(address, UPGRADED, word(implementation))]
     if init != "0x":
         call_data = decode(init)
         logs += initialize(proxy, address, sender, call_data["args"])
     state["contracts"][address] = proxy
-    return receipt(state, sender, created=address, logs=logs)
+    return receipt(state, sender, created=address, logs=logs, data=data)
 
-def went_stale(state):
-    # FIXTURE_EVM's "lag", n, makes the next n reads of the head, of code or
-    # of receipts answer from before the latest write, as a load-balanced
-    # endpoint can when it reaches a node a block behind.
+def went_stale(state, before):
+    # After each write:
+    # - "lag", n: the next n reads of the head, of code or of receipts answer
+    #   from a node a block behind, which hasn't seen the write, and so does a
+    #   read at a block (cast --block), which that node doesn't have yet;
+    # - "stale_latest", n: the head is current, but the next n reads of code,
+    #   storage, a call or a receipt at the latest block answer from before
+    #   the write, as a node behind the one that answered the head does;
+    # - "pinned_misses", n: the next n reads at a block fail as from a node
+    #   that doesn't have it yet;
+    # `before` is the contracts as they were before the write.
     if state.get("lag"):
         state["stale_left"] = state["lag"]
         state["stale_head"] = state["block"] - 2
+    if state.get("stale_latest"):
+        state["latest_stale_left"] = state["stale_latest"]
+        state["latest_stale"] = {"contracts": before, "block": state["block"] - 2}
+    if state.get("pinned_misses"):
+        state["pinned_misses_left"] = state["pinned_misses"]
 
 def stale_read(state):
     if state.get("stale_left", 0) <= 0:
@@ -589,21 +779,121 @@ def stale_read(state):
     save(state)
     return state["stale_head"]
 
+HEADER_NOT_FOUND = "Error: server returned an error response: error code -32000: header not found"
+
+def record_history(state, tx, before):
+    # What a transaction changed, to read the chain as of a block before it:
+    # each contract it changed, as it was before ("history", [block, undo]).
+    block = int(state["receipts"][tx]["blockNumber"], 16)
+    undo = {address: before.get(address) for address in set(before) | set(state["contracts"])
+            if before.get(address) != state["contracts"].get(address)}
+    state.setdefault("history", []).append([block, undo])
+
+def as_of(state, block):
+    # The contracts as of the end of `block`: the current ones, with every
+    # later transaction's changes undone.
+    contracts = json.loads(json.dumps(state["contracts"]))
+    for changed_at, undo in reversed(state.get("history", [])):
+        if changed_at <= block:
+            break
+        for address, previous in undo.items():
+            if previous is None:
+                contracts.pop(address, None)
+            else:
+                contracts[address] = previous
+    return contracts
+
+def note_early_read(state, block):
+    # A read made at a block before the deployer's last transaction's, which
+    # a script that checks its own write must never make ("early_pinned_reads").
+    deployer_blocks = [int(r["blockNumber"], 16) for r in state.get("receipts", {}).values()
+                       if r["from"] in {k.lower() for k in state["keys"].values()}]
+    if deployer_blocks and block < max(deployer_blocks):
+        state["early_pinned_reads"] = state.get("early_pinned_reads", 0) + 1
+        save(state)
+
+def read_view(state, options):
+    # What a read of code, storage, a call or a receipt answers from: the
+    # state as of the block it names (cast --block), which the node must
+    # have, or as of the latest block, which "stale_latest" can make a
+    # node's from before the last write. Returns that state and the newest
+    # block it has seen.
+    block = options.get("--block")
+    if block not in (None, "latest"):
+        # The head, as block-number answers it, is state["block"].
+        if int(block) > state["block"]:
+            die(HEADER_NOT_FOUND)
+        if state.get("pinned_misses_left", 0) > 0:
+            state["pinned_misses_left"] -= 1
+            save(state)
+            die(HEADER_NOT_FOUND)
+        if stale_read(state) is not None:
+            die(HEADER_NOT_FOUND)
+        note_early_read(state, int(block))
+        # The chain as of that block, not as it is now, if anything changed
+        # after it.
+        history = state.get("history", [])
+        if not history or history[-1][0] <= int(block):
+            return state, state["block"]
+        return {**state, "contracts": as_of(state, int(block))}, state["block"]
+    if state.get("latest_stale_left", 0) > 0:
+        state["latest_stale_left"] -= 1
+        save(state)
+        return {**state, "contracts": state["latest_stale"]["contracts"]}, state["latest_stale"]["block"]
+    return state, None
+
+def refuse_stale_nonce(state):
+    # "nonce_refusals", n: the next n transactions sent, after the first
+    # "nonce_refusals_skip", are refused as a node that hasn't seen the
+    # sender's last transaction refuses them, and change nothing.
+    if state.get("nonce_refusals_skip", 0) > 0:
+        state["nonce_refusals_skip"] -= 1
+        save(state)
+        return
+    if state.get("nonce_refusals", 0) > 0:
+        state["nonce_refusals"] -= 1
+        save(state)
+        die("Error: server returned an error response: error code -32000: nonce too low: next nonce 5, tx nonce 4")
+
 def main_cast(argv):
     state = load()
     positional, options, flags = split(argv)
     trace("cast " + " ".join(positional + ([f"--create {options['--create'][:40]}..."] if "--create" in options else [])
-                             + ([f"--from {options['--from']}"] if "--from" in options else [])))
+                             + ([f"--from {options['--from']}"] if "--from" in options else [])
+                             + ([f"--block {options['--block']}"] if "--block" in options else [])))
     command = positional[0]
     sender = state["keys"].get(options.get("--private-key", ""), ZERO)
     if command == "chain-id":
         print(state["chain_id"])
+    elif command == "nonce":
+        # "stale_nonce_reads", n: the next n reads answer one below, as a
+        # node that hasn't seen the sender's last transaction does.
+        nonce = state.get("account_nonces", {}).get(positional[1].lower(), 0)
+        if state.get("stale_nonce_reads", 0) > 0:
+            state["stale_nonce_reads"] -= 1
+            save(state)
+            nonce = max(nonce - 1, 0)
+        print(nonce)
+    elif command == "compute-address":
+        sender, nonce = positional[1].lower(), int(options["--nonce"])
+        created = [r["contractAddress"] for r in state.get("receipts", {}).values()
+                   if r["from"] == sender and r.get("nonce") == nonce and r["contractAddress"]]
+        print(f"Computed Address: {created[0] if created else derive('unused', sender, nonce)}")
+    elif command == "block" and "--full" in flags:
+        number = int(positional[1])
+        found = [{"hash": tx, "from": r["from"], "to": r["to"], "nonce": hex(r.get("nonce", 0)),
+                  "input": r.get("input", "0x")}
+                 for tx, r in state.get("receipts", {}).items() if int(r["blockNumber"], 16) == number]
+        if number > state["block"]:
+            die(f"Error: block {number} not found")
+        print(json.dumps({"number": hex(number), "transactions": found}))
     elif command == "block-number":
         stale = stale_read(state)
         print(state["block"] if stale is None else stale)
     elif command == "code":
-        stale = stale_read(state)
-        c = state["contracts"].get(positional[1].lower())
+        view, _ = read_view(state, options)
+        stale = stale_read(state) if view is state and "--block" not in options else None
+        c = view["contracts"].get(positional[1].lower())
         visible = c is not None and (stale is None or c.get("created_at", -1) <= stale)
         print("0x6080" if visible else "0x")
     elif command == "balance":
@@ -614,7 +904,8 @@ def main_cast(argv):
     elif command in ("calldata", "abi-encode"):
         print(encode({"sig": positional[1], "args": positional[2:]}))
     elif command == "storage":
-        c = contract(state, positional[1])
+        view, _ = read_view(state, options)
+        c = contract(view, positional[1])
         if positional[2].lower() == IMPLEMENTATION_SLOT and "implementation" in c:
             print(word(c["implementation"]))
         elif positional[2].lower() == ADMIN_SLOT and "admin" in c:
@@ -623,6 +914,9 @@ def main_cast(argv):
             print("0x" + "00" * 32)
     elif command == "receipt":
         found = state.get("receipts", {}).get(positional[1].lower())
+        _, seen = read_view(state, options)
+        if found is not None and seen is not None and int(found["blockNumber"], 16) > seen:
+            found = None
         stale = stale_read(state)
         if found is not None and stale is not None and int(found["blockNumber"], 16) > stale:
             found = None
@@ -630,8 +924,13 @@ def main_cast(argv):
             die(f"Error: transaction {positional[1]} not found")
         print(json.dumps(found) if "--json" in flags else found[positional[2]])
     elif command == "call":
-        print(call(state, positional[1], positional[2], positional[3:], options.get("--from", ZERO)))
-        if state.pop("changed", False):
+        view, _ = read_view(state, options)
+        result = call(view, positional[1], positional[2], positional[3:], options.get("--from", ZERO))
+        if isinstance(result, tuple):
+            # cast prints a string quoted, and with --json in a list.
+            result = json.dumps([result[1]]) if "--json" in flags else json.dumps(result[1])
+        print(result)
+        if view is state and state.pop("changed", False):
             save(state)
     elif command == "logs":
         start, end = int(options["--from-block"]), int(options["--to-block"])
@@ -646,15 +945,29 @@ def main_cast(argv):
                     found.append({**entry, "blockNumber": r["blockNumber"], "transactionHash": tx})
         print(json.dumps(found))
     elif command == "send" and "--create" in options:
+        refuse_stale_nonce(state)
+        check_nonce(state, sender, options)
+        refuse = accept_then_refuse(state)
+        before = json.loads(json.dumps(state["contracts"]))
         tx = create_proxy(state, sender, options["--create"])
-        went_stale(state)
+        record_history(state, tx, before)
+        went_stale(state, before)
         save(state)
+        if refuse:
+            die("Error: server returned an error response: error code -32000: nonce too low")
         print(json.dumps(state["receipts"][tx]))
     elif command == "send":
+        refuse_stale_nonce(state)
+        check_nonce(state, sender, options)
+        refuse = accept_then_refuse(state)
+        before = json.loads(json.dumps(state["contracts"]))
         logs = send(state, positional[1], positional[2], positional[3:], sender)
         tx = receipt(state, sender, to=positional[1], logs=logs)
-        went_stale(state)
+        record_history(state, tx, before)
+        went_stale(state, before)
         save(state)
+        if refuse:
+            die("Error: server returned an error response: error code -32000: nonce too low")
         if "--json" in flags:
             print(json.dumps(state["receipts"][tx]))
     else:
@@ -668,21 +981,39 @@ def main_forge(argv):
         print("@openzeppelin/contracts/=dependencies/@openzeppelin-contracts-4.9.3/contracts/")
         return
     if positional[0] == "inspect":
-        if not positional[1].endswith("ERC1967Proxy.sol:ERC1967Proxy") or positional[2] != "bytecode":
+        name = positional[1].split(":")[-1]
+        if positional[1].endswith("ERC1967Proxy.sol:ERC1967Proxy") and positional[2] == "bytecode":
+            print(PROXY_CODE)
+        elif positional[2] == "bytecode" and name in CREATED:
+            print(creation_code(name))
+        elif positional[2] == "abi" and name in CREATED:
+            types = [t for t in CONSTRUCTOR_TYPES.get(name, "").split(",") if t]
+            print(json.dumps([{"type": "constructor", "inputs": [{"type": t} for t in types]}]))
+        else:
             die(f"stub forge: unexpected inspect {positional[1:]}")
-        print(PROXY_CODE)
         return
     name = positional[1].split(":")[-1]
     sender = state["keys"][options["--private-key"]]
+    refuse_stale_nonce(state)
+    check_nonce(state, sender, options)
+    refuse = accept_then_refuse(state)
+    before = json.loads(json.dumps(state["contracts"]))
     address = new_address(state, sender)
-    created = CREATED[name](sender, options.get("--constructor-args", []))
+    args = options.get("--constructor-args", [])
+    created = CREATED[name](sender, args)
     created["created_at"] = state["block"]
     state["contracts"][address] = created
     logs = [log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))] if created.get("owner", ZERO) != ZERO else []
-    tx = receipt(state, sender, created=address, logs=logs)
-    front_run(state, sender, address, created)
-    went_stale(state)
+    tx = receipt(state, sender, created=address, logs=logs, data=creation_input(name, args))
+    record_history(state, tx, before)
+    created_only = json.loads(json.dumps(state["contracts"]))
+    attack = front_run(state, sender, address, created)
+    if attack:
+        record_history(state, attack, created_only)
+    went_stale(state, before)
     save(state)
+    if refuse:
+        die("Error: server returned an error response: error code -32000: nonce too low")
     print(json.dumps({"deployer": sender, "deployedTo": address, "transactionHash": tx}))
 """
 
@@ -848,6 +1179,8 @@ class TestnetScript(unittest.TestCase):
             "DUSK_ORIGIN_THRESHOLD": "1",
             "EVM_ORIGIN_VALIDATORS": VALIDATOR,
             "EVM_ORIGIN_THRESHOLD": "1",
+            # Token routes have tests of their own (TestnetTokenRoutes).
+            "TOKEN_ROUTES": "",
         }
         self.out = self.root / "deploy" / "out" / "fixture"
         self.out.mkdir(parents=True)
@@ -860,6 +1193,18 @@ class TestnetScript(unittest.TestCase):
         # them.
         self.dusk_interleave = None
         self.dusk_on_read = None
+        # The canonical DRC20s on the stubbed Dusk chain, by ID, and the
+        # stub's failures to come, by command.
+        self.tokens = {}
+        self.dusk_failures = {}
+        # What the stub's next deploy-token-route leaves tampered with
+        # ("tamper"), and the deployer's DUSK.
+        self.dusk_tamper = None
+        self.dusk_balance = 1000 * 10**9
+        # The stub's deploy transactions ("txs", "deploys_sent"), and the
+        # faults its deploy-token-route plays ("front_run_deploy",
+        # "stop_after_token").
+        self.dusk_deploys = {}
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -870,7 +1215,11 @@ class TestnetScript(unittest.TestCase):
         deploy-hyperlane leaves them."""
         (self.out / "deployment.json").unlink(missing_ok=True)
         (self.out / "dusk-deploy.json").unlink(missing_ok=True)
+        for log in self.out.glob("dusk-route-*.txs"):
+            log.unlink()
         self.queries = dusk_queries()
+        self.tokens = {}
+        self.dusk_deploys = {}
 
     def state(self):
         return json.loads((self.out / "deployment.json").read_text())
@@ -881,8 +1230,11 @@ class TestnetScript(unittest.TestCase):
         env_file.write_text('source "$DUSK_DIR/deploy/testnet.env.example"\n'
                             + "".join(f"{key}={shlex.quote(str(value))}\n" for key, value in values.items()))
         self.chain.write_text(json.dumps({"queries": self.queries, "deployer_h256": DEPLOYER_H256,
-                                          "deploy": DUSK_CONTRACTS, "interleave": self.dusk_interleave,
-                                          "on_read": self.dusk_on_read}))
+                                          "deployer_key": DEPLOYER_KEY_HEX, "tokens": self.tokens,
+                                          "fail": self.dusk_failures, "deploy": DUSK_CONTRACTS,
+                                          "interleave": self.dusk_interleave, "on_read": self.dusk_on_read,
+                                          "tamper": self.dusk_tamper, "balance": self.dusk_balance,
+                                          **self.dusk_deploys}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
             self.relayer_config.unlink()
@@ -904,7 +1256,14 @@ class TestnetScript(unittest.TestCase):
         chain = json.loads(self.chain.read_text())
         self.queries, self.dusk_interleave = chain["queries"], chain.get("interleave")
         self.dusk_on_read = chain.get("on_read")
+        self.tokens, self.dusk_failures = chain.get("tokens", {}), chain.get("fail") or {}
+        self.dusk_tamper = chain.get("tamper")
+        self.dusk_deploys = {key: chain[key] for key in ("txs", "deploys_sent", "front_run_deploy", "stop_after_token")
+                             if key in chain}
         self.evm = json.loads(self.evm_file.read_text())
+        # A read that checks a write is made at the write's block or later.
+        self.assertEqual(self.evm.pop("early_pinned_reads", 0), 0,
+                         f"{command}: an EVM read pinned to a block before the deployer's last transaction's")
         return result
 
     def traced(self, prefix):
@@ -939,7 +1298,8 @@ class DeployedTestnet(TestnetScript):
         evm[self.igp_impl] = {"type": "igp", "hook_type": 4, "owner": "0x" + "00" * 20,
                               "beneficiary": "0x" + "00" * 20, "configs": {}, "quote_signers": [], "quotes": {}}
         evm[self.token_impl] = {"type": "token", "mailbox": EVM_MAILBOX, "hook": "0x" + "00" * 20,
-                                "ism": "0x" + "00" * 20, "owner": DEPLOYER, "routers": {}, "supply": 0}
+                                "ism": "0x" + "00" * 20, "owner": DEPLOYER, "routers": {}, "supply": 0,
+                                "decimals": 9, "scale": [1, 1]}
         self.igp_tx = proxy_creation(self.evm, self.evm_igp, self.igp_impl, {
             "type": "igp", "hook_type": 4, "owner": DEPLOYER, "beneficiary": DEPLOYER,
             "configs": {str(DUSK_DOMAIN): [self.oracle, int(DEFAULT_EVM_IGP["gas_overhead"])]},
@@ -947,7 +1307,8 @@ class DeployedTestnet(TestnetScript):
         evm[self.hook] = {"type": "aggregation", "hook_type": 2, "hooks": [EVM_MERKLE, self.evm_igp]}
         self.token_tx = proxy_creation(self.evm, self.token, self.token_impl, {
             "type": "token", "mailbox": EVM_MAILBOX, "hook": self.hook, "ism": self.ism, "owner": DEPLOYER,
-            "routers": {str(DUSK_DOMAIN): "0x" + ROUTE}, "supply": 0})
+            "routers": {str(DUSK_DOMAIN): "0x" + ROUTE}, "supply": 0, "name": "Dusk", "symbol": "DUSK",
+            "decimals": 9, "scale": [1, 1]})
         self.queries[f"{ROUTE}/enrolled_router/{EVM_DOMAIN}"] = {"value": "00" * 12 + "11" * 20}
         self.write_state({
             "evm_chain": "sepolia",
@@ -1205,6 +1566,107 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         creates = self.traced("forge create")
         self.assertEqual(len(creates), len(set(creates)))
         self.assert_ok(self.run_script("agent-configs"))
+
+    def deployed_transactions(self):
+        """The transactions a deploy left on the fake EVM, by what each
+        created or called, in order."""
+        return [r["contractAddress"] and "create" or r["to"] for r in self.evm.get("receipts", {}).values()]
+
+    def test_a_deploy_whose_latest_reads_lag_completes(self):
+        # The live Sepolia deploy: the endpoint's head showed each write, so
+        # the writes settled, but the read of the IGP proxy's implementation
+        # slot right after its creation reached a node behind it and read
+        # zero, and deploy stopped. Once a command has written, its reads
+        # are made at a block at or past the write, which a node either
+        # answers with the write in it or refuses until it has the block;
+        # a refused read is made again.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm.update(stale_latest=2, pinned_misses=1)
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="60")
+        self.assert_ok(result)
+        self.assertEqual(self.deployed_transactions(), honest, "each transaction once, as without the lag")
+        # Every read after the first write names a block.
+        trace = self.trace.read_text().splitlines()
+        first_write = next(i for i, line in enumerate(trace) if line.startswith(("cast send", "forge create")))
+        reads = [line for line in trace[first_write:] if line.split()[1] in ("call", "code", "storage")]
+        self.assertTrue(reads)
+        self.assertEqual([line for line in reads if "--block" not in line], [])
+        self.evm.update(stale_latest=0, latest_stale_left=0, pinned_misses=0, pinned_misses_left=0)
+        self.assert_ok(self.run_script("agent-configs"))
+
+    def test_reads_a_node_never_answers_are_given_up(self):
+        self.evm.update(pinned_misses=10**6)
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+        self.assert_fails(result, "header not found")
+
+    def test_a_transaction_refused_for_its_nonce_is_never_sent_again(self):
+        # The live Sepolia deploy: a send got its nonce from a node that
+        # hadn't seen the deployer's last transaction, and the node answered
+        # "nonce too low". That doesn't show the transaction was refused: a
+        # gateway that sent it on and then answered a replay of the request
+        # says so too. So nothing is sent again: deploy stops, and a re-run,
+        # which reads the chain afresh, sends what is left, each once.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        for skip, expected in ((0, "cast send"), (1, "forge create"), (3, "cast send --create")):
+            with self.subTest(refused=expected):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(nonce_refusals=1, nonce_refusals_skip=skip)
+                # A creation is looked for among the deployer's transactions
+                # for up to EVM_SETTLE_SECONDS.
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+                self.assert_fails(result, "with \"nonce too low\", which doesn't show whether it was sent on")
+                sends = [line for line in self.trace.read_text().splitlines()
+                         if line.startswith(("cast send", "forge create"))]
+                self.assertTrue(sends[skip].startswith(expected), sends)
+                self.assertEqual(len(sends), skip + 1, "nothing is sent again")
+                self.assert_ok(self.run_script("deploy"))
+                self.assertEqual(self.deployed_transactions(), honest)
+        # The nonce is the highest of three reads: two nodes behind don't
+        # matter. With all three behind, the node refuses the nonce they
+        # give, which another transaction of the deployer's took: nothing
+        # is sent again.
+        for stale, fails in ((2, False), (3, True)):
+            with self.subTest(stale_reads=stale):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(account_nonces={DEPLOYER.lower(): 5}, stale_nonce_reads=stale)
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+                if fails:
+                    self.assert_fails(result, "nothing was sent again")
+                    self.assertEqual(self.deployed_transactions(), [])
+                else:
+                    self.assert_ok(result)
+                    self.assertEqual(self.deployed_transactions(), honest)
+
+    def test_a_creation_taken_but_answered_with_nonce_too_low_is_adopted(self):
+        # A gateway sends the creation on, a block takes it, and the
+        # gateway answers a replay of the request with "nonce too low". The
+        # deployer's transaction with the creation's nonce is that very
+        # creation, executed: it is taken, and nothing is created twice.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        for skip, expected in ((1, "forge create"), (3, "cast send --create")):
+            with self.subTest(creation=expected):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(accept_then_refuse=1, accept_then_refuse_skip=skip)
+                result = self.run_script("deploy")
+                self.assert_ok(result)
+                self.assertIn("is that very creation, executed: taking it", result.stderr)
+                self.assertEqual(self.deployed_transactions(), honest)
+        # Any other transaction answered so stops deploy, sending nothing
+        # again; the re-run finds it done.
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm.update(accept_then_refuse=1, accept_then_refuse_skip=0)
+        self.assert_fails(self.run_script("deploy"), "nothing was sent again. Run deploy again")
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.deployed_transactions(), honest)
 
 
 class TestnetTypelessHooks(TestnetScript):
@@ -1475,7 +1937,7 @@ class TestnetTokenBinding(DeployedTestnet):
         new = "0x" + "33" * 20
         tx = proxy_creation(self.evm, new, self.token_impl, {
             "type": "token", "mailbox": EVM_MAILBOX, "hook": self.hook, "ism": self.ism, "owner": DEPLOYER,
-            "routers": {}, "supply": 0})
+            "routers": {}, "supply": 0, "name": "Dusk", "symbol": "DUSK", "decimals": 9, "scale": [1, 1]})
         state = self.state()
         self.write_state({**state, "evm": {**state["evm"], "token": new, "token_creation_tx": tx}})
         for command in ["preflight", "agent-configs", "claim", "deploy"]:
@@ -1624,8 +2086,8 @@ class TestnetQuoteSignerHistory(DeployedTestnet):
         self.assert_refused("has had a quote signer")
 
 
-def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=110000,
-                  evm_overhead=2170000, dusk_gas_price=1):
+def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=405000,
+                  evm_overhead=2200000, dusk_gas_price=1):
     """docs/costs.md's formula, worked out here independently of the script."""
     ratio = Fraction(ratio)
     markup = Fraction(10_000 + margin, 10_000)
@@ -1656,23 +2118,23 @@ class TestnetFees(TestnetScript):
 
     def test_default_settings_charge_the_documented_amounts(self):
         fees = self.fees()
-        self.assertEqual(fees["dusk_igp"]["config"], f"{EVM_DOMAIN}:110000:375000:1000000000")
+        self.assertEqual(fees["dusk_igp"]["config"], f"{EVM_DOMAIN}:405000:375000:1000000000")
         self.assertEqual(fees["evm_igp"], {"domain": DUSK_DOMAIN, **DEFAULT_EVM_IGP})
-        # 160,000 EVM gas at 1 gwei is 0.00016 ETH, 4 DUSK at 25,000 DUSK per
-        # ETH; with the 50% margin, 6 DUSK.
-        self.assertEqual(fees["dusk_to_evm"]["quote_lux"], "6000000000")
-        self.assertEqual(fees["dusk_to_evm"]["gas_cost_lux"], "4000000000")
-        # 2,170,000 Dusk gas at 1 LUX is 0.00217 DUSK, 8.68e10 wei; with the
-        # margin, 1.302e11 wei.
-        self.assertEqual(fees["evm_to_dusk"]["quote_wei"], "130200000000")
-        self.assertEqual(fees["evm_to_dusk"]["gas_cost_wei"], "86800000000")
+        # 455,000 EVM gas at 1 gwei is 0.000455 ETH, 11.375 DUSK at 25,000
+        # DUSK per ETH; with the 50% margin, 17.0625 DUSK.
+        self.assertEqual(fees["dusk_to_evm"]["quote_lux"], "17062500000")
+        self.assertEqual(fees["dusk_to_evm"]["gas_cost_lux"], "11375000000")
+        # 2,200,000 Dusk gas at 1 LUX is 0.0022 DUSK, 8.8e10 wei; with the
+        # margin, 1.32e11 wei.
+        self.assertEqual(fees["evm_to_dusk"]["quote_wei"], "132000000000")
+        self.assertEqual(fees["evm_to_dusk"]["gas_cost_wei"], "88000000000")
         self.assertEqual(fees["relayer"], {"dusk_origin_gas_fraction": "2/3",
-                                           "evm_origin_gas_fraction": "217/500",
-                                           "evm_origin_required_gas": 2170000})
+                                           "evm_origin_gas_fraction": "11/25",
+                                           "evm_origin_required_gas": 2200000})
         summary = self.run_script("fees")
         self.assert_ok(summary)
-        self.assertIn("quote 6 DUSK", summary.stdout)
-        self.assertIn("quote 0.0000001302 ETH (130,200,000,000 wei)", summary.stdout)
+        self.assertIn("quote 17.0625 DUSK", summary.stdout)
+        self.assertIn("quote 0.000000132 ETH (132,000,000,000 wei)", summary.stdout)
 
     def test_pricing_follows_the_formula(self):
         for ratio, margin, gas_price in [("25000", 5000, 10**9), ("30000", 0, 10**9),
@@ -1715,16 +2177,19 @@ class TestnetFees(TestnetScript):
                 self.assert_fails(self.run_script("fees", **settings), expected)
 
     def test_gas_overheads_must_cover_delivery(self):
-        # 125,000 + 7,500 x 6 + 2,500 x 6 = 185,000 EVM gas, less the 50,000.
+        # 420,000 + 7,500 x 6 + 2,500 x 6 = 480,000 EVM gas, less the 50,000.
         six = ",".join(validators(6))
         self.assert_fails(
             self.run_script("fees", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6),
-            "Set it to at least 135,000")
+            "Set it to at least 430,000")
         self.assert_ok(self.run_script("fees", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6,
-                                       DUSK_IGP_GAS_OVERHEAD=135000))
-        # The default covers 3 of 5.
+                                       DUSK_IGP_GAS_OVERHEAD=430000))
+        # The default covers 3 of 5. The 110,000 deploy/testnet.env.example
+        # had before, sized on Anvil, is refused even at 1 of 1: Sepolia
+        # estimated a token's first mint at 424,972 gas at 1 of 2.
         self.assert_ok(self.run_script("fees", DUSK_ORIGIN_VALIDATORS=",".join(validators(5)),
                                        DUSK_ORIGIN_THRESHOLD=3))
+        self.assert_fails(self.run_script("fees", DUSK_IGP_GAS_OVERHEAD=110000), "Set it to at least 380,000")
         self.assert_fails(
             self.run_script("fees", EVM_ORIGIN_THRESHOLD=2, EVM_ORIGIN_VALIDATORS=",".join(validators(2))),
             "takes about 2,390,000 Dusk gas")
@@ -1741,7 +2206,7 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertNotIn("whitelist", relayer)
         self.assertEqual(relayer["gasPaymentEnforcement"], [
             {"type": "onChainFeeQuoting", "gasFraction": "2/3", "matchingList": [{"originDomain": DUSK_DOMAIN}]},
-            {"type": "onChainFeeQuoting", "gasFraction": "217/500",
+            {"type": "onChainFeeQuoting", "gasFraction": "11/25",
              "matchingList": [{"originDomain": EVM_DOMAIN}]},
         ])
         self.assertTrue(relayer["igpIndexingEnabled"])
@@ -1850,7 +2315,7 @@ class TestnetFeeCommands(DeployedTestnet):
         rows = [line.split() for line in result.stderr.splitlines() if line.split()[:1] in (["now"], ["new"])]
         # The pricing deploy/testnet.sh used to deploy charged 25,000 LUX.
         self.assertEqual(rows, [["now", "200000", "1", "1000000000", "25000"],
-                                ["new", "110000", "375000", "1000000000", "6000000000"]])
+                                ["new", "405000", "375000", "1000000000", "17062500000"]])
         self.assertIn("Dry run: nothing was sent", result.stderr)
         self.assertEqual(self.traced("dusk-tx set-igp-config"), [])
 
@@ -1858,7 +2323,7 @@ class TestnetFeeCommands(DeployedTestnet):
         self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"] = 1
         self.assert_ok(self.run_script("dusk-igp", "--apply"))
         [sent] = self.traced("dusk-tx set-igp-config")
-        self.assertIn(f"--igp {IGP} --igp-domain-config {EVM_DOMAIN}:110000:375000:1000000000", sent)
+        self.assertIn(f"--igp {IGP} --igp-domain-config {EVM_DOMAIN}:405000:375000:1000000000", sent)
         self.assertEqual(self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"],
                          375000)
         result = self.run_script("dusk-igp")
@@ -1874,8 +2339,8 @@ class TestnetFeeCommands(DeployedTestnet):
         result = self.run_script("evm-igp")
         self.assert_ok(result)
         rows = [line.split() for line in result.stderr.splitlines() if line.split()[:1] in (["now"], ["new"])]
-        self.assertEqual(rows, [["now", "2170000", "600000000000000", "1", "130200000000"],
-                                ["new", "2170000", "750000000000000", "1", "162750000000"]])
+        self.assertEqual(rows, [["now", "2200000", "600000000000000", "1", "132000000000"],
+                                ["new", "2200000", "750000000000000", "1", "165000000000"]])
         self.assertEqual(self.traced("cast send"), [])
         self.assert_ok(self.run_script("evm-igp", "--apply"))
         [sent] = self.traced("cast send")
@@ -1922,7 +2387,7 @@ class TestnetFeeCommands(DeployedTestnet):
                          ["setRemoteGasDataConfigs", "setDestinationGasConfigs"])
         self.assertEqual(sent[0].split()[2], self.oracle)
         self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], [600000000000000, 1])
-        self.assertEqual(self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)], [self.oracle, 2170000])
+        self.assertEqual(self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)], [self.oracle, 2200000])
 
     def test_fee_commands_refuse_a_dusk_node_on_another_chain(self):
         # The node is on chain 1, not DUSK_EXPECTED_CHAIN_ID 2. A Dusk
@@ -2110,7 +2575,7 @@ class TestnetDeploy(TestnetScript):
         result = self.run_script("deploy")
         self.assert_ok(result)
         [deploy] = self.traced("dusk-tx deploy-hyperlane")
-        self.assertIn(f"--igp-domain-config {EVM_DOMAIN}:110000:375000:1000000000", deploy)
+        self.assertIn(f"--igp-domain-config {EVM_DOMAIN}:405000:375000:1000000000", deploy)
         # Every Dusk transaction is signed for DUSK_EXPECTED_CHAIN_ID only.
         [enroll] = self.traced("dusk-tx enroll-router")
         for sent in (deploy, enroll):
@@ -2122,7 +2587,7 @@ class TestnetDeploy(TestnetScript):
         self.assertEqual(evm[oracle]["data"][str(DUSK_DOMAIN)], [600000000000000, 1])
         self.assertEqual(evm[igp]["owner"], DEPLOYER)
         self.assertEqual(evm[igp]["beneficiary"], DEPLOYER)
-        self.assertEqual(evm[igp]["configs"][str(DUSK_DOMAIN)], [oracle, 2170000])
+        self.assertEqual(evm[igp]["configs"][str(DUSK_DOMAIN)], [oracle, 2200000])
         # The agents index from before the IGP and the token existed.
         self.assertLessEqual(state["evm"]["index_from"], min(evm[igp]["created_at"], evm[token]["created_at"]))
         # Sepolia's Mailbox requires only its ProtocolFee: the route's hook
@@ -2131,7 +2596,7 @@ class TestnetDeploy(TestnetScript):
                          {"type": "aggregation", "hook_type": 2, "hooks": [EVM_MERKLE, igp]})
         self.assertEqual(evm[token]["hook"], hook)
         # A transfer pays the 1 wei protocol fee and the IGP's quote.
-        self.assertIn("charges 130200000000 wei for a transfer to Dusk", result.stderr)
+        self.assertIn("charges 132000000000 wei for a transfer to Dusk", result.stderr)
         # Running it again sends nothing new.
         self.assert_ok(self.run_script("deploy"))
         self.assertEqual(self.traced("cast send"), [])
@@ -2168,7 +2633,7 @@ class TestnetDeploy(TestnetScript):
         self.assert_ok(result)
         self.assertIn("isn't priced for Dusk yet; deploy prices it", result.stderr)
         self.assertEqual(self.evm["contracts"][igp]["owner"], DEPLOYER)
-        self.assertEqual(self.evm["contracts"][igp]["configs"][str(DUSK_DOMAIN)], [oracle, 2170000])
+        self.assertEqual(self.evm["contracts"][igp]["configs"][str(DUSK_DOMAIN)], [oracle, 2200000])
         self.assertEqual(self.state()["evm"]["igp"], igp)
 
     def test_deploy_initializes_the_igp_and_the_token_in_their_creation_transactions(self):
@@ -2527,6 +2992,565 @@ class TestnetDeploymentRecord(DeployedTestnet):
                 self.assertEqual({key: chain[key] for key in expected},
                                  {key: "0x" + value for key, value in expected.items()})
 
+def stub_route_ids(nonce):
+    """The token and route IDs the dusk-tx stub plans at a deploy nonce."""
+    return (hashlib.sha256(f"token:{nonce}".encode()).hexdigest(),
+            hashlib.sha256(f"route:{nonce}".encode()).hexdigest())
+
+
+TOKEN_ROUTE_SETTINGS = {"EURd": ("Dusk Euro (testnet)", 6, "1000000000000"),
+                        "USDd": ("Dusk Dollar (testnet)", 6, "1000000000000")}
+
+
+class TokenRouteChecks:
+    """What a token route looks like once deploy is done with it."""
+
+    def use_token_routes(self, routes=EXAMPLE_TOKEN_ROUTES):
+        self.settings["TOKEN_ROUTES"] = routes
+        for name in ("canonical_drc20_roles_pausable.wasm", "hyperlane_dusk_warp_drc20_collateral.wasm"):
+            (self.root / "wasm" / name).write_bytes(b"\0asm" + bytes(1000))
+
+    def assert_token_routes(self, symbols=("EURd", "USDd"), nonces=(10, 12)):
+        state = self.state()
+        evm = self.evm["contracts"]
+        self.assertEqual(list(state["token_routes"]), list(symbols))
+        for symbol, nonce in zip(symbols, nonces):
+            with self.subTest(route=symbol):
+                name, decimals, supply = TOKEN_ROUTE_SETTINGS[symbol]
+                record = state["token_routes"][symbol]
+                token, route = stub_route_ids(nonce)
+                self.assertEqual({key: record[key] for key in ("name", "symbol", "decimals", "supply")},
+                                 {"name": name, "symbol": symbol, "decimals": decimals, "supply": supply})
+                dusk = record["dusk"]
+                self.assertEqual({key: dusk[key] for key in ("deploy_nonce", "token", "route", "read_back")},
+                                 {"deploy_nonce": nonce, "token": token, "route": route, "read_back": True})
+                # Each created by the transaction recorded for it.
+                for what, contract_id in (("token", token), ("route", route)):
+                    self.assertEqual(self.dusk_deploys["txs"][dusk[f"{what}_tx"]],
+                                     {"id": contract_id, "executed": True}, what)
+                # The Dusk token: the deployer its admin and holder of the supply.
+                self.assertEqual({key: self.tokens[token][key] for key in ("name", "symbol", "decimals",
+                                                                          "total_supply")},
+                                 {"name": name, "symbol": symbol, "decimals": decimals, "total_supply": supply})
+                # The EVM token: the route's metadata, no scaling, the
+                # deployment's hook and ISM, created and initialized at once.
+                address = record["evm"]["token"]
+                contract = evm[address]
+                self.assertEqual({key: contract[key] for key in ("name", "symbol", "decimals", "scale", "supply",
+                                                                 "owner", "ism", "hook", "mailbox")},
+                                 {"name": name, "symbol": symbol, "decimals": decimals, "scale": [1, 1],
+                                  "supply": 0, "owner": DEPLOYER, "ism": state["evm"]["ism"],
+                                  "hook": state["evm"]["route_hook"], "mailbox": EVM_MAILBOX})
+                self.assertEqual(contract["implementation"], record["evm"]["token_implementation"])
+                receipt = self.evm["receipts"][record["evm"]["token_creation_tx"]]
+                self.assertEqual((receipt["contractAddress"], receipt["from"]), (address, DEPLOYER))
+                # Each enrolled on the other.
+                self.assertEqual(contract["routers"], {str(DUSK_DOMAIN): "0x" + route})
+                self.assertEqual(self.queries[f"{route}/enrolled_router/{EVM_DOMAIN}"],
+                                 {"value": "00" * 12 + address[2:]})
+        self.assertEqual(state["dusk_owner_key"], DEPLOYER_KEY_HEX)
+
+    def sends(self):
+        return [line for line in self.trace.read_text().splitlines()
+                if line.startswith(("cast send", "forge create")) or line.split()[:2] in (
+                    ["dusk-tx", "deploy-hyperlane"], ["dusk-tx", "deploy-token-route"], ["dusk-tx", "enroll-router"],
+                    ["dusk-tx", "set-beneficiary"], ["dusk-tx", "set-igp-config"])]
+
+    def route_sends(self):
+        """The sends, without deploy-token-route's plans, which send
+        nothing."""
+        return [line for line in self.sends() if "--plan" not in line.split()]
+
+
+class TestnetTokenRoutes(TokenRouteChecks, TestnetScript):
+    """deploy with TOKEN_ROUTES: each token issued on Dusk, its route and its
+    synthetic token on the EVM chain, deployed, read back and enrolled, and
+    resumed wherever a run stops."""
+
+    def setUp(self):
+        super().setUp()
+        self.use_token_routes()
+
+    def test_a_fresh_deploy_deploys_the_core_the_dusk_route_and_the_token_routes(self):
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assert_token_routes()
+        state = self.state()
+        self.assertEqual(state["dusk"], DUSK_CONTRACTS)
+        self.assertIn("token", state["evm"])
+        # Planned, then deployed, at nonces 10 and 12, signed for chain 2.
+        deploys = self.traced("dusk-tx deploy-token-route")
+        self.assertEqual(len(deploys), 4)
+        for line, (symbol, nonce) in zip(deploys[1::2], (("EURd", 10), ("USDd", 12))):
+            name, decimals, supply = TOKEN_ROUTE_SETTINGS[symbol]
+            token, route = stub_route_ids(nonce)
+            for part in (f"--token-name {name} --token-symbol {symbol} --token-decimals {decimals}",
+                         f"--token-supply {supply} --deploy-nonce {nonce} --remote-domain {EVM_DOMAIN}",
+                         f"--expected-token {token} --expected-route {route}", "--expected-chain-id 2",
+                         f"--mailbox {MAILBOX}"):
+                self.assertIn(part, line)
+        # The EVM tokens are HypERC20s of the routes' decimals.
+        creates = [line for line in self.traced("forge create") if "HypERC20" in line]
+        self.assertEqual([line.split()[-4] for line in creates], ["9", "6", "6"])
+        # Running it again sends nothing.
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.route_sends(), [])
+        result = self.run_script("agent-configs")
+        self.assert_ok(result)
+        for symbol in ("route", "EURd route", "USDd route"):
+            self.assertIn(f"The Dusk {symbol} uses the Mailbox's default ISM", result.stderr)
+
+    def test_the_agent_configs_dont_change_with_routes(self):
+        # The relayer relays any message once it is paid for, and the
+        # validators sign the Mailbox's tree: neither names a route.
+        self.settings["TOKEN_ROUTES"] = ""
+        self.assert_ok(self.run_script("deploy"))
+        self.assert_ok(self.run_script("agent-configs"))
+        without = {name: (self.out / name).read_text() for name in ("relayer.json", "validator-dusk.json")}
+        self.use_token_routes()
+        self.assert_ok(self.run_script("deploy"))
+        self.assert_ok(self.run_script("agent-configs"))
+        for name, text in without.items():
+            self.assertEqual((self.out / name).read_text(), text, name)
+        for command in (["preflight"], ["revenue"], ["claim"], ["dusk-igp"], ["evm-igp"]):
+            with self.subTest(command=command):
+                self.assert_ok(self.run_script(*command))
+
+    def honest_run(self):
+        """What a deploy that nothing stops leaves: the transactions on the
+        fake EVM, and the record."""
+        self.assert_ok(self.run_script("deploy"))
+        return [r["contractAddress"] or r["to"] for r in self.evm["receipts"].values()], self.state()
+
+    def start_over(self):
+        self.evm = sepolia()
+        self.forget_deployment()
+
+    def test_a_deploy_stopped_at_any_step_of_a_route_resumes(self):
+        honest_txs, honest_state = self.honest_run()
+        sends = [line for line in self.trace.read_text().splitlines() if line.startswith(("cast send", "forge create"))]
+        eurd = [i for i, line in enumerate(sends) if "HypERC20" in line][1]
+        token = honest_state["token_routes"]["EURd"]["evm"]["token"].lower()
+        # The EURd token's implementation, its proxy, and the Dusk EURd
+        # route's enrollment on it; every route's steps are the same code.
+        stops = [("the EURd token's implementation", eurd), ("the EURd token's proxy", eurd + 1)]
+        stops += [("the EURd token's enrollment", i) for i, line in enumerate(sends)
+                  if "enrollRemoteRouter" in line and token in line.lower()]
+        self.assertEqual(len(stops), 3)
+        for what, index in stops:
+            with self.subTest(stopped_at=what):
+                self.start_over()
+                self.evm.update(nonce_refusals=10**6, nonce_refusals_skip=index)
+                self.assert_fails(self.run_script("deploy", EVM_SETTLE_SECONDS="2"), "nonce too low")
+                self.evm.update(nonce_refusals=0, nonce_refusals_skip=0)
+                self.assert_ok(self.run_script("deploy"))
+                txs = [r["contractAddress"] or r["to"] for r in self.evm["receipts"].values()]
+                self.assertEqual(txs, honest_txs, "each transaction once, as in a run nothing stopped")
+                self.assertEqual(self.state()["token_routes"], honest_state["token_routes"])
+        # On Dusk: deploy-token-route fails once, after the plan was
+        # recorded; enroll-router fails once.
+        for command in ("deploy-token-route", "enroll-router"):
+            with self.subTest(stopped_at=command):
+                self.start_over()
+                self.dusk_failures = {command: 1}
+                self.assert_fails(self.run_script("deploy"), "failed")
+                if command == "deploy-token-route":
+                    record = self.state()["token_routes"]["EURd"]
+                    self.assertEqual(record["dusk"], {"deploy_nonce": 10, "token": stub_route_ids(10)[0],
+                                                      "route": stub_route_ids(10)[1]})
+                self.assert_ok(self.run_script("deploy"))
+                # The plan recorded before the failure is the one deployed:
+                # EURd isn't planned again.
+                self.assertEqual([line for line in self.traced("dusk-tx deploy-token-route")
+                                  if "--plan" in line and "--token-symbol EURd" in line], [])
+                self.assert_token_routes()
+
+    def test_the_plan_skips_ids_someone_has_taken(self):
+        # Someone deployed at the IDs nonce 10 gives before the route was
+        # planned: the plan takes the next free nonces.
+        self.tokens[stub_route_ids(10)[0]] = {"error": "someone else's"}
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("Deploy nonces 10 and 11 give contract IDs someone has taken; trying the next two",
+                      result.stderr)
+        self.assert_token_routes(nonces=(12, 14))
+        # Nothing was sent at the taken nonces.
+        self.assertEqual([line for line in self.route_sends() if "--deploy-nonce 10" in line], [])
+
+    def test_a_contract_someone_put_at_a_planned_id_is_never_used(self):
+        # The plan is recorded, then someone deploys at the token's planned
+        # ID before this deployment does, a token that reads back exactly as
+        # its own would, the deployer holding every role: but whoever
+        # deployed it chose its init, and could hold roles too, which the
+        # token can't list. No transaction of this deployment's created it,
+        # so the pair is left and the next planned before anything is sent.
+        self.dusk_failures = {"deploy-token-route": 1}
+        self.assert_fails(self.run_script("deploy"), "failed")
+        token, _ = stub_route_ids(10)
+        name, decimals, supply = TOKEN_ROUTE_SETTINGS["EURd"]
+        self.tokens[token] = {"name": name, "symbol": "EURd", "decimals": decimals, "total_supply": supply,
+                              "cap": "0", "paused": False, "accounts": {DEPLOYER_KEY_HEX: {
+                                  "balance": supply, "admin": True, "minter": True, "pauser": True}}}
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn(f"The token's planned ID {token} isn't this deployment's: a contract is at its planned ID "
+                      "that no transaction of this deployment's created", result.stderr)
+        self.assertIn("Leaving deploy nonces 10 and 11 for the EURd route; planning the next two", result.stderr)
+        self.assertEqual(self.state()["token_routes"]["EURd"]["dusk"]["abandoned"], [10])
+        self.assert_token_routes(nonces=(12, 14))
+        # Nothing was sent to nonces 10 and 11.
+        self.assertEqual([sent for sent in self.dusk_deploys["txs"].values() if sent["id"] in stub_route_ids(10)], [])
+
+    def test_a_planned_id_taken_between_the_plan_and_the_send_is_left(self):
+        # Someone's contract lands at the token's planned ID right before
+        # this deployment's deploy to it, which fails: the pair is left, and
+        # the next planned and deployed in the same run.
+        token, _ = stub_route_ids(10)
+        self.dusk_deploys["front_run_deploy"] = [token]
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("another contract got to its ID first", result.stderr)
+        self.assertIn("Leaving deploy nonces 10 and 11 for the EURd route; planning the next two", result.stderr)
+        self.assertEqual(self.state()["token_routes"]["EURd"]["dusk"]["abandoned"], [10])
+        self.assert_token_routes(nonces=(12, 14))
+        # The failed deploy is in the ledger; nothing else went to nonce 10.
+        failed = [tx for tx, sent in self.dusk_deploys["txs"].items() if sent["id"] == token]
+        self.assertEqual([self.dusk_deploys["txs"][tx]["executed"] for tx in failed], [False])
+
+    def test_a_resumed_deploy_takes_what_its_recorded_transaction_created(self):
+        # A run stops once the token is deployed: its transaction is in the
+        # tx log, and so in the record. The next run takes the token, which
+        # that transaction created, and deploys only the route.
+        self.dusk_deploys["stop_after_token"] = True
+        self.assert_fails(self.run_script("deploy"), "stopped after the token")
+        token, route = stub_route_ids(10)
+        record = self.state()["token_routes"]["EURd"]["dusk"]
+        self.assertEqual(self.dusk_deploys["txs"][record["token_tx"]], {"id": token, "executed": True})
+        self.assertNotIn("route_tx", record)
+        # Had deploy itself stopped before it recorded the transaction, the
+        # tx log, written before the transaction was sent, still has it.
+        state = self.state()
+        for key in ("token_tx", "token_tx_nonce"):
+            del state["token_routes"]["EURd"]["dusk"][key]
+        self.write_state(state)
+        self.assert_ok(self.run_script("deploy"))
+        [deploy] = [line for line in self.route_sends() if "--deploy-nonce 10" in line]
+        self.assertIn(f"--token-tx {record['token_tx']}", deploy)
+        self.assertNotIn("abandoned", self.state()["token_routes"]["EURd"]["dusk"])
+        self.assert_token_routes()
+        self.assertEqual(len([tx for tx, sent in self.dusk_deploys["txs"].items() if sent["id"] == token]), 1)
+
+    def test_a_route_that_doesnt_read_back_is_never_recorded_or_used(self):
+        attacker = "ee" * 32
+        cases = [
+            ({"route": {"owner": {"value": attacker}}}, f"'s owner is {attacker}, not the deployer's account"),
+            ({"route": {"mailbox": {"value": OTHER_ID}}}, f"'s mailbox is {OTHER_ID}, not {MAILBOX}"),
+            ({"route": {"wrapped_token": {"value": OTHER_ID}}}, f"'s wrapped_token is {OTHER_ID}"),
+            ({"route": {"hook": {"value": OTHER_ID}}}, f"'s hook is {OTHER_ID}, not {ZERO}"),
+            ({"route": {"interchain_security_module": {"value": OTHER_ID}}},
+             f"'s interchain_security_module is {OTHER_ID}, not {ZERO}"),
+            ({"route": {f"enrolled_router/{DUSK_DOMAIN}": {"value": attacker}}}, f"'s enrolled_router is {attacker}"),
+            ({"route": {f"enrolled_router/{EVM_DOMAIN}": {"value": attacker}}},
+             f"is enrolled with the router {attacker} for sepolia (domain {EVM_DOMAIN}), not none"),
+            ({"route": {"state_version": {"value": 6}}}, "'s state_version is 6, not 7"),
+            ({"token": {"name": "Dusk Euro"}}, "'s name is Dusk Euro, not Dusk Euro (testnet)"),
+            ({"token": {"symbol": "EUR"}}, "'s symbol is EUR, not EURd"),
+            ({"token": {"decimals": 18}}, "'s decimals is 18, not 6"),
+            ({"token": {"total_supply": "2000000000000"}}, "'s supply is 2000000000000, not 1000000000000"),
+            ({"token": {"account.balance": "1"}}, "'s balance of the deployer is 1, not 1000000000000"),
+            ({"token": {"account.admin": False}}, "'s admin role held by the deployer is false, not true"),
+            ({"token": {"account.minter": False}}, "'s minter role held by the deployer is false, not true"),
+            ({"token": {"account.pauser": False}}, "'s pauser role held by the deployer is false, not true"),
+            ({"token": {"cap": "5"}}, "'s cap is 5, not 0"),
+            ({"token": {"paused": True}}, "'s paused is true, not false"),
+        ]
+        for tamper, expected in cases:
+            with self.subTest(tamper=tamper):
+                self.start_over()
+                self.dusk_tamper = tamper
+                result = self.run_script("deploy")
+                self.assert_fails(result, expected)
+                self.assertIn("isn't recorded as deployed", result.stderr)
+                record = self.state()["token_routes"]["EURd"]
+                self.assertNotIn("read_back", record["dusk"])
+                self.assertNotIn("evm", record)
+                self.assertEqual([line for line in self.traced("forge create") if "HypERC20" in line
+                                  and " 6 1 1 " in line], [])
+
+    def test_routers_are_never_replaced(self):
+        self.assert_ok(self.run_script("deploy"))
+        state = self.state()
+        eurd, usdd = state["token_routes"]["EURd"], state["token_routes"]["USDd"]
+        # The EURd token enrolled with the USDd route, and the EURd route
+        # with the USDd token: another route's custody backs those tokens.
+        saved = dict(self.evm["contracts"][eurd["evm"]["token"]]["routers"])
+        self.evm["contracts"][eurd["evm"]["token"]]["routers"] = {str(DUSK_DOMAIN): "0x" + usdd["dusk"]["route"]}
+        for command in ("preflight", "deploy", "agent-configs"):
+            with self.subTest(command=command, side="EVM"):
+                self.assert_fails(self.run_script(command),
+                                  f"The EVM EURd token {eurd['evm']['token']} is enrolled with the Dusk route "
+                                  f"{usdd['dusk']['route']}, not the route recorded in")
+                self.assertEqual(self.route_sends(), [])
+        self.evm["contracts"][eurd["evm"]["token"]]["routers"] = saved
+        key = f"{eurd['dusk']['route']}/enrolled_router/{EVM_DOMAIN}"
+        self.queries[key] = {"value": "00" * 12 + usdd["evm"]["token"][2:]}
+        for command in ("preflight", "deploy", "claim"):
+            with self.subTest(command=command, side="Dusk"):
+                self.assert_fails(self.run_script(command),
+                                  f"The Dusk EURd route {eurd['dusk']['route']} is enrolled with the router "
+                                  f"{'00' * 12 + usdd['evm']['token'][2:]} for sepolia (domain {EVM_DOMAIN}), not none or "
+                                  f"the EVM EURd token {eurd['evm']['token']}")
+                self.assertEqual(self.route_sends(), [])
+        # A router that appears after the read-back, before the write, as
+        # the owner could enroll it from elsewhere, is refused too.
+        self.start_over()
+        self.assert_ok(self.run_script("deploy"))
+        state = self.state()
+        route = state["token_routes"]["USDd"]["dusk"]["route"]
+        key = f"{route}/enrolled_router/{EVM_DOMAIN}"
+        self.queries.pop(key)
+        self.evm["contracts"][state["token_routes"]["USDd"]["evm"]["token"]]["routers"] = {}
+        self.dusk_interleave = {"key": key, "after_reads": 1, "value": "00" * 12 + "22" * 20}
+        result = self.run_script("deploy")
+        self.assert_fails(result, f"The Dusk USDd route {route} is enrolled with the router {'00' * 12 + '22' * 20}")
+        self.assertIn("not replacing it", result.stderr)
+        self.assertEqual(self.traced("dusk-tx enroll-router"), [])
+
+    def test_the_evm_tokens_are_read_back(self):
+        self.assert_ok(self.run_script("deploy"))
+        record = self.state()["token_routes"]["EURd"]
+        address = record["evm"]["token"]
+        token = self.evm["contracts"][address]
+        saved = json.loads(json.dumps(token))
+        cases = [
+            ({"decimals": 18}, f"The EVM EURd token {address}'s decimals is '18', not '6'"),
+            ({"scale": [10**12, 1]}, f"The EVM EURd token {address}'s scaleNumerator is '1000000000000', not '1'"),
+            ({"name": "Euro"}, f"The EVM EURd token {address}'s name is 'Euro', not 'Dusk Euro (testnet)'"),
+            ({"symbol": "EURx"}, f"The EVM EURd token {address}'s symbol is 'EURx', not 'EURd'"),
+            ({"mailbox": "0x" + "bb" * 20}, f"through the Mailbox 0x{'bb' * 20}, not EVM_MAILBOX"),
+            ({"ism": "0x" + "56" * 20}, f"verifies messages from Dusk with the ISM 0x{'56' * 20}"),
+            ({"routers": {}, "supply": 5}, f"The EVM EURd token {address} has a supply of 5 but no Dusk route"),
+            ({"admin": ATTACKER}, f"The EVM EURd token {address} has the proxy admin {ATTACKER}"),
+            ({"implementation": "0x" + "4b" * 20}, f"runs the implementation 0x{'4b' * 20}"),
+            ({"hook": "0x" + "00" * 20}, f"The EVM EURd route {address} dispatches through hook"),
+        ]
+        for i, (change, expected) in enumerate(cases):
+            with self.subTest(change=change):
+                self.evm["contracts"][address] = {**saved, **change}
+                # Every command reads the tokens back the same way: each
+                # change is tried on preflight, and the first on them all.
+                # preflight only warns of another hook, as deploy sets it,
+                # and evm-igp doesn't use it; agent-configs refuses it.
+                commands = ["preflight", "agent-configs", "evm-igp"] if i == 0 else ["preflight"]
+                if change.get("hook"):
+                    commands = ["agent-configs"]
+                    self.assert_ok(self.run_script("preflight"))
+                for command in commands:
+                    self.assert_fails(self.run_script(command), expected)
+                    self.assertEqual(self.route_sends(), [])
+        self.evm["contracts"][address] = saved
+        # A token created by someone else, or initialized after its creation.
+        tx = record["evm"]["token_creation_tx"]
+        receipt = self.evm["receipts"][tx]
+        self.evm["receipts"][tx] = {**receipt, "from": ATTACKER}
+        self.assert_fails(self.run_script("preflight"),
+                          f"The EVM EURd token {address} wasn't initialized in the transaction that created it")
+
+    def test_recorded_routes_are_read_back_by_every_command(self):
+        self.assert_ok(self.run_script("deploy"))
+        record = self.state()["token_routes"]["USDd"]
+        token, route = record["dusk"]["token"], record["dusk"]["route"]
+        attacker = "ee" * 32
+        for change, expected in [
+            (lambda: self.queries.update({f"{route}/owner": {"value": attacker}}),
+             f"The Dusk USDd route {route}'s owner is {attacker}"),
+            (lambda: self.queries.update({f"{route}/mailbox": {"value": OTHER_ID}}),
+             f"The Dusk USDd route {route}'s mailbox is {OTHER_ID}"),
+            (lambda: self.queries.update({f"{route}/hook": {"value": OTHER_ID}}),
+             f"The Dusk USDd route {route}'s hook is {OTHER_ID}"),
+            (lambda: self.queries.update({f"{route}/state_version": {"value": 6}}),
+             "records a Dusk route (warp_drc20_collateral, the USDd route)"),
+            (lambda: self.tokens[token].update(name="Dusk Dollar"),
+             f"The Dusk USDd token {token}'s name is Dusk Dollar, not Dusk Dollar (testnet)"),
+            (lambda: self.tokens[token]["accounts"][DEPLOYER_KEY_HEX].update(admin=False),
+             f"The Dusk USDd token {token}'s admin role held by the deployer is false"),
+            (lambda: self.queries.update({f"{route}/interchain_security_module": {"value": TEST_MOCK}}),
+             "The Dusk USDd route uses its own ISM"),
+        ]:
+            with self.subTest(expected=expected):
+                saved_queries, saved_tokens = json.loads(json.dumps(self.queries)), json.loads(json.dumps(self.tokens))
+                change()
+                # Every command reads the routes back the same way: each
+                # change is tried on preflight, and the first on them all.
+                # The ISM a route uses is checked where the relayer's limit
+                # is, as the DUSK route's is.
+                commands = [["preflight"]]
+                if "owner is" in expected:
+                    commands += [["claim"], ["agent-configs"], ["dusk-igp", "--apply"]]
+                elif "ISM" in expected:
+                    commands += [["agent-configs"]]
+                for command in commands:
+                    result = self.run_script(*command)
+                    self.assert_fails(result, expected)
+                    self.assertEqual(self.route_sends() + self.traced("dusk-tx claim-fees"), [])
+                    self.assertFalse(self.relayer_config.exists())
+                self.queries, self.tokens = saved_queries, saved_tokens
+        # What the owner may change on purpose isn't refused: the supply it
+        # mints, and the minter and pauser roles.
+        self.tokens[token]["total_supply"] = "5000000000000"
+        self.tokens[token]["accounts"][DEPLOYER_KEY_HEX].update(minter=False, balance="7")
+        self.assert_ok(self.run_script("preflight"))
+
+    def test_settings_must_be_well_formed(self):
+        for routes, expected in [
+            ("EURd|Dusk Euro|6", "isn't SYMBOL|NAME|DECIMALS|SUPPLY"),
+            ("EURd|Dusk Euro|6|1|extra", "isn't SYMBOL|NAME|DECIMALS|SUPPLY"),
+            ("1EUR|Dusk Euro|6|1", "the symbol '1EUR' must be a letter"),
+            ("EUR-d|Dusk Euro|6|1", "the symbol 'EUR-d' must be a letter"),
+            ("EURdEURdEURd|Dusk Euro|6|1", "the symbol 'EURdEURdEURd' must be a letter"),
+            ("dusk|Dusk|9|1", "DUSK is the native route's token"),
+            ("EURd||6|1", "the name '' must be 1 to 64"),
+            ("EURd|Dusk Euro|19|1", "the decimals '19' must be a whole number from 0 to 18"),
+            ("EURd|Dusk Euro|six|1", "the decimals 'six'"),
+            ("EURd|Dusk Euro|6|-1", "the supply '-1' must be a whole number"),
+            ("EURd|Dusk Euro|6|1e12", "the supply '1e12'"),
+            ("EURd|Dusk Euro|6|18446744073709551616", "at most 18446744073709551615"),
+            ("EURd|Dusk Euro|6|1\nEURD|Dusk Euro 2|6|1", "lists the symbol EURD twice"),
+        ]:
+            with self.subTest(routes=routes):
+                for command in ("fees", "preflight", "deploy"):
+                    result = self.run_script(command, TOKEN_ROUTES=routes)
+                    self.assert_fails(result, expected)
+                    self.assertEqual(self.route_sends(), [])
+        # Blank lines, comments and the largest supply are fine.
+        self.assert_ok(self.run_script("fees", TOKEN_ROUTES="\n# routes\n  EURd | Dusk Euro | 6 | 18446744073709551615  \n"))
+
+    def test_a_recorded_routes_settings_cant_change(self):
+        self.assert_ok(self.run_script("deploy"))
+        for routes, what in [
+            ("EURd|Dusk Euro|6|1000000000000\nUSDd|Dusk Dollar (testnet)|6|1000000000000", "Dusk Euro|6|1000000000000"),
+            ("EURd|Dusk Euro (testnet)|2|1000000000000", "Dusk Euro (testnet)|2|1000000000000"),
+            ("EURd|Dusk Euro (testnet)|6|5", "Dusk Euro (testnet)|6|5"),
+        ]:
+            with self.subTest(routes=routes):
+                for command in ("preflight", "deploy", "claim"):
+                    self.assert_fails(self.run_script(command, TOKEN_ROUTES=routes),
+                                      f"TOKEN_ROUTES has EURd as {what}, but")
+                    self.assertEqual(self.route_sends(), [])
+        # Nor its symbol's case: EURD would be another route, a token
+        # nobody could tell from EURd.
+        for command in ("preflight", "deploy"):
+            self.assert_fails(self.run_script(command, TOKEN_ROUTES="EURD|Dusk Euro (testnet)|6|1000000000000"),
+                              "TOKEN_ROUTES lists EURD, and")
+            self.assertEqual(self.route_sends(), [])
+        # A recorded route TOKEN_ROUTES no longer lists is still checked.
+        result = self.run_script("preflight", TOKEN_ROUTES="")
+        self.assert_ok(result)
+        self.assertIn("has the token route EURd, which TOKEN_ROUTES doesn't list", result.stderr)
+
+    def test_deliveries_to_dusk_are_priced_for_the_token_routes(self):
+        # A token route's payout costs more than the native route's, so the
+        # EVM IGP's overhead must cover it once the deployment has one.
+        self.assert_fails(self.run_script("fees", EVM_IGP_GAS_OVERHEAD=2170000),
+                          "takes about 2,200,000 Dusk gas (1,980,000 plus 220,000 per signature, for a payout from "
+                          "a token route")
+        self.assert_ok(self.run_script("fees", EVM_IGP_GAS_OVERHEAD=2170000, TOKEN_ROUTES=""))
+        self.assert_ok(self.run_script("fees"))
+        # The relayer's gas limit too: 1.5 times 1.98M + 0.22M at threshold 7
+        # is 5.28M.
+        seven = ",".join(validators(7))
+        self.assert_fails(self.run_script("preflight", EVM_ORIGIN_VALIDATORS=seven, EVM_ORIGIN_THRESHOLD=7,
+                                          EVM_IGP_GAS_OVERHEAD=3520000),
+                          "DUSK_RELAYER_GAS_LIMIT is 5000000; with EVM_ORIGIN_THRESHOLD of 7 it must be at least 5280000")
+
+    def test_the_deployer_needs_dusk_for_the_routes(self):
+        self.settings["TOKEN_ROUTES"] = ""
+        self.assert_ok(self.run_script("deploy"))
+        self.use_token_routes()
+        # The pinned token's and the route's Wasms, at the sizes make builds:
+        # 438,136 bytes a route at 100 gas a byte, and 2M gas for each
+        # contract's init, 95.6 DUSK at 2,000 LUX; and a deploy's gas limit
+        # times its price up front, 100 DUSK.
+        for name, size in (("canonical_drc20_roles_pausable.wasm", 261_980),
+                           ("hyperlane_dusk_warp_drc20_collateral.wasm", 176_156)):
+            (self.root / "wasm" / name).write_bytes(b"\0asm" + bytes(size - 4))
+        self.dusk_balance = 291 * 10**9
+        self.assert_fails(self.run_script("preflight"), "needs at least 291 for the 2 token routes to deploy")
+        self.dusk_balance = 292 * 10**9
+        self.assert_ok(self.run_script("preflight"))
+        (self.root / "wasm" / "canonical_drc20_roles_pausable.wasm").unlink()
+        self.dusk_balance = 1000 * 10**9
+        self.assert_fails(self.run_script("preflight"), "canonical_drc20_roles_pausable.wasm isn't built")
+
+    def test_deploy_leaves_a_beneficiary_already_set_alone(self):
+        # So deploy, run again to add routes, reconfigures nothing: here
+        # without routes, which it doesn't depend on.
+        self.settings["TOKEN_ROUTES"] = ""
+        self.assert_ok(self.run_script("deploy", DUSK_FEE_BENEFICIARY="fixture-treasury"))
+        self.assertEqual(len(self.traced("dusk-tx set-beneficiary")), 2)
+        self.assert_ok(self.run_script("deploy", DUSK_FEE_BENEFICIARY="fixture-treasury"))
+        self.assertEqual(self.traced("dusk-tx set-beneficiary"), [])
+
+
+class TestnetTokenRoutesOnADeployment(TokenRouteChecks, DeployedTestnet):
+    """The recorded deployment has the core and the DUSK route only, as the
+    live one does: deploy with TOKEN_ROUTES adds the token routes and leaves
+    everything else as it is."""
+
+    def setUp(self):
+        super().setUp()
+        # As deploy leaves it, the route's hook is the one the factory gives
+        # for the Merkle hook and the IGP.
+        children = f"[{EVM_MERKLE},{self.evm_igp}]"
+        hook = "0x" + hashlib.sha256(f"aggregation:{EVM_HOOK_FACTORY}:{children}".encode()).hexdigest()[:40]
+        contracts = self.evm["contracts"]
+        contracts[hook] = contracts.pop(self.hook)
+        contracts[self.token]["hook"] = hook
+        self.hook = hook
+        state = self.state()
+        state["evm"]["route_hook"] = hook
+        self.write_state(state)
+
+    def test_routes_are_added_without_touching_the_rest(self):
+        before = self.state()
+        evm_before = json.loads(json.dumps(self.evm["contracts"]))
+        self.use_token_routes()
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assert_token_routes()
+        after = self.state()
+        for key in ("dusk", "dusk_owner", "dusk_domain", "evm_domain"):
+            self.assertEqual(after[key], before[key], key)
+        for key, value in before["evm"].items():
+            if key != "igp_quote_signers_scanned":
+                self.assertEqual(str(after["evm"][key]).lower(), str(value).lower(), key)
+        # Nothing existing was redeployed or reconfigured: no core deploy, no
+        # write to the IGP, its oracle, the hook or the DUSK token, and on
+        # Dusk only the new routes' deploys and enrollments.
+        self.assertEqual(self.traced("dusk-tx deploy-hyperlane"), [])
+        new_tokens = {after["token_routes"][symbol]["evm"]["token"] for symbol in ("EURd", "USDd")}
+        for line in self.traced("cast send"):
+            target = line.split()[2]
+            self.assertTrue(target == "--create" or target.lower() in new_tokens, line)
+        self.assertEqual([line for line in self.traced("forge create") if "HypERC20" not in line], [])
+        for address in (self.evm_igp, self.oracle, self.hook, self.token, self.ism):
+            self.assertEqual(self.evm["contracts"][address], evm_before[address], address)
+        new_routes = {after["token_routes"][symbol]["dusk"]["route"] for symbol in ("EURd", "USDd")}
+        for line in self.traced("dusk-tx enroll-router"):
+            self.assertIn(line.split("--warp-contract ")[1].split()[0], new_routes)
+        self.assertEqual(self.traced("dusk-tx set-igp-config") + self.traced("dusk-tx set-beneficiary"), [])
+        # The record gets the deployer's key, which the routes' tokens name.
+        self.assertEqual(after["dusk_owner_key"], DEPLOYER_KEY_HEX)
+        self.assert_ok(self.run_script("agent-configs"))
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.route_sends(), [])
+
+    def test_a_deployment_without_token_routes_is_left_alone(self):
+        self.assert_ok(self.run_script("deploy"))
+        self.assertEqual(self.route_sends(), [])
+        self.assertNotIn("token_routes", self.state())
+
+
 class StateVersions(unittest.TestCase):
     """The state versions the tooling expects are the contracts' own."""
 
@@ -2667,7 +3691,9 @@ class AnvilEvmDeploy(unittest.TestCase):
                              .replace("REAL", shlex.quote(shutil.which(tool))))
         wasm = cls.root / "wasm"
         wasm.mkdir()
-        (wasm / "hyperlane_dusk_mailbox.wasm").write_bytes(b"\0asm")
+        for name in ("hyperlane_dusk_mailbox.wasm", "canonical_drc20_roles_pausable.wasm",
+                     "hyperlane_dusk_warp_drc20_collateral.wasm"):
+            (wasm / name).write_bytes(b"\0asm")
         keys = cls.root / "consensus.keys"
         keys.write_text("{}")
         (cls.root / "demo" / ".env.bridge").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in {
@@ -2683,7 +3709,7 @@ class AnvilEvmDeploy(unittest.TestCase):
         queries[f"{MULTISIG}/validators_and_threshold"] = {"value": {"validators": [ANVIL_VALIDATOR],
                                                                      "threshold": 1}}
         cls.chain.write_text(json.dumps({"queries": queries, "deployer_h256": DEPLOYER_H256,
-                                         "deploy": DUSK_CONTRACTS}))
+                                         "deployer_key": DEPLOYER_KEY_HEX, "deploy": DUSK_CONTRACTS}))
         cls.trace.write_text("")
 
     @classmethod
@@ -2763,6 +3789,51 @@ class AnvilEvmDeploy(unittest.TestCase):
         self.assertEqual(self.cast_ok("call", evm["token"], "totalSupply()(uint256)"), "0")
         # deploy never sent initialize in a transaction of its own.
         self.assertNotRegex(self.deploy_trace, r"cast send [^\n]*initialize")
+
+    def test_the_token_routes_tokens_are_created_as_the_dusk_token_is(self):
+        # deploy/testnet.env.example's EURd and USDd: each a HypERC20 of 6
+        # decimals and no scaling, behind an ERC1967Proxy that initialized it
+        # in the transaction that created it, with the route's hook and the
+        # EVM ISM, no supply, and its Dusk route enrolled.
+        evm = self.state["evm"]
+        routes = self.state["token_routes"]
+        self.assertEqual(list(routes), ["EURd", "USDd"])
+        for symbol, name in (("EURd", "Dusk Euro (testnet)"), ("USDd", "Dusk Dollar (testnet)")):
+            with self.subTest(route=symbol):
+                record = routes[symbol]["evm"]
+                token = record["token"]
+                receipt = json.loads(self.cast_ok("receipt", record["token_creation_tx"], "--json"))
+                self.assertEqual((receipt["status"], receipt["from"].lower(), receipt["contractAddress"].lower()),
+                                 ("0x1", ANVIL_DEPLOYER, token.lower()))
+                topics = [entry["topics"][0] for entry in receipt["logs"]
+                          if entry["address"].lower() == token.lower()]
+                self.assertEqual((topics[0], topics[-1]), (UPGRADED, INITIALIZED))
+                slot = self.cast_ok("storage", token,
+                                    "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
+                self.assertEqual("0x" + slot[-40:], record["token_implementation"].lower())
+                self.assertEqual(int(self.cast_ok("storage", token,
+                                                  "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"),
+                                     16), 0)
+                for signature, expected in (("name()(string)", f'"{name}"'), ("symbol()(string)", f'"{symbol}"'),
+                                            ("decimals()(uint8)", "6"), ("scaleNumerator()(uint256)", "1"),
+                                            ("scaleDenominator()(uint256)", "1"), ("totalSupply()(uint256)", "0")):
+                    self.assertEqual(self.cast_ok("call", token, signature), expected, signature)
+                for signature, expected in (("owner()(address)", ANVIL_DEPLOYER), ("hook()(address)", evm["route_hook"]),
+                                            ("interchainSecurityModule()(address)", evm["ism"])):
+                    self.assertEqual(self.cast_ok("call", token, signature).lower(), expected.lower(), signature)
+                self.assertEqual(self.cast_ok("call", token, "routers(uint32)(bytes32)", "1146442572"),
+                                 "0x" + routes[symbol]["dusk"]["route"])
+                # Nobody can initialize it again.
+                result = self.cast("send", token, "initialize(uint256,string,string,address,address,address)",
+                                   "1000000", name, symbol, "0x" + "00" * 20, ANVIL_ATTACKER, ANVIL_ATTACKER,
+                                   "--private-key", ANVIL_ATTACKER_KEY)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Initializable: contract is already initialized", result.stderr)
+        # A transfer to Dusk of either token pays the same as one of DUSK.
+        quotes = {self.cast_ok("call", record["evm"]["token"], "quoteGasPayment(uint32)(uint256)", "1146442572")
+                  for record in routes.values()}
+        quotes.add(self.cast_ok("call", evm["token"], "quoteGasPayment(uint32)(uint256)", "1146442572"))
+        self.assertEqual(len(quotes), 1, quotes)
 
     def test_the_other_evm_contracts_have_nothing_to_initialize(self):
         evm = self.state["evm"]
@@ -2910,7 +3981,7 @@ class AnvilEvmDeploy(unittest.TestCase):
         # checks looked at before. Its events still show the signer. Anvil
         # puts the chain back afterwards.
         igp, token = self.state["evm"]["igp"], self.state["evm"]["token"]
-        domain, gas = 1146442572, "2170000"
+        domain, gas = 1146442572, "2200000"
         testnet = str(self.root / "deploy" / "testnet.sh")
         snapshot = json.loads(self.cast_ok("rpc", "evm_snapshot"))
         try:

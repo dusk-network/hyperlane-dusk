@@ -177,12 +177,74 @@ dusk_value() {
     printf '%s' "$value"
 }
 dusk_tx() { DUSK_CONSENSUS_PASSWORD="$DUSK_CONSENSUS_PASSWORD" "$DUSK_TX" "$@"; }
-evm_call() { cast call "$@" --rpc-url "$EVM_RPC"; }
-# EVM_RPC can be a load balancer over nodes a block or two apart, such as the
+# EVM_RPC can be a load balancer over nodes a block or more apart, such as the
 # public Sepolia endpoints, so a read right after a write can reach a node
-# that hasn't seen it, and a check of what was just written fail. After each
-# write, evm_settle waits until the endpoint answers at or past the write's
-# block on three reads in a row, for up to EVM_SETTLE_SECONDS (120).
+# that hasn't seen it: a check of what was just written read the
+# implementation slot of a proxy just created as zero. So once this command
+# has written, every EVM read is made at a block, the newest of its last
+# write's and the head the endpoint reports, never at "latest": a node that
+# has that block answers with the write in it, and one that doesn't have it
+# yet refuses the read ("header not found"), which evm_read tries again. A
+# read before any write, or the first of a command, is at "latest".
+EVM_WRITE_BLOCK=""
+# Note the block of a transaction this command sent.
+evm_wrote() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]] || return 0
+    if [ -z "$EVM_WRITE_BLOCK" ] || [ "$1" -gt "$EVM_WRITE_BLOCK" ]; then
+        EVM_WRITE_BLOCK="$1"
+    fi
+}
+# The block EVM reads are made at: "latest" before this command's first
+# write, then the newest of that write's block and the head, so that a read
+# right before a write still sees as late a state as the endpoint can show.
+evm_read_block() {
+    local head
+    if [ -z "$EVM_WRITE_BLOCK" ]; then
+        echo latest
+        return 0
+    fi
+    head="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || head=""
+    if [[ "$head" =~ ^[0-9]+$ ]] && [ "$head" -gt "$EVM_WRITE_BLOCK" ]; then
+        echo "$head"
+    else
+        echo "$EVM_WRITE_BLOCK"
+    fi
+}
+# Run an EVM read, a cast command that takes --block, at evm_read_block's
+# block. Once this command has written, a read that fails for anything but
+# a revert is tried again, at a block looked up again, for up to
+# EVM_SETTLE_SECONDS (120): it reached a node that doesn't have the block
+# yet. A revert is the contract's answer, at any block. Prints the read's
+# output, or its error.
+evm_read() {
+    local block out errors deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    block="$(evm_read_block)"
+    if [ "$block" = latest ]; then
+        "$@" --rpc-url "$EVM_RPC"
+        return
+    fi
+    errors="$(mktemp)" || return 1
+    while :; do
+        if out="$("$@" --block "$block" --rpc-url "$EVM_RPC" 2>"$errors")"; then
+            rm -f "$errors"
+            printf '%s\n' "$out"
+            return 0
+        fi
+        if grep -qi 'revert' "$errors" || [ "$SECONDS" -ge "$deadline" ]; then
+            cat "$errors" >&2
+            rm -f "$errors"
+            return 1
+        fi
+        sleep 1
+        block="$(evm_read_block)"
+    done
+}
+evm_call() { evm_read cast call "$@"; }
+# After each write, evm_settle also waits until the endpoint answers at or
+# past the write's block on three reads in a row, for up to
+# EVM_SETTLE_SECONDS (120), so that the next transaction is less likely to
+# get its nonce from a node that hasn't seen this one (evm_next_nonce reads
+# it three times, and evm_submit fails rather than send anything again).
 evm_settle() {
     local block="$1" seen=0 now deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
     [[ "$block" =~ ^[0-9]+$ ]] || fail "No block number to wait for on $EVM_CHAIN_NAME"
@@ -199,22 +261,133 @@ evm_settle() {
         sleep 2
     done
 }
-# The block a transaction is in, once EVM_RPC has its receipt, waiting as
-# evm_settle does.
-evm_tx_block() {
-    local tx="$1" block deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+# A transaction's receipt, as `cast receipt` prints it (with a field or
+# --json), waiting as evm_settle does while EVM_RPC doesn't have it: the
+# node that answers may not have seen the transaction yet. Prints the last
+# error if it never does.
+evm_receipt() {
+    local tx="$1" out deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    shift
     while :; do
-        block="$(cast receipt "$tx" blockNumber --rpc-url "$EVM_RPC" 2>/dev/null)" && block="$(evm_block_number "$block")" \
-            && [[ "$block" =~ ^[0-9]+$ ]] && { printf '%s' "$block"; return 0; }
+        out="$(cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" 2>/dev/null)" && [ -n "$out" ] \
+            && { printf '%s\n' "$out"; return 0; }
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" >/dev/null
+            return 1
+        fi
+        sleep 2
+    done
+}
+# The block a transaction is in, once EVM_RPC has its receipt.
+evm_tx_block() {
+    local block
+    block="$(evm_receipt "$1" blockNumber 2>/dev/null)" && block="$(evm_block_number "$block")" \
+        && [[ "$block" =~ ^[0-9]+$ ]] && printf '%s' "$block"
+}
+# The deployer's next nonce on the EVM chain: the highest of three reads of
+# its pending nonce, as each node behind a load-balanced EVM_RPC can be
+# behind. Every transaction deploy sends carries the nonce it was given, so
+# that what took that nonce can be told afterwards.
+evm_next_nonce() {
+    local deployer read best="" i
+    deployer="$(evm_deployer)" || return 1
+    for i in 1 2 3; do
+        read="$(cast nonce "$deployer" --block pending --rpc-url "$EVM_RPC" 2>/dev/null)" || continue
+        [[ "$read" =~ ^[0-9]+$ ]] || continue
+        if [ -z "$best" ] || [ "$read" -gt "$best" ]; then best="$read"; fi
+    done
+    [ -n "$best" ] || return 1
+    printf '%s' "$best"
+}
+# evm_submit <nonce> <creation input, or empty> <command...>: run a command
+# that sends one EVM transaction (cast send, forge create) with the nonce it
+# carries (--nonce). Nothing is ever sent again: a node's "nonce too low"
+# doesn't show the transaction was refused, as a gateway that sent it on and
+# then answered a replay of the request reports it so. A creation is taken
+# if the deployer's transaction with its nonce is that very creation, which
+# executed and created the contract at the address the nonce gives
+# (evm_adopt_creation); otherwise, and for any other transaction, it fails,
+# for deploy to be run again, which reads the chain afresh and skips what is
+# done. Prints the command's output, or an adopted creation's receipt.
+evm_submit() {
+    local nonce="$1" input="$2" from out errors receipt
+    shift 2
+    from="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || from=""
+    errors="$(mktemp)" || return 1
+    if out="$("$@" 2>"$errors")"; then
+        cat "$errors" >&2
+        rm -f "$errors"
+        printf '%s\n' "$out"
+        return 0
+    fi
+    if grep -qi 'nonce too low' "$errors"; then
+        if [ -n "$input" ] && receipt="$(evm_adopt_creation "$nonce" "$input" "$from")"; then
+            rm -f "$errors"
+            info "$EVM_CHAIN_NAME answered the creation with \"nonce too low\", but the deployer's transaction with its nonce $nonce is that very creation, executed: taking it"
+            printf '%s\n' "$receipt"
+            return 0
+        fi
+        cat "$errors" >&2
+        rm -f "$errors"
+        echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\", which doesn't show whether it was sent on, and the deployer's transaction with that nonce isn't it: nothing was sent again. Run deploy again: it reads what is on chain afresh and skips what is done." >&2
+        return 1
+    fi
+    cat "$errors" >&2
+    rm -f "$errors"
+    printf '%s\n' "$out"
+    return 1
+}
+# The transaction <sender> sent with <nonce>, as `cast block --full --json`
+# shows it, in a block from <from block> to the head, waiting up to
+# EVM_SETTLE_SECONDS for EVM_RPC to show it.
+evm_sent_with_nonce() {
+    local sender="$1" nonce="$2" block="$3" head txs found deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    sender="$(lower "$sender")"
+    while :; do
+        head="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || head=""
+        while [[ "$head" =~ ^[0-9]+$ ]] && [ "$block" -le "$head" ]; do
+            txs="$(cast block "$block" --full --json --rpc-url "$EVM_RPC" 2>/dev/null)" || break
+            found="$(jq -c --arg s "$sender" --arg n "$nonce" --arg h "$(printf '0x%x' "$nonce")" \
+                '.transactions[]? | select(((.from // "") | ascii_downcase) == $s
+                    and ((.nonce | tostring | ascii_downcase) as $v | $v == $n or $v == $h))' <<<"$txs" 2>/dev/null | head -1)"
+            if [ -n "$found" ]; then
+                printf '%s\n' "$found"
+                return 0
+            fi
+            block=$((block + 1))
+        done
         [ "$SECONDS" -lt "$deadline" ] || return 1
         sleep 2
     done
 }
+# The receipt of the deployer's transaction with <nonce>, if it is the
+# creation <input>, sent from block <from block> on: it executed, and created
+# the contract at the address the deployer and the nonce give, which has code.
+evm_adopt_creation() {
+    local nonce="$1" input="$2" from="$3" deployer address tx receipt
+    [[ "$from" =~ ^[0-9]+$ ]] || return 1
+    deployer="$(evm_deployer)" || return 1
+    address="$(cast compute-address "$deployer" --nonce "$nonce" 2>/dev/null | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)"
+    [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || return 1
+    tx="$(evm_sent_with_nonce "$deployer" "$nonce" "$from")" || return 1
+    jq -e --arg i "$(lower "$input")" '(.to == null) and ((.input // .data // "") | ascii_downcase) == $i' \
+        <<<"$tx" >/dev/null || return 1
+    receipt="$(evm_receipt "$(jq -r .hash <<<"$tx")" --json)" || return 1
+    jq -e --arg a "$(lower "$address")" \
+        '(.status | tostring | test("^(0x)?1$")) and ((.contractAddress // "") | ascii_downcase) == $a' \
+        <<<"$receipt" >/dev/null || return 1
+    evm_wrote "$(evm_block_number "$(jq -r '.blockNumber' <<<"$receipt")")"
+    evm_has_code "$address" || return 1
+    printf '%s\n' "$receipt"
+}
 evm_send() {
-    local receipt block
-    receipt="$(cast send "$@" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
+    local receipt block nonce
+    nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+    receipt="$(evm_submit "$nonce" "" cast send "$@" --nonce "$nonce" --rpc-url "$EVM_RPC" \
+        --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
     jq -e '.status | tostring | test("^(0x)?1$")' <<<"$receipt" >/dev/null || return 1
     block="$(evm_block_number "$(jq -r '.blockNumber' <<<"$receipt")")" || return 1
+    evm_wrote "$block"
     evm_settle "$block"
 }
 # A number `cast call` returns, without the scientific form it adds.
@@ -223,9 +396,11 @@ evm_number() { local out; out="$(evm_call "$@")" || return 1; awk 'NR == 1 {prin
 # rather than count as either.
 evm_has_code() {
     local code
-    code="$(cast code "$1" --rpc-url "$EVM_RPC")" || fail "Can't read the code at $1 on $EVM_CHAIN_NAME"
+    code="$(evm_read cast code "$1")" || fail "Can't read the code at $1 on $EVM_CHAIN_NAME"
     [ "$code" != "0x" ]
 }
+# A storage slot of an EVM contract.
+evm_storage() { evm_read cast storage "$1" "$2"; }
 evm_deployer() { cast wallet address --private-key "$EVM_DEPLOYER_KEY"; }
 # Who deployed the EVM contracts: EVM_DEPLOYER_KEY's address, or, for a
 # command run without the key, the deployer deploy recorded.
@@ -239,21 +414,44 @@ evm_creator() {
         return 1
     fi
 }
-# Deploy a contract from the Hyperlane Solidity sources; prints its address.
+# forge_create <variable> <contract> [forge create arguments...]: deploy a
+# contract from the Hyperlane Solidity sources, and set <variable> to its
+# address. It runs in this shell, not in a command substitution, so that
+# the reads after it are made at its block (evm_wrote).
 forge_create() {
-    local contract="$1" created address tx block
-    shift
-    created="$(cd "$SOLIDITY_DIR" && forge create "$contract" --broadcast --json --rpc-url "$EVM_RPC" \
-        --private-key "$EVM_DEPLOYER_KEY" "$@")" || return 1
-    address="$(jq -r '.deployedTo // empty' <<<"$created")"
-    tx="$(jq -r '.transactionHash // empty' <<<"$created")"
-    [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] || return 1
+    local _fc_var="$1" _fc_contract="$2" _fc_created _fc_address _fc_tx _fc_block _fc_nonce _fc_input
+    shift 2
+    _fc_input="$(forge_creation_input "$_fc_contract" "$@")" \
+        || fail "Can't work out the creation code of $_fc_contract from $SOLIDITY_DIR"
+    _fc_nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+    _fc_created="$(cd "$SOLIDITY_DIR" && evm_submit "$_fc_nonce" "$_fc_input" forge create "$_fc_contract" \
+        --broadcast --json --nonce "$_fc_nonce" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" "$@")" \
+        || return 1
+    _fc_address="$(jq -r '.deployedTo // .contractAddress // empty' <<<"$_fc_created")"
+    _fc_tx="$(jq -r '.transactionHash // empty' <<<"$_fc_created")"
+    [[ "$_fc_address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$_fc_tx" =~ ^0x[0-9a-fA-F]{64}$ ]] || return 1
     # The contract exists whatever the endpoint shows next: return it so the
     # caller records it, and a re-run doesn't deploy it again.
-    if block="$(evm_tx_block "$tx")"; then
-        ( evm_settle "$block" ) || info "Going on without EVM_RPC showing $tx's block; a check that fails on it is safe to re-run"
+    printf -v "$_fc_var" '%s' "$_fc_address"
+    if _fc_block="$(evm_tx_block "$_fc_tx")"; then
+        evm_wrote "$_fc_block"
+        ( evm_settle "$_fc_block" ) || info "Going on without EVM_RPC showing $_fc_tx's block; a check that fails on it is safe to re-run"
     fi
-    printf '%s' "$address"
+}
+# What `forge create <contract> [--constructor-args <args...>]` sends: the
+# contract's creation code, then its constructor's arguments, ABI-encoded.
+forge_creation_input() {
+    local contract="$1" code types args=""
+    shift
+    [ "${1:-}" != --constructor-args ] || shift
+    code="$(cd "$SOLIDITY_DIR" && forge inspect "$contract" bytecode 2>/dev/null)" \
+        && [[ "$code" =~ ^0x[0-9a-fA-F]+$ ]] || return 1
+    if [ "$#" -gt 0 ]; then
+        types="$(cd "$SOLIDITY_DIR" && forge inspect "$contract" abi --json 2>/dev/null \
+            | jq -r '[.[] | select(.type == "constructor") | .inputs[].type] | join(",")')" || return 1
+        args="$(cast abi-encode "constructor($types)" "$@")" && [[ "$args" =~ ^0x[0-9a-fA-F]*$ ]] || return 1
+    fi
+    printf '%s%s' "$code" "${args#0x}"
 }
 # ERC1967Proxy's creation code, from the OpenZeppelin release Hyperlane's
 # Solidity sources build with.
@@ -274,19 +472,21 @@ evm_proxy_creation_code() {
 # for good (docs/security.md, HIGH-8). The proxies have no admin, and
 # neither implementation can upgrade itself, so they stay what they are.
 #
-# deploy_evm_proxied <key> <label> <implementation> <initialize calldata>
-#     [forge create arguments for the implementation...]
-# deploys the implementation, unless .evm.<key>_implementation records one,
-# then the proxy, and records .evm.<key> and .evm.<key>_creation_tx.
+# deploy_evm_proxied <base> <key> <label> <implementation>
+#     <initialize calldata> [forge create arguments for the implementation...]
+# deploys the implementation, unless <base>.<key>_implementation records one,
+# then the proxy, and records <base>.<key> and <base>.<key>_creation_tx.
+# <base> is where $STATE keeps the contract: .evm, or a token route's
+# .token_routes["SYMBOL"].evm.
 deploy_evm_proxied() {
-    local key="$1" label="$2" contract="$3" init="$4" impl code args receipt address tx
-    shift 4
+    local base="$1" key="$2" label="$3" contract="$4" init="$5" impl code args receipt address tx block nonce
+    shift 5
     [[ "$init" =~ ^0x[0-9a-fA-F]{8,}$ ]] || fail "No initialize call for the $label"
-    impl="$(state_get ".evm.${key}_implementation")"
+    impl="$(state_get "$base.${key}_implementation")"
     if [ -z "$impl" ]; then
         info "Deploying the $label's implementation on $EVM_CHAIN_NAME..."
-        impl="$(forge_create "$contract" "$@")" || fail "$label implementation deployment failed"
-        state_set --arg k "${key}_implementation" --arg i "$impl" '.evm[$k] = $i'
+        forge_create impl "$contract" "$@" || fail "$label implementation deployment failed"
+        state_set --arg i "$impl" "$base.${key}_implementation = \$i"
     fi
     evm_has_code "$impl" || fail "No $label implementation at $impl, which $STATE records"
     code="$(evm_proxy_creation_code)" && [[ "$code" =~ ^0x[0-9a-fA-F]+$ ]] \
@@ -294,16 +494,19 @@ deploy_evm_proxied() {
     args="$(cast abi-encode "constructor(address,bytes)" "$impl" "$init")" \
         || fail "Can't encode the $label proxy's constructor arguments"
     info "Deploying the $label behind an ERC1967Proxy that initializes it in the same transaction..."
-    receipt="$(cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json --create "$code${args#0x}")" \
-        || fail "$label deployment failed"
+    nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+    receipt="$(evm_submit "$nonce" "$code${args#0x}" cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" \
+        --json --nonce "$nonce" --create "$code${args#0x}")" || fail "$label deployment failed"
     address="$(jq -r '.contractAddress // empty' <<<"$receipt")"
     tx="$(jq -r '.transactionHash // empty' <<<"$receipt")"
     [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] \
         || fail "$label deployment returned no contract address and transaction hash"
-    state_set --arg k "$key" --arg a "$address" --arg t "$tx" --arg d "$(evm_deployer)" \
-        '.evm[$k] = $a | .evm[$k + "_creation_tx"] = $t | .evm.deployer = $d'
-    evm_settle "$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$receipt")")"
-    check_evm_creation "$key" "$label"
+    state_set --arg a "$address" --arg t "$tx" --arg d "$(evm_deployer)" \
+        "$base.$key = \$a | $base.${key}_creation_tx = \$t | .evm.deployer = \$d"
+    block="$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$receipt")")"
+    evm_wrote "$block"
+    evm_settle "$block"
+    check_evm_creation "$base" "$key" "$label"
 }
 
 # Prove from the receipt of the transaction that created the recorded
@@ -315,14 +518,14 @@ deploy_evm_proxied() {
 # ERC1967Proxy has none, and a proxy whose admin can upgrade it isn't one
 # this deployment created.
 check_evm_creation() {
-    local key="$1" label="$2" address tx impl creator receipt slot
-    address="$(state_get ".evm.$key")"
+    local base="$1" key="$2" label="$3" address tx impl creator receipt slot
+    address="$(state_get "$base.$key")"
     [ -n "$address" ] || return 0
-    tx="$(state_get ".evm.${key}_creation_tx")" impl="$(state_get ".evm.${key}_implementation")"
+    tx="$(state_get "$base.${key}_creation_tx")" impl="$(state_get "$base.${key}_implementation")"
     [ -n "$tx" ] && [ -n "$impl" ] \
         || fail "$STATE records the EVM $label $address without the transaction that created and initialized it. An older deploy/testnet.sh initialized it in a second transaction, which anyone could send first, and so choose its owner, its beneficiary or its pricing (docs/security.md, HIGH-8). Move $OUT_DIR aside and deploy again."
     creator="$(evm_creator)" || exit 1
-    receipt="$(cast receipt "$tx" --json --rpc-url "$EVM_RPC")" \
+    receipt="$(evm_receipt "$tx" --json)" \
         || fail "Can't read the receipt of $tx, which created the EVM $label $address"
     jq -e --arg a "$(lower "$address")" --arg c "$(lower "$creator")" --arg i "$(pad32 "$impl")" \
         --arg upgraded "$UPGRADED_TOPIC" --arg initialized "$INITIALIZED_TOPIC" '
@@ -334,93 +537,155 @@ check_evm_creation() {
                 and ((.topics[1] // "") | ascii_downcase | ltrimstr("0x")) == $i)
         and any(.logs[]; mine and .topics[0] == $initialized)' <<<"$receipt" >/dev/null \
         || fail "The EVM $label $address wasn't initialized in the transaction that created it: $tx isn't the EVM deployer $creator creating it as a proxy of $impl and initializing it. Whoever initialized it chose its owner (docs/security.md, HIGH-8). Move $OUT_DIR aside and deploy again."
-    slot="$(cast storage "$address" "$IMPLEMENTATION_SLOT" --rpc-url "$EVM_RPC")" \
+    slot="$(evm_storage "$address" "$IMPLEMENTATION_SLOT")" \
         || fail "Can't read the implementation of the EVM $label $address"
     [ "$(lower "0x${slot: -40}")" = "$(lower "$impl")" ] \
         || fail "The EVM $label $address runs the implementation 0x${slot: -40}, not $impl, which it was created with"
-    slot="$(cast storage "$address" "$ADMIN_SLOT" --rpc-url "$EVM_RPC")" \
+    slot="$(evm_storage "$address" "$ADMIN_SLOT")" \
         || fail "Can't read the proxy admin of the EVM $label $address"
     [[ "$slot" =~ ^0x0{64}$ ]] \
         || fail "The EVM $label $address has the proxy admin 0x${slot: -40}, which can change its code: this deployment's ERC1967Proxy has no admin. Move $OUT_DIR aside and deploy again."
 }
 
 # The EVM contracts deploy initializes: our IGP, once the state records its
-# oracle (before, .evm.igp was Hyperlane's), and the token, which must also
-# be bound to this deployment (check_evm_token_binding).
+# oracle (before, .evm.igp was Hyperlane's), and each route's token, which
+# must also be bound to this deployment (check_evm_token_binding).
 check_evm_creations() {
-    [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_creation igp IGP
-    check_evm_creation token "DUSK token"
-    check_evm_token_binding
+    local route
+    [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_creation .evm igp IGP
+    for route in $(recorded_routes); do
+        check_evm_creation "$(route_evm_base "$route")" token "$(route_symbol "$route") token"
+        check_evm_token_binding "$route"
+    done
 }
 
-# The recorded token must be this deployment's route on the EVM chain: bound
-# to EVM_MAILBOX (a HypERC20's mailbox() is fixed in its implementation),
-# verifying messages from Dusk with the ISM recorded in $STATE, a
-# MessageIdMultisig ISM of DUSK_ORIGIN_VALIDATORS and DUSK_ORIGIN_THRESHOLD
-# that lists each validator once, and routed to the recorded Dusk route or
-# to none yet (check_evm_token_router). A token another deployment of the
-# same deployer created, the same way, passes the creation checks; this
-# keeps every command from adopting it, and deploy from rewiring it, before
-# either uses it.
+# ── Routes ───────────────────────────────────────────────────────────────────
+#
+# A route is the native DUSK route, `native`, or a token route,
+# `token:SYMBOL`, for a token issued on Dusk (TOKEN_ROUTES). Each is a route
+# on Dusk and a HypERC20 on the EVM chain, which $STATE records as:
+#
+#   native        .dusk.warp_native                .evm.token, .evm.token_*
+#   token:SYMBOL  .token_routes.SYMBOL.dusk.route  .token_routes.SYMBOL.evm.token, ...
+#
+# with a token route's settings, its token on Dusk and the deploy nonces
+# under .token_routes.SYMBOL too.
+
+# The routes of the recorded deployment: the native one, then each token
+# route deploy finished on Dusk, in the record's order.
+recorded_routes() {
+    echo native
+    state_json | jq -r '.token_routes // {} | to_entries[] | select(.value.dusk.read_back == true) | "token:" + .key'
+}
+route_symbol() { if [ "$1" = native ]; then echo DUSK; else echo "${1#token:}"; fi; }
+# Where $STATE keeps the route's Dusk route ID, and its EVM token.
+route_path() { if [ "$1" = native ]; then echo '.dusk.warp_native'; else echo ".token_routes[\"${1#token:}\"].dusk.route"; fi; }
+route_evm_base() { if [ "$1" = native ]; then echo '.evm'; else echo ".token_routes[\"${1#token:}\"].evm"; fi; }
+# The route as messages name it: the Dusk route, or the Dusk EURd route.
+route_name() { if [ "$1" = native ]; then echo "route"; else echo "${1#token:} route"; fi; }
+# Each route's token on the EVM chain, one a line, as $STATE records them.
+recorded_evm_tokens() {
+    local route token
+    for route in $(recorded_routes); do
+        token="$(state_get "$(route_evm_base "$route").token")"
+        [ -z "$token" ] || echo "$token"
+    done
+}
+# What the route's EVM token was initialized with, NAME|SYMBOL|DECIMALS:
+# the DUSK token's, or the token route's settings.
+route_token_metadata() {
+    if [ "$1" = native ]; then
+        echo "Dusk|DUSK|9"
+    else
+        state_json | jq -r --arg s "${1#token:}" '.token_routes[$s] | "\(.name)|\(.symbol)|\(.decimals)"'
+    fi
+}
+
+# The route's recorded token must be this deployment's route on the EVM
+# chain: bound to EVM_MAILBOX (a HypERC20's mailbox() is fixed in its
+# implementation), verifying messages from Dusk with the ISM recorded in
+# $STATE, a MessageIdMultisig ISM of DUSK_ORIGIN_VALIDATORS and
+# DUSK_ORIGIN_THRESHOLD that lists each validator once, with the name,
+# symbol and decimals deploy initialized it with and no scaling (Dusk's
+# routes move amounts as they are, in the token's smallest unit), and routed
+# to the recorded Dusk route or to none yet (check_evm_token_router). A
+# token another deployment of the same deployer created, the same way,
+# passes the creation checks; this keeps every command from adopting it,
+# and deploy from rewiring it, before either uses it.
 check_evm_token_binding() {
-    local token mailbox ism recorded type policy validators repeated threshold expected
-    token="$(state_get '.evm.token')"
+    local route="$1" label token mailbox ism recorded type policy validators repeated threshold expected
+    local metadata name symbol decimals value
+    token="$(state_get "$(route_evm_base "$route").token")"
     [ -n "$token" ] || return 0
+    label="EVM $(route_symbol "$route") token"
     require DUSK_ORIGIN_VALIDATORS DUSK_ORIGIN_THRESHOLD
-    mailbox="$(evm_call "$token" "mailbox()(address)")" || fail "Can't read the Mailbox of the EVM DUSK token $token"
+    mailbox="$(evm_call "$token" "mailbox()(address)")" || fail "Can't read the Mailbox of the $label $token"
     [ "$(lower "$mailbox")" = "$(lower "$EVM_MAILBOX")" ] \
-        || fail "The EVM DUSK token $token sends and takes its messages through the Mailbox $mailbox, not EVM_MAILBOX $EVM_MAILBOX: it is another deployment's. Move $OUT_DIR aside and deploy again."
+        || fail "The $label $token sends and takes its messages through the Mailbox $mailbox, not EVM_MAILBOX $EVM_MAILBOX: it is another deployment's. Move $OUT_DIR aside and deploy again."
     ism="$(evm_call "$token" "interchainSecurityModule()(address)")" \
-        || fail "Can't read the ISM of the EVM DUSK token $token"
+        || fail "Can't read the ISM of the $label $token"
     recorded="$(state_get '.evm.ism')"
     [ "$(lower "$ism")" = "$(lower "$recorded")" ] \
-        || fail "The EVM DUSK token $token verifies messages from Dusk with the ISM $ism, not $recorded recorded in $STATE"
+        || fail "The $label $token verifies messages from Dusk with the ISM $ism, not $recorded recorded in $STATE"
     type="$(evm_number "$ism" "moduleType()(uint8)")" || fail "Can't read the module type of the EVM ISM $ism"
     [ "$type" = "$MESSAGE_ID_MULTISIG_ISM" ] \
-        || fail "The EVM DUSK token's ISM $ism is of module type $type; it must be a MessageIdMultisig ISM ($MESSAGE_ID_MULTISIG_ISM)"
+        || fail "The $label's ISM $ism is of module type $type; it must be a MessageIdMultisig ISM ($MESSAGE_ID_MULTISIG_ISM)"
     policy="$(evm_call "$ism" "validatorsAndThreshold(bytes)(address[],uint8)" 0x)" \
         || fail "Can't read the validators and threshold of the EVM ISM $ism"
     validators="$(sed -n 1p <<<"$policy" | tr -d '[] ')"
     repeated="$(repeated_addresses "$validators")"
     [ -z "$repeated" ] \
-        || fail "The EVM DUSK token's ISM $ism lists [$repeated] more than once among its validators. A MessageIdMultisig ISM counts a signature for each place its validator is listed, so fewer than DUSK_ORIGIN_THRESHOLD validators can sign for a message. This deployment's ISM lists each once: it is another's. Move $OUT_DIR aside and deploy again."
+        || fail "The $label's ISM $ism lists [$repeated] more than once among its validators. A MessageIdMultisig ISM counts a signature for each place its validator is listed, so fewer than DUSK_ORIGIN_THRESHOLD validators can sign for a message. This deployment's ISM lists each once: it is another's. Move $OUT_DIR aside and deploy again."
     validators="$(sorted_addresses "$validators")"
     threshold="$(sed -n 2p <<<"$policy" | awk '{print $1}')"
     expected="$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")"
     [ "$validators" = "$expected" ] && [ "$threshold" = "$DUSK_ORIGIN_THRESHOLD" ] \
-        || fail "The EVM DUSK token's ISM $ism needs $threshold of [$validators], but DUSK_ORIGIN_THRESHOLD and DUSK_ORIGIN_VALIDATORS say $DUSK_ORIGIN_THRESHOLD of [$expected]"
-    check_evm_token_router "$token"
+        || fail "The $label's ISM $ism needs $threshold of [$validators], but DUSK_ORIGIN_THRESHOLD and DUSK_ORIGIN_VALIDATORS say $DUSK_ORIGIN_THRESHOLD of [$expected]"
+    metadata="$(route_token_metadata "$route")"
+    IFS='|' read -r name symbol decimals <<<"$metadata"
+    for expected in "name()(string)=$name" "symbol()(string)=$symbol" "decimals()(uint8)=$decimals" \
+        "scaleNumerator()(uint256)=1" "scaleDenominator()(uint256)=1"; do
+        if [[ "$expected" == *"(string)="* ]]; then
+            value="$(evm_call "$token" "${expected%%=*}" --json | jq -r '.[0] // empty')"
+        else
+            value="$(evm_number "$token" "${expected%%=*}")"
+        fi || fail "Can't read the ${expected%%(*} of the $label $token"
+        [ "$value" = "${expected#*=}" ] \
+            || fail "The $label $token's ${expected%%(*} is '$value', not '${expected#*=}', which deploy initialized it with: it is another deployment's, or another token's. Move $OUT_DIR aside and deploy again."
+    done
+    check_evm_token_router "$route" "$token"
 }
 
-# The token's router for Dusk must be the Dusk route recorded in $STATE, or
-# none yet, and with none the token must have no supply. Deployments by the
-# same deployer through the same Mailbox and validators share the ISM, so
-# another deployment's token passes the binding checks; its router is that
-# deployment's route, whose custody backs its supply. Enrolling this route
-# on it would let those tokens be redeemed for this route's DUSK, and so
-# would supply minted before any route was enrolled, which nothing backs.
-# deploy creates the token with no supply and enrolls the route after it,
-# so a new or resumed deployment passes. Runs at preflight, and again right
-# before deploy writes to the token. Sets EVM_TOKEN_ROUTER to the router it
-# read.
+# The token's router for Dusk must be its route's Dusk route recorded in
+# $STATE, or none yet, and with none the token must have no supply.
+# Deployments by the same deployer through the same Mailbox and validators
+# share the ISM, so another deployment's token passes the binding checks;
+# its router is that deployment's route, whose custody backs its supply.
+# Enrolling this route on it would let those tokens be redeemed for what
+# this route holds, and so would supply minted before any route was
+# enrolled, which nothing backs. deploy creates each token with no supply
+# and enrolls its route after it, so a new or resumed deployment passes.
+# Runs at preflight, and again right before deploy writes to the token.
+# Sets EVM_TOKEN_ROUTER to the router it read.
 EVM_TOKEN_ROUTER=""
 check_evm_token_router() {
-    local token="$1" route router supply
+    local route="$1" token="$2" label dusk_route router supply
     EVM_TOKEN_ROUTER=""
-    route="$(lower "$(state_get '.dusk.warp_native')")"
+    label="EVM $(route_symbol "$route") token"
+    dusk_route="$(lower "$(state_get "$(route_path "$route")")")"
     router="$(evm_call "$token" "routers(uint32)(bytes32)" "$DUSK_DOMAIN")" \
-        || fail "Can't read the Dusk router of the EVM DUSK token $token"
+        || fail "Can't read the Dusk router of the $label $token"
     router="$(lower "$router")"
-    if [ -n "$route" ] && [ "$router" = "0x$route" ]; then
+    if [ -n "$dusk_route" ] && [ "$router" = "0x$dusk_route" ]; then
         EVM_TOKEN_ROUTER="$router"
         return 0
     fi
     [[ "$router" =~ ^0x0{64}$ ]] \
-        || fail "The EVM DUSK token $token is enrolled with the Dusk route ${router#0x}, not the route recorded in $STATE (${route:-none}): it is another deployment's, and that route's DUSK backs its tokens. Move $OUT_DIR aside and deploy again."
+        || fail "The $label $token is enrolled with the Dusk route ${router#0x}, not the route recorded in $STATE (${dusk_route:-none}): it is another deployment's, or another route's, and that route's custody backs its tokens. Move $OUT_DIR aside and deploy again."
     supply="$(evm_number "$token" "totalSupply()(uint256)")" && [[ "$supply" =~ ^[0-9]+$ ]] \
-        || fail "Can't read the supply of the EVM DUSK token $token"
+        || fail "Can't read the supply of the $label $token"
     [ "$supply" = 0 ] \
-        || fail "The EVM DUSK token $token has a supply of $supply but no Dusk route: nothing on Dusk backs those tokens, and enrolling this deployment's route would let them be redeemed for its DUSK. deploy creates the token with none. Move $OUT_DIR aside and deploy again."
+        || fail "The $label $token has a supply of $supply but no Dusk route: nothing on Dusk backs those tokens, and enrolling this deployment's route would let them be redeemed for what it holds. deploy creates the token with none. Move $OUT_DIR aside and deploy again."
     EVM_TOKEN_ROUTER="$router"
 }
 
@@ -480,6 +745,7 @@ compute_fees() {
         DUSK_RELAYER_GAS_LIMIT="$DUSK_RELAYER_GAS_LIMIT" EVM_ORIGIN_THRESHOLD="$EVM_ORIGIN_THRESHOLD" \
         DUSK_ORIGIN_THRESHOLD="${DUSK_ORIGIN_THRESHOLD:-}" \
         DUSK_ORIGIN_VALIDATOR_COUNT="$(count_addresses "${DUSK_ORIGIN_VALIDATORS:-}")" \
+        TOKEN_ROUTE_COUNT="$(token_route_count)" \
         EVM_DOMAIN="$EVM_DOMAIN" DUSK_DOMAIN="$DUSK_DOMAIN" EVM_CHAIN_NAME="$EVM_CHAIN_NAME" <<'PY'
 import json, re, sys
 from fractions import Fraction
@@ -494,11 +760,23 @@ LUX, WEI = 10**9, 10**18         # per DUSK, per ETH
 DEFAULT_GAS = 50_000             # the Dusk IGP's gas for a message without hook metadata
 IGP_MAX_GAS_LIMIT = 10**9        # the largest gas limit the Dusk IGP prices
 # A route transfer's delivery on the EVM chain, Mailbox.process with an m-of-n
-# MessageId multisig ISM and HypERC20.handle: at most this. The local
-# rehearsal measured 140,569 gas at 2 of 3 (a StorageMessageIdMultisigIsm,
-# minting to a new holder); each signature and validator adds at most this.
-EVM_DELIVERY_BASE, EVM_DELIVERY_PER_SIGNATURE, EVM_DELIVERY_PER_VALIDATOR = 125_000, 7_500, 2_500
-DUSK_PROCESS_BASE, DUSK_PROCESS_PER_SIGNATURE = 1_950_000, 220_000
+# MessageId multisig ISM and a HypERC20's handle, as the relayer estimates it
+# (eth_estimateGas): at most this, plus this per signature and per
+# validator. A delivery stores a new delivery record, a mint to a new holder
+# a new balance, and a token's first mint a new supply. Sepolia charges
+# about 111,000 gas for each new storage slot (Anvil, and Sepolia before its
+# Glamsterdam upgrade, 22,100), so it estimated a delivery of a live
+# transfer, at 1 of 2, at 218,195 gas to a holder, 320,137 to a new one and
+# 424,972 as the token's first mint (docs/costs.md, Fee coverage). The
+# local rehearsal, on Anvil, measured 140,569 at 2 of 3.
+EVM_DELIVERY_BASE, EVM_DELIVERY_PER_SIGNATURE, EVM_DELIVERY_PER_VALIDATOR = 420_000, 7_500, 2_500
+# A relayed process on Dusk: at most this, plus this per signature the Dusk
+# ISM checks, the route's handle included. A token route's collateral route
+# pays out with its token's transfer, which costs more than the native
+# route's payout, so a deployment with token routes is priced at their base
+# (test_relayed_deliveries_cost_no_more_than_deploy_testnet_sh_prices: a
+# payout from a token route took 2,183,528 gas at 1 signature).
+DUSK_PROCESS_BASE_NATIVE, DUSK_PROCESS_BASE_TOKEN_ROUTE, DUSK_PROCESS_PER_SIGNATURE = 1_950_000, 1_980_000, 220_000
 
 def whole(name, low, high):
     raw = s.get(name, "")
@@ -576,12 +854,16 @@ if dusk_threshold and validators:
 # EVM -> Dusk: the route asks for no gas beyond the overhead, which must
 # cover a relayed `process` at EVM_ORIGIN_THRESHOLD signatures, the route's
 # handle included (docs/testnet.md, test_relayed_process_fits_the_relayer_gas_limit).
-dusk_process = DUSK_PROCESS_BASE + DUSK_PROCESS_PER_SIGNATURE * evm_threshold
+token_routes = int(s["TOKEN_ROUTE_COUNT"] or 0)
+dusk_process_base = DUSK_PROCESS_BASE_TOKEN_ROUTE if token_routes else DUSK_PROCESS_BASE_NATIVE
+dusk_process = dusk_process_base + DUSK_PROCESS_PER_SIGNATURE * evm_threshold
 if evm_overhead < dusk_process:
     errors.append(
         f"EVM_IGP_GAS_OVERHEAD is {evm_overhead:,}, but a relayed process with "
         f"EVM_ORIGIN_THRESHOLD {evm_threshold} takes about {dusk_process:,} Dusk gas "
-        f"({DUSK_PROCESS_BASE:,} plus {DUSK_PROCESS_PER_SIGNATURE:,} per signature). Raise it.")
+        f"({dusk_process_base:,} plus {DUSK_PROCESS_PER_SIGNATURE:,} per signature"
+        + (", for a payout from a token route, which the deployment has" if token_routes else "")
+        + "). Raise it.")
 if evm_overhead > relayer_limit:
     errors.append(
         f"EVM_IGP_GAS_OVERHEAD ({evm_overhead:,}) is above the relayer's gas limit "
@@ -626,6 +908,9 @@ result = {
         "gas_cost_lux": str(evm_overhead * dusk_gas_price),
         "gas_cost_wei": str(int(evm_overhead * dusk_gas_price * WEI / (ratio * LUX))),
         "delivery_gas": dusk_process,
+        # The costliest route the price covers: a token route's payout, or
+        # the native route's.
+        "costliest_route": "token" if token_routes else "native",
     },
     "relayer": {
         # Dusk-origin: what was paid for, priced with the margin, must cover
@@ -672,7 +957,8 @@ def summary(r):
         f"{amount(int(e['gas_cost_lux']), 9)} DUSK, {amount(int(e['gas_cost_wei']), 18)} ETH, at these prices, "
         f"plus the margin",
         f"  a relayed process at EVM_ORIGIN_THRESHOLD {evm_threshold} takes up to about "
-        f"{e['delivery_gas']:,} gas",
+        f"{e['delivery_gas']:,} gas"
+        + (f" (a payout from a token route, the costliest of the {token_routes + 1} routes)" if token_routes else ""),
         "",
         "The relayer (agent-configs) relays any message, once it is paid for:",
         f"  from Dusk: its Dusk IGP payment covers {rel['dusk_origin_gas_fraction']} of the "
@@ -790,10 +1076,18 @@ check_dusk_deployment() {
 DUSK_READ_BACK="" DUSK_READ_BACK_OF=""
 dusk_read_back() {
     DUSK_READ_BACK="$1"
-    DUSK_READ_BACK_OF="$(jq -cnS --argjson d "$2" --arg o "$3" '{dusk: $d, owner: $o}')"
+    DUSK_READ_BACK_OF="$(dusk_read_back_record "$2" "$3")"
+}
+# What a read-back covers: the core contracts and the native route, each
+# token route deploy finished on Dusk, and the owner.
+dusk_read_back_record() {
+    state_json | jq -cS --argjson d "$1" --arg o "$2" \
+        '{dusk: $d, owner: $o, owner_key: (.dusk_owner_key // ""),
+          token_routes: (.token_routes // {} | with_entries(select(.value.dusk.read_back == true))
+                         | map_values({name, symbol, decimals, supply, dusk, token: .evm.token}))}'
 }
 check_recorded_dusk_contracts() {
-    local mailbox name contract owner contracts record
+    local mailbox name contract owner contracts record route owner_key
     mailbox="$(state_get '.dusk.mailbox')"
     for name in igp protocol_fee; do
         contract="$(state_get ".dusk.$name")"
@@ -801,14 +1095,49 @@ check_recorded_dusk_contracts() {
         check_dusk_hook_binding "$name" "$contract" "$mailbox"
     done
     contracts="$(state_json | jq -c '.dusk')"
-    record="$(jq -cnS --argjson d "$contracts" --arg o "$(state_get '.dusk_owner')" '{dusk: $d, owner: $o}')"
+    record="$(dusk_read_back_record "$contracts" "$(state_get '.dusk_owner')")"
     if [ "$DUSK_READ_BACK_OF" = "$record" ] \
         && { [ "$DUSK_READ_BACK" = keys ] || [ "${1:-}" != keys ]; }; then
         return 0
     fi
     owner="$(recorded_dusk_owner "${1:-}")" || exit 1
     check_dusk_contracts "$contracts" "$owner" recorded
+    for route in $(recorded_routes); do
+        [ "$route" != native ] || continue
+        owner_key="$(recorded_dusk_owner_key "$owner")" || exit 1
+        check_dusk_token_route "$route" "$owner" "$owner_key" recorded
+    done
     dusk_read_back "${1:-owner}" "$contracts" "$owner"
+}
+
+# DUSK_KEYS's account, as `dusk-tx account` prints it: its address, public
+# key and hash.
+deployer_identity() {
+    local out
+    out="$(dusk_tx account --offline --keys "$DUSK_KEYS" 2>/dev/null)" \
+        && jq -e '(.account_h256 | test("^[0-9a-f]{64}$")) and (.public_key | test("^[0-9a-f]{192}$"))' \
+            <<<"$out" >/dev/null 2>&1 \
+        || { echo "[FAIL] Can't read the account of DUSK_KEYS $DUSK_KEYS: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)" >&2; return 1; }
+    printf '%s' "$out"
+}
+
+# The public key of the owner of the recorded Dusk contracts, whose hash is
+# `owner`. A token route's canonical DRC20 names its admin by the key, not
+# the hash, so deploy records it (.dusk_owner_key) before its first token
+# route. Its hash must be the owner's.
+recorded_dusk_owner_key() {
+    local owner="$1" key out
+    key="$(state_get '.dusk_owner_key')"
+    [[ "$key" =~ ^[0-9a-f]{192}$ ]] || {
+        echo "[FAIL] $STATE records token routes but not the public key of their owner (.dusk_owner_key), which their tokens name as admin. Run deploy, which records it from DUSK_KEYS." >&2
+        return 1
+    }
+    out="$("$DUSK_TX" account --offline --public-key "$key" 2>/dev/null)" \
+        && [ "$(jq -r '.account_h256 // empty' <<<"$out" 2>/dev/null)" = "$owner" ] || {
+        echo "[FAIL] $STATE records the Dusk contracts' owner as the account with hash $owner, but its key $key as another's" >&2
+        return 1
+    }
+    printf '%s' "$key"
 }
 
 # The account hash of DUSK_KEYS: the owner dusk-tx deploy-hyperlane gives
@@ -1007,6 +1336,301 @@ check_evm_deployment() {
     check_evm_creations
 }
 
+# ── Token routes ─────────────────────────────────────────────────────────────
+#
+# TOKEN_ROUTES lists tokens issued on Dusk that get a route to the EVM chain,
+# one a line, SYMBOL|NAME|DECIMALS|SUPPLY (deploy/testnet.env.example). Each
+# is the pinned canonical DRC20 on Dusk, with DUSK_KEYS its admin, holding
+# every role and the initial SUPPLY, locked by a WarpDrc20Collateral bound
+# to the deployment's Mailbox, and on the EVM chain a synthetic HypERC20 of
+# the same name, symbol and decimals. deploy finishes every token route
+# $STATE records and adds those TOKEN_ROUTES lists that it doesn't, and
+# leaves the rest of the deployment as it is.
+
+# The deploy nonce of the first token route's DRC20: the core contracts take
+# 0 to 9. Each route takes two, its token's and the next for its route.
+TOKEN_ROUTE_FIRST_NONCE=10
+# The largest supply a canonical DRC20 holds: a u64.
+U64_MAX=18446744073709551615
+
+# TOKEN_ROUTES as JSON, [{symbol, name, decimals, supply}], once
+# parse_token_routes has read it.
+TOKEN_ROUTES_JSON="[]"
+parse_token_routes() {
+    local line n=0 symbol name decimals supply extra seen=" " json="[]"
+    while IFS= read -r line || [ -n "$line" ]; do
+        n=$((n + 1))
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] && [[ "$line" != \#* ]] || continue
+        IFS='|' read -r symbol name decimals supply extra <<<"$line"
+        symbol="$(trim "$symbol")" name="$(trim "$name")" decimals="$(trim "$decimals")" supply="$(trim "$supply")"
+        [ -z "$extra" ] && [ -n "$supply" ] \
+            || fail "TOKEN_ROUTES line $n ('$line') isn't SYMBOL|NAME|DECIMALS|SUPPLY"
+        [[ "$symbol" =~ ^[A-Za-z][A-Za-z0-9]{0,10}$ ]] \
+            || fail "TOKEN_ROUTES line $n: the symbol '$symbol' must be a letter and up to 10 more letters or digits"
+        [ "${symbol^^}" != DUSK ] \
+            || fail "TOKEN_ROUTES line $n: DUSK is the native route's token"
+        [[ "$seen" != *" ${symbol^^} "* ]] \
+            || fail "TOKEN_ROUTES lists the symbol $symbol twice (case doesn't tell symbols apart)"
+        seen+="${symbol^^} "
+        [ -n "$name" ] && [ "${#name}" -le 64 ] && [[ "$name" != *[[:cntrl:]]* ]] \
+            || fail "TOKEN_ROUTES line $n: the name '$name' must be 1 to 64 printable characters"
+        [[ "$decimals" =~ ^[0-9]{1,2}$ ]] && [ "$((10#$decimals))" -le 18 ] \
+            || fail "TOKEN_ROUTES line $n: the decimals '$decimals' must be a whole number from 0 to 18"
+        [[ "$supply" =~ ^(0|[1-9][0-9]{0,19})$ ]] \
+            && { [ "${#supply}" -lt 20 ] || [[ "$supply" < "$U64_MAX" ]] || [ "$supply" = "$U64_MAX" ]; } \
+            || fail "TOKEN_ROUTES line $n: the supply '$supply' must be a whole number of the token's smallest unit, at most $U64_MAX"
+        json="$(jq -c --arg s "$symbol" --arg n "$name" --argjson d "$((10#$decimals))" --arg u "$supply" \
+            '. + [{symbol: $s, name: $n, decimals: $d, supply: $u}]' <<<"$json")"
+    done <<<"${TOKEN_ROUTES:-}"
+    TOKEN_ROUTES_JSON="$json"
+}
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; printf '%s' "${v%"${v##*[![:space:]]}"}"; }
+
+# A route $STATE records must keep its settings: its tokens can't change
+# their name, symbol or decimals, and its initial supply is minted. A
+# TOKEN_ROUTES line for it that differs is refused, rather than taken as a
+# route to change; one that $STATE has and TOKEN_ROUTES doesn't is still
+# checked, and finished by deploy.
+check_token_route_settings() {
+    local symbol settings recorded other
+    for symbol in $(jq -r '.[].symbol' <<<"$TOKEN_ROUTES_JSON"); do
+        other="$(state_json | jq -r --arg s "$symbol" \
+            '.token_routes // {} | keys_unsorted[] | select(ascii_downcase == ($s | ascii_downcase) and . != $s)')"
+        [ -z "$other" ] \
+            || fail "TOKEN_ROUTES lists $symbol, and $STATE records the token route $other: case doesn't tell symbols apart. Write it $other."
+        recorded="$(state_json | jq -c --arg s "$symbol" '.token_routes[$s] // empty | {symbol, name, decimals, supply}')"
+        [ -n "$recorded" ] || continue
+        settings="$(jq -c --arg s "$symbol" '.[] | select(.symbol == $s)' <<<"$TOKEN_ROUTES_JSON")"
+        [ "$(jq -cS . <<<"$recorded")" = "$(jq -cS . <<<"$settings")" ] \
+            || fail "TOKEN_ROUTES has $symbol as $(jq -r '"\(.name)|\(.decimals)|\(.supply)"' <<<"$settings"), but $STATE records its route as $(jq -r '"\(.name)|\(.decimals)|\(.supply)"' <<<"$recorded"). A token's name and decimals can't change, and its initial supply is minted: put the line back as it was, and mint more with dusk-tx drc20-mint (docs/testnet.md)."
+    done
+    for symbol in $(state_json | jq -r '.token_routes // {} | keys_unsorted[]'); do
+        jq -e --arg s "$symbol" 'any(.[]; .symbol == $s)' <<<"$TOKEN_ROUTES_JSON" >/dev/null \
+            || info "$STATE has the token route $symbol, which TOKEN_ROUTES doesn't list: it is checked, and deploy finishes it"
+    done
+}
+
+# The token routes deploy works on: the ones $STATE records, then the new
+# ones TOKEN_ROUTES lists.
+token_routes_to_deploy() {
+    { state_json | jq -r '.token_routes // {} | keys_unsorted[]'; jq -r '.[].symbol' <<<"$TOKEN_ROUTES_JSON"; } \
+        | awk '!seen[$0]++'
+}
+# Token routes $STATE doesn't record as deployed on Dusk yet, that deploy
+# would deploy there.
+pending_token_routes() {
+    local symbol
+    for symbol in $(token_routes_to_deploy); do
+        [ "$(state_get ".token_routes[\"$symbol\"].dusk.read_back")" = true ] || echo "$symbol"
+    done
+}
+# How many token routes the deployment has or deploy would add, which the
+# pricing of deliveries to Dusk depends on (compute_fees).
+token_route_count() { token_routes_to_deploy | grep -c . || true; }
+
+# The deploy nonce of a new token route's DRC20: past every nonce $STATE's
+# token routes use, or have left to someone else's contracts.
+next_token_route_nonce() {
+    state_json | jq -r --argjson first "$TOKEN_ROUTE_FIRST_NONCE" \
+        '[.token_routes // {} | .[].dusk | (.deploy_nonce // empty), (.abandoned // [] | .[]) | . + 2] + [$first] | max'
+}
+
+# Record DUSK_KEYS's public key, the token routes' admin, before deploy
+# deploys the first: a canonical DRC20 names its admin by the key, and the
+# commands that don't read DUSK_KEYS check the admin with the recorded one.
+record_dusk_owner_key() {
+    local identity
+    identity="$(deployer_identity)" || exit 1
+    [ "$(jq -r .account_h256 <<<"$identity")" = "$(state_get '.dusk_owner')" ] \
+        || fail "DUSK_KEYS's account isn't the owner $STATE records for the Dusk contracts"
+    [ "$(state_get '.dusk_owner_key')" = "$(jq -r .public_key <<<"$identity")" ] \
+        || state_set --arg k "$(jq -r .public_key <<<"$identity")" '.dusk_owner_key = $k'
+}
+
+# Deploy a token route on Dusk: plan its deploy nonces and contract IDs, and
+# record them with its settings before anything is sent, then deploy the
+# token and its route with dusk-tx deploy-token-route, which deploys only
+# what isn't at the planned IDs yet and reads both back, then read them
+# back here against $STATE and record them as deployed. A run that stops
+# anywhere in between resumes at the same IDs. deploy-token-route writes
+# each deploy transaction to the route's tx log before it sends it, and the
+# transactions for the planned IDs go into $STATE: a contract already at a
+# planned ID is taken only if one of them created it, in a final block. One
+# that none created is someone else's, deployed there first with an init of
+# their choosing, whatever it reads back (docs/testnet.md, Before mainnet):
+# the pair of nonces is left, and the next two planned, before anything
+# else is sent. The plan also skips nonces whose IDs are taken already.
+deploy_dusk_token_route() {
+    local symbol="$1" base settings name decimals supply nonce attempt token dusk_route out report log
+    local code taken tx recorded
+    base=".token_routes[\"$symbol\"]"
+    if [ "$(state_get "$base.dusk.read_back")" = true ]; then
+        ok "Dusk $symbol route already deployed ($(state_get "$base.dusk.route"))"
+        return
+    fi
+    settings="$(state_json | jq -c --arg s "$symbol" '.token_routes[$s] // empty | {symbol, name, decimals, supply}')"
+    [ -n "$settings" ] || settings="$(jq -c --arg s "$symbol" '.[] | select(.symbol == $s)' <<<"$TOKEN_ROUTES_JSON")"
+    name="$(jq -r .name <<<"$settings")" decimals="$(jq -r .decimals <<<"$settings")" supply="$(jq -r .supply <<<"$settings")"
+    log="$OUT_DIR/dusk-route-$symbol.txs"
+    out="$OUT_DIR/dusk-route-$symbol.json"
+    for attempt in $(seq 16); do
+        [ -n "$(state_get "$base.dusk.deploy_nonce")" ] \
+            || plan_dusk_token_route "$symbol" "$name" "$decimals" "$supply"
+        record_token_route_txs "$symbol" "$log"
+        nonce="$(state_get "$base.dusk.deploy_nonce")"
+        token="$(state_get "$base.dusk.token")" dusk_route="$(state_get "$base.dusk.route")"
+        recorded=()
+        tx="$(state_get "$base.dusk.token_tx")"
+        [ -z "$tx" ] || recorded+=(--token-tx "$tx" --token-tx-nonce "$(state_get "$base.dusk.token_tx_nonce")")
+        tx="$(state_get "$base.dusk.route_tx")"
+        [ -z "$tx" ] || recorded+=(--route-tx "$tx" --route-tx-nonce "$(state_get "$base.dusk.route_tx_nonce")")
+        info "Deploying the $symbol token and its route on Dusk, at deploy nonces $nonce and $((nonce + 1)) (the token $token, the route $dusk_route)..."
+        code=0
+        dusk_tx deploy-token-route --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
+            --mailbox "$(state_get '.dusk.mailbox')" --token-name "$name" --token-symbol "$symbol" \
+            --token-decimals "$decimals" --token-supply "$supply" --deploy-nonce "$nonce" \
+            --remote-domain "$EVM_DOMAIN" --expected-token "$token" --expected-route "$dusk_route" \
+            --tx-log "$log" "${recorded[@]}" --wait-finality \
+            --wasm-dir "$WASM_DIR" --gas-limit "$DUSK_GAS_LIMIT" --gas-price "$DUSK_GAS_PRICE" \
+            --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" > "$out" || code=$?
+        record_token_route_txs "$symbol" "$log"
+        taken="$(jq -r '.taken // empty' "$out" 2>/dev/null)" || taken=""
+        if [ -n "$taken" ]; then
+            warn "$(jq -r .error "$out") Leaving deploy nonces $nonce and $((nonce + 1)) for the $symbol route; planning the next two."
+            state_set --argjson n "$nonce" "$base.dusk = {abandoned: (($base.dusk.abandoned // []) + [\$n])}"
+            continue
+        fi
+        [ "$code" = 0 ] \
+            || fail "The $symbol route's deployment on Dusk failed: $(jq -r '.error // empty' "$out" 2>/dev/null). Run deploy again: it resumes at the same contract IDs."
+        report="$(<"$out")"
+        jq -e --arg t "$token" --arg r "$dusk_route" '.success == true and .contracts.token == $t and .contracts.route == $r' \
+            <<<"$report" >/dev/null || fail "deploy-token-route reported other contracts than the $symbol route's planned ones in $out"
+        check_dusk_token_route "token:$symbol" "$(state_get '.dusk_owner')" \
+            "$(recorded_dusk_owner_key "$(state_get '.dusk_owner')")" fresh
+        state_set "$base.dusk.read_back = true"
+        ok "Dusk $symbol token $token and its route $dusk_route: both read back as deployed, owned by DUSK_KEYS"
+        return
+    done
+    fail "16 pairs of deploy nonces planned for the $symbol route were taken by someone else's contracts. Nothing of theirs is used: find out who is deploying at this deployer's IDs before running deploy again."
+}
+
+# Plan a token route's deploy nonces and contract IDs, the first pair past
+# every nonce $STATE's token routes use or left whose IDs no contract has
+# yet, and record them with the route's settings.
+plan_dusk_token_route() {
+    local symbol="$1" name="$2" decimals="$3" supply="$4" base nonce plan tries token dusk_route
+    base=".token_routes[\"$symbol\"]"
+    nonce="$(next_token_route_nonce)"
+    for tries in $(seq 16); do
+        plan="$(dusk_tx deploy-token-route --plan --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
+            --mailbox "$(state_get '.dusk.mailbox')" --token-name "$name" --token-symbol "$symbol" \
+            --token-decimals "$decimals" --token-supply "$supply" --deploy-nonce "$nonce" \
+            --wasm-dir "$WASM_DIR")" && jq -e '.success == true' <<<"$plan" >/dev/null \
+            || fail "Can't plan the $symbol route's contracts on Dusk: $(jq -r '.error // empty' <<<"$plan" 2>/dev/null)"
+        jq -e '.exists.token or .exists.route' <<<"$plan" >/dev/null || break
+        info "Deploy nonces $nonce and $((nonce + 1)) give contract IDs someone has taken; trying the next two"
+        nonce=$((nonce + 2))
+        [ "$tries" -lt 16 ] || fail "The first 16 pairs of deploy nonces from $(next_token_route_nonce) give the $symbol route contract IDs someone has taken"
+    done
+    token="$(jq -r .contracts.token <<<"$plan")" dusk_route="$(jq -r .contracts.route <<<"$plan")"
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] && [[ "$dusk_route" =~ ^[0-9a-f]{64}$ ]] \
+        || fail "deploy-token-route planned no contract IDs for the $symbol route"
+    state_set --arg n "$name" --arg s "$symbol" --argjson d "$decimals" --arg u "$supply" \
+        --argjson nonce "$nonce" --arg t "$token" --arg r "$dusk_route" \
+        ".token_routes = (.token_routes // {}) | ($base.dusk.abandoned // []) as \$left
+         | $base = {name: \$n, symbol: \$s, decimals: \$d, supply: \$u,
+             dusk: ({deploy_nonce: \$nonce, token: \$t, route: \$r} + if \$left == [] then {} else {abandoned: \$left} end)}"
+}
+
+# Record in $STATE the transactions deploy-token-route sent for a token
+# route's planned contracts, from the tx log it writes each to before it
+# sends it: the last for each.
+record_token_route_txs() {
+    local symbol="$1" log="$2" base txs
+    base=".token_routes[\"$symbol\"]"
+    [ -s "$log" ] || return 0
+    txs="$(jq -Rsc --arg t "$(state_get "$base.dusk.token")" --arg r "$(state_get "$base.dusk.route")" '
+        [splits("\n") | fromjson? | objects] as $sent
+        | ($sent | map(select(.contract == "token" and .id == $t)) | last) as $token
+        | ($sent | map(select(.contract == "route" and .id == $r)) | last) as $route
+        | (if $token then {token_tx: $token.tx, token_tx_nonce: $token.nonce} else {} end)
+          + (if $route then {route_tx: $route.tx, route_tx_nonce: $route.nonce} else {} end)' "$log")" \
+        || fail "Can't read the tx log $log"
+    [ "$txs" = "{}" ] || state_set --argjson x "$txs" "$base.dusk += \$x"
+}
+
+# Read back a token route's contracts on Dusk, its canonical DRC20 and the
+# collateral route that locks it, against $STATE and the settings, as
+# check_dusk_contracts reads back the rest. Someone can deploy at the
+# planned IDs first, or front-run an init, and choose their owner and
+# bindings (docs/testnet.md, Before mainnet). Always: the route's owner is
+# `owner`, it is bound to the recorded Mailbox and locks the recorded token,
+# has no hook of its own and no router for Dusk; the token has the route's
+# name, symbol and decimals, and `owner_key`, `owner`'s public key, holds
+# its admin role. `fresh`, right after deploy-token-route, also reads what
+# only the owner can change later: the route has no ISM of its own and no
+# router for the EVM chain yet, and the token's whole supply is the route's
+# initial supply, held by the owner, who also holds the minter and pauser
+# roles, with no cap and not paused. `recorded` holds the route's router for
+# the EVM chain to none or the recorded EVM token instead, and leaves its
+# ISM to check_deployed_ism.
+check_dusk_token_route() {
+    local route="$1" owner="$2" owner_key="$3" mode="$4" symbol base dusk_route token label hint
+    local info field value expected what
+    symbol="$(route_symbol "$route")" base=".token_routes[\"$(route_symbol "$route")\"]"
+    dusk_route="$(state_get "$base.dusk.route")" token="$(state_get "$base.dusk.token")"
+    label="$(route_name "$route")"
+    if [ "$mode" = fresh ]; then
+        hint="They don't hold what deploy-token-route sent, though this deployment's own transactions created them, or the node doesn't answer as they do. The route isn't recorded as deployed. Don't use them: take .token_routes.$symbol out of $STATE and run deploy again, which plans the route at other deploy nonces."
+    else
+        hint="$STATE records a token route that isn't as deploy left it: it is another deployment's, or its owner changed it, which deploy/testnet.sh never does. Nothing was sent. Find out which."
+    fi
+    [[ "$dusk_route" =~ ^[0-9a-f]{64}$ ]] && [[ "$token" =~ ^[0-9a-f]{64}$ ]] \
+        || fail "$STATE names no Dusk contracts for the $symbol route"
+    [ "$mode" = recorded ] || dusk_expect "$label" "$dusk_route" state_version u32 \
+        "$(sed -n 's/.*warp_drc20_collateral=\([0-9]*\).*/\1/p' <<<"$ROUTE_STATE_VERSIONS")" "this checkout's" "$hint"
+    value="$(dusk_owner_of "$label" "$dusk_route")" || exit 1
+    [ "$value" = "$owner" ] || fail "The Dusk $label $dusk_route's owner is $value, not the deployer's account $owner. $hint"
+    dusk_expect "$label" "$dusk_route" mailbox bytes32 "$(state_get '.dusk.mailbox')" "the Mailbox" "$hint"
+    dusk_expect "$label" "$dusk_route" wrapped_token bytes32 "$token" "the $symbol token recorded in $STATE" "$hint"
+    dusk_expect "$label" "$dusk_route" hook bytes32 "$ZERO_ID" "none: the Mailbox's default hook, the IGP" "$hint"
+    dusk_expect "$label" "$dusk_route" enrolled_router bytes32 "$ZERO_ID" "none" "$hint" --arg-u32 "$DUSK_DOMAIN"
+    value="$(dusk_value "the router of the Dusk $label $dusk_route for $EVM_CHAIN_NAME" --contract "$dusk_route" \
+        --method enrolled_router --return-type bytes32 --arg-u32 "$EVM_DOMAIN")" || exit 1
+    expected="$(state_get "$base.evm.token")"
+    if [ "$mode" = fresh ]; then
+        expected="none: deploy-token-route enrolls none"
+    elif [ -n "$expected" ]; then
+        [ "$value" != "$(pad32 "$expected")" ] || value="$ZERO_ID"
+        expected="none or the EVM $symbol token $expected recorded in $STATE"
+    else
+        expected="none: $STATE records no EVM $symbol token"
+    fi
+    [ "$value" = "$ZERO_ID" ] \
+        || fail "The Dusk $label $dusk_route is enrolled with the router $value for $EVM_CHAIN_NAME (domain $EVM_DOMAIN), not $expected. $hint"
+    [ "$mode" = recorded ] || dusk_expect "$label" "$dusk_route" interchain_security_module bytes32 "$ZERO_ID" \
+        "none: the Mailbox's default ISM" "$hint"
+
+    info="$("$DUSK_TX" drc20-info --rues-url "$DUSK_RUES_URL" --token "$token" --account "$owner_key" 2>/dev/null)" \
+        && jq -e '.success == true' <<<"$info" >/dev/null \
+        || fail "Can't read the Dusk $symbol token $token: $(jq -r '.error // "the query failed"' <<<"$info" 2>/dev/null)${DUSK_READ_HINT:+. $DUSK_READ_HINT}"
+    for field in name symbol decimals account.admin $( [ "$mode" = fresh ] && echo total_supply account.balance account.minter account.pauser cap paused ); do
+        value="$(jq -r ".$field | tostring" <<<"$info")"
+        case "$field" in
+            name|symbol|decimals) expected="$(state_get "$base.$field")" what="$field" ;;
+            total_supply) expected="$(state_get "$base.supply")" what="supply" ;;
+            account.balance) expected="$(state_get "$base.supply")" what="balance of the deployer" ;;
+            account.*) expected=true what="${field#account.} role held by the deployer" ;;
+            cap) expected=0 what="cap" ;;
+            paused) expected=false what="paused" ;;
+        esac
+        [ "$value" = "$expected" ] \
+            || fail "The Dusk $symbol token $token's $what is $value, not $expected. $hint"
+    done
+}
+
 # ── Preflight ────────────────────────────────────────────────────────────────
 
 preflight_dusk() {
@@ -1166,16 +1790,34 @@ preflight_keys() {
     [ -f "$DUSK_KEYS" ] || fail "DUSK_KEYS file $DUSK_KEYS not found"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
     [ -f "$WASM_DIR/hyperlane_dusk_mailbox.wasm" ] || fail "contract WASMs not built (run: make all)"
-    local deployer balance n account need
+    local deployer balance n account need pending wasm bytes=0
+    pending="$(pending_token_routes | grep -c . || true)"
+    if [ "$pending" -gt 0 ]; then
+        for wasm in canonical_drc20_roles_pausable.wasm hyperlane_dusk_warp_drc20_collateral.wasm; do
+            [ -f "$WASM_DIR/$wasm" ] \
+                || fail "$WASM_DIR/$wasm isn't built, which deploy needs for the token routes (run: make all canonical-drc20-fixture)"
+            bytes=$((bytes + $(wc -c <"$WASM_DIR/$wasm")))
+        done
+    fi
     account="$(dusk_tx account --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS")" \
         || fail "Can't read the Dusk deployer account: $(jq -r '.error // empty' <<<"$account" 2>/dev/null)"
     # Deploying the contracts costs about 300 DUSK, and each deploy needs
     # gas limit x gas price in the balance up front. Afterwards only cheap
-    # calls remain.
-    if [ -n "$(state_get '.dusk.mailbox')" ]; then need=1000000000; else need=$((400 * 1000000000)); fi
+    # calls remain, but for the token routes deploy has yet to deploy: 100
+    # gas a byte of their Wasms and up to 2M for each one's init, 95 DUSK a
+    # route at 2,000 LUX (the local rehearsal's took 47.5M gas), and the
+    # same gas limit up front.
+    if [ -z "$(state_get '.dusk.mailbox')" ]; then
+        need=$((400 * 1000000000))
+    elif [ "$pending" -gt 0 ]; then
+        need=$((DUSK_GAS_LIMIT * DUSK_GAS_PRICE))
+    else
+        need=1000000000
+    fi
+    need=$((need + pending * (bytes * 100 + 2 * 2000000) * DUSK_GAS_PRICE))
     balance="$(jq -r '.balance' <<<"$account")"
     [ "$balance" -ge "$need" ] \
-        || fail "Dusk deployer $(jq -r '.address' <<<"$account") has $(jq -r '.balance_dusk' <<<"$account") DUSK, needs at least $((need / 1000000000))"
+        || fail "Dusk deployer $(jq -r '.address' <<<"$account") has $(jq -r '.balance_dusk' <<<"$account") DUSK, needs at least $((need / 1000000000))$([ "$pending" = 0 ] || echo " for the $pending token routes to deploy")"
     ok "Dusk deployer $(jq -r '.address' <<<"$account") has $(jq -r '.balance_dusk' <<<"$account") DUSK"
     deployer="$(evm_deployer)" || fail "EVM_DEPLOYER_KEY is not a valid key"
     balance="$(cast balance "$deployer" --rpc-url "$EVM_RPC" --ether)"
@@ -1200,17 +1842,20 @@ check_evm_origin_policy() {
 }
 
 # A relayed `process` costs about 1.95M gas plus 0.22M per signature the
-# Dusk ISM checks (test_relayed_process_fits_the_relayer_gas_limit). Below
-# that every delivery runs out of gas and pays the whole limit, which the
-# relayer's simulation can't catch, so insist on 1.5 times the cost.
+# Dusk ISM checks (test_relayed_process_fits_the_relayer_gas_limit), 1.98M
+# plus that for a token route's payout. Below that every delivery runs out
+# of gas and pays the whole limit, which the relayer's simulation can't
+# catch, so insist on 1.5 times the cost.
 # check_deployed_ism makes sure the deployed ISM's threshold is
 # EVM_ORIGIN_THRESHOLD; the larger of the two is checked all the same.
 check_relayer_gas_limit() {
-    local threshold="$EVM_ORIGIN_THRESHOLD" basis="EVM_ORIGIN_THRESHOLD" need
+    local threshold="$EVM_ORIGIN_THRESHOLD" basis="EVM_ORIGIN_THRESHOLD" need base=1950000
     if [ -n "$DEPLOYED_ISM_THRESHOLD" ] && [ "$DEPLOYED_ISM_THRESHOLD" -gt "$threshold" ]; then
         threshold="$DEPLOYED_ISM_THRESHOLD" basis="the deployed ISM's threshold"
     fi
-    need=$(((1950000 + 220000 * threshold) * 3 / 2))
+    # A token route's payout costs more (compute_fees).
+    [ "$(token_route_count)" = 0 ] || base=1980000
+    need=$(((base + 220000 * threshold) * 3 / 2))
     [ "$DUSK_RELAYER_GAS_LIMIT" -ge "$need" ] \
         || fail "DUSK_RELAYER_GAS_LIMIT is $DUSK_RELAYER_GAS_LIMIT; with $basis of $threshold it must be at least $need"
 }
@@ -1266,13 +1911,21 @@ check_dusk_multicall() {
 # are deployed there is nothing to check.
 DEPLOYED_ISM_THRESHOLD=""
 check_deployed_ism() {
-    local route mailbox ism which type policy validators repeated threshold expected
+    local route
     DEPLOYED_ISM_THRESHOLD=""
-    route="$(state_get '.dusk.warp_native')"
-    mailbox="$(state_get '.dusk.mailbox')"
-    [ -n "$route" ] && [ -n "$mailbox" ] || return 0
+    [ -n "$(state_get '.dusk.warp_native')" ] && [ -n "$(state_get '.dusk.mailbox')" ] || return 0
     check_evm_origin_policy
-    ism="$(dusk_value "the ISM of the Dusk route $route recorded in $STATE (if the network was reset, move $OUT_DIR aside and deploy again)" \
+    for route in $(recorded_routes); do
+        check_route_ism "$route"
+    done
+}
+# The ISM one route uses: its own, or the Mailbox's default.
+check_route_ism() {
+    local key="$1" label route mailbox ism which type policy validators repeated threshold expected
+    label="Dusk $(route_name "$key")"
+    route="$(state_get "$(route_path "$key")")"
+    mailbox="$(state_get '.dusk.mailbox')"
+    ism="$(dusk_value "the ISM of the $label $route recorded in $STATE (if the network was reset, move $OUT_DIR aside and deploy again)" \
         --contract "$route" --method interchain_security_module --return-type bytes32)" || exit 1
     which="its own ISM"
     if [ "$ism" = "$ZERO_ID" ]; then
@@ -1281,7 +1934,7 @@ check_deployed_ism() {
         which="the Mailbox's default ISM"
     fi
     [[ "$ism" =~ ^[0-9a-f]{64}$ ]] && [ "$ism" != "$ZERO_ID" ] \
-        || fail "The Dusk route uses $which, which is not set ('$ism')"
+        || fail "The $label uses $which, which is not set ('$ism')"
     which="$which, $ism,"
     type="$(dusk_value "the module type of the Dusk ISM $ism" \
         --contract "$ism" --method module_type --return-type u8)" || exit 1
@@ -1289,10 +1942,10 @@ check_deployed_ism() {
         "$MESSAGE_ID_MULTISIG_ISM") ;;
         "$TEST_MOCK_ISM")
             allows_test_mock_ism \
-                || fail "The Dusk route uses $which a TestMock ISM that accepts every message. Point it at a MessageIdMultisig ISM."
-            warn "The Dusk route uses $which a TestMock ISM that accepts every message. Allowed for this local rehearsal only."
+                || fail "The $label uses $which a TestMock ISM that accepts every message. Point it at a MessageIdMultisig ISM."
+            warn "The $label uses $which a TestMock ISM that accepts every message. Allowed for this local rehearsal only."
             return 0 ;;
-        *) fail "The Dusk route uses $which of module type $type; it must be a MessageIdMultisig ISM ($MESSAGE_ID_MULTISIG_ISM)" ;;
+        *) fail "The $label uses $which of module type $type; it must be a MessageIdMultisig ISM ($MESSAGE_ID_MULTISIG_ISM)" ;;
     esac
     policy="$(dusk_value "the validators and threshold of the Dusk ISM $ism" \
         --contract "$ism" --method validators_and_threshold --return-type validators-and-threshold)" || exit 1
@@ -1301,15 +1954,17 @@ check_deployed_ism() {
         || fail "The Dusk ISM $ism returned a malformed validator set"
     repeated="$(repeated_addresses "$validators")"
     [ -z "$repeated" ] \
-        || fail "The Dusk route uses $which which lists [$repeated] more than once among its validators, so fewer than its threshold of validators could sign for a message. This checkout's MessageIdMultisig ISM lists each once; point the route at one."
+        || fail "The $label uses $which which lists [$repeated] more than once among its validators, so fewer than its threshold of validators could sign for a message. This checkout's MessageIdMultisig ISM lists each once; point the route at one."
     validators="$(sorted_addresses "$validators")"
     expected="$(sorted_addresses "$EVM_ORIGIN_VALIDATORS")"
     [ "$validators" = "$expected" ] \
-        || fail "The Dusk route uses $which which trusts [$validators], but EVM_ORIGIN_VALIDATORS is [$expected]. Set EVM_ORIGIN_VALIDATORS to what the chain has, or change the ISM."
+        || fail "The $label uses $which which trusts [$validators], but EVM_ORIGIN_VALIDATORS is [$expected]. Set EVM_ORIGIN_VALIDATORS to what the chain has, or change the ISM."
     [ "$threshold" -eq "$EVM_ORIGIN_THRESHOLD" ] \
-        || fail "The Dusk route uses $which which needs $threshold signatures, but EVM_ORIGIN_THRESHOLD is $EVM_ORIGIN_THRESHOLD. Set EVM_ORIGIN_THRESHOLD, and a DUSK_RELAYER_GAS_LIMIT that covers it, to what the chain has, or change the ISM."
-    DEPLOYED_ISM_THRESHOLD="$threshold"
-    ok "The Dusk route uses $which a MessageIdMultisig ISM: $threshold of [$validators]"
+        || fail "The $label uses $which which needs $threshold signatures, but EVM_ORIGIN_THRESHOLD is $EVM_ORIGIN_THRESHOLD. Set EVM_ORIGIN_THRESHOLD, and a DUSK_RELAYER_GAS_LIMIT that covers it, to what the chain has, or change the ISM."
+    if [ -z "$DEPLOYED_ISM_THRESHOLD" ] || [ "$threshold" -gt "$DEPLOYED_ISM_THRESHOLD" ]; then
+        DEPLOYED_ISM_THRESHOLD="$threshold"
+    fi
+    ok "The $label uses $which a MessageIdMultisig ISM: $threshold of [$validators]"
 }
 
 # LOCAL_REHEARSAL_ALLOW_TEST_MOCK=1 lets a local rehearsal's route use a
@@ -1472,8 +2127,7 @@ check_evm_igp_quotes() {
     check_evm_igp_quote_history
     gas="$(fee .evm_igp.gas_overhead)"
     expected="$(igp_cost "$gas" "$(jq -r .gas_price <<<"$current")" "$(jq -r .token_exchange_rate <<<"$current")")"
-    for sender in "$(state_get '.evm.token')" "$ZERO_ADDRESS"; do
-        [ -n "$sender" ] || continue
+    for sender in $(recorded_evm_tokens) "$ZERO_ADDRESS"; do
         quote="$(evm_number "$igp" "quoteGasPayment(uint32,uint256)(uint256)" "$DUSK_DOMAIN" "$gas" --from "$sender")" \
             || fail "Can't read the EVM IGP $igp's quote for a message from $sender"
         [ "$quote" = "$expected" ] \
@@ -1491,7 +2145,7 @@ check_evm_igp_quote_history() {
     [[ "$EVM_LOG_BLOCK_RANGE" =~ ^[1-9][0-9]*$ ]] \
         || fail "EVM_LOG_BLOCK_RANGE must be a whole number of blocks, not '$EVM_LOG_BLOCK_RANGE'"
     [[ "$EVM_REORG_PERIOD" =~ ^[0-9]+$ ]] || fail "EVM_REORG_PERIOD must be a whole number of blocks, not '$EVM_REORG_PERIOD'"
-    created="$(evm_block_number "$(cast receipt "$tx" blockNumber --rpc-url "$EVM_RPC")")" \
+    created="$(evm_block_number "$(evm_receipt "$tx" blockNumber)")" \
         || fail "Can't read the block of $tx, which created the EVM IGP $igp"
     scanned="$(state_json | jq -r --arg igp "$igp" '.evm.igp_quote_signers_scanned // {} | select(.igp == $igp) | .to // empty')"
     from="$created"
@@ -1525,29 +2179,36 @@ evm_block_number() {
 # it. Bash's integers are too small.
 igp_cost() { python3 -c 'import sys; g, p, r = map(int, sys.argv[1:]); print(g * p * r // 10**10)' "$@"; }
 
-# The EVM route must dispatch through its recorded hook, and that hook must
-# insert into the Merkle tree validators sign, unless the required hook
-# does, and pay our IGP. Before `deploy`, a route that doesn't yet only
+# Every route's EVM token must dispatch through the recorded hook, and that
+# hook must insert into the Merkle tree validators sign, unless the required
+# hook does, and pay our IGP. Before `deploy`, a token that doesn't yet only
 # warns: deploy sets its hook.
 check_evm_route_hook() {
-    local when="${1:-}" token hook igp current children expected
-    token="$(state_get '.evm.token')" hook="$(state_get '.evm.route_hook')" igp="$(state_get '.evm.igp')"
+    local when="${1:-}" route
+    for route in $(recorded_routes); do
+        check_evm_route_hook_of "$when" "$route"
+    done
+}
+check_evm_route_hook_of() {
+    local when="$1" route="$2" label token hook igp current children expected
+    token="$(state_get "$(route_evm_base "$route").token")" hook="$(state_get '.evm.route_hook')" igp="$(state_get '.evm.igp')"
     [ -n "$token" ] || return 0
+    if [ "$route" = native ]; then label="EVM route"; else label="EVM $(route_name "$route")"; fi
     if [ -z "$hook" ] || [ -z "$(state_get '.evm.storage_gas_oracle')" ]; then
-        [ "$when" = before-deploy ] || fail "The EVM route $token has no hook that pays an IGP of this deployment: run deploy"
-        warn "The EVM route $token has no hook that pays an IGP of this deployment yet; deploy sets one"
+        [ "$when" = before-deploy ] || fail "The $label $token has no hook that pays an IGP of this deployment: run deploy"
+        warn "The $label $token has no hook that pays an IGP of this deployment yet; deploy sets one"
         return 0
     fi
-    current="$(evm_call "$token" "hook()(address)")" || fail "Can't read the hook of the EVM route $token"
+    current="$(evm_call "$token" "hook()(address)")" || fail "Can't read the hook of the $label $token"
     if [ "$(lower "$current")" != "$(lower "$hook")" ]; then
-        [ "$when" = before-deploy ] || fail "The EVM route $token dispatches through hook $current, not $hook recorded in $STATE: run deploy"
-        warn "The EVM route $token dispatches through hook $current; deploy sets $hook"
+        [ "$when" = before-deploy ] || fail "The $label $token dispatches through hook $current, not $hook recorded in $STATE: run deploy"
+        warn "The $label $token dispatches through hook $current; deploy sets $hook"
         return 0
     fi
     if [ "$(lower "$hook")" = "$(lower "$igp")" ]; then
         [ "$ROUTE_HOOK_NEEDS_MERKLE" = 0 ] \
-            || fail "The EVM route's hook is the IGP alone, so its messages never reach the Merkle tree validators sign"
-        ok "The EVM route dispatches through the IGP $igp; the Mailbox's required hook inserts into $EVM_MERKLE_TREE_HOOK"
+            || fail "The $label's hook is the IGP alone, so its messages never reach the Merkle tree validators sign"
+        ok "The $label dispatches through the IGP $igp; the Mailbox's required hook inserts into $EVM_MERKLE_TREE_HOOK"
         return 0
     fi
     [ "$ROUTE_HOOK_NEEDS_MERKLE" = 1 ] \
@@ -1556,8 +2217,8 @@ check_evm_route_hook() {
     children="$(tr -d '[] ' <<<"$children" | tr '[:upper:]' '[:lower:]')"
     expected="$(lower "$EVM_MERKLE_TREE_HOOK,$igp")"
     [ "$children" = "$expected" ] \
-        || fail "The EVM route's hook $hook aggregates [$children], not [$expected] (the Merkle hook validators sign, then the IGP)"
-    ok "The EVM route dispatches through $hook: Merkle tree $EVM_MERKLE_TREE_HOOK, then IGP $igp"
+        || fail "The $label's hook $hook aggregates [$children], not [$expected] (the Merkle hook validators sign, then the IGP)"
+    ok "The $label dispatches through $hook: Merkle tree $EVM_MERKLE_TREE_HOOK, then IGP $igp"
 }
 
 cmd_preflight() {
@@ -1631,9 +2292,16 @@ deploy_dusk() {
 # deploy-hyperlane makes the beneficiary.
 configure_dusk_beneficiary() {
     [ -n "${DUSK_FEE_BENEFICIARY:-}" ] || return 0
-    local name contract out
+    local name contract out wanted current
+    out="$("$DUSK_TX" account --offline --address "$DUSK_FEE_BENEFICIARY" 2>/dev/null)" \
+        && wanted="$(jq -er '.account_h256' <<<"$out" 2>/dev/null)" \
+        || fail "DUSK_FEE_BENEFICIARY ($DUSK_FEE_BENEFICIARY) isn't a Moonlight address: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
     for name in igp protocol_fee; do
         contract="$(state_get ".dusk.$name")"
+        # A beneficiary already set stays as it is: nothing is sent.
+        current="$(dusk_value "the beneficiary of the Dusk $name $contract" --contract "$contract" \
+            --method beneficiary --return-type bytes32)" || exit 1
+        [ "$current" != "$wanted" ] || continue
         out="$(dusk_tx set-beneficiary --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
             --contract "$contract" --beneficiary "$DUSK_FEE_BENEFICIARY" \
             --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
@@ -1657,8 +2325,8 @@ deploy_evm_ism() {
         fi
     else
         info "Deploying StorageMessageIdMultisigIsm ($DUSK_ORIGIN_THRESHOLD of [$validators])..."
-        ism="$(forge_create contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
-            --constructor-args "[$validators]" "$DUSK_ORIGIN_THRESHOLD")" || fail "EVM security module deployment failed"
+        forge_create ism contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
+            --constructor-args "[$validators]" "$DUSK_ORIGIN_THRESHOLD" || fail "EVM security module deployment failed"
     fi
     evm_has_code "$ism" || fail "EVM security module deployment failed"
     state_set --arg ism "$ism" --arg v "$validators" --argjson t "$DUSK_ORIGIN_THRESHOLD" \
@@ -1696,7 +2364,7 @@ deploy_evm_igp() {
     if [ -z "$oracle" ]; then
         record_index_from
         info "Deploying a StorageGasOracle on $EVM_CHAIN_NAME..."
-        oracle="$(forge_create contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle)" \
+        forge_create oracle contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle \
             || fail "StorageGasOracle deployment failed"
         state_set --arg o "$oracle" '.evm.storage_gas_oracle = $o'
     fi
@@ -1706,10 +2374,10 @@ deploy_evm_igp() {
         record_index_from
         init="$(cast calldata "initialize(address,address)" "$deployer" "$beneficiary")" \
             || fail "Can't encode the EVM IGP's initialize call"
-        deploy_evm_proxied igp IGP contracts/hooks/igp/InterchainGasPaymaster.sol:InterchainGasPaymaster "$init"
+        deploy_evm_proxied .evm igp IGP contracts/hooks/igp/InterchainGasPaymaster.sol:InterchainGasPaymaster "$init"
     fi
     igp="$(state_get '.evm.igp')"
-    check_evm_creation igp IGP
+    check_evm_creation .evm igp IGP
     # Only its owner, the deployer, could have handed it to someone else.
     owner="$(evm_call "$igp" "owner()(address)")" || fail "Can't read the owner of the EVM IGP $igp"
     [ "$(lower "$owner")" = "$(lower "$deployer")" ] \
@@ -1744,7 +2412,7 @@ deploy_evm_route_hook() {
         factory="${EVM_AGGREGATION_HOOK_FACTORY:-$(state_get '.evm.aggregation_hook_factory')}"
         if [ -z "$factory" ]; then
             info "Deploying a StaticAggregationHookFactory on $EVM_CHAIN_NAME..."
-            factory="$(forge_create contracts/hooks/aggregation/StaticAggregationHookFactory.sol:StaticAggregationHookFactory)" \
+            forge_create factory contracts/hooks/aggregation/StaticAggregationHookFactory.sol:StaticAggregationHookFactory \
                 || fail "StaticAggregationHookFactory deployment failed"
             state_set --arg f "$factory" '.evm.aggregation_hook_factory = $f'
         fi
@@ -1776,27 +2444,53 @@ deploy_evm_token() {
         0 "Dusk" "DUSK" "$(state_get '.evm.route_hook')" "$(state_get '.evm.ism')" "$deployer")" \
         || fail "Can't encode the EVM token's initialize call"
     info "Deploying the synthetic DUSK token on $EVM_CHAIN_NAME (9 decimals, matching LUX)..."
-    deploy_evm_proxied token "DUSK token" contracts/token/HypERC20.sol:HypERC20 "$init" \
+    deploy_evm_proxied .evm token "DUSK token" contracts/token/HypERC20.sol:HypERC20 "$init" \
         --constructor-args 9 1 1 "$EVM_MAILBOX"
     state_set --arg o "$deployer" '.evm.owner = $o'
     ok "EVM DUSK token $(state_get '.evm.token')"
+}
+
+# A token route's synthetic token on the EVM chain: a HypERC20 with the
+# route's name, symbol and decimals, and no scaling, so that an amount is
+# the same number of the token's smallest units on both chains. It is
+# created behind an ERC1967Proxy that initializes it with the route's hook
+# and the EVM ISM, as the DUSK token is, and with no supply: the route's
+# custody on Dusk backs every token it mints.
+deploy_evm_route_token() {
+    local route="$1" base symbol name decimals deployer init
+    base="$(route_evm_base "$route")" symbol="$(route_symbol "$route")"
+    if [ -n "$(state_get "$base.token")" ]; then
+        ok "EVM $symbol token already deployed ($(state_get "$base.token"))"
+        return
+    fi
+    IFS='|' read -r name symbol decimals <<<"$(route_token_metadata "$route")"
+    deployer="$(evm_deployer)"
+    record_index_from
+    init="$(cast calldata "initialize(uint256,string,string,address,address,address)" \
+        0 "$name" "$symbol" "$(state_get '.evm.route_hook')" "$(state_get '.evm.ism')" "$deployer")" \
+        || fail "Can't encode the EVM $symbol token's initialize call"
+    info "Deploying the synthetic $symbol token on $EVM_CHAIN_NAME ($name, $decimals decimals, as on Dusk)..."
+    deploy_evm_proxied "$base" token "$symbol token" contracts/token/HypERC20.sol:HypERC20 "$init" \
+        --constructor-args "$decimals" 1 1 "$EVM_MAILBOX"
+    check_evm_token_binding "$route"
+    ok "EVM $symbol token $(state_get "$base.token")"
 }
 
 # A token deployed before the route had its own hook dispatches through the
 # Mailbox's default hook, which pays nothing to our IGP. The token is
 # checked again right before the write, as enroll_routers checks it.
 set_evm_route_hook() {
-    local token hook
-    token="$(state_get '.evm.token')" hook="$(state_get '.evm.route_hook')"
+    local route="$1" token hook
+    token="$(state_get "$(route_evm_base "$route").token")" hook="$(state_get '.evm.route_hook')"
     if [ "$(lower "$(evm_call "$token" "hook()(address)")")" != "$(lower "$hook")" ]; then
-        check_evm_token_binding
-        info "Setting the EVM route's hook to $hook..."
+        check_evm_token_binding "$route"
+        info "Setting the EVM $(route_symbol "$route") token's hook to $hook..."
         evm_send "$token" "setHook(address)" "$hook"
     fi
-    check_evm_route_hook
+    check_evm_route_hook_of "" "$route"
 }
 
-# Enroll this deployment's route on the token, and the token on the route.
+# Enroll a route's Dusk route on its EVM token, and the token on the route.
 # Preflight checked both routers, but their owners can enroll others in
 # between from elsewhere: the deployment's lock keeps out only this
 # script's commands. So each side is read again right before each write,
@@ -1806,47 +2500,50 @@ set_evm_route_hook() {
 # replaces whatever is there; an on-chain check waits for the mainnet
 # contracts (docs/testnet.md, Before mainnet).
 enroll_routers() {
-    local token route router
-    token="$(state_get '.evm.token')"
-    route="$(lower "$(state_get '.dusk.warp_native')")"
-    check_evm_token_binding
-    router="$(dusk_route_router "$route" "$token")" || exit 1
-    if [ "$EVM_TOKEN_ROUTER" != "0x$route" ]; then
+    local route="$1" token dusk_route router symbol
+    symbol="$(route_symbol "$route")"
+    token="$(state_get "$(route_evm_base "$route").token")"
+    dusk_route="$(lower "$(state_get "$(route_path "$route")")")"
+    check_evm_token_binding "$route"
+    router="$(dusk_route_router "$route")" || exit 1
+    if [ "$EVM_TOKEN_ROUTER" != "0x$dusk_route" ]; then
         [[ "$EVM_TOKEN_ROUTER" =~ ^0x0{64}$ ]] \
-            || fail "The EVM DUSK token $token is enrolled with the Dusk route ${EVM_TOKEN_ROUTER#0x}: not replacing it"
-        info "Enrolling the Dusk route on $EVM_CHAIN_NAME..."
-        evm_send "$token" "enrollRemoteRouter(uint32,bytes32)" "$DUSK_DOMAIN" "0x$route"
+            || fail "The EVM $symbol token $token is enrolled with the Dusk route ${EVM_TOKEN_ROUTER#0x}: not replacing it"
+        info "Enrolling the Dusk $(route_name "$route") on $EVM_CHAIN_NAME..."
+        evm_send "$token" "enrollRemoteRouter(uint32,bytes32)" "$DUSK_DOMAIN" "0x$dusk_route"
     fi
-    [ "$(lower "$(evm_call "$token" "routers(uint32)(bytes32)" "$DUSK_DOMAIN")")" = "0x$route" ] \
-        || fail "EVM token does not have the Dusk route enrolled"
-    [ "$router" = token ] || router="$(dusk_route_router "$route" "$token")" || exit 1
+    [ "$(lower "$(evm_call "$token" "routers(uint32)(bytes32)" "$DUSK_DOMAIN")")" = "0x$dusk_route" ] \
+        || fail "The EVM $symbol token does not have its Dusk route enrolled"
+    [ "$router" = token ] || router="$(dusk_route_router "$route")" || exit 1
     if [ "$router" = none ]; then
-        info "Enrolling the $EVM_CHAIN_NAME token on the Dusk route..."
+        info "Enrolling the $EVM_CHAIN_NAME $symbol token on the Dusk $(route_name "$route")..."
         dusk_tx enroll-router --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-            --warp-contract "$route" --domain "$EVM_DOMAIN" --router "$(pad32 "$token")" \
+            --warp-contract "$dusk_route" --domain "$EVM_DOMAIN" --router "$(pad32 "$token")" \
             --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" >/dev/null \
             || fail "Dusk router enrollment failed"
     fi
-    router="$(dusk_route_router "$route" "$token")" || exit 1
-    [ "$router" = token ] || fail "Dusk route does not have the EVM token enrolled"
-    ok "Routes enrolled with each other"
+    router="$(dusk_route_router "$route")" || exit 1
+    [ "$router" = token ] || fail "The Dusk $(route_name "$route") does not have the EVM $symbol token enrolled"
+    ok "The $symbol routes are enrolled with each other"
 }
 
-# The Dusk route's router for EVM_DOMAIN: `token` when it is the recorded
-# EVM token, `none` when there is none yet. Any other router fails, as the
-# EVM side's does (check_evm_token_router): the route's DUSK backs that
-# router's tokens, and replacing it would leave their holders nothing to
-# bring them back to.
+# A Dusk route's router for EVM_DOMAIN: `token` when it is the route's
+# recorded EVM token, `none` when there is none yet. Any other router
+# fails, as the EVM side's does (check_evm_token_router): the route's
+# custody backs that router's tokens, and replacing it would leave their
+# holders nothing to bring them back to.
 dusk_route_router() {
-    local route="$1" token="$2" router
-    router="$(dusk_value "the router of the Dusk route $route for $EVM_CHAIN_NAME" --contract "$route" \
-        --method enrolled_router --return-type bytes32 --arg-u32 "$EVM_DOMAIN")" || return 1
-    if [ "$router" = "$(pad32 "$token")" ]; then
+    local route="$1" dusk_route token router
+    dusk_route="$(lower "$(state_get "$(route_path "$route")")")"
+    token="$(state_get "$(route_evm_base "$route").token")"
+    router="$(dusk_value "the router of the Dusk $(route_name "$route") $dusk_route for $EVM_CHAIN_NAME" \
+        --contract "$dusk_route" --method enrolled_router --return-type bytes32 --arg-u32 "$EVM_DOMAIN")" || return 1
+    if [ -n "$token" ] && [ "$router" = "$(pad32 "$token")" ]; then
         echo token
     elif [ "$router" = "$ZERO_ID" ]; then
         echo none
     else
-        echo "[FAIL] The Dusk route $route is enrolled with the router $router for $EVM_CHAIN_NAME (domain $EVM_DOMAIN), not the EVM DUSK token $token recorded in $STATE: not replacing it. The route's DUSK backs that router's tokens, and replacing it would cut their holders off. If $STATE recorded another token before, put it back; if the route is another deployment's, move $OUT_DIR aside." >&2
+        echo "[FAIL] The Dusk $(route_name "$route") $dusk_route is enrolled with the router $router for $EVM_CHAIN_NAME (domain $EVM_DOMAIN), not the EVM $(route_symbol "$route") token $token recorded in $STATE: not replacing it. The route's custody backs that router's tokens, and replacing it would cut their holders off. If $STATE recorded another token before, put it back; if the route is another deployment's, move $OUT_DIR aside." >&2
         return 1
     fi
 }
@@ -1855,7 +2552,7 @@ dusk_route_router() {
 # make `deploy` skip steps whose contracts don't exist. One whose routes are
 # older than this checkout's would reuse contracts with known bugs.
 check_state_matches_chain() {
-    local mailbox name contract domain
+    local mailbox name contract domain route
     [ -n "$STATE_JSON" ] || return 0
     [ "$(lower "$(state_get '.evm.mailbox')")" = "" ] || [ "$(lower "$(state_get '.evm.mailbox')")" = "$(lower "$EVM_MAILBOX")" ] \
         || fail "$STATE was made for EVM Mailbox $(state_get '.evm.mailbox'), not $EVM_MAILBOX. Use another DEPLOY_NAME or move it aside."
@@ -1866,10 +2563,15 @@ check_state_matches_chain() {
             || fail "$STATE records Dusk Mailbox $mailbox, but it isn't on this chain with domain $DUSK_DOMAIN. The network was reset or the state is from elsewhere; move it aside and redeploy."
     fi
     check_state_versions
-    for name in token storage_gas_oracle route_hook aggregation_hook_factory; do
+    for name in storage_gas_oracle route_hook aggregation_hook_factory; do
         contract="$(state_get ".evm.$name")"
         [ -z "$contract" ] || evm_has_code "$contract" \
             || fail "$STATE records EVM $name $contract, but there is no contract there; move the state aside and redeploy."
+    done
+    for route in $(recorded_routes); do
+        contract="$(state_get "$(route_evm_base "$route").token")"
+        [ -z "$contract" ] || evm_has_code "$contract" \
+            || fail "$STATE records the EVM $(route_symbol "$route") token $contract, but there is no contract there; move the state aside and redeploy."
     done
     contract="$(state_get '.evm.igp')"
     if [ -n "$contract" ] && [ -n "$(state_get '.evm.storage_gas_oracle')" ]; then
@@ -1882,12 +2584,25 @@ check_state_matches_chain() {
 
 # Refuse a deployment whose core contracts or warp routes report another
 # state_version than this checkout's (CORE_STATE_VERSIONS,
-# ROUTE_STATE_VERSIONS).
+# ROUTE_STATE_VERSIONS), its token routes' collateral routes included.
+token_route_state_versions() {
+    local route
+    for route in $(recorded_routes); do
+        [ "$route" = native ] \
+            || echo "$route=$(sed -n 's/.*warp_drc20_collateral=\([0-9]*\).*/\1/p' <<<"$ROUTE_STATE_VERSIONS")"
+    done
+}
 check_state_versions() {
-    local entry name expected contract version kind older
-    for entry in $CORE_STATE_VERSIONS $ROUTE_STATE_VERSIONS; do
+    local entry name expected contract version kind older route
+    for entry in $CORE_STATE_VERSIONS $ROUTE_STATE_VERSIONS $(token_route_state_versions); do
         name="${entry%%=*}" expected="${entry#*=}"
-        contract="$(state_get ".dusk.$name")"
+        if [[ "$name" == token:* ]]; then
+            contract="$(state_get "$(route_path "$name")")"
+            route="$name" name="warp_drc20_collateral, the $(route_symbol "$name") route"
+            entry="warp_drc20_collateral=$expected"
+        else
+            contract="$(state_get ".dusk.$name")"
+        fi
         [ -n "$contract" ] || continue
         if [[ " $ROUTE_STATE_VERSIONS " == *" $entry "* ]]; then
             kind="route"
@@ -1923,12 +2638,24 @@ cmd_deploy() {
     check_dusk_deployment keys
     configure_dusk_beneficiary
     check_dusk_igp_pricing
+    local symbol route
+    if [ -n "$(token_routes_to_deploy)" ]; then
+        record_dusk_owner_key
+        for symbol in $(token_routes_to_deploy); do
+            deploy_dusk_token_route "$symbol"
+        done
+    fi
     deploy_evm_ism
     deploy_evm_igp
     deploy_evm_route_hook
     deploy_evm_token
-    set_evm_route_hook
-    enroll_routers
+    for route in $(recorded_routes); do
+        [ "$route" = native ] || deploy_evm_route_token "$route"
+    done
+    for route in $(recorded_routes); do
+        set_evm_route_hook "$route"
+        enroll_routers "$route"
+    done
     check_deployed_ism
     ok "Deployment complete: $STATE"
     info "Next: bash deploy/testnet.sh agent-configs"
@@ -2023,12 +2750,11 @@ cmd_evm_igp() {
     require EVM_DEPLOYER_KEY
     configure_evm_igp_pricing apply
     check_evm_igp_pricing
-    token="$(state_get '.evm.token')"
-    if [ -n "$token" ]; then
+    for token in $(recorded_evm_tokens); do
         route_quote="$(evm_number "$token" "quoteGasPayment(uint32)(uint256)" "$DUSK_DOMAIN")" \
-            || fail "Can't read the EVM route's quote"
-        ok "A transfer to Dusk now pays $route_quote wei (quoteGasPayment on the route, the required hook's fee included)"
-    fi
+            || fail "Can't read the quote of the EVM token $token"
+        ok "A transfer of $(evm_call "$token" "symbol()(string)" --json | jq -r '.[0] // "?"') to Dusk now pays $route_quote wei (quoteGasPayment on its token, the required hook's fee included)"
+    done
     info "Regenerate the agent configs (agent-configs) if the overhead changed: the relayer's requirement follows it."
 }
 
@@ -2211,8 +2937,11 @@ dusk-tx. See docs/testnet.md.
 EOF
 }
 
+parse_token_routes
 case "${1:-}" in
-    preflight|deploy|agent-configs|dusk-igp|evm-igp|revenue|claim) lock_deployment ;;
+    preflight|deploy|agent-configs|dusk-igp|evm-igp|revenue|claim)
+        lock_deployment
+        check_token_route_settings ;;
 esac
 case "${1:-}" in
     preflight) cmd_preflight ;;

@@ -1362,6 +1362,8 @@ dependencies = [
  "clap",
  "constant_time_eq",
  "dusk-bytes",
+ "dusk-contract-standards",
+ "dusk-core 1.6.0",
  "dusk-core 1.7.1",
  "hex",
  "hyperlane-dusk-types",

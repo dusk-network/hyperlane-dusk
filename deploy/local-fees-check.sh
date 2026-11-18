@@ -147,9 +147,9 @@ info "delivering it on $EVM_CHAIN_NAME used $(evm_delivery_gas "$transfer_id") g
 recipient="$(cd "$SOLIDITY_DIR" && forge create contracts/test/TestRecipient.sol:TestRecipient --broadcast --json \
     --rpc-url "$EVM_RPC" --private-key "$EVM_USER_KEY" 2>/dev/null | jq -er '.deployedTo')" \
     || fail "Can't deploy a TestRecipient on $EVM_CHAIN_NAME"
-# The Dusk TestRecipient dispatches with its own Mailbox credit: 6.001 DUSK
-# a message at the default prices.
-dtx fund-dispatch --mailbox "$DUSK_MAILBOX" --payer "$DUSK_RECIPIENT" --amount 20000000000 >/dev/null \
+# The Dusk TestRecipient dispatches with its own Mailbox credit: 17.0635
+# DUSK a message at the default prices.
+dtx fund-dispatch --mailbox "$DUSK_MAILBOX" --payer "$DUSK_RECIPIENT" --amount 40000000000 >/dev/null \
     || fail "Can't fund the Dusk TestRecipient's dispatch credit"
 dtx dispatch --mailbox "$DUSK_MAILBOX" --test-recipient "$DUSK_RECIPIENT" --destination "$EVM_DOMAIN" \
     --recipient "$(pad32 "$recipient")" --body 0x736d616c6c >/dev/null || fail "Dusk dispatch failed"
