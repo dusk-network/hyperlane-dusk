@@ -732,7 +732,7 @@ def front_run(state, deployer, address, c):
         logs = initialize(c, address, attacker, [10**30, "Dusk", "DUSK", ZERO, attacker, attacker])
     else:
         die(f"fake EVM: unknown front_run {mode} for a {c['type']}")
-    receipt(state, attacker, to=address, logs=logs)
+    return receipt(state, attacker, to=address, logs=logs)
 
 def create_proxy(state, sender, data):
     if not data.startswith(PROXY_CODE):
@@ -781,6 +781,37 @@ def stale_read(state):
 
 HEADER_NOT_FOUND = "Error: server returned an error response: error code -32000: header not found"
 
+def record_history(state, tx, before):
+    # What a transaction changed, to read the chain as of a block before it:
+    # each contract it changed, as it was before ("history", [block, undo]).
+    block = int(state["receipts"][tx]["blockNumber"], 16)
+    undo = {address: before.get(address) for address in set(before) | set(state["contracts"])
+            if before.get(address) != state["contracts"].get(address)}
+    state.setdefault("history", []).append([block, undo])
+
+def as_of(state, block):
+    # The contracts as of the end of `block`: the current ones, with every
+    # later transaction's changes undone.
+    contracts = json.loads(json.dumps(state["contracts"]))
+    for changed_at, undo in reversed(state.get("history", [])):
+        if changed_at <= block:
+            break
+        for address, previous in undo.items():
+            if previous is None:
+                contracts.pop(address, None)
+            else:
+                contracts[address] = previous
+    return contracts
+
+def note_early_read(state, block):
+    # A read made at a block before the deployer's last transaction's, which
+    # a script that checks its own write must never make ("early_pinned_reads").
+    deployer_blocks = [int(r["blockNumber"], 16) for r in state.get("receipts", {}).values()
+                       if r["from"] in {k.lower() for k in state["keys"].values()}]
+    if deployer_blocks and block < max(deployer_blocks):
+        state["early_pinned_reads"] = state.get("early_pinned_reads", 0) + 1
+        save(state)
+
 def read_view(state, options):
     # What a read of code, storage, a call or a receipt answers from: the
     # state as of the block it names (cast --block), which the node must
@@ -798,7 +829,13 @@ def read_view(state, options):
             die(HEADER_NOT_FOUND)
         if stale_read(state) is not None:
             die(HEADER_NOT_FOUND)
-        return state, state["block"]
+        note_early_read(state, int(block))
+        # The chain as of that block, not as it is now, if anything changed
+        # after it.
+        history = state.get("history", [])
+        if not history or history[-1][0] <= int(block):
+            return state, state["block"]
+        return {**state, "contracts": as_of(state, int(block))}, state["block"]
     if state.get("latest_stale_left", 0) > 0:
         state["latest_stale_left"] -= 1
         save(state)
@@ -913,6 +950,7 @@ def main_cast(argv):
         refuse = accept_then_refuse(state)
         before = json.loads(json.dumps(state["contracts"]))
         tx = create_proxy(state, sender, options["--create"])
+        record_history(state, tx, before)
         went_stale(state, before)
         save(state)
         if refuse:
@@ -925,6 +963,7 @@ def main_cast(argv):
         before = json.loads(json.dumps(state["contracts"]))
         logs = send(state, positional[1], positional[2], positional[3:], sender)
         tx = receipt(state, sender, to=positional[1], logs=logs)
+        record_history(state, tx, before)
         went_stale(state, before)
         save(state)
         if refuse:
@@ -966,7 +1005,11 @@ def main_forge(argv):
     state["contracts"][address] = created
     logs = [log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))] if created.get("owner", ZERO) != ZERO else []
     tx = receipt(state, sender, created=address, logs=logs, data=creation_input(name, args))
-    front_run(state, sender, address, created)
+    record_history(state, tx, before)
+    created_only = json.loads(json.dumps(state["contracts"]))
+    attack = front_run(state, sender, address, created)
+    if attack:
+        record_history(state, attack, created_only)
     went_stale(state, before)
     save(state)
     if refuse:
@@ -1218,6 +1261,9 @@ class TestnetScript(unittest.TestCase):
         self.dusk_deploys = {key: chain[key] for key in ("txs", "deploys_sent", "front_run_deploy", "stop_after_token")
                              if key in chain}
         self.evm = json.loads(self.evm_file.read_text())
+        # A read that checks a write is made at the write's block or later.
+        self.assertEqual(self.evm.pop("early_pinned_reads", 0), 0,
+                         f"{command}: an EVM read pinned to a block before the deployer's last transaction's")
         return result
 
     def traced(self, prefix):
