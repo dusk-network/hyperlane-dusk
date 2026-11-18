@@ -9848,6 +9848,162 @@ fn test_relayed_process_at_threshold_6_fits_a_5m_gas_limit() {
     }
 }
 
+/// `deploy/testnet.sh`'s prices for a relayed delivery to Dusk, as its
+/// fee check sets them: `DUSK_PROCESS_BASE_NATIVE`,
+/// `DUSK_PROCESS_BASE_TOKEN_ROUTE` and `DUSK_PROCESS_PER_SIGNATURE`.
+fn deploy_testnet_sh_process_prices() -> (u64, u64, u64) {
+    const NAMES: &str =
+        "DUSK_PROCESS_BASE_NATIVE, DUSK_PROCESS_BASE_TOKEN_ROUTE, DUSK_PROCESS_PER_SIGNATURE = ";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../deploy/testnet.sh");
+    let script =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let values: Vec<u64> = script
+        .lines()
+        .find_map(|line| line.strip_prefix(NAMES))
+        .expect("deploy/testnet.sh should set its delivery prices on one line")
+        .split(", ")
+        .map(|value| {
+            value
+                .trim()
+                .replace('_', "")
+                .parse()
+                .expect("each price should be a whole number")
+        })
+        .collect();
+    assert_eq!(values.len(), 3, "three prices");
+    (values[0], values[1], values[2])
+}
+
+/// `deploy/testnet.sh` prices a relayed delivery to Dusk at a base for the
+/// costliest kind of route the deployment has, plus a price a signature
+/// the Dusk ISM checks: `EVM_IGP_GAS_OVERHEAD` must cover that at
+/// `EVM_ORIGIN_THRESHOLD`, and `DUSK_RELAYER_GAS_LIMIT` must be 1.5 times
+/// it. The bases are its `DUSK_PROCESS_BASE`s, 1,950,000 for the native
+/// route and 1,980,000 for a collateral route that locks the pinned
+/// canonical DRC20, as a token route does, and a signature is 220,000.
+/// Every delivery to each must cost no more, at every threshold up to 6
+/// and on every path: a payout to a registered account that holds the
+/// token, or that holds none of it (the token then stores a new balance),
+/// and a new or an existing escrow entry.
+#[test]
+fn test_relayed_deliveries_cost_no_more_than_deploy_testnet_sh_prices() {
+    const RELAYER_GAS_LIMIT: u64 = 5_000_000;
+    let (native_base, token_route_base, per_signature) = deploy_testnet_sh_process_prices();
+    let amount = 1_000u64;
+    let signers = checkpoint_signer_set(6);
+    let validators: Vec<EthAddress> = signers.iter().map(|(address, _)| *address).collect();
+    for (route, base) in [
+        (Route::Native, native_base),
+        (Route::CanonicalCollateral, token_route_base),
+    ] {
+        let collateral = matches!(route, Route::CanonicalCollateral);
+        let (mut session, remote_router) = route.session(100 * amount);
+        register_by_claim(
+            &mut session,
+            route.id(),
+            remote_router,
+            1_000,
+            &OWNER_SK,
+            amount,
+        );
+        // On the collateral route, a second registered account gives away
+        // all of the token it holds before each payout to it.
+        let give_away = |session: &mut TestSession| {
+            let held = canonical_drc20_balance_of(session, Drc20Account::moonlight(&RELAYER_PK));
+            session
+                .call_public::<_, ()>(
+                    &RELAYER_SK,
+                    WARP_DRC20_ID,
+                    "transfer",
+                    &hyperlane_dusk_types::drc20::TransferCall {
+                        to: Drc20Account::moonlight(&OWNER_PK),
+                        amount: held,
+                    },
+                )
+                .expect("the account gives its tokens away");
+            assert_eq!(
+                canonical_drc20_balance_of(session, Drc20Account::moonlight(&RELAYER_PK)),
+                0
+            );
+        };
+        if collateral {
+            register_by_claim(
+                &mut session,
+                route.id(),
+                remote_router,
+                1_001,
+                &RELAYER_SK,
+                amount,
+            );
+        }
+        session
+            .deploy(
+                ISM_MULTISIG_BYTECODE,
+                dusk_vm::ContractData::builder()
+                    .owner(DEPLOYER)
+                    .init_arg(&(*OWNER_ID, validators.clone(), 1u8))
+                    .contract_id(ISM_MULTISIG_ID),
+            )
+            .expect("Deploying MessageIdMultisigISM should succeed");
+        session
+            .call_public::<_, ()>(
+                &OWNER_SK,
+                MAILBOX_ID,
+                "set_default_ism",
+                &(ISM_MULTISIG_ID,),
+            )
+            .expect("the owner sets the default ISM");
+
+        let mut nonce = 0u32;
+        for threshold in 1u8..=6 {
+            session
+                .call_public::<_, ()>(
+                    &OWNER_SK,
+                    ISM_MULTISIG_ID,
+                    "set_validators_and_threshold",
+                    &(validators.clone(), threshold),
+                )
+                .expect("the owner sets the threshold");
+            let signing: Vec<&SecpSecretKey> = signers[signers.len() - usize::from(threshold)..]
+                .iter()
+                .map(|(_, key)| key)
+                .collect();
+            let escrow = [0x60 + threshold; 32];
+            let mut paths = vec![("payout to a holder", *OWNER_ID)];
+            if collateral {
+                give_away(&mut session);
+                paths.push(("payout to a registered account holding none", *RELAYER_ID));
+            }
+            paths.extend([("new escrow", escrow), ("existing escrow", escrow)]);
+            for (path, recipient) in paths {
+                let inbound = inbound_transfer(route.id(), remote_router, nonce, recipient, amount);
+                nonce += 1;
+                let metadata = signed_checkpoint_metadata(&inbound, &signing);
+                let receipt = session
+                    .call_public_with_gas_limit::<_, ()>(
+                        &RELAYER_SK,
+                        MAILBOX_ID,
+                        "process",
+                        &(metadata, inbound),
+                        RELAYER_GAS_LIMIT,
+                    )
+                    .unwrap_or_else(|e| panic!("{route:?} {path} at {threshold}: {e}"));
+                let priced = base + per_signature * u64::from(threshold);
+                println!(
+                    "delivery|{route:?}|{path}|{threshold}|{}|{priced}",
+                    receipt.gas_spent
+                );
+                assert!(
+                    receipt.gas_spent <= priced,
+                    "{route:?} {path} at threshold {threshold}: process took {} gas, more than the \
+                     {priced} deploy/testnet.sh prices it at",
+                    receipt.gas_spent
+                );
+            }
+        }
+    }
+}
+
 /// A recipient without `interchain_security_module` gets the default ISM.
 /// The failed lookup costs at most its fixed allowance; an unbounded call
 /// would be charged most of the transaction's gas.
