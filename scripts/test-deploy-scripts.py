@@ -2100,6 +2100,21 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.storage_gas_oracle"])
         self.assertEqual(self.traced("forge create"), [])
 
+    def test_switching_the_ism_to_a_factory_keeps_an_unsettled_direct_creation(self):
+        # The ISM's direct creation (EVM_ISM_FACTORY empty) timed out; deploy
+        # is then run with the factory. Recording the factory's ISM would
+        # forget the creation, which can still execute: deploy stops,
+        # sending nothing, and keeps it.
+        self.evm.update(hold=1, hold_skip=0)
+        self.assert_fails(self.run_script("deploy", EVM_ISM_FACTORY=""), "timed out")
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.ism"])
+        result = self.run_script("deploy")
+        self.assert_fails(result, "An earlier run sent a creation of the EVM security module without "
+                                  "EVM_ISM_FACTORY, and it isn't settled")
+        self.assertEqual(self.traced("cast send") + self.traced("forge create"), [])
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.ism"])
+        self.assertNotIn("ism", self.state()["evm"])
+
     def test_a_send_recorded_without_its_step_stops_each_command_that_sends(self):
         # The record only an earlier version of this script left, from a
         # local rehearsal: .evm_pending, one send without the step that sent

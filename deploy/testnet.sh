@@ -2629,6 +2629,11 @@ deploy_evm_ism() {
     local validators ism
     validators="$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")"
     if [ -n "${EVM_ISM_FACTORY:-}" ]; then
+        # A creation of the ISM an earlier run sent directly, without the
+        # factory, can still execute: recording the factory's ISM would
+        # forget it. It is kept, and stops deploy until it is settled.
+        [ -z "$(state_json | jq -r --arg s "$(evm_creation_step .evm.ism)" '.evm_sending[$s] // empty')" ] \
+            || fail "An earlier run sent a creation of the EVM security module without EVM_ISM_FACTORY, and it isn't settled (\"create .evm.ism\" in .evm_sending). Nothing was sent. Settle it first: run deploy with EVM_ISM_FACTORY empty, which takes that ISM if the creation executed; or, once the deployer's transaction with its nonce is final and isn't that creation, remove the entry (docs/testnet.md)."
         ism="$(evm_call "$EVM_ISM_FACTORY" "getAddress(address[],uint8)(address)" "[$validators]" "$DUSK_ORIGIN_THRESHOLD")"
         evm_settle_call "$EVM_ISM_FACTORY" "deploy(address[],uint8)"
         if ! evm_has_code "$ism"; then
