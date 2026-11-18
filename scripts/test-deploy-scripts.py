@@ -484,9 +484,10 @@ def send(state, address, signature, args, sender):
     elif name == "deploy" and c["type"] == "aggregation_factory":
         hooks = [h.strip().lower() for h in args[0].strip("[]").split(",")]
         state["contracts"][derive("aggregation", address.lower(), args[0].lower())] = {
-            "type": "aggregation", "hook_type": 2, "hooks": hooks}
+            "type": "aggregation", "hook_type": 2, "hooks": hooks, "created_at": state["block"]}
     elif name == "deploy" and c["type"] == "ism_factory":
-        state["contracts"][derive("ism", address.lower(), args[0].lower(), args[1])] = multisig(args)
+        state["contracts"][derive("ism", address.lower(), args[0].lower(), args[1])] = {
+            **multisig(args), "created_at": state["block"]}
     elif name == "addQuoteSigner":
         only_owner(c, sender)
         c["quote_signers"].append(args[0].lower())
@@ -573,6 +574,21 @@ def create_proxy(state, sender, data):
     state["contracts"][address] = proxy
     return receipt(state, sender, created=address, logs=logs)
 
+def went_stale(state):
+    # FIXTURE_EVM's "lag", n, makes the next n reads of the head, of code or
+    # of receipts answer from before the latest write, as a load-balanced
+    # endpoint can when it reaches a node a block behind.
+    if state.get("lag"):
+        state["stale_left"] = state["lag"]
+        state["stale_head"] = state["block"] - 2
+
+def stale_read(state):
+    if state.get("stale_left", 0) <= 0:
+        return None
+    state["stale_left"] -= 1
+    save(state)
+    return state["stale_head"]
+
 def main_cast(argv):
     state = load()
     positional, options, flags = split(argv)
@@ -583,9 +599,13 @@ def main_cast(argv):
     if command == "chain-id":
         print(state["chain_id"])
     elif command == "block-number":
-        print(state["block"])
+        stale = stale_read(state)
+        print(state["block"] if stale is None else stale)
     elif command == "code":
-        print("0x6080" if positional[1].lower() in state["contracts"] else "0x")
+        stale = stale_read(state)
+        c = state["contracts"].get(positional[1].lower())
+        visible = c is not None and (stale is None or c.get("created_at", -1) <= stale)
+        print("0x6080" if visible else "0x")
     elif command == "balance":
         wei = state["balances"].get(positional[1].lower(), 0)
         print(f"{wei / 10**18:.18f}" if "--ether" in flags else wei)
@@ -603,6 +623,9 @@ def main_cast(argv):
             print("0x" + "00" * 32)
     elif command == "receipt":
         found = state.get("receipts", {}).get(positional[1].lower())
+        stale = stale_read(state)
+        if found is not None and stale is not None and int(found["blockNumber"], 16) > stale:
+            found = None
         if found is None:
             die(f"Error: transaction {positional[1]} not found")
         print(json.dumps(found) if "--json" in flags else found[positional[2]])
@@ -624,11 +647,13 @@ def main_cast(argv):
         print(json.dumps(found))
     elif command == "send" and "--create" in options:
         tx = create_proxy(state, sender, options["--create"])
+        went_stale(state)
         save(state)
         print(json.dumps(state["receipts"][tx]))
     elif command == "send":
         logs = send(state, positional[1], positional[2], positional[3:], sender)
         tx = receipt(state, sender, to=positional[1], logs=logs)
+        went_stale(state)
         save(state)
         if "--json" in flags:
             print(json.dumps(state["receipts"][tx]))
@@ -656,6 +681,7 @@ def main_forge(argv):
     logs = [log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))] if created.get("owner", ZERO) != ZERO else []
     tx = receipt(state, sender, created=address, logs=logs)
     front_run(state, sender, address, created)
+    went_stale(state)
     save(state)
     print(json.dumps({"deployer": sender, "deployedTo": address, "transactionHash": tx}))
 """
@@ -1154,6 +1180,31 @@ class TestnetRouteHookPlan(TestnetScript):
                     result = self.run_script(command)
                     self.assert_fails(result, expected)
                     self.assertEqual(self.traced("cast send") + self.traced("forge"), [])
+
+
+class TestnetLaggingEvmEndpoint(TestnetScript):
+    """EVM_RPC can be a load balancer over nodes a block apart, as the public
+    Sepolia endpoints are: a read right after a write can reach a node that
+    hasn't seen it. Each write waits until the endpoint answers past its
+    block, so the checks that follow see what was written, and a deploy on
+    such an endpoint completes with each contract deployed once."""
+
+    def test_a_deploy_on_a_lagging_endpoint_completes(self):
+        self.evm["lag"] = 2
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="60")
+        self.assert_ok(result)
+        state = self.state()["evm"]
+        for key in ("ism", "igp", "token", "route_hook"):
+            self.assertIn(key, state)
+        # Each contract once: one ISM and one hook from the factories, the
+        # IGP's and the token's proxies, and no forge create repeated.
+        sends = self.traced("cast send")
+        self.assertEqual(sum("deploy(address[],uint8)" in line for line in sends), 1)
+        self.assertEqual(sum("deploy(address[])" in line for line in sends), 1)
+        self.assertEqual(sum("--create" in line for line in sends), 2)
+        creates = self.traced("forge create")
+        self.assertEqual(len(creates), len(set(creates)))
+        self.assert_ok(self.run_script("agent-configs"))
 
 
 class TestnetTypelessHooks(TestnetScript):

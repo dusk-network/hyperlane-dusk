@@ -178,7 +178,45 @@ dusk_value() {
 }
 dusk_tx() { DUSK_CONSENSUS_PASSWORD="$DUSK_CONSENSUS_PASSWORD" "$DUSK_TX" "$@"; }
 evm_call() { cast call "$@" --rpc-url "$EVM_RPC"; }
-evm_send() { cast send "$@" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" >/dev/null; }
+# EVM_RPC can be a load balancer over nodes a block or two apart, such as the
+# public Sepolia endpoints, so a read right after a write can reach a node
+# that hasn't seen it, and a check of what was just written fail. After each
+# write, evm_settle waits until the endpoint answers at or past the write's
+# block on three reads in a row, for up to EVM_SETTLE_SECONDS (120).
+evm_settle() {
+    local block="$1" seen=0 now deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    [[ "$block" =~ ^[0-9]+$ ]] || fail "No block number to wait for on $EVM_CHAIN_NAME"
+    while :; do
+        now="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || now=0
+        if [[ "$now" =~ ^[0-9]+$ ]] && [ "$now" -ge "$block" ]; then
+            seen=$((seen + 1))
+            [ "$seen" -lt 3 ] || return 0
+            continue
+        fi
+        seen=0
+        [ "$SECONDS" -lt "$deadline" ] \
+            || fail "EVM_RPC still answers from before block $block, which holds a transaction just sent, after ${EVM_SETTLE_SECONDS:-120}s"
+        sleep 2
+    done
+}
+# The block a transaction is in, once EVM_RPC has its receipt, waiting as
+# evm_settle does.
+evm_tx_block() {
+    local tx="$1" block deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    while :; do
+        block="$(cast receipt "$tx" blockNumber --rpc-url "$EVM_RPC" 2>/dev/null)" && block="$(evm_block_number "$block")" \
+            && [[ "$block" =~ ^[0-9]+$ ]] && { printf '%s' "$block"; return 0; }
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 2
+    done
+}
+evm_send() {
+    local receipt block
+    receipt="$(cast send "$@" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
+    jq -e '.status | tostring | test("^(0x)?1$")' <<<"$receipt" >/dev/null || return 1
+    block="$(evm_block_number "$(jq -r '.blockNumber' <<<"$receipt")")" || return 1
+    evm_settle "$block"
+}
 # A number `cast call` returns, without the scientific form it adds.
 evm_number() { local out; out="$(evm_call "$@")" || return 1; awk 'NR == 1 {print $1}' <<<"$out"; }
 # Whether there is a contract at an address. A failed lookup stops the script
@@ -203,11 +241,18 @@ evm_creator() {
 }
 # Deploy a contract from the Hyperlane Solidity sources; prints its address.
 forge_create() {
-    local contract="$1" address
+    local contract="$1" created address tx block
     shift
-    address="$(cd "$SOLIDITY_DIR" && forge create "$contract" --broadcast --json --rpc-url "$EVM_RPC" \
-        --private-key "$EVM_DEPLOYER_KEY" "$@" | jq -r '.deployedTo')" || return 1
-    [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || return 1
+    created="$(cd "$SOLIDITY_DIR" && forge create "$contract" --broadcast --json --rpc-url "$EVM_RPC" \
+        --private-key "$EVM_DEPLOYER_KEY" "$@")" || return 1
+    address="$(jq -r '.deployedTo // empty' <<<"$created")"
+    tx="$(jq -r '.transactionHash // empty' <<<"$created")"
+    [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] || return 1
+    # The contract exists whatever the endpoint shows next: return it so the
+    # caller records it, and a re-run doesn't deploy it again.
+    if block="$(evm_tx_block "$tx")"; then
+        ( evm_settle "$block" ) || info "Going on without EVM_RPC showing $tx's block; a check that fails on it is safe to re-run"
+    fi
     printf '%s' "$address"
 }
 # ERC1967Proxy's creation code, from the OpenZeppelin release Hyperlane's
@@ -257,6 +302,7 @@ deploy_evm_proxied() {
         || fail "$label deployment returned no contract address and transaction hash"
     state_set --arg k "$key" --arg a "$address" --arg t "$tx" --arg d "$(evm_deployer)" \
         '.evm[$k] = $a | .evm[$k + "_creation_tx"] = $t | .evm.deployer = $d'
+    evm_settle "$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$receipt")")"
     check_evm_creation "$key" "$label"
 }
 
