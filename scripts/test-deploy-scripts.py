@@ -2759,6 +2759,36 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], [750000000000000, 1])
         self.assert_ok(self.run_script("agent-configs"))
 
+    def test_evm_igp_apply_settles_an_update_an_earlier_run_sent_before_comparing(self):
+        # An --apply's update of the oracle timed out, and is still pending;
+        # the settings then go back to what the oracle prices. The next
+        # --apply settles that update before it compares: pending, it stops,
+        # sending nothing, rather than find the pricing as the settings say
+        # and leave the update to land after it. Once it has landed, --apply
+        # sets the settings' pricing again.
+        prices = list(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)])
+        dusk_igp = self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]
+        self.settings["ETH_DUSK_PRICE_RATIO"] = "20000"
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"] = {"value": {
+            key: int(value) for key, value in expected_fees(ratio="20000")["dusk_igp"].items()}}
+        self.evm.update(hold=1)
+        self.assert_fails(self.run_script("evm-igp", "--apply"), "timed out")
+        del self.settings["ETH_DUSK_PRICE_RATIO"]
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"] = dusk_igp
+        result = self.run_script("evm-igp", "--apply", EVM_SETTLE_SECONDS="3")
+        self.assert_fails(result, "isn't in a block")
+        self.assertNotIn("already charges what the settings say", result.stderr)
+        self.assertEqual(self.traced("cast send"), [])
+        self.evm["mine_held"] = True
+        result = self.run_script("evm-igp", "--apply")
+        self.assert_ok(result)
+        self.assertIn("It executed: the step reads the chain as of its block, or later", result.stderr)
+        [sent] = self.traced("cast send")
+        self.assertIn(f"setRemoteGasDataConfigs((uint32,uint128,uint128)[]) [({DUSK_DOMAIN},{prices[0]},{prices[1]})]",
+                      sent)
+        self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], prices)
+        self.assertNotIn("evm_sending", self.state())
+
     def test_evm_igp_apply_changes_the_overhead(self):
         self.settings.update(EVM_IGP_GAS_OVERHEAD=2390000, EVM_ORIGIN_THRESHOLD=2,
                              EVM_ORIGIN_VALIDATORS=",".join(validators(2)))

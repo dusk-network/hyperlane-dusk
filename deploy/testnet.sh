@@ -2983,6 +2983,14 @@ cmd_evm_igp() {
     igp="$(state_get '.evm.igp')" oracle="$(state_get '.evm.storage_gas_oracle')"
     [ -n "$igp" ] && [ -n "$oracle" ] || fail "No EVM IGP recorded in $STATE; run deploy first"
     check_evm_deployment
+    # An update an earlier --apply sent is settled before the pricing is
+    # read: one still pending could land after this run found the pricing
+    # as the settings say, and leave it as it said.
+    if [ -n "$apply" ] && [ -n "$(state_get '.evm_sending')" ]; then
+        require EVM_DEPLOYER_KEY
+        evm_settle_call "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])"
+        evm_settle_call "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])"
+    fi
     current="$(evm_igp_pricing)" || exit 1
     check_evm_igp_oracle "$current"
     chain_quote="none"
