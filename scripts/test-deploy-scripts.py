@@ -71,7 +71,7 @@ QUOTE_SIGNER_ADDED = "0x1999e59a6c4f2d603b5236b4b6a9ab4caecb598d4a59fe663b6eae45
 QUOTE_SIGNER_REMOVED = "0xf1e7459dfbea75ed7b558903ed9cf48b6c71a30d598a87ca5335d87663a2f70a"
 
 # What deploy/testnet.env.example's defaults charge (docs/costs.md).
-DEFAULT_DUSK_IGP = {"gas_overhead": "110000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
+DEFAULT_DUSK_IGP = {"gas_overhead": "405000", "token_exchange_rate": "375000", "gas_price": "1000000000"}
 DEFAULT_EVM_IGP = {"gas_overhead": "2170000", "token_exchange_rate": "600000000000000", "gas_price": "1"}
 
 
@@ -1766,7 +1766,7 @@ class TestnetQuoteSignerHistory(DeployedTestnet):
         self.assert_refused("has had a quote signer")
 
 
-def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=110000,
+def expected_fees(ratio="25000", margin=5000, evm_gas_price=10**9, dusk_overhead=405000,
                   evm_overhead=2170000, dusk_gas_price=1):
     """docs/costs.md's formula, worked out here independently of the script."""
     ratio = Fraction(ratio)
@@ -1798,12 +1798,12 @@ class TestnetFees(TestnetScript):
 
     def test_default_settings_charge_the_documented_amounts(self):
         fees = self.fees()
-        self.assertEqual(fees["dusk_igp"]["config"], f"{EVM_DOMAIN}:110000:375000:1000000000")
+        self.assertEqual(fees["dusk_igp"]["config"], f"{EVM_DOMAIN}:405000:375000:1000000000")
         self.assertEqual(fees["evm_igp"], {"domain": DUSK_DOMAIN, **DEFAULT_EVM_IGP})
-        # 160,000 EVM gas at 1 gwei is 0.00016 ETH, 4 DUSK at 25,000 DUSK per
-        # ETH; with the 50% margin, 6 DUSK.
-        self.assertEqual(fees["dusk_to_evm"]["quote_lux"], "6000000000")
-        self.assertEqual(fees["dusk_to_evm"]["gas_cost_lux"], "4000000000")
+        # 455,000 EVM gas at 1 gwei is 0.000455 ETH, 11.375 DUSK at 25,000
+        # DUSK per ETH; with the 50% margin, 17.0625 DUSK.
+        self.assertEqual(fees["dusk_to_evm"]["quote_lux"], "17062500000")
+        self.assertEqual(fees["dusk_to_evm"]["gas_cost_lux"], "11375000000")
         # 2,170,000 Dusk gas at 1 LUX is 0.00217 DUSK, 8.68e10 wei; with the
         # margin, 1.302e11 wei.
         self.assertEqual(fees["evm_to_dusk"]["quote_wei"], "130200000000")
@@ -1813,7 +1813,7 @@ class TestnetFees(TestnetScript):
                                            "evm_origin_required_gas": 2170000})
         summary = self.run_script("fees")
         self.assert_ok(summary)
-        self.assertIn("quote 6 DUSK", summary.stdout)
+        self.assertIn("quote 17.0625 DUSK", summary.stdout)
         self.assertIn("quote 0.0000001302 ETH (130,200,000,000 wei)", summary.stdout)
 
     def test_pricing_follows_the_formula(self):
@@ -1857,16 +1857,19 @@ class TestnetFees(TestnetScript):
                 self.assert_fails(self.run_script("fees", **settings), expected)
 
     def test_gas_overheads_must_cover_delivery(self):
-        # 125,000 + 7,500 x 6 + 2,500 x 6 = 185,000 EVM gas, less the 50,000.
+        # 420,000 + 7,500 x 6 + 2,500 x 6 = 480,000 EVM gas, less the 50,000.
         six = ",".join(validators(6))
         self.assert_fails(
             self.run_script("fees", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6),
-            "Set it to at least 135,000")
+            "Set it to at least 430,000")
         self.assert_ok(self.run_script("fees", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6,
-                                       DUSK_IGP_GAS_OVERHEAD=135000))
-        # The default covers 3 of 5.
+                                       DUSK_IGP_GAS_OVERHEAD=430000))
+        # The default covers 3 of 5. The 110,000 deploy/testnet.env.example
+        # had before, sized on Anvil, is refused even at 1 of 1: Sepolia
+        # estimated a token's first mint at 424,972 gas at 1 of 2.
         self.assert_ok(self.run_script("fees", DUSK_ORIGIN_VALIDATORS=",".join(validators(5)),
                                        DUSK_ORIGIN_THRESHOLD=3))
+        self.assert_fails(self.run_script("fees", DUSK_IGP_GAS_OVERHEAD=110000), "Set it to at least 380,000")
         self.assert_fails(
             self.run_script("fees", EVM_ORIGIN_THRESHOLD=2, EVM_ORIGIN_VALIDATORS=",".join(validators(2))),
             "takes about 2,390,000 Dusk gas")
@@ -1992,7 +1995,7 @@ class TestnetFeeCommands(DeployedTestnet):
         rows = [line.split() for line in result.stderr.splitlines() if line.split()[:1] in (["now"], ["new"])]
         # The pricing deploy/testnet.sh used to deploy charged 25,000 LUX.
         self.assertEqual(rows, [["now", "200000", "1", "1000000000", "25000"],
-                                ["new", "110000", "375000", "1000000000", "6000000000"]])
+                                ["new", "405000", "375000", "1000000000", "17062500000"]])
         self.assertIn("Dry run: nothing was sent", result.stderr)
         self.assertEqual(self.traced("dusk-tx set-igp-config"), [])
 
@@ -2000,7 +2003,7 @@ class TestnetFeeCommands(DeployedTestnet):
         self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"] = 1
         self.assert_ok(self.run_script("dusk-igp", "--apply"))
         [sent] = self.traced("dusk-tx set-igp-config")
-        self.assertIn(f"--igp {IGP} --igp-domain-config {EVM_DOMAIN}:110000:375000:1000000000", sent)
+        self.assertIn(f"--igp {IGP} --igp-domain-config {EVM_DOMAIN}:405000:375000:1000000000", sent)
         self.assertEqual(self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]["value"]["token_exchange_rate"],
                          375000)
         result = self.run_script("dusk-igp")
@@ -2252,7 +2255,7 @@ class TestnetDeploy(TestnetScript):
         result = self.run_script("deploy")
         self.assert_ok(result)
         [deploy] = self.traced("dusk-tx deploy-hyperlane")
-        self.assertIn(f"--igp-domain-config {EVM_DOMAIN}:110000:375000:1000000000", deploy)
+        self.assertIn(f"--igp-domain-config {EVM_DOMAIN}:405000:375000:1000000000", deploy)
         # Every Dusk transaction is signed for DUSK_EXPECTED_CHAIN_ID only.
         [enroll] = self.traced("dusk-tx enroll-router")
         for sent in (deploy, enroll):

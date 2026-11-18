@@ -421,7 +421,7 @@ the ranges run from keys in increasing order to keys in random order
 | Mailbox, both | | dispatches to 3 GiB, then 33M to 41M deliveries for the last GiB: 177,000 to 192,000 DUSK, the cheapest way to make `process` fail |
 | Mailbox, credit for new payers | | 29M to 34M new payers to 3 GiB, where new payers stop, each with a dispatch through its own hook that takes the 0.01 DUSK minimum back: 140,000 to 225,000 DUSK |
 | MerkleTreeHook | 33.5M dispatches, with the Mailbox | 134M; the Mailbox closes dispatch first |
-| IGP | 16.8M payments; about 5,600 DUSK plus IGP fees | about 67M payments. Top-ups close at 3 GiB, about 94,000 DUSK at the testnet pricing; dispatches through the IGP pay 6.001 DUSK each there, about 403 million DUSK to fill it |
+| IGP | 16.8M payments; about 5,600 DUSK plus IGP fees | about 67M payments. Top-ups close at 3 GiB, about 94,000 DUSK at the testnet pricing; dispatches through the IGP pay 17.0635 DUSK each there, about 1.14 billion DUSK to fill it |
 | ValidatorAnnounce, new keys | 3.5M announcements of 1 KiB locations; about 1,257 DUSK | 36M to 40M, a transaction each: 74,000 to 82,000 DUSK with 1-byte locations |
 | WarpDrc20, new holders | 14.3M; about 227 DUSK | 42M to 52M to the 3 GiB reserve: 2,300 to 2,900 DUSK, plus a token unit each |
 | WarpDrc20, approvals of new spenders | 14.3M; about 156 DUSK | 42M to 52M to the 3 GiB reserve, at most 64 per owner and a transaction each: 79,000 to 99,000 DUSK |

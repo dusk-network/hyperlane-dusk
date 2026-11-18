@@ -233,7 +233,7 @@ The relayer only delivers a message once the gas it paid for covers what
 its delivery takes ([costs.md](costs.md#what-the-relayer-requires)). A
 message that paid for less waits, and the relayer checks it again later.
 That happens to a message whose recipient's `handle` takes more gas than
-its dispatch paid for (a warp transfer from Dusk pays for 160,000 EVM
+its dispatch paid for (a warp transfer from Dusk pays for 455,000 EVM
 gas), or whose delivery got more expensive after it was sent.
 Anyone can pay for more gas for it, as with `payForGas` on EVM, and the
 relayer adds up every payment for the message's ID and destination.

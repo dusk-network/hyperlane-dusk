@@ -605,10 +605,16 @@ LUX, WEI = 10**9, 10**18         # per DUSK, per ETH
 DEFAULT_GAS = 50_000             # the Dusk IGP's gas for a message without hook metadata
 IGP_MAX_GAS_LIMIT = 10**9        # the largest gas limit the Dusk IGP prices
 # A route transfer's delivery on the EVM chain, Mailbox.process with an m-of-n
-# MessageId multisig ISM and HypERC20.handle: at most this. The local
-# rehearsal measured 140,569 gas at 2 of 3 (a StorageMessageIdMultisigIsm,
-# minting to a new holder); each signature and validator adds at most this.
-EVM_DELIVERY_BASE, EVM_DELIVERY_PER_SIGNATURE, EVM_DELIVERY_PER_VALIDATOR = 125_000, 7_500, 2_500
+# MessageId multisig ISM and a HypERC20's handle, as the relayer estimates it
+# (eth_estimateGas): at most this, plus this per signature and per
+# validator. A delivery stores a new delivery record, a mint to a new holder
+# a new balance, and a token's first mint a new supply. Sepolia charges
+# about 111,000 gas for each new storage slot (Anvil, and Sepolia before its
+# Glamsterdam upgrade, 22,100), so it estimated a delivery of a live
+# transfer, at 1 of 2, at 218,195 gas to a holder, 320,137 to a new one and
+# 424,972 as the token's first mint (docs/costs.md, Fee coverage). The
+# local rehearsal, on Anvil, measured 140,569 at 2 of 3.
+EVM_DELIVERY_BASE, EVM_DELIVERY_PER_SIGNATURE, EVM_DELIVERY_PER_VALIDATOR = 420_000, 7_500, 2_500
 DUSK_PROCESS_BASE, DUSK_PROCESS_PER_SIGNATURE = 1_950_000, 220_000
 
 def whole(name, low, high):

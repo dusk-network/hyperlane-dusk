@@ -30,8 +30,11 @@ between the two chains, from any sender, once it is paid for
 ([costs.md](costs.md#fee-coverage)):
 
 - **Dusk → Sepolia.** The Dusk IGP, the Dusk Mailbox's default hook, charges
-  DUSK for the Sepolia gas a delivery takes: 6 DUSK for a transfer at the
-  default prices. The ProtocolFee adds 0.001 DUSK for its beneficiary.
+  DUSK for the Sepolia gas a delivery takes: 17.0625 DUSK for a transfer at
+  the default prices, for 455,000 gas. Sepolia charges about 111,000 gas
+  for each storage slot a delivery creates, so a delivery takes 218,195 to
+  424,972 gas there ([costs.md](costs.md#pricing)). The ProtocolFee adds
+  0.001 DUSK for its beneficiary.
 - **Sepolia → Dusk.** Our IGP on Sepolia charges ETH for the Dusk gas a
   delivery takes: 1.302e11 wei for a transfer at the default prices, on top
   of Hyperlane's 1 wei protocol fee. Hyperlane's own Sepolia IGP has no
@@ -416,7 +419,7 @@ DUSK=https://testnet.nodes.dusk.network/; EVM_RPC=https://ethereum-sepolia.publi
 export DUSK_CONSENSUS_PASSWORD=...
 
 # Dusk -> Sepolia: lock 1 DUSK (1e9 LUX), mint 1 DUSK on Sepolia. The
-# deposit is the amount plus the quoted dispatch fee, 6.001 DUSK at the
+# deposit is the amount plus the quoted dispatch fee, 17.0635 DUSK at the
 # default prices; dusk-tx adds the fee.
 target/release/dusk-tx transfer-remote --native --rues-url $DUSK --keys my.keys \
   --warp-contract $ROUTE --destination 11155111 \

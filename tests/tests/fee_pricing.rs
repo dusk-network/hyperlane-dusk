@@ -205,12 +205,12 @@ fn the_dusk_igp_quotes_the_configured_fee_for_a_transfer() {
         config.gas_price, config.token_exchange_rate
     );
 
-    // docs/costs.md quotes the example's defaults: 160,000 gas at 1 gwei,
-    // 0.00016 ETH, is 4 DUSK at 25,000 DUSK per ETH, and 6 DUSK with the 50%
-    // margin. Change both together.
-    assert_eq!(gas, 160_000);
+    // docs/costs.md quotes the example's defaults: 455,000 gas at 1 gwei,
+    // 0.000455 ETH, is 11.375 DUSK at 25,000 DUSK per ETH, and 17.0625 DUSK
+    // with the 50% margin. Change both together.
+    assert_eq!(gas, 455_000);
     assert_eq!(config.token_exchange_rate, 375_000);
-    assert_eq!(quote, 6_000_000_000);
+    assert_eq!(quote, 17_062_500_000);
 }
 
 /// What deploy/testnet.sh passes to `dusk-tx deploy-hyperlane` and
