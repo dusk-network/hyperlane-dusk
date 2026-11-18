@@ -661,12 +661,68 @@ def check_nonce(state, sender, options):
     # as a node does.
     if "--nonce" not in options:
         return
-    expected = state.get("account_nonces", {}).get(sender.lower(), 0)
+    expected = state.get("account_nonces", {}).get(sender.lower(), 0) + len(
+        [h for h in state.get("held", []) if h["sender"] == sender.lower()])
     given = int(options["--nonce"])
     if given < expected:
         die(f"Error: server returned an error response: error code -32000: nonce too low: next nonce {expected}, tx nonce {given}")
     if given > expected:
         die(f"Error: server returned an error response: error code -32000: nonce too high: next nonce {expected}, tx nonce {given}")
+
+def apply_send(state, kind, sender, payload):
+    # Make a transaction happen: a forge creation, a proxy creation or a
+    # call, with the sender's next nonce. Returns its hash and, for a forge
+    # creation, the address.
+    before = json.loads(json.dumps(state["contracts"]))
+    address = None
+    if kind == "forge":
+        name, args = payload["name"], payload["args"]
+        address = new_address(state, sender)
+        created = CREATED[name](sender, args)
+        created["created_at"] = state["block"]
+        state["contracts"][address] = created
+        logs = ([log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))]
+                if created.get("owner", ZERO) != ZERO else [])
+        tx = receipt(state, sender, created=address, logs=logs, data=creation_input(name, args))
+        record_history(state, tx, before)
+        created_only = json.loads(json.dumps(state["contracts"]))
+        attack = front_run(state, sender, address, created)
+        if attack:
+            record_history(state, attack, created_only)
+    elif kind == "create":
+        tx = create_proxy(state, sender, payload["data"])
+        record_history(state, tx, before)
+    else:
+        logs = send(state, payload["to"], payload["sig"], payload["args"], sender)
+        tx = receipt(state, sender, to=payload["to"], logs=logs,
+                     data=encode({"sig": payload["sig"], "args": payload["args"]}))
+        record_history(state, tx, before)
+    went_stale(state, before)
+    return tx, address
+
+def held(state, sender, kind, payload):
+    # "hold", n: the next n transactions sent are taken but not mined, and
+    # the send times out, as one a gateway passed on and lost track of does.
+    # They hold their nonces (cast nonce --block pending counts them), and
+    # are mined once "mine_held" is set. "hold_skip", n: the first n sends
+    # go through.
+    if state.get("hold", 0) <= 0:
+        return False
+    if state.get("hold_skip", 0) > 0:
+        state["hold_skip"] -= 1
+        save(state)
+        return False
+    state["hold"] -= 1
+    state.setdefault("held", []).append({"sender": sender.lower(), "kind": kind, "payload": payload})
+    save(state)
+    die("Error: error sending request for url (http://fixture): operation timed out")
+
+def mine_held(state):
+    if not state.pop("mine_held", False):
+        return
+    for item in state.pop("held", []):
+        apply_send(state, item["kind"], item["sender"], item["payload"])
+    save(state)
 
 def accept_then_refuse(state):
     # "accept_then_refuse", n: the next n transactions sent, after the first
@@ -853,21 +909,25 @@ def read_view(state, options):
         return {**state, "contracts": state["latest_stale"]["contracts"]}, state["latest_stale"]["block"]
     return state, None
 
-def refuse_stale_nonce(state):
+def refuse_stale_nonce(state, sender):
     # "nonce_refusals", n: the next n transactions sent, after the first
-    # "nonce_refusals_skip", are refused as a node that hasn't seen the
-    # sender's last transaction refuses them, and change nothing.
+    # "nonce_refusals_skip", find their nonce taken, by an earlier
+    # transaction of the sender's that a node behind showed late (a
+    # "filler"), and are refused for it, changing nothing else.
     if state.get("nonce_refusals_skip", 0) > 0:
         state["nonce_refusals_skip"] -= 1
         save(state)
         return
     if state.get("nonce_refusals", 0) > 0:
         state["nonce_refusals"] -= 1
+        tx = receipt(state, sender, to=ZERO, data="0xf111e4")
+        state["receipts"][tx]["filler"] = True
         save(state)
-        die("Error: server returned an error response: error code -32000: nonce too low: next nonce 5, tx nonce 4")
+        die("Error: server returned an error response: error code -32000: nonce too low")
 
 def main_cast(argv):
     state = load()
+    mine_held(state)
     positional, options, flags = split(argv)
     trace("cast " + " ".join(positional + ([f"--create {options['--create'][:40]}..."] if "--create" in options else [])
                              + ([f"--from {options['--from']}"] if "--from" in options else [])
@@ -880,6 +940,8 @@ def main_cast(argv):
         # "stale_nonce_reads", n: the next n reads answer one below, as a
         # node that hasn't seen the sender's last transaction does.
         nonce = state.get("account_nonces", {}).get(positional[1].lower(), 0)
+        if options.get("--block") == "pending":
+            nonce += len([h for h in state.get("held", []) if h["sender"] == positional[1].lower()])
         if state.get("stale_nonce_reads", 0) > 0:
             state["stale_nonce_reads"] -= 1
             save(state)
@@ -953,26 +1015,22 @@ def main_cast(argv):
                     found.append({**entry, "blockNumber": r["blockNumber"], "transactionHash": tx})
         print(json.dumps(found))
     elif command == "send" and "--create" in options:
-        refuse_stale_nonce(state)
+        refuse_stale_nonce(state, sender)
         check_nonce(state, sender, options)
+        held(state, sender, "create", {"data": options["--create"]})
         refuse = accept_then_refuse(state)
-        before = json.loads(json.dumps(state["contracts"]))
-        tx = create_proxy(state, sender, options["--create"])
-        record_history(state, tx, before)
-        went_stale(state, before)
+        tx, _ = apply_send(state, "create", sender, {"data": options["--create"]})
         save(state)
         if refuse:
             die("Error: server returned an error response: error code -32000: nonce too low")
         print(json.dumps(state["receipts"][tx]))
     elif command == "send":
-        refuse_stale_nonce(state)
+        refuse_stale_nonce(state, sender)
         check_nonce(state, sender, options)
+        payload = {"to": positional[1], "sig": positional[2], "args": positional[3:]}
+        held(state, sender, "call", payload)
         refuse = accept_then_refuse(state)
-        before = json.loads(json.dumps(state["contracts"]))
-        logs = send(state, positional[1], positional[2], positional[3:], sender)
-        tx = receipt(state, sender, to=positional[1], logs=logs)
-        record_history(state, tx, before)
-        went_stale(state, before)
+        tx, _ = apply_send(state, "call", sender, payload)
         save(state)
         if refuse:
             die("Error: server returned an error response: error code -32000: nonce too low")
@@ -983,6 +1041,7 @@ def main_cast(argv):
 
 def main_forge(argv):
     state = load()
+    mine_held(state)
     positional, options, flags = split(argv)
     trace("forge " + " ".join(positional + options.get("--constructor-args", [])))
     if positional[0] == "remappings":
@@ -1002,23 +1061,12 @@ def main_forge(argv):
         return
     name = positional[1].split(":")[-1]
     sender = state["keys"][options["--private-key"]]
-    refuse_stale_nonce(state)
+    refuse_stale_nonce(state, sender)
     check_nonce(state, sender, options)
+    payload = {"name": name, "args": options.get("--constructor-args", [])}
+    held(state, sender, "forge", payload)
     refuse = accept_then_refuse(state)
-    before = json.loads(json.dumps(state["contracts"]))
-    address = new_address(state, sender)
-    args = options.get("--constructor-args", [])
-    created = CREATED[name](sender, args)
-    created["created_at"] = state["block"]
-    state["contracts"][address] = created
-    logs = [log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))] if created.get("owner", ZERO) != ZERO else []
-    tx = receipt(state, sender, created=address, logs=logs, data=creation_input(name, args))
-    record_history(state, tx, before)
-    created_only = json.loads(json.dumps(state["contracts"]))
-    attack = front_run(state, sender, address, created)
-    if attack:
-        record_history(state, attack, created_only)
-    went_stale(state, before)
+    tx, address = apply_send(state, "forge", sender, payload)
     save(state)
     if refuse:
         die("Error: server returned an error response: error code -32000: nonce too low")
@@ -1058,6 +1106,15 @@ case "$url" in
     *) exit 22 ;;
 esac
 '''
+
+
+def evm_transactions(evm):
+    """The transactions on the fake EVM, in order: what each created, or
+    the contract it called, by type, as addresses follow the deployer's
+    nonce; without the fillers that take a nonce first (nonce_refusals)."""
+    kind = lambda address: evm["contracts"].get(address, {}).get("type", address)
+    return [("create", kind(r["contractAddress"])) if r["contractAddress"] else ("call", kind(r["to"]))
+            for r in evm.get("receipts", {}).values() if not r.get("filler")]
 
 
 def write_executable(path, text):
@@ -1576,9 +1633,7 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         self.assert_ok(self.run_script("agent-configs"))
 
     def deployed_transactions(self):
-        """The transactions a deploy left on the fake EVM, by what each
-        created or called, in order."""
-        return [r["contractAddress"] and "create" or r["to"] for r in self.evm.get("receipts", {}).values()]
+        return evm_transactions(self.evm)
 
     def test_a_deploy_whose_latest_reads_lag_completes(self):
         # The live Sepolia deploy: the endpoint's head showed each write, so
@@ -1624,10 +1679,10 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.evm = sepolia()
                 self.forget_deployment()
                 self.evm.update(nonce_refusals=1, nonce_refusals_skip=skip)
-                # A creation is looked for among the deployer's transactions
-                # for up to EVM_SETTLE_SECONDS.
                 result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
-                self.assert_fails(result, "with \"nonce too low\", which doesn't show whether it was sent on")
+                self.assert_fails(result, "another transaction of the deployer's took that nonce, so this one "
+                                          "never executes. Nothing was sent again")
+                self.assertNotIn("evm_pending", self.state())
                 sends = [line for line in self.trace.read_text().splitlines()
                          if line.startswith(("cast send", "forge create"))]
                 self.assertTrue(sends[skip].startswith(expected), sends)
@@ -1691,6 +1746,36 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         self.assert_fails(result, "nothing was sent again")
         self.assertNotIn("taking it", result.stderr)
         self.assertEqual(len([r for r in self.evm["receipts"].values() if r["contractAddress"]]), 1)
+
+    def test_a_send_a_run_left_unsettled_is_settled_before_its_step_is_sent_again(self):
+        # A transaction the node took, but whose send timed out, isn't
+        # mined until after the run has stopped. Its nonce and input are in
+        # the record from before it was sent, so the re-run settles it first:
+        # the step's own transaction, mined, is taken, and nothing is sent
+        # twice; one still pending stops the re-run, sending nothing.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        for skip, step in ((0, "the factory's ISM (a call)"), (1, "the oracle (forge create)"),
+                           (3, "the IGP's proxy (cast send --create)")):
+            with self.subTest(step=step):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(hold=1, hold_skip=skip)
+                self.assert_fails(self.run_script("deploy"), "timed out")
+                pending = self.state()["evm_pending"]
+                self.assertEqual(pending["nonce"], skip)
+                # Still pending: the re-run sends nothing.
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+                self.assert_fails(result, "isn't in a block: it may still be pending, so nothing was sent")
+                self.assertEqual(len(self.evm.get("receipts", {})), skip)
+                # Mined: the re-run takes it, and sends each transaction once.
+                self.evm["mine_held"] = True
+                result = self.run_script("deploy")
+                self.assert_ok(result)
+                self.assertEqual(self.deployed_transactions(), honest)
+                self.assertNotIn("evm_pending", self.state())
+                if skip:
+                    self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
 
 
 class TestnetTypelessHooks(TestnetScript):
@@ -3144,7 +3229,7 @@ class TestnetTokenRoutes(TokenRouteChecks, TestnetScript):
         """What a deploy that nothing stops leaves: the transactions on the
         fake EVM, and the record."""
         self.assert_ok(self.run_script("deploy"))
-        return [r["contractAddress"] or r["to"] for r in self.evm["receipts"].values()], self.state()
+        return evm_transactions(self.evm), self.state()
 
     def start_over(self):
         self.evm = sepolia()
@@ -3168,9 +3253,17 @@ class TestnetTokenRoutes(TokenRouteChecks, TestnetScript):
                 self.assert_fails(self.run_script("deploy", EVM_SETTLE_SECONDS="2"), "nonce too low")
                 self.evm.update(nonce_refusals=0, nonce_refusals_skip=0)
                 self.assert_ok(self.run_script("deploy"))
-                txs = [r["contractAddress"] or r["to"] for r in self.evm["receipts"].values()]
+                txs = evm_transactions(self.evm)
                 self.assertEqual(txs, honest_txs, "each transaction once, as in a run nothing stopped")
-                self.assertEqual(self.state()["token_routes"], honest_state["token_routes"])
+                # The same record, but for the EVM addresses, which follow
+                # the deployer's nonce, one of which went to another
+                # transaction.
+                routes, honest_routes = self.state()["token_routes"], json.loads(json.dumps(
+                    honest_state["token_routes"]))
+                for record in (routes, honest_routes):
+                    for route in record.values():
+                        route["evm"] = sorted(route["evm"])
+                self.assertEqual(routes, honest_routes)
         # On Dusk: deploy-token-route fails once, after the plan was
         # recorded; enroll-router fails once.
         for command in ("deploy-token-route", "enroll-router"):
