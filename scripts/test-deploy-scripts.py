@@ -656,13 +656,22 @@ def receipt(state, sender, to=None, created=None, logs=(), data="0x"):
     state["block"] += 1
     return tx
 
+def pending_nonce(state, sender):
+    # The sender's next nonce as a node with the held transactions in its
+    # pool gives it: past its mined transactions, and past each held one
+    # that follows them.
+    nonce = state.get("account_nonces", {}).get(sender.lower(), 0)
+    held_nonces = {h["nonce"] for h in state.get("held", []) if h["sender"] == sender.lower()}
+    while nonce in held_nonces:
+        nonce += 1
+    return nonce
+
 def check_nonce(state, sender, options):
     # A transaction sent with --nonce: refused below the sender's next one,
     # as a node does.
     if "--nonce" not in options:
         return
-    expected = state.get("account_nonces", {}).get(sender.lower(), 0) + len(
-        [h for h in state.get("held", []) if h["sender"] == sender.lower()])
+    expected = pending_nonce(state, sender)
     given = int(options["--nonce"])
     if given < expected:
         die(f"Error: server returned an error response: error code -32000: nonce too low: next nonce {expected}, tx nonce {given}")
@@ -700,12 +709,13 @@ def apply_send(state, kind, sender, payload):
     went_stale(state, before)
     return tx, address
 
-def held(state, sender, kind, payload):
+def held(state, sender, kind, payload, options):
     # "hold", n: the next n transactions sent are taken but not mined, and
     # the send times out, as one a gateway passed on and lost track of does.
-    # They hold their nonces (cast nonce --block pending counts them), and
-    # are mined once "mine_held" is set. "hold_skip", n: the first n sends
-    # go through.
+    # Each keeps the nonce it was sent with (cast nonce --block pending
+    # counts it), and is mined with it once "mine_held" is set, or never,
+    # if another transaction has taken it. "hold_skip", n: the first n
+    # sends go through.
     if state.get("hold", 0) <= 0:
         return False
     if state.get("hold_skip", 0) > 0:
@@ -713,15 +723,33 @@ def held(state, sender, kind, payload):
         save(state)
         return False
     state["hold"] -= 1
-    state.setdefault("held", []).append({"sender": sender.lower(), "kind": kind, "payload": payload})
+    hold(state, sender, kind, payload, options)
     save(state)
     die("Error: error sending request for url (http://fixture): operation timed out")
 
+def hold(state, sender, kind, payload, options):
+    nonce = int(options["--nonce"]) if "--nonce" in options else pending_nonce(state, sender)
+    state.setdefault("held", []).append(
+        {"sender": sender.lower(), "kind": kind, "payload": payload, "nonce": nonce})
+
 def mine_held(state):
+    # Each held transaction is mined when its sender's next nonce is its
+    # own, and dropped once another transaction has taken it.
     if not state.pop("mine_held", False):
         return
-    for item in state.pop("held", []):
-        apply_send(state, item["kind"], item["sender"], item["payload"])
+    waiting = state.pop("held", [])
+    while True:
+        nonces = state.setdefault("account_nonces", {})
+        waiting = [h for h in waiting if h["nonce"] >= nonces.get(h["sender"], 0)]
+        ready = [h for h in waiting if h["nonce"] == nonces.get(h["sender"], 0)]
+        if not ready:
+            break
+        item = ready[0]
+        waiting.remove(item)
+        tx, _ = apply_send(state, item["kind"], item["sender"], item["payload"])
+        assert state["receipts"][tx]["nonce"] == item["nonce"]
+    if waiting:
+        state["held"] = waiting
     save(state)
 
 def accept_then_refuse(state):
@@ -941,7 +969,7 @@ def main_cast(argv):
         # node that hasn't seen the sender's last transaction does.
         nonce = state.get("account_nonces", {}).get(positional[1].lower(), 0)
         if options.get("--block") == "pending":
-            nonce += len([h for h in state.get("held", []) if h["sender"] == positional[1].lower()])
+            nonce = pending_nonce(state, positional[1])
         if state.get("stale_nonce_reads", 0) > 0:
             state["stale_nonce_reads"] -= 1
             save(state)
@@ -1017,7 +1045,7 @@ def main_cast(argv):
     elif command == "send" and "--create" in options:
         refuse_stale_nonce(state, sender)
         check_nonce(state, sender, options)
-        held(state, sender, "create", {"data": options["--create"]})
+        held(state, sender, "create", {"data": options["--create"]}, options)
         refuse = accept_then_refuse(state)
         tx, _ = apply_send(state, "create", sender, {"data": options["--create"]})
         save(state)
@@ -1028,7 +1056,7 @@ def main_cast(argv):
         refuse_stale_nonce(state, sender)
         check_nonce(state, sender, options)
         payload = {"to": positional[1], "sig": positional[2], "args": positional[3:]}
-        held(state, sender, "call", payload)
+        held(state, sender, "call", payload, options)
         refuse = accept_then_refuse(state)
         tx, _ = apply_send(state, "call", sender, payload)
         save(state)
@@ -1064,7 +1092,7 @@ def main_forge(argv):
     refuse_stale_nonce(state, sender)
     check_nonce(state, sender, options)
     payload = {"name": name, "args": options.get("--constructor-args", [])}
-    held(state, sender, "forge", payload)
+    held(state, sender, "forge", payload, options)
     refuse = accept_then_refuse(state)
     tx, address = apply_send(state, "forge", sender, payload)
     save(state)
