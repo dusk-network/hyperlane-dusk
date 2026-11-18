@@ -2010,6 +2010,26 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.assertNotIn("evm_sending", self.state())
 
     @unittest.skipUnless(shutil.which("strace"), "needs strace")
+    def test_a_new_deployment_directory_is_on_disk_before_anything_is_sent(self):
+        # The first command on a deployment makes deploy/out and its
+        # directory: both are synced in their parents, before the first
+        # send, so that the record's directory survives a crash of the host.
+        shutil.rmtree(self.root / "deploy" / "out")
+        trace = self.root / "strace.log"
+        self.command_prefix = ["strace", "-f", "-qq", "-y", "-o", str(trace),
+                               "-e", "trace=fsync,fdatasync,execve"]
+        self.evm.update(hold=1, hold_skip=1)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        lines = trace.read_text().splitlines()
+        # The first send: Dusk's deploy-hyperlane, as deploy sends on Dusk first.
+        first_send = next(i for i, line in enumerate(lines) if re.search(
+            r'execve\("[^"]*/(cast|forge|dusk-tx)", \["[^"]*"(\.\.\.)?, "(send|create|deploy[^"]*)"', line))
+        self.assertIn("deploy-hyperlane", lines[first_send])
+        for directory in (self.root / "deploy", self.root / "deploy" / "out"):
+            self.assertTrue(any(re.search(r"\bf(data)?sync\(\d+<" + re.escape(os.path.realpath(directory)) + ">", line)
+                                for line in lines[:first_send]), f"{directory} synced before the first send")
+
+    @unittest.skipUnless(shutil.which("strace"), "needs strace")
     def test_each_send_is_on_disk_in_the_record_before_it_goes_out(self):
         # Each EVM send's record reaches the disk before the send goes out:
         # the new record's temporary file is synced, renamed over the

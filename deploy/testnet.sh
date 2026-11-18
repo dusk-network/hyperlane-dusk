@@ -138,6 +138,20 @@ state_set() {
     fi
     STATE_JSON="$new"
 }
+# sync_directories <directory>...: have each directory's entries on disk.
+sync_directories() {
+    python3 - "$@" <<'PY'
+import os
+import sys
+
+for name in sys.argv[1:]:
+    fd = os.open(name, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+PY
+}
 # durable_replace <temporary file> <file>: put the temporary file in the
 # file's place for good: its contents reach the disk, then it is renamed
 # over the file, then the directory that holds both reaches the disk.
@@ -168,8 +182,15 @@ PY
 # holds it until it exits, so no other command records or replaces anything
 # between what this one checks and what it records or configures.
 lock_deployment() {
+    local made=""
     command -v flock >/dev/null || fail "flock is required (util-linux)"
+    [ -d "$OUT_DIR" ] || made=1
     mkdir -p "$OUT_DIR"
+    # A deployment directory made here, and deploy/out if it is new too, is
+    # in its parent for good, after a crash of the host as well, once the
+    # parent is synced: so it is, before anything is sent or recorded.
+    [ -z "$made" ] || sync_directories "$(dirname "$OUT_DIR")" "$(dirname "$(dirname "$OUT_DIR")")" \
+        || fail "Can't sync the directories $OUT_DIR was made in"
     exec 9>>"$OUT_DIR/.lock"
     flock -n 9 \
         || fail "Another deploy/testnet.sh command is running on $OUT_DIR. Wait for it to finish, then run this one again."
