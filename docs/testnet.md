@@ -298,18 +298,22 @@ endpoint can each be behind. A node that answers one with "nonce too low"
 doesn't show it was refused: a gateway that sent it on answers a replay of
 the request so too. So nothing is sent again: the deployer's transaction
 with that nonce tells. A contract creation is taken if it is that very
-creation, executed; if it is another transaction, this one never executes,
-and `deploy` stops and forgets it, for the next run to send that step
-again. Any other transaction answered so, or a send that times out, stops
-`deploy` too. Its nonce and input are in the record from before it was
+creation, executed. If it is another transaction, this one never executes
+once that transaction's block is final: `deploy` waits for that, for up
+to `EVM_FINALITY_SECONDS` (1800), checks that the block is still the
+chain's, and then stops and forgets it, for the next run to send that
+step again. Until then another block can replace that one, and `deploy`
+stops but keeps it. Any other transaction answered so, or a send that
+times out, stops `deploy` too. Its nonce and input are in the record from before it was
 sent, under `.evm_sending`, keyed by the step that sends it: a creation by
 where the record keeps its address, a call by its function and recipient.
 Only that step settles it, when it next runs: the deployer's transaction
 with that nonce, if it is that one and executed, is taken as the step's
 own, and a call's step then reads the chain afresh; if it is still
-pending, the run stops, sending nothing, until it is in a block; if
-another transaction took the nonce, the run stops for you to find out
-what. Another command, such as `claim`, leaves it alone. A transaction
+pending, the run stops, sending nothing, until it is in a block; if it
+failed, or another transaction took the nonce, it is forgotten once that
+block is final, and the step goes on afresh. Another command, such as
+`claim`, leaves it alone. A transaction
 that never went out, whose nonce the deployer never reaches, keeps
 stopping its step: once you are sure, remove its entry from
 `.evm_sending`.

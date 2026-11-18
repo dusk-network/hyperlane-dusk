@@ -312,7 +312,7 @@ evm_next_nonce() {
 # nothing (exit status 3). Prints the command's output, or an adopted
 # creation's receipt.
 evm_submit() {
-    local nonce="$1" to="$2" input="$3" from out errors receipt tx
+    local nonce="$1" to="$2" input="$3" from out errors receipt tx final
     shift 3
     from="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || from=""
     errors="$(mktemp)" || return 1
@@ -333,8 +333,17 @@ evm_submit() {
         if ! jq -e --arg to "$(lower "$to")" --arg i "$(lower "$input")" \
             '((.to // "") | ascii_downcase) == $to and ((.input // .data // "") | ascii_downcase) == $i' \
             <<<"$tx" >/dev/null; then
-            echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\": another transaction of the deployer's took that nonce, so this one never executes. Nothing was sent again. Run deploy again: it reads what is on chain afresh and sends what isn't done." >&2
-            return 4
+            # Until the other transaction's block is final, another block can
+            # take its place, without it, and this one, if a node took it,
+            # can still execute: it is forgotten only then.
+            final=0
+            evm_final_canonical "$tx" || final=$?
+            if [ "$final" = 0 ]; then
+                echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\": another transaction of the deployer's took that nonce, in a block that is final, so this one never executes. Nothing was sent again. Run deploy again: it reads what is on chain afresh and sends what isn't done." >&2
+                return 4
+            fi
+            echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\": another transaction of the deployer's took that nonce, in a block that isn't final, or that another block has replaced. Until that is final, this one can still execute, so nothing was sent again. Run deploy again: it settles it first." >&2
+            return 1
         fi
         if [ -z "$to" ] && receipt="$(evm_adopt_creation "$nonce" "$input" "$tx")"; then
             info "$EVM_CHAIN_NAME answered the creation with \"nonce too low\", but the deployer's transaction with its nonce $nonce is that very creation, executed: taking it"
@@ -407,11 +416,14 @@ evm_settle_call() {
 # sends now, <variable> is set to its receipt, for the step to take as its
 # own send; a creation also must have made the contract at the address the
 # nonce gives. With <input> "*" (evm_settle_call), it is forgotten instead.
-# One that failed, or that the step no longer sends, is settled. One that
-# isn't in a block within EVM_SETTLE_SECONDS, or a nonce another
-# transaction took, stops the script: nothing is sent.
+# If it failed, or the step no longer sends it, or another transaction
+# took its nonce, the record is forgotten once that block is final, for
+# the step to send afresh. One that isn't in a block within
+# EVM_SETTLE_SECONDS, or in a final one within EVM_FINALITY_SECONDS, stops
+# the script: nothing is sent.
 evm_settle_pending() {
     local _sp_var="$1" _sp_step="$2" _sp_to="$3" _sp_input="$4" _sp_pending _sp_nonce _sp_label _sp_tx _sp_receipt _sp_address
+    local _sp_what _sp_final
     printf -v "$_sp_var" '%s' ""
     # A send an earlier version of this script recorded, as .evm_pending,
     # without its step, is the step's that sends just that.
@@ -423,34 +435,82 @@ evm_settle_pending() {
     [ -n "$_sp_pending" ] || return 0
     _sp_nonce="$(jq -r .nonce <<<"$_sp_pending")" _sp_label="$(jq -r .label <<<"$_sp_pending")"
     info "Settling the deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending..."
-    _sp_tx="$(evm_sent_with_nonce "$(evm_deployer)" "$_sp_nonce" "$(jq -r .from_block <<<"$_sp_pending")")" \
-        || fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending, isn't in a block: it may still be pending, so nothing was sent. Run deploy again once it is in a block. If it never went out, and the deployer's nonce stays below $_sp_nonce, remove the entry \"$_sp_step\" from .evm_sending in $STATE first."
-    jq -e --argjson p "$_sp_pending" \
-        '((.to // "") | ascii_downcase) == $p.to and ((.input // .data // "") | ascii_downcase) == $p.input' \
-        <<<"$_sp_tx" >/dev/null \
-        || fail "The deployer's transaction with nonce $_sp_nonce isn't the one an earlier run recorded as sending ($_sp_label): something else sent it. Nothing was sent. Find out what; then remove the entry \"$_sp_step\" from .evm_sending in $STATE and run deploy again, which reads the chain afresh."
-    _sp_receipt="$(evm_receipt "$(jq -r .hash <<<"$_sp_tx")" --json)" \
-        || fail "Can't read the receipt of $(jq -r .hash <<<"$_sp_tx") on $EVM_CHAIN_NAME"
-    evm_wrote "$(evm_block_number "$(jq -r .blockNumber <<<"$_sp_receipt")")"
-    if [ "$_sp_input" = "*" ] && jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null; then
-        info "It executed: the step reads the chain as of its block, or later, to see what is left to do"
-        evm_done "$_sp_step"
-        return 0
-    fi
-    if jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null \
-        && [ "$(jq -r .to <<<"$_sp_pending")" = "$(lower "$_sp_to")" ] \
-        && [ "$(jq -r .input <<<"$_sp_pending")" = "$(lower "$_sp_input")" ]; then
-        if [ -z "$_sp_to" ]; then
-            _sp_address="$(cast compute-address "$(evm_deployer)" --nonce "$_sp_nonce" 2>/dev/null | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)"
-            [ "$(lower "$(jq -r '.contractAddress // empty' <<<"$_sp_receipt")")" = "$(lower "$_sp_address")" ] \
-                && evm_has_code "$_sp_address" \
-                || fail "The deployer's creation with nonce $_sp_nonce ($_sp_label) didn't make the contract at $_sp_address, the address its nonce gives: nothing was sent. Find out why before running deploy again."
+    while :; do
+        _sp_tx="$(evm_sent_with_nonce "$(evm_deployer)" "$_sp_nonce" "$(jq -r .from_block <<<"$_sp_pending")")" \
+            || fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending, isn't in a block: it may still be pending, so nothing was sent. Run deploy again once it is in a block. If it never went out, and the deployer's nonce stays below $_sp_nonce, remove the entry \"$_sp_step\" from .evm_sending in $STATE first."
+        if jq -e --argjson p "$_sp_pending" \
+            '((.to // "") | ascii_downcase) == $p.to and ((.input // .data // "") | ascii_downcase) == $p.input' \
+            <<<"$_sp_tx" >/dev/null; then
+            _sp_receipt="$(evm_receipt "$(jq -r .hash <<<"$_sp_tx")" --json)" \
+                || fail "Can't read the receipt of $(jq -r .hash <<<"$_sp_tx") on $EVM_CHAIN_NAME"
+            evm_wrote "$(evm_block_number "$(jq -r .blockNumber <<<"$_sp_receipt")")"
+            if [ "$_sp_input" = "*" ] && jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null; then
+                info "It executed: the step reads the chain as of its block, or later, to see what is left to do"
+                evm_done "$_sp_step"
+                return 0
+            fi
+            if jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null \
+                && [ "$(jq -r .to <<<"$_sp_pending")" = "$(lower "$_sp_to")" ] \
+                && [ "$(jq -r .input <<<"$_sp_pending")" = "$(lower "$_sp_input")" ]; then
+                if [ -z "$_sp_to" ]; then
+                    _sp_address="$(cast compute-address "$(evm_deployer)" --nonce "$_sp_nonce" 2>/dev/null | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)"
+                    [ "$(lower "$(jq -r '.contractAddress // empty' <<<"$_sp_receipt")")" = "$(lower "$_sp_address")" ] \
+                        && evm_has_code "$_sp_address" \
+                        || fail "The deployer's creation with nonce $_sp_nonce ($_sp_label) didn't make the contract at $_sp_address, the address its nonce gives: nothing was sent. Find out why before running deploy again."
+                fi
+                info "It is this step's own transaction, executed: taking it"
+                printf -v "$_sp_var" '%s' "$_sp_receipt"
+                return 0
+            fi
+            if jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null; then
+                _sp_what="It executed, but isn't what this step sends now"
+            else
+                _sp_what="It failed"
+            fi
+        else
+            _sp_what="Another transaction of the deployer's, $(jq -r .hash <<<"$_sp_tx"), took its nonce"
+            warn "$_sp_what: the one recorded as sending ($_sp_label) never executes once that is final"
         fi
-        info "It is this step's own transaction, executed: taking it"
-        printf -v "$_sp_var" '%s' "$_sp_receipt"
-        return 0
-    fi
-    evm_done "$_sp_step"
+        # Until its block is final, another block can take its place, and
+        # what took the nonce, or how it ended, can change: it is forgotten
+        # only once that block is final, and still the chain's.
+        info "$_sp_what: waiting until its block is final..."
+        _sp_final=0
+        evm_final_canonical "$_sp_tx" || _sp_final=$?
+        case "$_sp_final" in
+            0)
+                info "Its block is final: forgetting it, for the step to go on afresh"
+                evm_done "$_sp_step"
+                return 0
+                ;;
+            2) info "Another block took the place of the one it was in: settling it again..." ;;
+            *) fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): ${_sp_what,}, in a block that isn't final after ${EVM_FINALITY_SECONDS:-1800}s. Until it is, that can change, so nothing was sent. Run deploy again once it is." ;;
+        esac
+    done
+}
+# evm_final_canonical <tx>: wait, for up to EVM_FINALITY_SECONDS (1800), until
+# the block of <tx>, a transaction as `cast block --full --json` shows it,
+# is final, then check that it is still the block at its height. Returns 0
+# if it is, 2 if another block took its place, and 1 if it isn't final in
+# time, or can't be read.
+evm_final_canonical() {
+    local number hash final canonical deadline=$((SECONDS + ${EVM_FINALITY_SECONDS:-1800}))
+    number="$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$1")")" || return 1
+    hash="$(lower "$(jq -r '.blockHash // empty' <<<"$1")")"
+    [[ "$number" =~ ^[0-9]+$ ]] && [[ "$hash" =~ ^0x[0-9a-f]{64}$ ]] || return 1
+    while :; do
+        final="$(cast block-number finalized --rpc-url "$EVM_RPC" 2>/dev/null)" || final=""
+        if [[ "$final" =~ ^[0-9]+$ ]] && [ "$final" -ge "$number" ]; then
+            canonical="$(cast block "$number" --json --rpc-url "$EVM_RPC" 2>/dev/null | jq -r '.hash // empty' 2>/dev/null)" \
+                || canonical=""
+            if [[ "$canonical" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+                [ "$(lower "$canonical")" = "$hash" ] && return 0
+                return 2
+            fi
+        fi
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 2
+    done
 }
 # The transaction <sender> sent with <nonce>, as `cast block --full --json`
 # shows it, in a block from <from block> to the head, waiting up to

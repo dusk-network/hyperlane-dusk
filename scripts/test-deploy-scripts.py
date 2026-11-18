@@ -652,8 +652,62 @@ def receipt(state, sender, to=None, created=None, logs=(), data="0x"):
     state.setdefault("receipts", {})[tx] = {
         "transactionHash": tx, "status": "0x1", "from": sender.lower(),
         "to": to.lower() if to else None, "contractAddress": created,
-        "blockNumber": hex(state["block"]), "logs": list(logs), "nonce": nonce, "input": data}
+        "blockNumber": hex(state["block"]), "blockHash": block_hash(state, state["block"]),
+        "logs": list(logs), "nonce": nonce, "input": data}
     state["block"] += 1
+    return tx
+
+def block_hash(state, number):
+    # A block's hash, which changes each time the blocks from a height at
+    # or below it are replaced ("reorg_from").
+    replaced = len([start for start in state.get("reorgs", []) if start <= number])
+    return "0x" + hashlib.sha256(f"block:{number}:{replaced}".encode()).hexdigest()
+
+def finalized(state):
+    # "finality_depth", n: the final block is n below the head.
+    return max(0, state["block"] - state.get("finality_depth", 0))
+
+def reorg(state):
+    # "reorg_from", b: the blocks from b on are replaced by blocks without
+    # the fillers in them (nonce_refusals), and with the held transactions
+    # that can then be mined, with their nonces. Only fillers' blocks are
+    # replaced: they change nothing but their sender's nonce.
+    start = state.pop("reorg_from", None)
+    if start is None:
+        return
+    nonces = state.setdefault("account_nonces", {})
+    for tx, r in list(state.get("receipts", {}).items()):
+        if int(r["blockNumber"], 16) >= start:
+            assert r.get("filler"), "the fake EVM replaces only fillers' blocks"
+            del state["receipts"][tx]
+            nonces[r["from"]] = min(nonces.get(r["from"], 0), r["nonce"])
+    state.setdefault("reorgs", []).append(start)
+    state["block"] = start
+    state["mine_held"] = True
+    mine_held(state)
+
+def fill_held(state):
+    # "fill_held": another transaction of each held one's sender, a filler,
+    # takes its nonce, and the held one is never mined.
+    if not state.pop("fill_held", False):
+        return
+    for item in sorted(state.get("held", []), key=lambda h: h["nonce"]):
+        if item["nonce"] == state.setdefault("account_nonces", {}).get(item["sender"], 0):
+            tx = receipt(state, item["sender"], to=ZERO, data="0xf111e4")
+            state["receipts"][tx]["filler"] = True
+    save(state)
+
+def fail_send(state, kind, sender, payload):
+    # The held transaction, mined but failed ("fail_held"): its nonce is
+    # spent, and nothing else changes.
+    if kind == "forge":
+        to, data = None, creation_input(payload["name"], payload["args"])
+    elif kind == "create":
+        to, data = None, payload["data"]
+    else:
+        to, data = payload["to"], encode({"sig": payload["sig"], "args": payload["args"]})
+    tx = receipt(state, sender, to=to, data=data)
+    state["receipts"][tx]["status"] = "0x0"
     return tx
 
 def pending_nonce(state, sender):
@@ -746,7 +800,10 @@ def mine_held(state):
             break
         item = ready[0]
         waiting.remove(item)
-        tx, _ = apply_send(state, item["kind"], item["sender"], item["payload"])
+        if state.get("fail_held"):
+            tx = fail_send(state, item["kind"], item["sender"], item["payload"])
+        else:
+            tx, _ = apply_send(state, item["kind"], item["sender"], item["payload"])
         assert state["receipts"][tx]["nonce"] == item["nonce"]
     if waiting:
         state["held"] = waiting
@@ -941,11 +998,14 @@ def read_view(state, options):
         return {**state, "contracts": state["latest_stale"]["contracts"]}, state["latest_stale"]["block"]
     return state, None
 
-def refuse_stale_nonce(state, sender):
+def refuse_stale_nonce(state, sender, kind, payload, options):
     # "nonce_refusals", n: the next n transactions sent, after the first
     # "nonce_refusals_skip", find their nonce taken, by an earlier
     # transaction of the sender's that a node behind showed late (a
-    # "filler"), and are refused for it, changing nothing else.
+    # "filler"), and are refused for it, changing nothing else. With
+    # "nonce_refusals_hold", a node holds the refused transaction anyway,
+    # with its nonce, as one a gateway passed on before the refusal does:
+    # it is mined if another block replaces the filler's (reorg_from).
     if state.get("nonce_refusals_skip", 0) > 0:
         state["nonce_refusals_skip"] -= 1
         save(state)
@@ -954,11 +1014,15 @@ def refuse_stale_nonce(state, sender):
         state["nonce_refusals"] -= 1
         tx = receipt(state, sender, to=ZERO, data="0xf111e4")
         state["receipts"][tx]["filler"] = True
+        if state.get("nonce_refusals_hold"):
+            hold(state, sender, kind, payload, options)
         save(state)
         die("Error: server returned an error response: error code -32000: nonce too low")
 
 def main_cast(argv):
     state = load()
+    reorg(state)
+    fill_held(state)
     mine_held(state)
     positional, options, flags = split(argv)
     trace("cast " + " ".join(positional + ([f"--create {options['--create'][:40]}..."] if "--create" in options else [])
@@ -984,11 +1048,18 @@ def main_cast(argv):
     elif command == "block" and "--full" in flags:
         number = int(positional[1])
         found = [{"hash": tx, "from": r["from"], "to": r["to"], "nonce": hex(r.get("nonce", 0)),
-                  "input": r.get("input", "0x")}
+                  "input": r.get("input", "0x"), "blockNumber": r["blockNumber"], "blockHash": r["blockHash"]}
                  for tx, r in state.get("receipts", {}).items() if int(r["blockNumber"], 16) == number]
         if number > state["block"]:
             die(f"Error: block {number} not found")
-        print(json.dumps({"number": hex(number), "transactions": found}))
+        print(json.dumps({"number": hex(number), "hash": block_hash(state, number), "transactions": found}))
+    elif command == "block":
+        number = finalized(state) if positional[1] == "finalized" else int(positional[1])
+        if number > state["block"]:
+            die(f"Error: block {number} not found")
+        print(json.dumps({"number": hex(number), "hash": block_hash(state, number)}))
+    elif command == "block-number" and positional[1:] == ["finalized"]:
+        print(finalized(state))
     elif command == "block-number":
         stale = stale_read(state)
         print(state["block"] if stale is None else stale)
@@ -1047,7 +1118,7 @@ def main_cast(argv):
                     found.append({**entry, "blockNumber": r["blockNumber"], "transactionHash": tx})
         print(json.dumps(found))
     elif command == "send" and "--create" in options:
-        refuse_stale_nonce(state, sender)
+        refuse_stale_nonce(state, sender, "create", {"data": options["--create"]}, options)
         check_nonce(state, sender, options)
         held(state, sender, "create", {"data": options["--create"]}, options)
         refuse = accept_then_refuse(state)
@@ -1057,9 +1128,9 @@ def main_cast(argv):
             die("Error: server returned an error response: error code -32000: nonce too low")
         print(json.dumps(state["receipts"][tx]))
     elif command == "send":
-        refuse_stale_nonce(state, sender)
-        check_nonce(state, sender, options)
         payload = {"to": positional[1], "sig": positional[2], "args": positional[3:]}
+        refuse_stale_nonce(state, sender, "call", payload, options)
+        check_nonce(state, sender, options)
         held(state, sender, "call", payload, options)
         refuse = accept_then_refuse(state)
         tx, _ = apply_send(state, "call", sender, payload)
@@ -1073,6 +1144,8 @@ def main_cast(argv):
 
 def main_forge(argv):
     state = load()
+    reorg(state)
+    fill_held(state)
     mine_held(state)
     positional, options, flags = split(argv)
     trace("forge " + " ".join(positional + options.get("--constructor-args", [])))
@@ -1093,9 +1166,9 @@ def main_forge(argv):
         return
     name = positional[1].split(":")[-1]
     sender = state["keys"][options["--private-key"]]
-    refuse_stale_nonce(state, sender)
-    check_nonce(state, sender, options)
     payload = {"name": name, "args": options.get("--constructor-args", [])}
+    refuse_stale_nonce(state, sender, "forge", payload, options)
+    check_nonce(state, sender, options)
     held(state, sender, "forge", payload, options)
     refuse = accept_then_refuse(state)
     tx, address = apply_send(state, "forge", sender, payload)
@@ -1143,10 +1216,11 @@ esac
 def evm_transactions(evm):
     """The transactions on the fake EVM, in order: what each created, or
     the contract it called, by type, as addresses follow the deployer's
-    nonce; without the fillers that take a nonce first (nonce_refusals)."""
+    nonce; without the fillers that take a nonce first (nonce_refusals),
+    and without the failed ones (fail_held)."""
     kind = lambda address: evm["contracts"].get(address, {}).get("type", address)
     return [("create", kind(r["contractAddress"])) if r["contractAddress"] else ("call", kind(r["to"]))
-            for r in evm.get("receipts", {}).values() if not r.get("filler")]
+            for r in evm.get("receipts", {}).values() if not r.get("filler") and r["status"] == "0x1"]
 
 
 def write_executable(path, text):
@@ -1712,8 +1786,8 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.forget_deployment()
                 self.evm.update(nonce_refusals=1, nonce_refusals_skip=skip)
                 result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
-                self.assert_fails(result, "another transaction of the deployer's took that nonce, so this one "
-                                          "never executes. Nothing was sent again")
+                self.assert_fails(result, "another transaction of the deployer's took that nonce, in a block "
+                                          "that is final, so this one never executes. Nothing was sent again")
                 self.assertNotIn("evm_sending", self.state())
                 sends = [line for line in self.trace.read_text().splitlines()
                          if line.startswith(("cast send", "forge create"))]
@@ -1850,6 +1924,73 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         # DUSK token's implementation, which was mined before claim ran.
         implementation = honest.index(("create", "token"))
         return honest[:implementation + 1] + [("call", "igp")] + honest[implementation + 1:]
+
+    def test_a_send_is_forgotten_only_once_what_took_its_nonce_is_final(self):
+        # The oracle's creation is answered with "nonce too low": another
+        # transaction of the deployer's took its nonce, in a block that
+        # isn't final, and a node holds the creation. Until that block is
+        # final, another can replace it, without the other transaction, and
+        # the creation can still execute: deploy keeps its record, stops,
+        # and the re-run takes the creation if it did.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        step = "create .evm.storage_gas_oracle"
+        for case in ("its block replaced", "its block final"):
+            with self.subTest(case=case):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(nonce_refusals=1, nonce_refusals_skip=1, nonce_refusals_hold=True,
+                                finality_depth=1000)
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3", EVM_FINALITY_SECONDS="3")
+                self.assert_fails(result, "another transaction of the deployer's took that nonce, in a block "
+                                          "that isn't final, or that another block has replaced")
+                self.assertEqual(list(self.state()["evm_sending"]), [step])
+                if case == "its block replaced":
+                    filler = next(r for r in self.evm["receipts"].values() if r.get("filler"))
+                    self.evm["reorg_from"] = int(filler["blockNumber"], 16)
+                    result = self.run_script("deploy")
+                    self.assert_ok(result)
+                    self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
+                else:
+                    # Still not final: the re-run stops too, sending nothing.
+                    result = self.run_script("deploy", EVM_FINALITY_SECONDS="3")
+                    self.assert_fails(result, "took its nonce, in a block that isn't final after 3s")
+                    self.assertEqual(list(self.state()["evm_sending"]), [step])
+                    self.evm["finality_depth"] = 0
+                    result = self.run_script("deploy")
+                    self.assert_ok(result)
+                    self.assertIn("Its block is final: forgetting it, for the step to go on afresh", result.stderr)
+                self.assertEqual(self.deployed_transactions(), honest, "the oracle created once")
+                self.assertNotIn("evm_sending", self.state())
+
+    def test_a_recorded_send_whose_nonce_is_settled_otherwise_is_forgotten_once_final(self):
+        # The oracle's creation timed out, and then failed in a block, or
+        # never was mined, its nonce taken by another transaction of the
+        # deployer's. Either can still change until that block is final:
+        # the re-run keeps the record and stops, and once the block is
+        # final, forgets it and creates the oracle afresh, once.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        step = "create .evm.storage_gas_oracle"
+        for case, settings, expected in (
+            ("failed", {"mine_held": True, "fail_held": True}, "it failed, in a block that isn't final after 3s"),
+            ("nonce taken", {"fill_held": True}, "took its nonce, in a block that isn't final after 3s"),
+        ):
+            with self.subTest(case=case):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(hold=1, hold_skip=1)
+                self.assert_fails(self.run_script("deploy"), "timed out")
+                self.evm.update(finality_depth=1000, **settings)
+                result = self.run_script("deploy", EVM_FINALITY_SECONDS="3")
+                self.assert_fails(result, expected)
+                self.assertEqual(list(self.state()["evm_sending"]), [step])
+                self.evm.update(finality_depth=0, fail_held=False)
+                result = self.run_script("deploy")
+                self.assert_ok(result)
+                self.assertIn("Its block is final: forgetting it, for the step to go on afresh", result.stderr)
+                self.assertEqual(self.deployed_transactions(), honest, "the oracle created once")
+                self.assertNotIn("evm_sending", self.state())
 
     def test_a_send_recorded_without_its_step_is_taken_by_the_step_that_sends_it(self):
         # The record an earlier version of this script left: .evm_pending,
