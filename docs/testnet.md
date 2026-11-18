@@ -49,7 +49,11 @@ the Mailbox's required hook, through aggregations and domain routing hooks,
 and counts how often it inserts a message to Dusk into that tree. Had it
 inserted once, the IGP alone would do, and adding the tree again would
 insert every message twice. More than once, or through a hook whose
-behaviour the script can't tell, and `deploy` stops.
+behaviour the script can't tell, and `deploy` stops. Sepolia's required
+hook is Hyperlane's ProtocolFee, deployed before hooks reported
+`hookType()`; `EVM_TYPELESS_HOOKS` lists it, so `deploy` takes it as a
+ProtocolFee once it answers `protocolFee()`, and stops at any other hook
+without a type.
 
 `relayer.json` enforces payment per origin, against this deployment's IGPs
 (`onChainFeeQuoting`). The operator collects what the IGPs take, and

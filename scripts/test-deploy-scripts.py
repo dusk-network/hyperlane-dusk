@@ -388,8 +388,12 @@ def interleave(state, address):
 def call(state, address, signature, args, sender):
     c = contract(state, address)
     name = signature.split("(")[0]
+    if name == "hookType" and "hook_type" not in c:
+        die("execution reverted")
     if name in ("hookType", "localDomain"):
         return str(c["hook_type" if name == "hookType" else "domain"])
+    if name == "protocolFee" and "fee" in c:
+        return num(c["fee"])
     if name in ("mailbox", "requiredHook", "defaultHook", "beneficiary"):
         return c[name]
     if name == "owner":
@@ -709,7 +713,9 @@ def sepolia():
                           "requiredHook": EVM_PROTOCOL_FEE, "defaultHook": EVM_DEFAULT_HOOK},
             EVM_MERKLE: {"type": "merkle", "hook_type": 3, "mailbox": EVM_MAILBOX},
             EVM_VA: {"type": "validator_announce", "mailbox": EVM_MAILBOX},
-            EVM_PROTOCOL_FEE: {"type": "protocol_fee", "hook_type": 8, "fee": 1},
+            # Hyperlane's Sepolia ProtocolFee predates hookType(); the
+            # example settings list it in EVM_TYPELESS_HOOKS.
+            EVM_PROTOCOL_FEE: {"type": "protocol_fee", "fee": 1},
             EVM_DEFAULT_HOOK: {"type": "fallback_routing", "hook_type": 5, "routes": {},
                                "fallback": EVM_MERKLE},
             EVM_ISM_FACTORY: {"type": "ism_factory"},
@@ -1148,6 +1154,59 @@ class TestnetRouteHookPlan(TestnetScript):
                     result = self.run_script(command)
                     self.assert_fails(result, expected)
                     self.assertEqual(self.traced("cast send") + self.traced("forge"), [])
+
+
+class TestnetTypelessHooks(TestnetScript):
+    """Sepolia's Mailbox requires a ProtocolFee deployed before hooks had
+    hookType(). `deploy` takes such a hook as a ProtocolFee, which inserts
+    nothing into the Merkle tree, only when EVM_TYPELESS_HOOKS lists it and
+    it answers protocolFee(); any other typeless hook stops it."""
+
+    TYPED = "0x" + "b1" * 20
+    OTHER = "0x" + "b2" * 20
+
+    def assert_refused(self, expected, **env):
+        for command in ("preflight", "deploy"):
+            with self.subTest(command=command, **env):
+                result = self.run_script(command, **env)
+                self.assert_fails(result, expected)
+                self.assertEqual(self.traced("cast send") + self.traced("forge"), [])
+
+    def test_the_listed_protocol_fee_inserts_nothing(self):
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("doesn't insert a message to Dusk into EVM_MERKLE_TREE_HOOK", result.stderr)
+        state = self.state()["evm"]
+        self.assertEqual(self.evm["contracts"][state["route_hook"]]["hooks"], [EVM_MERKLE, state["igp"]])
+
+    def test_an_unlisted_typeless_hook_is_refused(self):
+        self.assert_refused(
+            f"Can't read the hook type of {EVM_PROTOCOL_FEE}",
+            EVM_TYPELESS_HOOKS=f"{self.OTHER}=protocol_fee")
+
+    def test_a_listed_hook_that_isnt_a_protocol_fee_is_refused(self):
+        self.evm["contracts"][EVM_PROTOCOL_FEE] = {"type": "merkle", "mailbox": EVM_MAILBOX}
+        self.assert_refused("doesn't answer protocolFee()")
+
+    def test_malformed_lists_are_refused(self):
+        for value, expected in (
+            (f"{EVM_PROTOCOL_FEE}=merkle_tree", "the only kind it takes is protocol_fee"),
+            (f"{EVM_PROTOCOL_FEE}", "isn't address=kind"),
+            ("0x1234=protocol_fee", "isn't address=kind"),
+        ):
+            self.evm = sepolia()
+            self.assert_refused(expected, EVM_TYPELESS_HOOKS=value)
+
+    def test_a_hook_with_a_type_is_taken_by_its_type(self):
+        # The list only names hooks without a type: one that reports a type
+        # is followed by it, listed or not.
+        self.evm["contracts"][EVM_PROTOCOL_FEE] = {"type": "merkle", "hook_type": 3, "mailbox": EVM_MAILBOX}
+        self.evm["contracts"][EVM_MAILBOX]["requiredHook"] = self.TYPED
+        self.evm["contracts"][self.TYPED] = {"type": "aggregation", "hook_type": 2,
+                                             "hooks": [EVM_MERKLE, EVM_PROTOCOL_FEE]}
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("inserts a message to Dusk into EVM_MERKLE_TREE_HOOK once", result.stderr)
 
 
 class TestnetEvmCreationChecks(DeployedTestnet):

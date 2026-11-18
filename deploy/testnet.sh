@@ -1057,13 +1057,38 @@ route_hook_plan() {
 # routing hook with nothing for Dusk, or hooks nested deeper than
 # MAX_HOOK_DEPTH stop the script: it can't tell how often a message would be
 # inserted. Prints the count.
+# The hook type a hook under the EVM Mailbox's required hook reports. A hook
+# deployed before hookType() existed has none; it counts as a ProtocolFee only
+# when EVM_TYPELESS_HOOKS lists it as one and it answers protocolFee(), and
+# stops the script otherwise. Prints the type.
+required_hook_type() {
+    local hook="$1" entry address kind
+    if evm_number "$hook" "hookType()(uint8)" 2>/dev/null; then
+        return 0
+    fi
+    for entry in ${EVM_TYPELESS_HOOKS//,/ }; do
+        address="${entry%%=*}"
+        kind="${entry#*=}"
+        [[ "$entry" == *=* && "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] \
+            || fail "EVM_TYPELESS_HOOKS entry '$entry' isn't address=kind"
+        [ "$kind" = protocol_fee ] \
+            || fail "EVM_TYPELESS_HOOKS lists $address as $kind; the only kind it takes is protocol_fee"
+        [ "$(lower "$address")" = "$(lower "$hook")" ] || continue
+        evm_number "$hook" "protocolFee()(uint256)" > /dev/null \
+            || fail "$hook, in the EVM Mailbox's required hook, has no hookType() and doesn't answer protocolFee(), though EVM_TYPELESS_HOOKS lists it as a ProtocolFee"
+        printf '%s' "$HOOK_PROTOCOL_FEE"
+        return 0
+    done
+    fail "Can't read the hook type of $hook, in the EVM Mailbox's required hook. If it is a ProtocolFee deployed before hookType(), list it in EVM_TYPELESS_HOOKS"
+}
+
 merkle_insertions() {
     local hook="$1" depth="${2:-0}" type children child route count=0 n
     [ "$depth" -lt "$MAX_HOOK_DEPTH" ] \
         || fail "The EVM Mailbox's required hook nests hooks more than $MAX_HOOK_DEPTH deep at $hook: deploy/testnet.sh can't tell how often it inserts a message to Dusk into EVM_MERKLE_TREE_HOOK"
     [ "$(lower "$hook")" != "$ZERO_ADDRESS" ] \
         || fail "The EVM Mailbox's required hook reaches the zero address: every dispatch would revert"
-    type="$(evm_number "$hook" "hookType()(uint8)")" || fail "Can't read the hook type of $hook, in the EVM Mailbox's required hook"
+    type="$(required_hook_type "$hook")" || exit 1
     case "$type" in
         "$HOOK_MERKLE_TREE")
             [ "$(lower "$hook")" != "$(lower "$EVM_MERKLE_TREE_HOOK")" ] || count=1 ;;
