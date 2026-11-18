@@ -541,14 +541,18 @@ evm_final_canonical() {
 }
 # The transaction <sender> sent with <nonce>, as `cast block --full --json`
 # shows it, in a block from <from block> to the head, waiting up to
-# EVM_SETTLE_SECONDS for EVM_RPC to show it.
+# EVM_SETTLE_SECONDS for EVM_RPC to show it. The deadline holds however
+# many blocks are left to read, and each read is given only what is left
+# of it.
 evm_sent_with_nonce() {
     local sender="$1" nonce="$2" block="$3" head txs found deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
     sender="$(lower "$sender")"
     while :; do
-        head="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || head=""
+        head="$(cast block-number --rpc-timeout "$(evm_time_left "$deadline")" --rpc-url "$EVM_RPC" 2>/dev/null)" \
+            || head=""
         while [[ "$head" =~ ^[0-9]+$ ]] && [ "$block" -le "$head" ]; do
-            txs="$(cast block "$block" --full --json --rpc-url "$EVM_RPC" 2>/dev/null)" || break
+            txs="$(cast block "$block" --full --json --rpc-timeout "$(evm_time_left "$deadline")" \
+                --rpc-url "$EVM_RPC" 2>/dev/null)" || break
             found="$(jq -c --arg s "$sender" --arg n "$nonce" --arg h "$(printf '0x%x' "$nonce")" \
                 '.transactions[]? | select(((.from // "") | ascii_downcase) == $s
                     and ((.nonce | tostring | ascii_downcase) as $v | $v == $n or $v == $h))' <<<"$txs" 2>/dev/null | head -1)"
@@ -557,10 +561,18 @@ evm_sent_with_nonce() {
                 return 0
             fi
             block=$((block + 1))
+            [ "$SECONDS" -lt "$deadline" ] || return 1
         done
         [ "$SECONDS" -lt "$deadline" ] || return 1
         sleep 2
     done
+}
+# The whole seconds left until <deadline> (a $SECONDS value), at least 1:
+# what an RPC request made against it may take.
+evm_time_left() {
+    local left=$(($1 - SECONDS))
+    [ "$left" -ge 1 ] || left=1
+    printf '%s' "$left"
 }
 # The receipt of the deployer's transaction with <nonce>, <tx> as
 # evm_sent_with_nonce shows it, if it is the creation <input>: it executed,

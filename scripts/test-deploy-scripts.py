@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -378,7 +379,7 @@ else:
 # minted to it). Its "interleave" changes the token between two reads of its
 # routers, as another process could (interleave() below).
 FAKE_EVM = r"""
-import hashlib, json, os, re, sys
+import hashlib, json, os, re, sys, time
 
 ZERO = "0x" + "00" * 20
 WILDCARD_SENDER = "0x" + "ff" * 20
@@ -438,7 +439,7 @@ def split(args):
     while i < len(args):
         arg = args[i]
         if arg in ("--rpc-url", "--private-key", "--value", "--from", "--create", "--gas-limit",
-                   "--from-block", "--to-block", "--address", "--block", "--nonce"):
+                   "--from-block", "--to-block", "--address", "--block", "--nonce", "--rpc-timeout"):
             options[arg] = args[i + 1]
             i += 2
         elif arg == "--constructor-args":
@@ -1046,6 +1047,15 @@ def main_cast(argv):
     elif command == "compute-address":
         print(f"Computed Address: {create_address(positional[1], int(options['--nonce']))}")
     elif command == "block" and "--full" in flags:
+        # "slow_block_reads", n: a node that takes n seconds to answer each
+        # read of a block, which cast gives up on at its --rpc-timeout (45
+        # seconds unless set).
+        slow = state.get("slow_block_reads", 0)
+        if slow:
+            timeout = int(options.get("--rpc-timeout", 45))
+            time.sleep(min(slow, timeout))
+            if slow > timeout:
+                die("Error: error sending request for url (http://fixture): operation timed out")
         number = int(positional[1])
         found = [{"hash": tx, "from": r["from"], "to": r["to"], "nonce": hex(r.get("nonce", 0)),
                   "input": r.get("input", "0x"), "blockNumber": r["blockNumber"], "blockHash": r["blockHash"]}
@@ -2022,6 +2032,26 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                             "the new record is on disk before it is renamed over the record")
             self.assertTrue(synced(directory, range(rename + 1, send)),
                             "the rename is on disk before the send")
+
+    def test_settling_a_send_gives_up_at_its_deadline(self):
+        # The oracle's creation timed out and is never mined. Settling it
+        # reads the blocks after it for its transaction, for up to
+        # EVM_SETTLE_SECONDS: however many blocks there are to read, and
+        # however long the node takes to answer each, it stops then.
+        for case, settings in (("thousands of blocks", {}), ("a node that doesn't answer", {"slow_block_reads": 30})):
+            with self.subTest(case=case):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(hold=1, hold_skip=1)
+                self.assert_fails(self.run_script("deploy"), "timed out")
+                self.evm["block"] += 5000
+                self.evm.update(settings)
+                started = time.monotonic()
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+                elapsed = time.monotonic() - started
+                self.assert_fails(result, "isn't in a block: it may still be pending, so nothing was sent")
+                self.assertLess(elapsed, 30)
+                self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.storage_gas_oracle"])
 
     def test_a_send_recorded_without_its_step_is_taken_by_the_step_that_sends_it(self):
         # The record an earlier version of this script left: .evm_pending,
