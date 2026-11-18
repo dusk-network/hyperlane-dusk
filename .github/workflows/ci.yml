@@ -40,7 +40,15 @@ jobs:
         run: python3 -B scripts/test-demo-lifecycle.py
 
       - name: Deploy script tests
-        run: python3 -B scripts/test-deploy-scripts.py
+        run: |
+          set -euo pipefail
+          # The test that each EVM send is on disk before it goes out
+          # traces the script's syscalls.
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y strace
+          fi
+          python3 -B scripts/test-deploy-scripts.py
 
       - name: Secret hygiene
         run: |

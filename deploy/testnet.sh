@@ -123,17 +123,58 @@ state_get() { [ -n "$STATE_JSON" ] && jq -r "$1 // empty" <<<"$STATE_JSON" || tr
 state_json() { if [ -n "$STATE_JSON" ]; then printf '%s\n' "$STATE_JSON"; else echo '{}'; fi; }
 # A record that can't be written stops the command there, so nothing goes
 # on from a step the record lacks. A failed write in an && list wouldn't
-# stop it under set -e, so each step is checked.
+# stop it under set -e, so each step is checked. The record is on disk
+# when state_set returns, so what a step sends after it, as an EVM send
+# after its record (evm_intend), is in the record after a crash of the
+# host too.
 state_set() {
     local new tmp
     new="$(state_json | jq "$@")" || fail "Can't update $STATE"
     mkdir -p "$OUT_DIR" || fail "Can't create $OUT_DIR"
     tmp="$(mktemp "$OUT_DIR/.state.XXXXXX")" || fail "Can't write to $OUT_DIR"
-    if ! printf '%s\n' "$new" > "$tmp" || ! mv "$tmp" "$STATE"; then
+    if ! printf '%s\n' "$new" > "$tmp" || ! durable_replace "$tmp" "$STATE"; then
         rm -f "$tmp"
         fail "Can't write $STATE, so this run stops before the next step. Free space or fix the directory's permissions, then run it again: it resumes from what $STATE records."
     fi
     STATE_JSON="$new"
+}
+# sync_directories <directory>...: have each directory's entries on disk.
+sync_directories() {
+    python3 - "$@" <<'PY'
+import os
+import sys
+
+for name in sys.argv[1:]:
+    fd = os.open(name, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+PY
+}
+# durable_replace <temporary file> <file>: put the temporary file in the
+# file's place for good: its contents reach the disk, then it is renamed
+# over the file, then the directory that holds both reaches the disk.
+durable_replace() {
+    python3 - "$1" "$2" <<'PY'
+import os
+import sys
+
+temporary, path = sys.argv[1:]
+
+
+def sync(name):
+    fd = os.open(name, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+sync(temporary)
+os.replace(temporary, path)
+sync(os.path.dirname(os.path.abspath(path)))
+PY
 }
 
 # One command at a time on a deployment. Every command but fees takes the
@@ -141,8 +182,15 @@ state_set() {
 # holds it until it exits, so no other command records or replaces anything
 # between what this one checks and what it records or configures.
 lock_deployment() {
+    local made=""
     command -v flock >/dev/null || fail "flock is required (util-linux)"
+    [ -d "$OUT_DIR" ] || made=1
     mkdir -p "$OUT_DIR"
+    # A deployment directory made here, and deploy/out if it is new too, is
+    # in its parent for good, after a crash of the host as well, once the
+    # parent is synced: so it is, before anything is sent or recorded.
+    [ -z "$made" ] || sync_directories "$(dirname "$OUT_DIR")" "$(dirname "$(dirname "$OUT_DIR")")" \
+        || fail "Can't sync the directories $OUT_DIR was made in"
     exec 9>>"$OUT_DIR/.lock"
     flock -n 9 \
         || fail "Another deploy/testnet.sh command is running on $OUT_DIR. Wait for it to finish, then run this one again."
@@ -217,27 +265,27 @@ evm_read_block() {
 # yet. A revert is the contract's answer, at any block. Prints the read's
 # output, or its error.
 evm_read() {
-    local block out errors deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    local block out errors deadline
+    deadline="$(evm_deadline "${EVM_SETTLE_SECONDS:-120}")"
     block="$(evm_read_block)"
     if [ "$block" = latest ]; then
         "$@" --rpc-url "$EVM_RPC"
         return
     fi
     errors="$(mktemp)" || return 1
-    while :; do
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if out="$("$@" --block "$block" --rpc-url "$EVM_RPC" 2>"$errors")"; then
             rm -f "$errors"
             printf '%s\n' "$out"
             return 0
         fi
-        if grep -qi 'revert' "$errors" || [ "$SECONDS" -ge "$deadline" ]; then
-            cat "$errors" >&2
-            rm -f "$errors"
-            return 1
-        fi
-        sleep 1
+        grep -qi 'revert' "$errors" && break
+        evm_sleep_until "$deadline" 1
         block="$(evm_read_block)"
     done
+    cat "$errors" >&2
+    rm -f "$errors"
+    return 1
 }
 evm_call() { evm_read cast call "$@"; }
 # After each write, evm_settle also waits until the endpoint answers at or
@@ -266,17 +314,22 @@ evm_settle() {
 # node that answers may not have seen the transaction yet. Prints the last
 # error if it never does.
 evm_receipt() {
-    local tx="$1" out deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    local tx="$1" out errors deadline
+    deadline="$(evm_deadline "${EVM_SETTLE_SECONDS:-120}")"
     shift
-    while :; do
-        out="$(cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" 2>/dev/null)" && [ -n "$out" ] \
-            && { printf '%s\n' "$out"; return 0; }
-        if [ "$SECONDS" -ge "$deadline" ]; then
-            cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" >/dev/null
-            return 1
+    errors="$(mktemp)" || return 1
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if out="$(cast receipt "$tx" "$@" --rpc-timeout "$(evm_time_left "$deadline")" \
+            --rpc-url "$EVM_RPC" 2>"$errors")" && [ -n "$out" ]; then
+            rm -f "$errors"
+            printf '%s\n' "$out"
+            return 0
         fi
-        sleep 2
+        evm_sleep_until "$deadline" 2
     done
+    cat "$errors" >&2
+    rm -f "$errors"
+    return 1
 }
 # The block a transaction is in, once EVM_RPC has its receipt.
 evm_tx_block() {
@@ -299,19 +352,21 @@ evm_next_nonce() {
     [ -n "$best" ] || return 1
     printf '%s' "$best"
 }
-# evm_submit <nonce> <creation input, or empty> <command...>: run a command
-# that sends one EVM transaction (cast send, forge create) with the nonce it
-# carries (--nonce). Nothing is ever sent again: a node's "nonce too low"
-# doesn't show the transaction was refused, as a gateway that sent it on and
-# then answered a replay of the request reports it so. A creation is taken
-# if the deployer's transaction with its nonce is that very creation, which
-# executed and created the contract at the address the nonce gives
-# (evm_adopt_creation); otherwise, and for any other transaction, it fails,
-# for deploy to be run again, which reads the chain afresh and skips what is
-# done. Prints the command's output, or an adopted creation's receipt.
+# evm_submit <nonce> <recipient, or empty for a creation> <input>
+# <command...>: run a command that sends one EVM transaction (cast send,
+# forge create) with the nonce it carries (--nonce). Nothing is ever sent
+# again: a node's "nonce too low" doesn't show the transaction was refused,
+# as a gateway that sent it on and then answered a replay of the request
+# reports it so. The deployer's transaction with that nonce tells: a
+# creation that is that very one, executed at the address the nonce gives,
+# is taken (evm_adopt_creation); another transaction means this one never
+# executes (exit status 4); this call, or none yet, fails, for the next
+# run to settle (evm_settle_pending). A gas estimate that reverted sent
+# nothing (exit status 3). Prints the command's output, or an adopted
+# creation's receipt.
 evm_submit() {
-    local nonce="$1" input="$2" from out errors receipt
-    shift 2
+    local nonce="$1" to="$2" input="$3" from out errors receipt tx final
+    shift 3
     from="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || from=""
     errors="$(mktemp)" || return 1
     if out="$("$@" 2>"$errors")"; then
@@ -321,32 +376,227 @@ evm_submit() {
         return 0
     fi
     if grep -qi 'nonce too low' "$errors"; then
-        if [ -n "$input" ] && receipt="$(evm_adopt_creation "$nonce" "$input" "$from")"; then
-            rm -f "$errors"
+        cat "$errors" >&2
+        rm -f "$errors"
+        # What took the nonce: this transaction, or another.
+        if ! [[ "$from" =~ ^[0-9]+$ ]] || ! tx="$(evm_sent_with_nonce "$(evm_deployer)" "$nonce" "$from")"; then
+            echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\", and no transaction with that nonce is in a block: it may still go out, so nothing was sent again. Run deploy again: it settles it first." >&2
+            return 1
+        fi
+        if ! jq -e --arg to "$(lower "$to")" --arg i "$(lower "$input")" \
+            '((.to // "") | ascii_downcase) == $to and ((.input // .data // "") | ascii_downcase) == $i' \
+            <<<"$tx" >/dev/null; then
+            # Until the other transaction's block is final, another block can
+            # take its place, without it, and this one, if a node took it,
+            # can still execute: it is forgotten only then.
+            final=0
+            evm_final_canonical "$tx" || final=$?
+            if [ "$final" = 0 ]; then
+                echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\": another transaction of the deployer's took that nonce, in a block that is final, so this one never executes. Nothing was sent again. Run deploy again: it reads what is on chain afresh and sends what isn't done." >&2
+                return 4
+            fi
+            echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\": another transaction of the deployer's took that nonce, in a block that isn't final, or that another block has replaced. Until that is final, this one can still execute, so nothing was sent again. Run deploy again: it settles it first." >&2
+            return 1
+        fi
+        if [ -z "$to" ] && receipt="$(evm_adopt_creation "$nonce" "$input" "$tx")"; then
             info "$EVM_CHAIN_NAME answered the creation with \"nonce too low\", but the deployer's transaction with its nonce $nonce is that very creation, executed: taking it"
             printf '%s\n' "$receipt"
             return 0
         fi
+        echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\", though it went out with that nonce: nothing was sent again. Run deploy again: it settles it first." >&2
+        return 1
+    fi
+    # A revert in the gas estimate: nothing went out.
+    if grep -qi 'execution reverted' "$errors"; then
         cat "$errors" >&2
         rm -f "$errors"
-        echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\", which doesn't show whether it was sent on, and the deployer's transaction with that nonce isn't it: nothing was sent again. Run deploy again: it reads what is on chain afresh and skips what is done." >&2
-        return 1
+        return 3
     fi
     cat "$errors" >&2
     rm -f "$errors"
     printf '%s\n' "$out"
     return 1
 }
+# The EVM transaction each step of this script is sending, recorded in
+# $STATE before it is sent, under .evm_sending, by the step that sends it:
+# "create <the key $STATE records the contract at>" for a creation, "call
+# <function> on <recipient>" for a call. The entry holds the step, the
+# nonce, the recipient (none for a creation), the exact input and the
+# block to look for it from, until the step records what it did
+# (evm_done). A run that stops between the two leaves it for the step's
+# next run, which settles it before the step sends anything
+# (evm_settle_pending). Only the step settles its own entry: a creation's
+# address is recorded by its step alone, so a step of another command, or
+# another step of deploy, leaves the entry as it is. These change $STATE,
+# so they run in this shell, never in a command substitution.
+evm_creation_step() { printf 'create %s' "$1"; }
+# A send recorded as .evm_pending, the form only an earlier version of this
+# script wrote, has no step: which step it was, and how it ended, are for
+# you to reconcile (docs/testnet.md, Reconciling .evm_pending). Every
+# command that sends on the EVM side stops on it before sending anything.
+check_no_unattributed_evm_send() {
+    local pending
+    pending="$(state_json | jq -c '.evm_pending // empty')"
+    [ -n "$pending" ] || return 0
+    fail "$STATE records an EVM send as .evm_pending, the form only an earlier version of this script wrote: nonce $(jq -r '.nonce' <<<"$pending") ($(jq -r '.label // "no label"' <<<"$pending")), without the step that sent it. Nothing was sent. Reconcile it by hand (docs/testnet.md, Reconciling .evm_pending), then remove .evm_pending from $STATE and run this again."
+}
+evm_call_step() { printf 'call %s on %s' "$2" "$(lower "$1")"; }
+evm_intend() {
+    local step="$1" nonce="$2" to="$3" input="$4" label="$5" from
+    from="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" && [[ "$from" =~ ^[0-9]+$ ]] \
+        || fail "Can't read $EVM_CHAIN_NAME's block number"
+    state_set --arg s "$step" --argjson n "$nonce" --arg to "$(lower "$to")" --arg i "$(lower "$input")" \
+        --arg l "$label" --argjson b "$from" \
+        '.evm_sending[$s] = {step: $s, nonce: $n, to: $to, input: $i, label: $l, from_block: $b}'
+}
+evm_done() {
+    [ -n "$(state_json | jq -r --arg s "$1" '.evm_sending[$s] // empty')" ] || return 0
+    state_set --arg s "$1" 'del(.evm_sending[$s]) | if .evm_sending == {} then del(.evm_sending) else . end'
+}
+# evm_record <step> [jq arguments...] <filter>: record in $STATE what <step>
+# made, as state_set does, and forget its send, in the same write, so that
+# no run finds the one without the other.
+evm_record() {
+    local step="$1"
+    shift
+    state_set --arg evm_step "$step" "${@:1:$#-1}" \
+        "${!#} | del(.evm_sending[\$evm_step]) | if .evm_sending == {} then del(.evm_sending) else . end"
+}
+# evm_settle_call <recipient> <function>: settle the call an earlier run
+# recorded as sending, before the call's step reads the chain to decide
+# whether to send it. Once its transaction is in a block and executed, the
+# record is forgotten, and the step's reads, made at that block or after
+# it (evm_wrote), show what it did. Taking it as this run's send instead
+# would be wrong for a call made again and again, as claim() is.
+evm_settle_call() {
+    local receipt
+    evm_settle_pending receipt "$(evm_call_step "$1" "$2")" "$1" "*"
+}
+# evm_settle_pending <variable> <step> <recipient, or empty for a creation>
+# <input>: settle the transaction <step> recorded as sending in an earlier
+# run, if any, before the step chooses a nonce: the deployer's transaction
+# with its nonce. If it is that transaction, executed, and what the step
+# sends now, <variable> is set to its receipt, for the step to take as its
+# own send; a creation also must have made the contract at the address the
+# nonce gives. With <input> "*" (evm_settle_call), it is forgotten instead.
+# If it failed, or the step no longer sends it, or another transaction
+# took its nonce, the record is forgotten once that block is final, for
+# the step to send afresh. One that isn't in a block within
+# EVM_SETTLE_SECONDS, or in a final one within EVM_FINALITY_SECONDS, stops
+# the script: nothing is sent.
+evm_settle_pending() {
+    local _sp_var="$1" _sp_step="$2" _sp_to="$3" _sp_input="$4" _sp_pending _sp_nonce _sp_label _sp_tx _sp_receipt _sp_address
+    local _sp_what _sp_final
+    printf -v "$_sp_var" '%s' ""
+    check_no_unattributed_evm_send
+    _sp_pending="$(state_json | jq -c --arg s "$_sp_step" '.evm_sending[$s] // empty')"
+    [ -n "$_sp_pending" ] || return 0
+    _sp_nonce="$(jq -r .nonce <<<"$_sp_pending")" _sp_label="$(jq -r .label <<<"$_sp_pending")"
+    info "Settling the deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending..."
+    # One deadline for the whole attempt, rechecks after a replaced block
+    # included: each wait below keeps to it (evm_deadline).
+    local evm_attempt_deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120} + ${EVM_FINALITY_SECONDS:-1800}))
+    while :; do
+        if ! _sp_tx="$(evm_sent_with_nonce "$(evm_deployer)" "$_sp_nonce" "$(jq -r .from_block <<<"$_sp_pending")")"; then
+            [ "$SECONDS" -lt "$evm_attempt_deadline" ] \
+                || fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): settling it again didn't finish by the attempt's deadline (EVM_SETTLE_SECONDS plus EVM_FINALITY_SECONDS), so nothing was sent. Run deploy again."
+            fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending, isn't in the blocks read (above): it may still be pending, or in a later block, so nothing was sent. Run deploy again: it reads from block $(jq -r .from_block <<<"$_sp_pending") again, and a larger EVM_SETTLE_SECONDS reads further. If it never went out, and the deployer's nonce stays below $_sp_nonce, remove the entry \"$_sp_step\" from .evm_sending in $STATE first."
+        fi
+        if jq -e --argjson p "$_sp_pending" \
+            '((.to // "") | ascii_downcase) == $p.to and ((.input // .data // "") | ascii_downcase) == $p.input' \
+            <<<"$_sp_tx" >/dev/null; then
+            _sp_receipt="$(evm_receipt "$(jq -r .hash <<<"$_sp_tx")" --json)" \
+                || fail "Can't read the receipt of $(jq -r .hash <<<"$_sp_tx") on $EVM_CHAIN_NAME"
+            evm_wrote "$(evm_block_number "$(jq -r .blockNumber <<<"$_sp_receipt")")"
+            if [ "$_sp_input" = "*" ] && jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null; then
+                info "It executed: the step reads the chain as of its block, or later, to see what is left to do"
+                evm_done "$_sp_step"
+                return 0
+            fi
+            if jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null \
+                && [ "$(jq -r .to <<<"$_sp_pending")" = "$(lower "$_sp_to")" ] \
+                && [ "$(jq -r .input <<<"$_sp_pending")" = "$(lower "$_sp_input")" ]; then
+                if [ -z "$_sp_to" ]; then
+                    _sp_address="$(cast compute-address "$(evm_deployer)" --nonce "$_sp_nonce" 2>/dev/null | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)"
+                    [ "$(lower "$(jq -r '.contractAddress // empty' <<<"$_sp_receipt")")" = "$(lower "$_sp_address")" ] \
+                        && evm_has_code "$_sp_address" \
+                        || fail "The deployer's creation with nonce $_sp_nonce ($_sp_label) didn't make the contract at $_sp_address, the address its nonce gives: nothing was sent. Find out why before running deploy again."
+                fi
+                info "It is this step's own transaction, executed: taking it"
+                printf -v "$_sp_var" '%s' "$_sp_receipt"
+                return 0
+            fi
+            if jq -e '.status | tostring | test("^(0x)?1$")' <<<"$_sp_receipt" >/dev/null; then
+                _sp_what="It executed, but isn't what this step sends now"
+            else
+                _sp_what="It failed"
+            fi
+        else
+            _sp_what="Another transaction of the deployer's, $(jq -r .hash <<<"$_sp_tx"), took its nonce"
+            warn "$_sp_what: the one recorded as sending ($_sp_label) never executes once that is final"
+        fi
+        # Until its block is final, another block can take its place, and
+        # what took the nonce, or how it ended, can change: it is forgotten
+        # only once that block is final, and still the chain's.
+        info "$_sp_what: waiting until its block is final..."
+        _sp_final=0
+        evm_final_canonical "$_sp_tx" || _sp_final=$?
+        case "$_sp_final" in
+            0)
+                info "Its block is final: forgetting it, for the step to go on afresh"
+                evm_done "$_sp_step"
+                return 0
+                ;;
+            2)
+                [ "$SECONDS" -lt "$evm_attempt_deadline" ] \
+                    || fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): ${_sp_what,}, in a block another took the place of, and settling it again would go past the attempt's deadline (EVM_SETTLE_SECONDS plus EVM_FINALITY_SECONDS): nothing was sent. Run deploy again."
+                info "Another block took the place of the one it was in: settling it again..."
+                ;;
+            *) fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): ${_sp_what,}, in a block that wasn't final, and the chain's, by the attempt's deadline (EVM_FINALITY_SECONDS for the block, within EVM_SETTLE_SECONDS plus EVM_FINALITY_SECONDS for the attempt). Until it is, that can change, so nothing was sent. Run deploy again once it is." ;;
+        esac
+    done
+}
+# evm_final_canonical <tx>: wait, for up to EVM_FINALITY_SECONDS (1800), until
+# the block of <tx>, a transaction as `cast block --full --json` shows it,
+# is final, then check that it is still the block at its height. Returns 0
+# if it is, 2 if another block took its place, and 1 if it isn't final in
+# time, or can't be read.
+evm_final_canonical() {
+    local number hash final canonical deadline
+    deadline="$(evm_deadline "${EVM_FINALITY_SECONDS:-1800}")"
+    number="$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$1")")" || return 1
+    hash="$(lower "$(jq -r '.blockHash // empty' <<<"$1")")"
+    [[ "$number" =~ ^[0-9]+$ ]] && [[ "$hash" =~ ^0x[0-9a-f]{64}$ ]] || return 1
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        final="$(cast block-number finalized --rpc-timeout "$(evm_time_left "$deadline")" \
+            --rpc-url "$EVM_RPC" 2>/dev/null)" || final=""
+        if [[ "$final" =~ ^[0-9]+$ ]] && [ "$final" -ge "$number" ] && [ "$SECONDS" -lt "$deadline" ]; then
+            canonical="$(cast block "$number" --json --rpc-timeout "$(evm_time_left "$deadline")" \
+                --rpc-url "$EVM_RPC" 2>/dev/null | jq -r '.hash // empty' 2>/dev/null)" || canonical=""
+            if [[ "$canonical" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+                [ "$(lower "$canonical")" = "$hash" ] && return 0
+                return 2
+            fi
+        fi
+        evm_sleep_until "$deadline" 2
+    done
+    return 1
+}
 # The transaction <sender> sent with <nonce>, as `cast block --full --json`
 # shows it, in a block from <from block> to the head, waiting up to
-# EVM_SETTLE_SECONDS for EVM_RPC to show it.
+# EVM_SETTLE_SECONDS for EVM_RPC to show it. The deadline holds however
+# many blocks are left to read, and each read is given only what is left
+# of it.
 evm_sent_with_nonce() {
-    local sender="$1" nonce="$2" block="$3" head txs found deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    local sender="$1" nonce="$2" from="$3" block="$3" head="" txs found deadline
+    deadline="$(evm_deadline "${EVM_SETTLE_SECONDS:-120}")"
     sender="$(lower "$sender")"
-    while :; do
-        head="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || head=""
-        while [[ "$head" =~ ^[0-9]+$ ]] && [ "$block" -le "$head" ]; do
-            txs="$(cast block "$block" --full --json --rpc-url "$EVM_RPC" 2>/dev/null)" || break
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        head="$(cast block-number --rpc-timeout "$(evm_time_left "$deadline")" --rpc-url "$EVM_RPC" 2>/dev/null)" \
+            || head=""
+        while [[ "$head" =~ ^[0-9]+$ ]] && [ "$block" -le "$head" ] && [ "$SECONDS" -lt "$deadline" ]; do
+            txs="$(cast block "$block" --full --json --rpc-timeout "$(evm_time_left "$deadline")" \
+                --rpc-url "$EVM_RPC" 2>/dev/null)" || break
             found="$(jq -c --arg s "$sender" --arg n "$nonce" --arg h "$(printf '0x%x' "$nonce")" \
                 '.transactions[]? | select(((.from // "") | ascii_downcase) == $s
                     and ((.nonce | tostring | ascii_downcase) as $v | $v == $n or $v == $h))' <<<"$txs" 2>/dev/null | head -1)"
@@ -356,20 +606,47 @@ evm_sent_with_nonce() {
             fi
             block=$((block + 1))
         done
-        [ "$SECONDS" -lt "$deadline" ] || return 1
-        sleep 2
+        evm_sleep_until "$deadline" 2
     done
+    if [ "$block" -gt "$from" ]; then
+        info "No transaction of $sender's with nonce $nonce in blocks $from to $((block - 1)) of $EVM_CHAIN_NAME (the head was ${head:-unknown}), read before the deadline"
+    else
+        info "No block from $from on of $EVM_CHAIN_NAME was read before the deadline, for $sender's transaction with nonce $nonce"
+    fi
+    return 1
 }
-# The receipt of the deployer's transaction with <nonce>, if it is the
-# creation <input>, sent from block <from block> on: it executed, and created
-# the contract at the address the deployer and the nonce give, which has code.
+# The whole seconds left until <deadline> (a $SECONDS value), at least 1:
+# what an RPC request made against it may take.
+evm_time_left() {
+    local left=$(($1 - SECONDS))
+    [ "$left" -ge 1 ] || left=1
+    printf '%s' "$left"
+}
+# The deadline (a $SECONDS value) of a wait of <seconds> starting now: the
+# end of those seconds, or the deadline of the settlement attempt it is part
+# of (evm_attempt_deadline, set by evm_settle_pending), if that is sooner.
+evm_deadline() {
+    local own=$((SECONDS + $1))
+    if [ -n "${evm_attempt_deadline:-}" ] && [ "$evm_attempt_deadline" -lt "$own" ]; then
+        own="$evm_attempt_deadline"
+    fi
+    printf '%s' "$own"
+}
+# evm_sleep_until <deadline> <seconds>: sleep the seconds, or until the
+# deadline if that is sooner.
+evm_sleep_until() {
+    local left=$(($1 - SECONDS))
+    [ "$left" -le 0 ] || sleep "$((left < $2 ? left : $2))"
+}
+# The receipt of the deployer's transaction with <nonce>, <tx> as
+# evm_sent_with_nonce shows it, if it is the creation <input>: it executed,
+# and created the contract at the address the deployer and the nonce give,
+# which has code.
 evm_adopt_creation() {
-    local nonce="$1" input="$2" from="$3" deployer address tx receipt
-    [[ "$from" =~ ^[0-9]+$ ]] || return 1
+    local nonce="$1" input="$2" tx="$3" deployer address receipt
     deployer="$(evm_deployer)" || return 1
     address="$(cast compute-address "$deployer" --nonce "$nonce" 2>/dev/null | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)"
     [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || return 1
-    tx="$(evm_sent_with_nonce "$deployer" "$nonce" "$from")" || return 1
     jq -e --arg i "$(lower "$input")" '(.to == null) and ((.input // .data // "") | ascii_downcase) == $i' \
         <<<"$tx" >/dev/null || return 1
     receipt="$(evm_receipt "$(jq -r .hash <<<"$tx")" --json)" || return 1
@@ -381,13 +658,22 @@ evm_adopt_creation() {
     printf '%s\n' "$receipt"
 }
 evm_send() {
-    local receipt block nonce
-    nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
-    receipt="$(evm_submit "$nonce" "" cast send "$@" --nonce "$nonce" --rpc-url "$EVM_RPC" \
-        --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
+    local receipt block nonce input step code=0
+    input="$(cast calldata "$2" "${@:3}")" || fail "Can't encode $2 for $1"
+    step="$(evm_call_step "$1" "$2")"
+    evm_settle_pending receipt "$step" "$1" "$input"
+    if [ -z "$receipt" ]; then
+        nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+        evm_intend "$step" "$nonce" "$1" "$input" "$2 on $1"
+        receipt="$(evm_submit "$nonce" "$1" "$input" cast send "$@" --nonce "$nonce" --rpc-url "$EVM_RPC" \
+            --private-key "$EVM_DEPLOYER_KEY" --json)" || code=$?
+        [ "$code" != 3 ] && [ "$code" != 4 ] || evm_done "$step"
+        [ "$code" = 0 ] || return 1
+    fi
     jq -e '.status | tostring | test("^(0x)?1$")' <<<"$receipt" >/dev/null || return 1
     block="$(evm_block_number "$(jq -r '.blockNumber' <<<"$receipt")")" || return 1
     evm_wrote "$block"
+    evm_done "$step"
     evm_settle "$block"
 }
 # A number `cast call` returns, without the scientific form it adds.
@@ -414,19 +700,29 @@ evm_creator() {
         return 1
     fi
 }
-# forge_create <variable> <contract> [forge create arguments...]: deploy a
-# contract from the Hyperlane Solidity sources, and set <variable> to its
-# address. It runs in this shell, not in a command substitution, so that
-# the reads after it are made at its block (evm_wrote).
+# forge_create <variable> <key> <contract> [forge create arguments...]:
+# deploy a contract from the Hyperlane Solidity sources, and set <variable>
+# to its address, which the caller records at <key> in $STATE with
+# evm_record "$(evm_creation_step <key>)". It runs in this shell, not in a
+# command substitution, so that the reads after it are made at its block
+# (evm_wrote).
 forge_create() {
-    local _fc_var="$1" _fc_contract="$2" _fc_created _fc_address _fc_tx _fc_block _fc_nonce _fc_input
-    shift 2
+    local _fc_var="$1" _fc_step _fc_contract="$3" _fc_created _fc_address _fc_tx _fc_block _fc_nonce _fc_input _fc_code
+    _fc_step="$(evm_creation_step "$2")"
+    shift 3
     _fc_input="$(forge_creation_input "$_fc_contract" "$@")" \
         || fail "Can't work out the creation code of $_fc_contract from $SOLIDITY_DIR"
-    _fc_nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
-    _fc_created="$(cd "$SOLIDITY_DIR" && evm_submit "$_fc_nonce" "$_fc_input" forge create "$_fc_contract" \
-        --broadcast --json --nonce "$_fc_nonce" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" "$@")" \
-        || return 1
+    evm_settle_pending _fc_created "$_fc_step" "" "$_fc_input"
+    if [ -z "$_fc_created" ]; then
+        _fc_nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+        evm_intend "$_fc_step" "$_fc_nonce" "" "$_fc_input" "$_fc_contract"
+        _fc_code=0
+        _fc_created="$(cd "$SOLIDITY_DIR" && evm_submit "$_fc_nonce" "" "$_fc_input" forge create "$_fc_contract" \
+            --broadcast --json --nonce "$_fc_nonce" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" "$@")" \
+            || _fc_code=$?
+        [ "$_fc_code" != 3 ] && [ "$_fc_code" != 4 ] || evm_done "$_fc_step"
+        [ "$_fc_code" = 0 ] || return 1
+    fi
     _fc_address="$(jq -r '.deployedTo // .contractAddress // empty' <<<"$_fc_created")"
     _fc_tx="$(jq -r '.transactionHash // empty' <<<"$_fc_created")"
     [[ "$_fc_address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$_fc_tx" =~ ^0x[0-9a-fA-F]{64}$ ]] || return 1
@@ -479,14 +775,16 @@ evm_proxy_creation_code() {
 # <base> is where $STATE keeps the contract: .evm, or a token route's
 # .token_routes["SYMBOL"].evm.
 deploy_evm_proxied() {
-    local base="$1" key="$2" label="$3" contract="$4" init="$5" impl code args receipt address tx block nonce
+    local base="$1" key="$2" label="$3" contract="$4" init="$5" impl code args receipt address tx block nonce sent step
     shift 5
     [[ "$init" =~ ^0x[0-9a-fA-F]{8,}$ ]] || fail "No initialize call for the $label"
     impl="$(state_get "$base.${key}_implementation")"
     if [ -z "$impl" ]; then
         info "Deploying the $label's implementation on $EVM_CHAIN_NAME..."
-        forge_create impl "$contract" "$@" || fail "$label implementation deployment failed"
-        state_set --arg i "$impl" "$base.${key}_implementation = \$i"
+        forge_create impl "$base.${key}_implementation" "$contract" "$@" \
+            || fail "$label implementation deployment failed"
+        evm_record "$(evm_creation_step "$base.${key}_implementation")" --arg i "$impl" \
+            "$base.${key}_implementation = \$i"
     fi
     evm_has_code "$impl" || fail "No $label implementation at $impl, which $STATE records"
     code="$(evm_proxy_creation_code)" && [[ "$code" =~ ^0x[0-9a-fA-F]+$ ]] \
@@ -494,14 +792,22 @@ deploy_evm_proxied() {
     args="$(cast abi-encode "constructor(address,bytes)" "$impl" "$init")" \
         || fail "Can't encode the $label proxy's constructor arguments"
     info "Deploying the $label behind an ERC1967Proxy that initializes it in the same transaction..."
-    nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
-    receipt="$(evm_submit "$nonce" "$code${args#0x}" cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" \
-        --json --nonce "$nonce" --create "$code${args#0x}")" || fail "$label deployment failed"
+    step="$(evm_creation_step "$base.$key")"
+    evm_settle_pending receipt "$step" "" "$code${args#0x}"
+    if [ -z "$receipt" ]; then
+        nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+        evm_intend "$step" "$nonce" "" "$code${args#0x}" "the $label's proxy"
+        sent=0
+        receipt="$(evm_submit "$nonce" "" "$code${args#0x}" cast send --rpc-url "$EVM_RPC" \
+            --private-key "$EVM_DEPLOYER_KEY" --json --nonce "$nonce" --create "$code${args#0x}")" || sent=$?
+        [ "$sent" != 3 ] && [ "$sent" != 4 ] || evm_done "$step"
+        [ "$sent" = 0 ] || fail "$label deployment failed"
+    fi
     address="$(jq -r '.contractAddress // empty' <<<"$receipt")"
     tx="$(jq -r '.transactionHash // empty' <<<"$receipt")"
     [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] \
         || fail "$label deployment returned no contract address and transaction hash"
-    state_set --arg a "$address" --arg t "$tx" --arg d "$(evm_deployer)" \
+    evm_record "$step" --arg a "$address" --arg t "$tx" --arg d "$(evm_deployer)" \
         "$base.$key = \$a | $base.${key}_creation_tx = \$t | .evm.deployer = \$d"
     block="$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$receipt")")"
     evm_wrote "$block"
@@ -1546,7 +1852,8 @@ plan_dusk_token_route() {
 
 # Record in $STATE the transactions deploy-token-route sent for a token
 # route's planned contracts, from the tx log it writes each to before it
-# sends it: the last for each.
+# sends it: the last for each, or none once deploy-token-route has marked
+# that one void, as never sent.
 record_token_route_txs() {
     local symbol="$1" log="$2" base txs
     base=".token_routes[\"$symbol\"]"
@@ -1555,10 +1862,12 @@ record_token_route_txs() {
         [splits("\n") | fromjson? | objects] as $sent
         | ($sent | map(select(.contract == "token" and .id == $t)) | last) as $token
         | ($sent | map(select(.contract == "route" and .id == $r)) | last) as $route
-        | (if $token then {token_tx: $token.tx, token_tx_nonce: $token.nonce} else {} end)
-          + (if $route then {route_tx: $route.tx, route_tx_nonce: $route.nonce} else {} end)' "$log")" \
+        | (if $token == null then {} elif $token.void then {token_tx: null, token_tx_nonce: null}
+           else {token_tx: $token.tx, token_tx_nonce: $token.nonce} end)
+          + (if $route == null then {} elif $route.void then {route_tx: null, route_tx_nonce: null}
+             else {route_tx: $route.tx, route_tx_nonce: $route.nonce} end)' "$log")" \
         || fail "Can't read the tx log $log"
-    [ "$txs" = "{}" ] || state_set --argjson x "$txs" "$base.dusk += \$x"
+    [ "$txs" = "{}" ] || state_set --argjson x "$txs" "$base.dusk += \$x | $base.dusk |= with_entries(select(.value != null))"
 }
 
 # Read back a token route's contracts on Dusk, its canonical DRC20 and the
@@ -2038,6 +2347,8 @@ configure_evm_igp_pricing() {
     local mode="$1" deployer igp oracle current active data wanted overhead
     deployer="$(evm_deployer)"
     igp="$(state_get '.evm.igp')" oracle="$(state_get '.evm.storage_gas_oracle')"
+    evm_settle_call "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])"
+    evm_settle_call "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])"
     current="$(evm_igp_pricing)" || exit 1
     check_evm_igp_oracle "$current"
     [ "$(lower "$(evm_call "$oracle" "owner()(address)")")" = "$(lower "$deployer")" ] \
@@ -2318,18 +2629,25 @@ deploy_evm_ism() {
     local validators ism
     validators="$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")"
     if [ -n "${EVM_ISM_FACTORY:-}" ]; then
+        # A creation of the ISM an earlier run sent directly, without the
+        # factory, can still execute: recording the factory's ISM would
+        # forget it. It is kept, and stops deploy until it is settled.
+        [ -z "$(state_json | jq -r --arg s "$(evm_creation_step .evm.ism)" '.evm_sending[$s] // empty')" ] \
+            || fail "An earlier run sent a creation of the EVM security module without EVM_ISM_FACTORY, and it isn't settled (\"create .evm.ism\" in .evm_sending). Nothing was sent. Settle it first: run deploy with EVM_ISM_FACTORY empty, which takes that ISM if the creation executed; or, once the deployer's transaction with its nonce is final and isn't that creation, remove the entry (docs/testnet.md)."
         ism="$(evm_call "$EVM_ISM_FACTORY" "getAddress(address[],uint8)(address)" "[$validators]" "$DUSK_ORIGIN_THRESHOLD")"
+        evm_settle_call "$EVM_ISM_FACTORY" "deploy(address[],uint8)"
         if ! evm_has_code "$ism"; then
             info "Deploying MessageIdMultisigIsm ($DUSK_ORIGIN_THRESHOLD of [$validators]) through the factory..."
             evm_send "$EVM_ISM_FACTORY" "deploy(address[],uint8)" "[$validators]" "$DUSK_ORIGIN_THRESHOLD"
         fi
     else
         info "Deploying StorageMessageIdMultisigIsm ($DUSK_ORIGIN_THRESHOLD of [$validators])..."
-        forge_create ism contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
+        forge_create ism .evm.ism contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
             --constructor-args "[$validators]" "$DUSK_ORIGIN_THRESHOLD" || fail "EVM security module deployment failed"
     fi
     evm_has_code "$ism" || fail "EVM security module deployment failed"
-    state_set --arg ism "$ism" --arg v "$validators" --argjson t "$DUSK_ORIGIN_THRESHOLD" \
+    evm_record "$(evm_creation_step .evm.ism)" --arg ism "$ism" --arg v "$validators" \
+        --argjson t "$DUSK_ORIGIN_THRESHOLD" \
         '.evm.ism = $ism | .dusk_origin_validators = ($v | split(",")) | .dusk_origin_threshold = $t'
     ok "EVM security module $ism"
 }
@@ -2364,9 +2682,9 @@ deploy_evm_igp() {
     if [ -z "$oracle" ]; then
         record_index_from
         info "Deploying a StorageGasOracle on $EVM_CHAIN_NAME..."
-        forge_create oracle contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle \
+        forge_create oracle .evm.storage_gas_oracle contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle \
             || fail "StorageGasOracle deployment failed"
-        state_set --arg o "$oracle" '.evm.storage_gas_oracle = $o'
+        evm_record "$(evm_creation_step .evm.storage_gas_oracle)" --arg o "$oracle" '.evm.storage_gas_oracle = $o'
     fi
     [ "$(lower "$(evm_call "$oracle" "owner()(address)")")" = "$(lower "$deployer")" ] \
         || fail "The StorageGasOracle $oracle isn't owned by the EVM deployer $deployer"
@@ -2384,6 +2702,7 @@ deploy_evm_igp() {
         || fail "The EVM IGP $igp is owned by $owner, not the EVM deployer $deployer"
     # EVM_IGP_BENEFICIARY, when set, wins over what the IGP has; when it isn't,
     # the beneficiary stays what it is, as on Dusk.
+    evm_settle_call "$igp" "setBeneficiary(address)"
     if [ -n "${EVM_IGP_BENEFICIARY:-}" ] \
         && [ "$(lower "$(evm_call "$igp" "beneficiary()(address)")")" != "$(lower "$EVM_IGP_BENEFICIARY")" ]; then
         info "Making $EVM_IGP_BENEFICIARY the EVM IGP's beneficiary..."
@@ -2412,12 +2731,15 @@ deploy_evm_route_hook() {
         factory="${EVM_AGGREGATION_HOOK_FACTORY:-$(state_get '.evm.aggregation_hook_factory')}"
         if [ -z "$factory" ]; then
             info "Deploying a StaticAggregationHookFactory on $EVM_CHAIN_NAME..."
-            forge_create factory contracts/hooks/aggregation/StaticAggregationHookFactory.sol:StaticAggregationHookFactory \
+            forge_create factory .evm.aggregation_hook_factory \
+                contracts/hooks/aggregation/StaticAggregationHookFactory.sol:StaticAggregationHookFactory \
                 || fail "StaticAggregationHookFactory deployment failed"
-            state_set --arg f "$factory" '.evm.aggregation_hook_factory = $f'
+            evm_record "$(evm_creation_step .evm.aggregation_hook_factory)" --arg f "$factory" \
+                '.evm.aggregation_hook_factory = $f'
         fi
         hook="$(evm_call "$factory" "getAddress(address[])(address)" "[$EVM_MERKLE_TREE_HOOK,$igp]")" \
             || fail "Can't get the aggregation hook's address from the factory $factory"
+        evm_settle_call "$factory" "deploy(address[])"
         if ! evm_has_code "$hook"; then
             info "Deploying the route's hook, aggregating the Merkle hook $EVM_MERKLE_TREE_HOOK and the IGP $igp..."
             evm_send "$factory" "deploy(address[])" "[$EVM_MERKLE_TREE_HOOK,$igp]"
@@ -2482,6 +2804,7 @@ deploy_evm_route_token() {
 set_evm_route_hook() {
     local route="$1" token hook
     token="$(state_get "$(route_evm_base "$route").token")" hook="$(state_get '.evm.route_hook')"
+    evm_settle_call "$token" "setHook(address)"
     if [ "$(lower "$(evm_call "$token" "hook()(address)")")" != "$(lower "$hook")" ]; then
         check_evm_token_binding "$route"
         info "Setting the EVM $(route_symbol "$route") token's hook to $hook..."
@@ -2504,6 +2827,7 @@ enroll_routers() {
     symbol="$(route_symbol "$route")"
     token="$(state_get "$(route_evm_base "$route").token")"
     dusk_route="$(lower "$(state_get "$(route_path "$route")")")"
+    evm_settle_call "$token" "enrollRemoteRouter(uint32,bytes32)"
     check_evm_token_binding "$route"
     router="$(dusk_route_router "$route")" || exit 1
     if [ "$EVM_TOKEN_ROUTER" != "0x$dusk_route" ]; then
@@ -2626,6 +2950,7 @@ check_state_versions() {
 }
 
 cmd_deploy() {
+    check_no_unattributed_evm_send
     cmd_preflight
     state_set --arg n "$EVM_CHAIN_NAME" --argjson d "$EVM_DOMAIN" --arg m "$EVM_MAILBOX" \
         --arg h "$EVM_MERKLE_TREE_HOOK" --arg va "$EVM_VALIDATOR_ANNOUNCE" \
@@ -2717,10 +3042,25 @@ cmd_dusk_igp() {
 cmd_evm_igp() {
     local apply="${1:-}" igp oracle current chain_quote new token route_quote
     [ -z "$apply" ] || [ "$apply" = --apply ] || fail "usage: bash deploy/testnet.sh evm-igp [--apply]"
+    [ -z "$apply" ] || check_no_unattributed_evm_send
     load_fees
     igp="$(state_get '.evm.igp')" oracle="$(state_get '.evm.storage_gas_oracle')"
     [ -n "$igp" ] && [ -n "$oracle" ] || fail "No EVM IGP recorded in $STATE; run deploy first"
     check_evm_deployment
+    # An update an earlier --apply sent is settled before the pricing is
+    # read: one still pending could land after this run found the pricing
+    # as the settings say, and leave it as it said.
+    # Only the two pricing steps' own sends matter here: another step's
+    # pending send (a claim, say) is settled by that step.
+    local oracle_step igp_step
+    oracle_step="$(evm_call_step "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])")"
+    igp_step="$(evm_call_step "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])")"
+    if [ -n "$apply" ] && [ -n "$(state_json | jq -r --arg a "$oracle_step" --arg b "$igp_step" \
+        '(.evm_sending // {}) | with_entries(select(.key == $a or .key == $b)) | keys[0] // empty')" ]; then
+        require EVM_DEPLOYER_KEY
+        evm_settle_call "$oracle" "setRemoteGasDataConfigs((uint32,uint128,uint128)[])"
+        evm_settle_call "$igp" "setDestinationGasConfigs((uint32,(address,uint96))[])"
+    fi
     current="$(evm_igp_pricing)" || exit 1
     check_evm_igp_oracle "$current"
     chain_quote="none"
@@ -2792,11 +3132,18 @@ cmd_revenue() {
 cmd_claim() {
     local name contract claimable beneficiary signer out igp balance
     [ -n "$STATE_JSON" ] || fail "Run deploy first"
+    check_no_unattributed_evm_send
     igp="$(state_get '.evm.igp')"
     [ -z "$igp" ] || [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_deployment
     check_dusk_deployment
     if [ -n "$igp" ] && [ -n "$(state_get '.evm.storage_gas_oracle')" ]; then
-        balance="$(cast balance "$igp" --rpc-url "$EVM_RPC")"
+        # A claim() an earlier run sent is settled before the balance is read.
+        if [ -n "$(state_json | jq -r --arg s "$(evm_call_step "$igp" "claim()")" '.evm_sending[$s] // empty')" ]; then
+            require EVM_DEPLOYER_KEY
+            evm_settle_call "$igp" "claim()"
+        fi
+        # Read at the block of the claim() settled above, or later.
+        balance="$(evm_read cast balance "$igp")" || fail "Can't read the EVM IGP $igp's balance"
         if [ "$balance" != 0 ]; then
             require EVM_DEPLOYER_KEY
             evm_send "$igp" "claim()"

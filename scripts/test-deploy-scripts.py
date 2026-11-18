@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -378,7 +379,7 @@ else:
 # minted to it). Its "interleave" changes the token between two reads of its
 # routers, as another process could (interleave() below).
 FAKE_EVM = r"""
-import hashlib, json, os, re, sys
+import hashlib, json, os, re, sys, time
 
 ZERO = "0x" + "00" * 20
 WILDCARD_SENDER = "0x" + "ff" * 20
@@ -438,7 +439,7 @@ def split(args):
     while i < len(args):
         arg = args[i]
         if arg in ("--rpc-url", "--private-key", "--value", "--from", "--create", "--gas-limit",
-                   "--from-block", "--to-block", "--address", "--block", "--nonce"):
+                   "--from-block", "--to-block", "--address", "--block", "--nonce", "--rpc-timeout"):
             options[arg] = args[i + 1]
             i += 2
         elif arg == "--constructor-args":
@@ -652,21 +653,166 @@ def receipt(state, sender, to=None, created=None, logs=(), data="0x"):
     state.setdefault("receipts", {})[tx] = {
         "transactionHash": tx, "status": "0x1", "from": sender.lower(),
         "to": to.lower() if to else None, "contractAddress": created,
-        "blockNumber": hex(state["block"]), "logs": list(logs), "nonce": nonce, "input": data}
+        "blockNumber": hex(state["block"]), "blockHash": block_hash(state, state["block"]),
+        "logs": list(logs), "nonce": nonce, "input": data}
     state["block"] += 1
     return tx
+
+def block_hash(state, number):
+    # A block's hash, which changes each time the blocks from a height at
+    # or below it are replaced ("reorg_from").
+    replaced = len([start for start in state.get("reorgs", []) if start <= number])
+    return "0x" + hashlib.sha256(f"block:{number}:{replaced}".encode()).hexdigest()
+
+def finalized(state):
+    # "finality_depth", n: the final block is n below the head.
+    return max(0, state["block"] - state.get("finality_depth", 0))
+
+def reorg(state):
+    # "reorg_from", b: the blocks from b on are replaced by blocks without
+    # the fillers in them (nonce_refusals), and with the held transactions
+    # that can then be mined, with their nonces. Only fillers' blocks are
+    # replaced: they change nothing but their sender's nonce.
+    start = state.pop("reorg_from", None)
+    if start is None:
+        return
+    nonces = state.setdefault("account_nonces", {})
+    for tx, r in list(state.get("receipts", {}).items()):
+        if int(r["blockNumber"], 16) >= start:
+            assert r.get("filler"), "the fake EVM replaces only fillers' blocks"
+            del state["receipts"][tx]
+            nonces[r["from"]] = min(nonces.get(r["from"], 0), r["nonce"])
+    state.setdefault("reorgs", []).append(start)
+    state["block"] = start
+    state["mine_held"] = True
+    mine_held(state)
+
+def fill_held(state):
+    # "fill_held": another transaction of each held one's sender, a filler,
+    # takes its nonce, and the held one is never mined.
+    if not state.pop("fill_held", False):
+        return
+    for item in sorted(state.get("held", []), key=lambda h: h["nonce"]):
+        if item["nonce"] == state.setdefault("account_nonces", {}).get(item["sender"], 0):
+            tx = receipt(state, item["sender"], to=ZERO, data="0xf111e4")
+            state["receipts"][tx]["filler"] = True
+    save(state)
+
+def fail_send(state, kind, sender, payload):
+    # The held transaction, mined but failed ("fail_held"): its nonce is
+    # spent, and nothing else changes.
+    if kind == "forge":
+        to, data = None, creation_input(payload["name"], payload["args"])
+    elif kind == "create":
+        to, data = None, payload["data"]
+    else:
+        to, data = payload["to"], encode({"sig": payload["sig"], "args": payload["args"]})
+    tx = receipt(state, sender, to=to, data=data)
+    state["receipts"][tx]["status"] = "0x0"
+    return tx
+
+def pending_nonce(state, sender):
+    # The sender's next nonce as a node with the held transactions in its
+    # pool gives it: past its mined transactions, and past each held one
+    # that follows them.
+    nonce = state.get("account_nonces", {}).get(sender.lower(), 0)
+    held_nonces = {h["nonce"] for h in state.get("held", []) if h["sender"] == sender.lower()}
+    while nonce in held_nonces:
+        nonce += 1
+    return nonce
 
 def check_nonce(state, sender, options):
     # A transaction sent with --nonce: refused below the sender's next one,
     # as a node does.
     if "--nonce" not in options:
         return
-    expected = state.get("account_nonces", {}).get(sender.lower(), 0)
+    expected = pending_nonce(state, sender)
     given = int(options["--nonce"])
     if given < expected:
         die(f"Error: server returned an error response: error code -32000: nonce too low: next nonce {expected}, tx nonce {given}")
     if given > expected:
         die(f"Error: server returned an error response: error code -32000: nonce too high: next nonce {expected}, tx nonce {given}")
+
+def apply_send(state, kind, sender, payload):
+    # Make a transaction happen: a forge creation, a proxy creation or a
+    # call, with the sender's next nonce. Returns its hash and, for a forge
+    # creation, the address.
+    before = json.loads(json.dumps(state["contracts"]))
+    address = None
+    if kind == "forge":
+        name, args = payload["name"], payload["args"]
+        address = new_address(state, sender)
+        created = CREATED[name](sender, args)
+        created["created_at"] = state["block"]
+        state["contracts"][address] = created
+        logs = ([log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))]
+                if created.get("owner", ZERO) != ZERO else [])
+        tx = receipt(state, sender, created=address, logs=logs, data=creation_input(name, args))
+        record_history(state, tx, before)
+        created_only = json.loads(json.dumps(state["contracts"]))
+        attack = front_run(state, sender, address, created)
+        if attack:
+            record_history(state, attack, created_only)
+    elif kind == "create":
+        tx = create_proxy(state, sender, payload["data"])
+        record_history(state, tx, before)
+    else:
+        logs = send(state, payload["to"], payload["sig"], payload["args"], sender)
+        tx = receipt(state, sender, to=payload["to"], logs=logs,
+                     data=encode({"sig": payload["sig"], "args": payload["args"]}))
+        record_history(state, tx, before)
+    went_stale(state, before)
+    return tx, address
+
+def held(state, sender, kind, payload, options):
+    # "hold", n: the next n transactions sent are taken but not mined, and
+    # the send times out, as one a gateway passed on and lost track of does.
+    # Each keeps the nonce it was sent with (cast nonce --block pending
+    # counts it), and is mined with it once "mine_held" is set, or never,
+    # if another transaction has taken it. "hold_skip", n: the first n
+    # sends go through.
+    if state.get("hold", 0) <= 0:
+        return False
+    if state.get("hold_skip", 0) > 0:
+        state["hold_skip"] -= 1
+        save(state)
+        return False
+    state["hold"] -= 1
+    hold(state, sender, kind, payload, options)
+    save(state)
+    die("Error: error sending request for url (http://fixture): operation timed out")
+
+def hold(state, sender, kind, payload, options):
+    nonce = int(options["--nonce"]) if "--nonce" in options else pending_nonce(state, sender)
+    state.setdefault("held", []).append(
+        {"sender": sender.lower(), "kind": kind, "payload": payload, "nonce": nonce})
+
+def mine_held(state):
+    # Each held transaction is mined when its sender's next nonce is its
+    # own, and dropped once another transaction has taken it.
+    if not state.pop("mine_held", False):
+        return
+    waiting = state.pop("held", [])
+    while True:
+        nonces = state.setdefault("account_nonces", {})
+        waiting = [h for h in waiting if h["nonce"] >= nonces.get(h["sender"], 0)]
+        ready = [h for h in waiting if h["nonce"] == nonces.get(h["sender"], 0)]
+        if not ready:
+            break
+        item = ready[0]
+        waiting.remove(item)
+        if state.get("fail_held"):
+            tx = fail_send(state, item["kind"], item["sender"], item["payload"])
+        else:
+            tx, _ = apply_send(state, item["kind"], item["sender"], item["payload"])
+        assert state["receipts"][tx]["nonce"] == item["nonce"]
+    if waiting:
+        state["held"] = waiting
+    # "after_mining": balances that grow once the held transactions are
+    # mined, as fees paid after them do.
+    for address, wei in state.pop("after_mining", {}).items():
+        state["balances"][address] = state["balances"].get(address, 0) + wei
+    save(state)
 
 def accept_then_refuse(state):
     # "accept_then_refuse", n: the next n transactions sent, after the first
@@ -694,9 +840,20 @@ def creation_input(name, args):
         return creation_code(name)
     return creation_code(name) + encode({"sig": f"constructor({CONSTRUCTOR_TYPES[name]})", "args": args})[2:]
 
+def create_address(sender, nonce):
+    # The address a sender's creation with that nonce gets, from those two
+    # alone, as CREATE's does.
+    return derive("create", sender.lower(), nonce)
+
 def new_address(state, sender):
-    state["nonce"] += 1
-    return derive("create", sender, state["nonce"])
+    # The address of the creation the sender sends next. "wrong_address", n:
+    # the next n creations land, and their receipts say they landed,
+    # somewhere else, as a node misreporting them would show.
+    nonce = state.get("account_nonces", {}).get(sender.lower(), 0)
+    if state.get("wrong_address", 0) > 0:
+        state["wrong_address"] -= 1
+        return derive("elsewhere", sender.lower(), nonce)
+    return create_address(sender, nonce)
 
 CREATED = {
     "StorageGasOracle": lambda sender, args: {"type": "oracle", "owner": sender, "data": {}},
@@ -842,21 +999,32 @@ def read_view(state, options):
         return {**state, "contracts": state["latest_stale"]["contracts"]}, state["latest_stale"]["block"]
     return state, None
 
-def refuse_stale_nonce(state):
+def refuse_stale_nonce(state, sender, kind, payload, options):
     # "nonce_refusals", n: the next n transactions sent, after the first
-    # "nonce_refusals_skip", are refused as a node that hasn't seen the
-    # sender's last transaction refuses them, and change nothing.
+    # "nonce_refusals_skip", find their nonce taken, by an earlier
+    # transaction of the sender's that a node behind showed late (a
+    # "filler"), and are refused for it, changing nothing else. With
+    # "nonce_refusals_hold", a node holds the refused transaction anyway,
+    # with its nonce, as one a gateway passed on before the refusal does:
+    # it is mined if another block replaces the filler's (reorg_from).
     if state.get("nonce_refusals_skip", 0) > 0:
         state["nonce_refusals_skip"] -= 1
         save(state)
         return
     if state.get("nonce_refusals", 0) > 0:
         state["nonce_refusals"] -= 1
+        tx = receipt(state, sender, to=ZERO, data="0xf111e4")
+        state["receipts"][tx]["filler"] = True
+        if state.get("nonce_refusals_hold"):
+            hold(state, sender, kind, payload, options)
         save(state)
-        die("Error: server returned an error response: error code -32000: nonce too low: next nonce 5, tx nonce 4")
+        die("Error: server returned an error response: error code -32000: nonce too low")
 
 def main_cast(argv):
     state = load()
+    reorg(state)
+    fill_held(state)
+    mine_held(state)
     positional, options, flags = split(argv)
     trace("cast " + " ".join(positional + ([f"--create {options['--create'][:40]}..."] if "--create" in options else [])
                              + ([f"--from {options['--from']}"] if "--from" in options else [])
@@ -869,24 +1037,43 @@ def main_cast(argv):
         # "stale_nonce_reads", n: the next n reads answer one below, as a
         # node that hasn't seen the sender's last transaction does.
         nonce = state.get("account_nonces", {}).get(positional[1].lower(), 0)
+        if options.get("--block") == "pending":
+            nonce = pending_nonce(state, positional[1])
         if state.get("stale_nonce_reads", 0) > 0:
             state["stale_nonce_reads"] -= 1
             save(state)
             nonce = max(nonce - 1, 0)
         print(nonce)
     elif command == "compute-address":
-        sender, nonce = positional[1].lower(), int(options["--nonce"])
-        created = [r["contractAddress"] for r in state.get("receipts", {}).values()
-                   if r["from"] == sender and r.get("nonce") == nonce and r["contractAddress"]]
-        print(f"Computed Address: {created[0] if created else derive('unused', sender, nonce)}")
+        print(f"Computed Address: {create_address(positional[1], int(options['--nonce']))}")
     elif command == "block" and "--full" in flags:
+        # "slow_block_reads", n: a node that takes n seconds to answer each
+        # read of a block, which cast gives up on at its --rpc-timeout (45
+        # seconds unless set).
+        slow = state.get("slow_block_reads", 0)
+        if slow:
+            timeout = int(options.get("--rpc-timeout", 45))
+            time.sleep(min(slow, timeout))
+            if slow > timeout:
+                die("Error: error sending request for url (http://fixture): operation timed out")
         number = int(positional[1])
         found = [{"hash": tx, "from": r["from"], "to": r["to"], "nonce": hex(r.get("nonce", 0)),
-                  "input": r.get("input", "0x")}
+                  "input": r.get("input", "0x"), "blockNumber": r["blockNumber"], "blockHash": r["blockHash"]}
                  for tx, r in state.get("receipts", {}).items() if int(r["blockNumber"], 16) == number]
         if number > state["block"]:
             die(f"Error: block {number} not found")
-        print(json.dumps({"number": hex(number), "transactions": found}))
+        print(json.dumps({"number": hex(number), "hash": block_hash(state, number), "transactions": found}))
+    elif command == "block":
+        number = finalized(state) if positional[1] == "finalized" else int(positional[1])
+        if number > state["block"]:
+            die(f"Error: block {number} not found")
+        # "other_fork_reads": a node on another fork answers each read of a
+        # block by its number, with another block there.
+        other = "0x" + hashlib.sha256(f"other fork:{number}".encode()).hexdigest()
+        print(json.dumps({"number": hex(number),
+                          "hash": other if state.get("other_fork_reads") else block_hash(state, number)}))
+    elif command == "block-number" and positional[1:] == ["finalized"]:
+        print(finalized(state))
     elif command == "block-number":
         stale = stale_read(state)
         print(state["block"] if stale is None else stale)
@@ -945,26 +1132,22 @@ def main_cast(argv):
                     found.append({**entry, "blockNumber": r["blockNumber"], "transactionHash": tx})
         print(json.dumps(found))
     elif command == "send" and "--create" in options:
-        refuse_stale_nonce(state)
+        refuse_stale_nonce(state, sender, "create", {"data": options["--create"]}, options)
         check_nonce(state, sender, options)
+        held(state, sender, "create", {"data": options["--create"]}, options)
         refuse = accept_then_refuse(state)
-        before = json.loads(json.dumps(state["contracts"]))
-        tx = create_proxy(state, sender, options["--create"])
-        record_history(state, tx, before)
-        went_stale(state, before)
+        tx, _ = apply_send(state, "create", sender, {"data": options["--create"]})
         save(state)
         if refuse:
             die("Error: server returned an error response: error code -32000: nonce too low")
         print(json.dumps(state["receipts"][tx]))
     elif command == "send":
-        refuse_stale_nonce(state)
+        payload = {"to": positional[1], "sig": positional[2], "args": positional[3:]}
+        refuse_stale_nonce(state, sender, "call", payload, options)
         check_nonce(state, sender, options)
+        held(state, sender, "call", payload, options)
         refuse = accept_then_refuse(state)
-        before = json.loads(json.dumps(state["contracts"]))
-        logs = send(state, positional[1], positional[2], positional[3:], sender)
-        tx = receipt(state, sender, to=positional[1], logs=logs)
-        record_history(state, tx, before)
-        went_stale(state, before)
+        tx, _ = apply_send(state, "call", sender, payload)
         save(state)
         if refuse:
             die("Error: server returned an error response: error code -32000: nonce too low")
@@ -975,6 +1158,9 @@ def main_cast(argv):
 
 def main_forge(argv):
     state = load()
+    reorg(state)
+    fill_held(state)
+    mine_held(state)
     positional, options, flags = split(argv)
     trace("forge " + " ".join(positional + options.get("--constructor-args", [])))
     if positional[0] == "remappings":
@@ -994,23 +1180,12 @@ def main_forge(argv):
         return
     name = positional[1].split(":")[-1]
     sender = state["keys"][options["--private-key"]]
-    refuse_stale_nonce(state)
+    payload = {"name": name, "args": options.get("--constructor-args", [])}
+    refuse_stale_nonce(state, sender, "forge", payload, options)
     check_nonce(state, sender, options)
+    held(state, sender, "forge", payload, options)
     refuse = accept_then_refuse(state)
-    before = json.loads(json.dumps(state["contracts"]))
-    address = new_address(state, sender)
-    args = options.get("--constructor-args", [])
-    created = CREATED[name](sender, args)
-    created["created_at"] = state["block"]
-    state["contracts"][address] = created
-    logs = [log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))] if created.get("owner", ZERO) != ZERO else []
-    tx = receipt(state, sender, created=address, logs=logs, data=creation_input(name, args))
-    record_history(state, tx, before)
-    created_only = json.loads(json.dumps(state["contracts"]))
-    attack = front_run(state, sender, address, created)
-    if attack:
-        record_history(state, attack, created_only)
-    went_stale(state, before)
+    tx, address = apply_send(state, "forge", sender, payload)
     save(state)
     if refuse:
         die("Error: server returned an error response: error code -32000: nonce too low")
@@ -1050,6 +1225,16 @@ case "$url" in
     *) exit 22 ;;
 esac
 '''
+
+
+def evm_transactions(evm):
+    """The transactions on the fake EVM, in order: what each created, or
+    the contract it called, by type, as addresses follow the deployer's
+    nonce; without the fillers that take a nonce first (nonce_refusals),
+    and without the failed ones (fail_held)."""
+    kind = lambda address: evm["contracts"].get(address, {}).get("type", address)
+    return [("create", kind(r["contractAddress"])) if r["contractAddress"] else ("call", kind(r["to"]))
+            for r in evm.get("receipts", {}).values() if not r.get("filler") and r["status"] == "0x1"]
 
 
 def write_executable(path, text):
@@ -1189,6 +1374,8 @@ class TestnetScript(unittest.TestCase):
         self.evm = sepolia()
         # Extra environment for the script and its stubs.
         self.extra_env = {}
+        # What runs the script: strace, for one.
+        self.command_prefix = []
         # The dusk-tx stub's "interleave" and "on_read", and what became of
         # them.
         self.dusk_interleave = None
@@ -1250,7 +1437,7 @@ class TestnetScript(unittest.TestCase):
             "FIXTURE_TRACE": str(self.trace),
             **self.extra_env,
         }
-        result = subprocess.run(["bash", str(self.root / "deploy" / "testnet.sh"), *command],
+        result = subprocess.run([*self.command_prefix, "bash", str(self.root / "deploy" / "testnet.sh"), *command],
                                 env=env, capture_output=True, text=True, timeout=120)
         # What the run left on the fake chains, for the next run and the asserts.
         chain = json.loads(self.chain.read_text())
@@ -1568,9 +1755,7 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         self.assert_ok(self.run_script("agent-configs"))
 
     def deployed_transactions(self):
-        """The transactions a deploy left on the fake EVM, by what each
-        created or called, in order."""
-        return [r["contractAddress"] and "create" or r["to"] for r in self.evm.get("receipts", {}).values()]
+        return evm_transactions(self.evm)
 
     def test_a_deploy_whose_latest_reads_lag_completes(self):
         # The live Sepolia deploy: the endpoint's head showed each write, so
@@ -1616,10 +1801,10 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.evm = sepolia()
                 self.forget_deployment()
                 self.evm.update(nonce_refusals=1, nonce_refusals_skip=skip)
-                # A creation is looked for among the deployer's transactions
-                # for up to EVM_SETTLE_SECONDS.
                 result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
-                self.assert_fails(result, "with \"nonce too low\", which doesn't show whether it was sent on")
+                self.assert_fails(result, "another transaction of the deployer's took that nonce, in a block "
+                                          "that is final, so this one never executes. Nothing was sent again")
+                self.assertNotIn("evm_sending", self.state())
                 sends = [line for line in self.trace.read_text().splitlines()
                          if line.startswith(("cast send", "forge create"))]
                 self.assertTrue(sends[skip].startswith(expected), sends)
@@ -1629,7 +1814,13 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         # The nonce is the highest of three reads: two nodes behind don't
         # matter. With all three behind, the node refuses the nonce they
         # give, which another transaction of the deployer's took: nothing
-        # is sent again.
+        # is sent again. (Creations' addresses follow the deployer's nonce,
+        # so the deploy to compare with starts at the same one.)
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm["account_nonces"] = {DEPLOYER.lower(): 5}
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
         for stale, fails in ((2, False), (3, True)):
             with self.subTest(stale_reads=stale):
                 self.evm = sepolia()
@@ -1667,6 +1858,287 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         self.assert_fails(self.run_script("deploy"), "nothing was sent again. Run deploy again")
         self.assert_ok(self.run_script("deploy"))
         self.assertEqual(self.deployed_transactions(), honest)
+        # A creation whose receipt says it landed somewhere other than the
+        # address its nonce gives isn't taken: deploy stops, sending nothing
+        # again.
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm.update(accept_then_refuse=1, accept_then_refuse_skip=1, wrong_address=1)
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+        self.assert_fails(result, "nothing was sent again")
+        self.assertNotIn("taking it", result.stderr)
+        self.assertEqual(len([r for r in self.evm["receipts"].values() if r["contractAddress"]]), 1)
+
+    def test_a_send_a_run_left_unsettled_is_settled_before_its_step_is_sent_again(self):
+        # A transaction the node took, but whose send timed out, isn't
+        # mined until after the run has stopped. Its nonce and input are in
+        # the record from before it was sent, so the re-run settles it first:
+        # the step's own transaction, mined, is taken, and nothing is sent
+        # twice; one still pending stops the re-run, sending nothing.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        for skip, step in ((0, "the factory's ISM (a call)"), (1, "the oracle (forge create)"),
+                           (3, "the IGP's proxy (cast send --create)")):
+            with self.subTest(step=step):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(hold=1, hold_skip=skip)
+                self.assert_fails(self.run_script("deploy"), "timed out")
+                pending = list(self.state()["evm_sending"].values())
+                self.assertEqual([entry["nonce"] for entry in pending], [skip])
+                # Still pending: the re-run sends nothing.
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+                self.assert_fails(result, "isn't in the blocks read (above): it may still be pending, or in a "
+                                          "later block, so nothing was sent")
+                self.assertEqual(len(self.evm.get("receipts", {})), skip)
+                # Mined: the re-run takes it, and sends each transaction once.
+                self.evm["mine_held"] = True
+                result = self.run_script("deploy")
+                self.assert_ok(result)
+                self.assertEqual(self.deployed_transactions(), honest)
+                self.assertNotIn("evm_sending", self.state())
+                if skip:
+                    self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
+
+    def interrupt_the_token_implementation(self):
+        """Deploy, stopped at the DUSK token's implementation, whose
+        creation the node took but whose send timed out; the creation is
+        mined after. Returns the honest deploy's transactions."""
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        sends = [line for line in self.trace.read_text().splitlines()
+                 if line.startswith(("cast send", "forge create"))]
+        skip = next(i for i, line in enumerate(sends) if line.startswith("forge create") and "HypERC20" in line)
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm.update(hold=1, hold_skip=skip)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.token_implementation"])
+        self.evm["mine_held"] = True
+        return honest
+
+    def test_a_creation_left_unsettled_is_left_to_its_step_by_the_others(self):
+        # Between the run that sent the creation and the re-run, claim
+        # sends the IGP's claim(). Only the creation's step records its
+        # address, so claim leaves its record alone, and the re-run takes
+        # the creation as its own: nothing is created twice.
+        honest = self.interrupt_the_token_implementation()
+        igp = self.state()["evm"]["igp"]
+        self.evm["balances"][igp] = 7
+        self.assert_ok(self.run_script("claim"))
+        self.assertEqual(self.evm["balances"].get(igp, 0), 0)
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.token_implementation"])
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
+        self.assertNotIn("evm_sending", self.state())
+        self.assertEqual(self.deployed_transactions(), self.with_claim_after_the_implementation(honest),
+                         "each creation once")
+
+    @staticmethod
+    def with_claim_after_the_implementation(honest):
+        # The deploy's transactions, with claim's claim() right after the
+        # DUSK token's implementation, which was mined before claim ran.
+        implementation = honest.index(("create", "token"))
+        return honest[:implementation + 1] + [("call", "igp")] + honest[implementation + 1:]
+
+    def test_a_send_is_forgotten_only_once_what_took_its_nonce_is_final(self):
+        # The oracle's creation is answered with "nonce too low": another
+        # transaction of the deployer's took its nonce, in a block that
+        # isn't final, and a node holds the creation. Until that block is
+        # final, another can replace it, without the other transaction, and
+        # the creation can still execute: deploy keeps its record, stops,
+        # and the re-run takes the creation if it did.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        step = "create .evm.storage_gas_oracle"
+        for case in ("its block replaced", "its block final"):
+            with self.subTest(case=case):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(nonce_refusals=1, nonce_refusals_skip=1, nonce_refusals_hold=True,
+                                finality_depth=1000)
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3", EVM_FINALITY_SECONDS="3")
+                self.assert_fails(result, "another transaction of the deployer's took that nonce, in a block "
+                                          "that isn't final, or that another block has replaced")
+                self.assertEqual(list(self.state()["evm_sending"]), [step])
+                if case == "its block replaced":
+                    filler = next(r for r in self.evm["receipts"].values() if r.get("filler"))
+                    self.evm["reorg_from"] = int(filler["blockNumber"], 16)
+                    result = self.run_script("deploy")
+                    self.assert_ok(result)
+                    self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
+                else:
+                    # Still not final: the re-run stops too, sending nothing.
+                    result = self.run_script("deploy", EVM_FINALITY_SECONDS="3")
+                    self.assert_fails(result, "took its nonce, in a block that wasn't final, and the chain's, by the attempt's deadline")
+                    self.assertEqual(list(self.state()["evm_sending"]), [step])
+                    self.evm["finality_depth"] = 0
+                    result = self.run_script("deploy")
+                    self.assert_ok(result)
+                    self.assertIn("Its block is final: forgetting it, for the step to go on afresh", result.stderr)
+                self.assertEqual(self.deployed_transactions(), honest, "the oracle created once")
+                self.assertNotIn("evm_sending", self.state())
+
+    def test_a_recorded_send_whose_nonce_is_settled_otherwise_is_forgotten_once_final(self):
+        # The oracle's creation timed out, and then failed in a block, or
+        # never was mined, its nonce taken by another transaction of the
+        # deployer's. Either can still change until that block is final:
+        # the re-run keeps the record and stops, and once the block is
+        # final, forgets it and creates the oracle afresh, once.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        step = "create .evm.storage_gas_oracle"
+        for case, settings, expected in (
+            ("failed", {"mine_held": True, "fail_held": True}, "it failed, in a block that wasn't final, and the chain's, by the attempt's deadline"),
+            ("nonce taken", {"fill_held": True}, "took its nonce, in a block that wasn't final, and the chain's, by the attempt's deadline"),
+        ):
+            with self.subTest(case=case):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(hold=1, hold_skip=1)
+                self.assert_fails(self.run_script("deploy"), "timed out")
+                self.evm.update(finality_depth=1000, **settings)
+                result = self.run_script("deploy", EVM_FINALITY_SECONDS="3")
+                self.assert_fails(result, expected)
+                self.assertEqual(list(self.state()["evm_sending"]), [step])
+                self.evm.update(finality_depth=0, fail_held=False)
+                result = self.run_script("deploy")
+                self.assert_ok(result)
+                self.assertIn("Its block is final: forgetting it, for the step to go on afresh", result.stderr)
+                self.assertEqual(self.deployed_transactions(), honest, "the oracle created once")
+                self.assertNotIn("evm_sending", self.state())
+
+    @unittest.skipUnless(shutil.which("strace"), "needs strace")
+    def test_a_new_deployment_directory_is_on_disk_before_anything_is_sent(self):
+        # The first command on a deployment makes deploy/out and its
+        # directory: both are synced in their parents, before the first
+        # send, so that the record's directory survives a crash of the host.
+        shutil.rmtree(self.root / "deploy" / "out")
+        trace = self.root / "strace.log"
+        self.command_prefix = ["strace", "-f", "-qq", "-y", "-o", str(trace),
+                               "-e", "trace=fsync,fdatasync,execve"]
+        self.evm.update(hold=1, hold_skip=1)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        lines = trace.read_text().splitlines()
+        # The first send: Dusk's deploy-hyperlane, as deploy sends on Dusk first.
+        first_send = next(i for i, line in enumerate(lines) if re.search(
+            r'execve\("[^"]*/(cast|forge|dusk-tx)", \["[^"]*"(\.\.\.)?, "(send|create|deploy[^"]*)"', line))
+        self.assertIn("deploy-hyperlane", lines[first_send])
+        for directory in (self.root / "deploy", self.root / "deploy" / "out"):
+            self.assertTrue(any(re.search(r"\bf(data)?sync\(\d+<" + re.escape(os.path.realpath(directory)) + ">", line)
+                                for line in lines[:first_send]), f"{directory} synced before the first send")
+
+    @unittest.skipUnless(shutil.which("strace"), "needs strace")
+    def test_each_send_is_on_disk_in_the_record_before_it_goes_out(self):
+        # Each EVM send's record reaches the disk before the send goes out:
+        # the new record's temporary file is synced, renamed over the
+        # record, and the record's directory synced. A crash of the host,
+        # not only of the script, then leaves the next run the send to
+        # settle.
+        trace = self.root / "strace.log"
+        self.command_prefix = ["strace", "-f", "-qq", "-y", "-o", str(trace),
+                               "-e", "trace=fsync,fdatasync,rename,renameat,renameat2,execve"]
+        self.evm.update(hold=1, hold_skip=1)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        record, directory = str(self.out / "deployment.json"), os.path.realpath(self.out)
+        lines = trace.read_text().splitlines()
+        sends = [i for i, line in enumerate(lines)
+                 if re.search(r'execve\("[^"]*", \["(cast", "send|forge", "create)"', line)]
+        self.assertEqual(len(sends), 2, "the ISM's call through its factory, and the oracle's creation")
+        for send in sends:
+            renames = [i for i in range(send) if re.search(r"rename(at2?)?\(", lines[i]) and f'"{record}"' in lines[i]]
+            self.assertTrue(renames, "the record is written before the send")
+            rename = renames[-1]
+            temporary = re.search(r'"([^"]*/\.state\.[^"]*)"', lines[rename]).group(1)
+            synced = lambda path, span: any(re.search(r"\bf(data)?sync\(\d+<" + re.escape(path) + ">", lines[i])
+                                            for i in span)
+            self.assertTrue(synced(os.path.realpath(temporary), range(rename)),
+                            "the new record is on disk before it is renamed over the record")
+            self.assertTrue(synced(directory, range(rename + 1, send)),
+                            "the rename is on disk before the send")
+
+    def test_settling_a_send_gives_up_at_its_deadline(self):
+        # The oracle's creation timed out and is never mined. Settling it
+        # reads the blocks after it for its transaction, for up to
+        # EVM_SETTLE_SECONDS: however many blocks there are to read, and
+        # however long the node takes to answer each, it stops then.
+        for case, settings in (("thousands of blocks", {}), ("a node that doesn't answer", {"slow_block_reads": 30})):
+            with self.subTest(case=case):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm.update(hold=1, hold_skip=1)
+                self.assert_fails(self.run_script("deploy"), "timed out")
+                self.evm["block"] += 5000
+                self.evm.update(settings)
+                started = time.monotonic()
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+                elapsed = time.monotonic() - started
+                self.assert_fails(result, "isn't in the blocks read (above): it may still be pending, or in a "
+                                          "later block, so nothing was sent")
+                self.assertRegex(result.stderr, r"No transaction of 0x[0-9a-f]{40}'s with nonce 1 in blocks \d+ to \d+"
+                                                if case == "thousands of blocks" else
+                                                r"No block from \d+ on of sepolia was read before the deadline")
+                self.assertLess(elapsed, 30)
+                self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.storage_gas_oracle"])
+
+    def test_settling_a_send_keeps_to_one_deadline_however_often_its_block_is_replaced(self):
+        # Another transaction took the recorded creation's nonce, and the
+        # node that answers a block by its number is on another fork, so
+        # the block holding the nonce reads as replaced each time. Settling
+        # it again keeps to the attempt's deadline: the run stops, sending
+        # nothing and keeping the record, rather than start afresh forever.
+        self.evm.update(hold=1, hold_skip=1)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        self.evm.update(fill_held=True, other_fork_reads=True)
+        started = time.monotonic()
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="2", EVM_FINALITY_SECONDS="2")
+        elapsed = time.monotonic() - started
+        self.assert_fails(result, "the attempt's deadline")
+        self.assertGreaterEqual(result.stderr.count("settling it again..."), 2)
+        self.assertLess(elapsed, 60)
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.storage_gas_oracle"])
+        self.assertEqual(self.traced("forge create"), [])
+
+    def test_switching_the_ism_to_a_factory_keeps_an_unsettled_direct_creation(self):
+        # The ISM's direct creation (EVM_ISM_FACTORY empty) timed out; deploy
+        # is then run with the factory. Recording the factory's ISM would
+        # forget the creation, which can still execute: deploy stops,
+        # sending nothing, and keeps it.
+        self.evm.update(hold=1, hold_skip=0)
+        self.assert_fails(self.run_script("deploy", EVM_ISM_FACTORY=""), "timed out")
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.ism"])
+        result = self.run_script("deploy")
+        self.assert_fails(result, "An earlier run sent a creation of the EVM security module without "
+                                  "EVM_ISM_FACTORY, and it isn't settled")
+        self.assertEqual(self.traced("cast send") + self.traced("forge create"), [])
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.ism"])
+        self.assertNotIn("ism", self.state()["evm"])
+
+    def test_a_send_recorded_without_its_step_stops_each_command_that_sends(self):
+        # The record only an earlier version of this script left, from a
+        # local rehearsal: .evm_pending, one send without the step that sent
+        # it. Nothing can tell which step's it is, so every command that
+        # sends on the EVM side stops on it, sending nothing anywhere, for
+        # it to be reconciled by hand.
+        self.interrupt_the_token_implementation()
+        state = self.state()
+        entry = state.pop("evm_sending")["create .evm.token_implementation"]
+        del entry["step"]
+        state["evm_pending"] = entry
+        self.write_state(state)
+        self.evm["balances"][state["evm"]["igp"]] = 7
+        sends = ("deploy-hyperlane", "deploy-token-route", "deploy-wasm", "set-beneficiary", "enroll-router",
+                 "claim-fees", "set-igp-config", "call", "fund-dispatch")
+        for command in (["deploy"], ["evm-igp", "--apply"], ["claim"]):
+            with self.subTest(command=command):
+                result = self.run_script(*command)
+                self.assert_fails(result, "records an EVM send as .evm_pending, the form only an earlier version "
+                                          "of this script wrote")
+                self.assertEqual(self.traced("cast send") + self.traced("forge create"), [])
+                self.assertEqual([line for line in self.traced("dusk-tx") if line.split()[1] in sends], [])
+                self.assertEqual(self.state()["evm_pending"], entry)
+                self.assertNotIn("evm_sending", self.state())
 
 
 class TestnetTypelessHooks(TestnetScript):
@@ -2349,6 +2821,54 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], [750000000000000, 1])
         self.assert_ok(self.run_script("agent-configs"))
 
+    def test_evm_igp_apply_settles_an_update_an_earlier_run_sent_before_comparing(self):
+        # An --apply's update of the oracle timed out, and is still pending;
+        # the settings then go back to what the oracle prices. The next
+        # --apply settles that update before it compares: pending, it stops,
+        # sending nothing, rather than find the pricing as the settings say
+        # and leave the update to land after it. Once it has landed, --apply
+        # sets the settings' pricing again.
+        prices = list(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)])
+        dusk_igp = self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"]
+        self.settings["ETH_DUSK_PRICE_RATIO"] = "20000"
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"] = {"value": {
+            key: int(value) for key, value in expected_fees(ratio="20000")["dusk_igp"].items()}}
+        self.evm.update(hold=1)
+        self.assert_fails(self.run_script("evm-igp", "--apply"), "timed out")
+        del self.settings["ETH_DUSK_PRICE_RATIO"]
+        self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"] = dusk_igp
+        result = self.run_script("evm-igp", "--apply", EVM_SETTLE_SECONDS="3")
+        self.assert_fails(result, "isn't in the blocks read (above)")
+        self.assertNotIn("already charges what the settings say", result.stderr)
+        self.assertEqual(self.traced("cast send"), [])
+        self.evm["mine_held"] = True
+        result = self.run_script("evm-igp", "--apply")
+        self.assert_ok(result)
+        self.assertIn("It executed: the step reads the chain as of its block, or later", result.stderr)
+        [sent] = self.traced("cast send")
+        self.assertIn(f"setRemoteGasDataConfigs((uint32,uint128,uint128)[]) [({DUSK_DOMAIN},{prices[0]},{prices[1]})]",
+                      sent)
+        self.assertEqual(self.evm["contracts"][self.oracle]["data"][str(DUSK_DOMAIN)], prices)
+        self.assertNotIn("evm_sending", self.state())
+
+    def test_evm_igp_apply_leaves_another_steps_pending_send_alone(self):
+        # Another step's send still pending (a claim()) is that step's to
+        # settle: an --apply whose pricing already matches needs no key and
+        # sends nothing, and the claim's entry stays.
+        state = self.state()
+        claim_step = f"call claim() on {self.state()['evm']['igp'].lower()}"
+        state["evm_sending"] = {claim_step: {"step": claim_step, "nonce": 7, "to": state["evm"]["igp"],
+                                             "input": "0x4e71d92d", "label": "claim", "from_block": 1}}
+        # A deploy records who deployed, so commands that only check run
+        # without the key.
+        state["evm"].setdefault("deployer", DEPLOYER)
+        self.write_state(state)
+        result = self.run_script("evm-igp", "--apply", EVM_DEPLOYER_KEY="")
+        self.assert_ok(result)
+        self.assertIn("already charges what the settings say", result.stderr)
+        self.assertEqual(self.traced("cast send"), [])
+        self.assertEqual(list(self.state()["evm_sending"]), [claim_step])
+
     def test_evm_igp_apply_changes_the_overhead(self):
         self.settings.update(EVM_IGP_GAS_OVERHEAD=2390000, EVM_ORIGIN_THRESHOLD=2,
                              EVM_ORIGIN_VALIDATORS=",".join(validators(2)))
@@ -2545,6 +3065,32 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(len(self.traced("dusk-tx claim-fees")), 2)
         self.assertEqual(self.evm["balances"][beneficiary], 130200000000)
         self.assertEqual(self.queries[f"{IGP}/claimable_fees"]["value"], 0)
+
+    def test_a_claim_an_earlier_run_sent_is_settled_before_the_balance_is_read(self):
+        # claim()'s send times out, and the transaction is mined after,
+        # claiming the IGP's balance then; more fees are paid after it. The
+        # next claim settles the one an earlier run sent before it reads the
+        # balance, and claims what has been paid since with a claim() of
+        # its own, rather than take the earlier one for it.
+        beneficiary = "0x" + "be" * 20
+        self.evm["contracts"][self.evm_igp]["beneficiary"] = beneficiary
+        self.evm["balances"][self.evm_igp] = 7
+        self.evm.update(hold=1)
+        self.assert_fails(self.run_script("claim"), "timed out")
+        self.evm.update(mine_held=True, after_mining={self.evm_igp: 5})
+        result = self.run_script("claim")
+        self.assert_ok(result)
+        self.assertIn("It executed: the step reads the chain as of its block, or later", result.stderr)
+        self.assertIn(f"Claimed 5 wei from the EVM IGP {self.evm_igp}", result.stderr)
+        # The balance is read as of the earlier claim()'s block, or later.
+        earlier = min(int(r["blockNumber"], 16) for r in self.evm["receipts"].values()
+                      if r["to"] == self.evm_igp.lower())
+        [read] = self.traced(f"cast balance {self.evm_igp}")
+        self.assertRegex(read, r"--block \d+$")
+        self.assertGreaterEqual(int(read.split()[-1]), earlier)
+        self.assertEqual(self.evm["balances"][beneficiary], 12)
+        self.assertEqual(self.evm["balances"].get(self.evm_igp, 0), 0)
+        self.assertNotIn("evm_sending", self.state())
 
     def test_an_igp_that_takes_no_top_ups_is_refused(self):
         # IGP state_version 3 has no pay_for_gas: a Dusk message that paid it
@@ -3120,7 +3666,7 @@ class TestnetTokenRoutes(TokenRouteChecks, TestnetScript):
         """What a deploy that nothing stops leaves: the transactions on the
         fake EVM, and the record."""
         self.assert_ok(self.run_script("deploy"))
-        return [r["contractAddress"] or r["to"] for r in self.evm["receipts"].values()], self.state()
+        return evm_transactions(self.evm), self.state()
 
     def start_over(self):
         self.evm = sepolia()
@@ -3144,9 +3690,17 @@ class TestnetTokenRoutes(TokenRouteChecks, TestnetScript):
                 self.assert_fails(self.run_script("deploy", EVM_SETTLE_SECONDS="2"), "nonce too low")
                 self.evm.update(nonce_refusals=0, nonce_refusals_skip=0)
                 self.assert_ok(self.run_script("deploy"))
-                txs = [r["contractAddress"] or r["to"] for r in self.evm["receipts"].values()]
+                txs = evm_transactions(self.evm)
                 self.assertEqual(txs, honest_txs, "each transaction once, as in a run nothing stopped")
-                self.assertEqual(self.state()["token_routes"], honest_state["token_routes"])
+                # The same record, but for the EVM addresses, which follow
+                # the deployer's nonce, one of which went to another
+                # transaction.
+                routes, honest_routes = self.state()["token_routes"], json.loads(json.dumps(
+                    honest_state["token_routes"]))
+                for record in (routes, honest_routes):
+                    for route in record.values():
+                        route["evm"] = sorted(route["evm"])
+                self.assertEqual(routes, honest_routes)
         # On Dusk: deploy-token-route fails once, after the plan was
         # recorded; enroll-router fails once.
         for command in ("deploy-token-route", "enroll-router"):

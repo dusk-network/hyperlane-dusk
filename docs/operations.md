@@ -400,6 +400,11 @@ token is unpaused. dusk-tx has no command for `pause` or `unpause`.
 
 ## Uncertain transactions
 
+`deploy/testnet.sh` settles the sends a stopped `deploy` left before it
+sends again; what that rests on, a consistent EVM endpoint and a Dusk node
+that publishes its tip promptly, is in
+[testnet.md](testnet.md#known-limits-of-resuming-a-deploy).
+
 Every Dusk write prints its locally computed transaction hash before it is
 submitted. If a command is interrupted or reports an unknown outcome, do not
 resend it: look up that hash on the node first. The agents do this themselves,

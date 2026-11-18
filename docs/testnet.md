@@ -263,10 +263,18 @@ transfer pays for. `fees` prints what they come to.
   message) included, and so does a query that fails. If the owner changes
   the validators or the threshold on chain, update both settings.
 
-`deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
-skips steps already recorded there. If it stops halfway, fix the cause and run
-it again. Every command but `fees` takes a lock on that directory
-(`flock` on its `.lock`) and holds it until it exits, and reads the record
+`deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json`
+and skips steps already recorded there. Each write of the record is synced
+to disk, with its directory, before the command goes on, and the first
+command on a deployment syncs the directories it makes into their parents
+before it sends anything. If it stops halfway, fix the cause and run it
+again: a step whose transaction the stopped run sent but couldn't confirm
+settles it before that step sends anything (below), and the run may stop
+again until that transaction is in a block, or until the block of one that
+took its nonce is final ([Known limits](#known-limits-of-resuming-a-deploy)
+says what that rests on). Every
+command but `fees` takes a lock on that directory (`flock` on its
+`.lock`) and holds it until it exits, and reads the record
 once: one command at a time runs on a deployment, and what a command
 checked is what it records and what the configs it writes name. A command
 started while another holds the lock stops at once; run it again when the
@@ -293,15 +301,104 @@ initialized them in a second transaction that anyone could send first
 
 Every transaction `deploy` sends on Sepolia carries its nonce: the highest
 of three reads of the deployer's pending nonce, as the nodes behind a public
-endpoint can each be behind. A node that answers one with "nonce too low"
-doesn't show it was refused: a gateway that sent it on answers a replay of
-the request so too. So nothing is sent again. A contract creation is taken
-if the deployer's transaction with its nonce is that very creation,
-executed; any other transaction answered so stops `deploy`, which, run
-again, reads the chain afresh and sends only what isn't done.
+endpoint can each be behind. Before it goes out, its step records it in the
+record, on disk, under `.evm_sending`: its nonce, its recipient (none for a
+creation) and its exact input, keyed by the step, a creation by where the
+record keeps its address and a call by its function and recipient.
+
+A node that answers one with "nonce too low" doesn't show it was refused: a
+gateway that sent it on answers a replay of the request so too. So nothing
+is sent again: the deployer's transaction with that nonce tells. A contract
+creation is taken if it is that very creation, executed. If it is another
+transaction, this one never executes once that transaction's block is
+final: `deploy` waits for that, for up to `EVM_FINALITY_SECONDS` (1800),
+checks that the endpoint still has that block at its height, and then stops
+and forgets it, for the next run to send that step again. Until then
+another block can replace that one, and `deploy` stops but keeps it. Any
+other transaction answered so, or a send that times out, stops `deploy`
+too, keeping it.
+
+The step that sent a kept transaction settles it the next time it runs,
+before it sends anything; other steps, and other commands such as `claim`,
+leave it alone. Settling keeps to one deadline, `EVM_SETTLE_SECONDS` (120)
+plus `EVM_FINALITY_SECONDS` from its start, whatever it finds, and every
+read in it is given only what is left. It reads the blocks from where the
+send was recorded for the deployer's transaction with that nonce, for up to
+`EVM_SETTLE_SECONDS`. If that is the one, executed, a creation's step takes
+it as its own, and a call's step reads the chain afresh, as of its block,
+for what is left to do. If it isn't in the blocks read by then, the run
+stops, sending nothing, and says which blocks it read; nothing records how
+far it got, so the next run reads them again, and a larger
+`EVM_SETTLE_SECONDS` reads further. If it failed, or another transaction
+took the nonce, it is forgotten once that block is final, and the step
+goes on afresh; a block that reads as replaced is settled again, within the
+same deadline. A transaction that never went out, whose nonce the deployer
+never reaches, keeps stopping its step: once you are sure, remove its entry
+from `.evm_sending`. With `EVM_ISM_FACTORY` set, a creation of the ISM an
+earlier run sent without it, still unsettled, stops `deploy` too: run
+`deploy` with `EVM_ISM_FACTORY` empty to settle it, or remove its entry
+once the deployer's transaction with its nonce is final and isn't that
+creation.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
+
+### Known limits of resuming a deploy
+
+What a resume decides rests on two things it can't check for itself:
+
+- **Sepolia's finality, as the endpoint answers it.** Settling a send reads
+  the endpoint's final block number, then its block at the height that
+  holds the nonce, in separate requests. Behind a load balancer, two nodes
+  can answer them, one still on a fork the other has left, and a block can
+  then read as final and the chain's when it isn't: a send can be forgotten
+  that can still execute, or a failed outcome taken from the wrong fork.
+  Deploy over a dedicated endpoint that answers from one node, or from nodes
+  kept consistent, not a public load-balanced one.
+- **Rusk publishing its tip promptly.** A Dusk node moves its queries to a
+  block's state before GraphQL reports that block as its tip. The fence a
+  resume reads a signer's nonce in reads the tip, the nonce, then the tip
+  again a second later, and counts the nonce as that block's only if the
+  tip stayed the same. A node slower than that second to publish the block
+  the nonce came from, with that block then replaced, could have a logged
+  token route deploy taken as never executing while it still can: the route
+  would be deployed again at its IDs, and, if the logged one landed first,
+  planned at other nonces. The fix needs Rusk to answer account queries at
+  an identified, or a final, block.
+
+### Reconciling `.evm_pending`
+
+Only a version of this script that local rehearsals ran recorded an EVM
+send as `.evm_pending`: one send, without the step that sent it. The live
+record has none. Nothing can tell which step such a send was, so a record
+that holds one stops `deploy`, `evm-igp --apply` and `claim` before they
+send anything. For a rehearsal, the simplest is to move
+`deploy/out/<DEPLOY_NAME>` aside and deploy afresh. To keep the deployment:
+
+1. Read it: `jq .evm_pending deploy/out/<DEPLOY_NAME>/deployment.json`
+   gives its `nonce`, its recipient `to` (empty for a creation), its exact
+   `input` and its `label`.
+2. Find the deployer's transaction with that nonce, on a block explorer.
+   While the deployer's nonce (`cast nonce <deployer>`) isn't past it, no
+   transaction with it is in a block: wait, or, if you are sure it never
+   went out, go to step 5.
+3. If it is that transaction, with that recipient and input, and it
+   succeeded: a call needs nothing more. A creation made its contract at
+   the address `cast compute-address <deployer> --nonce <nonce>` gives;
+   record it where the step that made it records it. The label names the
+   contract: StorageMessageIdMultisigIsm at `.evm.ism` (with
+   `.dusk_origin_validators` and `.dusk_origin_threshold` as `deploy`
+   records them), StorageGasOracle at `.evm.storage_gas_oracle`,
+   StaticAggregationHookFactory at `.evm.aggregation_hook_factory`, an
+   implementation at the IGP's or the token's `…_implementation`, and a
+   proxy ("the … proxy") at the IGP's or the token's key, with
+   `…_creation_tx` its transaction and `.evm.deployer` the deployer. The
+   label doesn't name the route: the route whose token has no
+   implementation recorded is the one.
+4. If it failed, or another transaction has the nonce, wait until that
+   block is final.
+5. Remove it (`jq 'del(.evm_pending)'`, written back to the record) and
+   run the command again.
 
 ### Reading back the Dusk contracts
 
@@ -569,9 +666,18 @@ reads back the deployment checks the Sepolia token's decimals and scale.
 records them before it sends anything; `dusk-tx deploy-token-route` then
 deploys the token and the route at them. It writes each deploy transaction
 to `deploy/out/<DEPLOY_NAME>/dusk-route-<SYMBOL>.txs` before it sends it,
-and `deploy` records them. A run that stops anywhere resumes at the same
-contract IDs, and takes a contract already at a planned ID only if one of
-those transactions created it, in a final block. A contract there any other
+and `deploy` records them. A run that stops resumes at the same contract
+IDs, and takes a contract already at a planned ID only if one of those
+transactions created it, in a final block. A logged transaction that is in
+neither the ledger nor the mempool, a couple of blocks on, with its nonce
+not reached, was never sent: it is marked void, and the ID deployed
+afresh. One whose nonce the account has passed without it never executes
+once the block that nonce was read at is final, and the ID is deployed
+afresh then; if another block takes that block's place first, the nonce is
+read again ([Known limits](#known-limits-of-resuming-a-deploy) says what
+this fence rests on). Settling a logged deploy keeps to one deadline,
+`--finality-timeout` (300 seconds), however often that happens. One still
+in the mempool is waited for, and stops the run if it doesn't land. A contract there any other
 way may come from a deploy or `init` someone front-ran, and reading it back
 can't rule that out: the token doesn't list who holds its roles, so an
 `init` that gave someone a role besides the deployer would read back the
