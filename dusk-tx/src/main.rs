@@ -4809,19 +4809,34 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A tx log starts with its first entry, its directory synced too, and
-    /// takes each entry after on a line of its own.
+    thread_local! {
+        /// The directories this thread has synced (sync_directory).
+        pub(super) static DIRECTORY_SYNCS: std::cell::RefCell<Vec<std::path::PathBuf>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// A tx log starts with its first entry and takes each entry after on
+    /// a line of its own, its directory synced on each append, a log that
+    /// a first append left unfinished included.
     #[test]
     fn append_tx_log_starts_a_log_and_appends_to_it() {
         let dir = std::env::temp_dir().join(format!("dusk-tx-new-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        DIRECTORY_SYNCS.with(|syncs| syncs.borrow_mut().clear());
         let log = dir.join("route.txs");
         super::append_tx_log(&log, &serde_json::json!({"contract": "token"})).unwrap();
         super::append_tx_log(&log, &serde_json::json!({"contract": "route"})).unwrap();
         assert_eq!(
             std::fs::read_to_string(&log).unwrap(),
             "{\"contract\":\"token\"}\n{\"contract\":\"route\"}\n"
+        );
+        let unfinished = dir.join("unfinished.txs");
+        std::fs::write(&unfinished, br#"{"contract":"tok"#).unwrap();
+        super::append_tx_log(&unfinished, &serde_json::json!({"contract": "token"})).unwrap();
+        assert_eq!(
+            DIRECTORY_SYNCS.with(|syncs| syncs.borrow().clone()),
+            vec![dir.clone(), dir.clone(), dir.clone()]
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -8023,18 +8038,21 @@ fn append_tx_log(path: &std::path::Path, entry: &serde_json::Value) -> Result<()
         .and_then(|()| file.flush())
         .and_then(|()| file.sync_all())
         .map_err(error)?;
-    // A log this append started is in its directory for good, after a
-    // crash of the host too, only once the directory is synced.
-    if length == 0 {
-        let directory = match path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent,
-            _ => std::path::Path::new("."),
-        };
-        fs::File::open(directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(error)?;
-    }
-    Ok(())
+    // The log is in its directory for good, after a crash of the host too,
+    // only once the directory is synced: so it is on each append, which
+    // also catches up a first append that stopped before it.
+    let directory = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => std::path::Path::new("."),
+    };
+    sync_directory(directory).map_err(error)
+}
+
+/// Have the entries of `directory` on disk.
+fn sync_directory(directory: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    tests::DIRECTORY_SYNCS.with(|syncs| syncs.borrow_mut().push(directory.to_path_buf()));
+    fs::File::open(directory)?.sync_all()
 }
 
 /// Deploy one of a token route's contracts, after appending its transaction
