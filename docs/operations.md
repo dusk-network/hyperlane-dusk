@@ -132,8 +132,10 @@ claims it ([Collecting the fees](#collecting-the-fees)).
 
 ## Relaying fees
 
-Relaying costs the operator gas on the destination chain: about 141,000
-Sepolia gas for a transfer from Dusk, about 2.14M Dusk gas for one to Dusk.
+Relaying costs the operator gas on the destination chain: 218,000 to
+425,000 Sepolia gas for a transfer from Dusk, as Sepolia prices the storage
+a delivery creates, and about 2.14M Dusk gas for one to Dusk, 2.18M to a
+token route.
 Hyperlane operators get that back the way Hyperlane itself does. Each
 message pays an InterchainGasPaymaster (IGP) on its origin chain, in the
 origin's token, for the gas its delivery takes, at a price the operator
@@ -206,7 +208,10 @@ relayer: its requirements follow them.
 A margin absorbs moves until the next update. At the default 50%, EVM gas
 or the ETH/DUSK price can rise by half before a warp transfer from Dusk
 costs more to deliver than it paid. Watch both, and the relayer's spending
-against what the IGPs collect.
+against what the IGPs collect. A network upgrade can change what delivery
+takes as well: Sepolia's Glamsterdam upgrade made a delivery from Dusk cost
+about three times what it did, and the old overhead covered none
+([costs.md](costs.md#pricing)). Measure again after one.
 
 ### An IGP that had a quote signer
 
@@ -309,7 +314,7 @@ cast send <evm igp> "payForGas(bytes32,uint32,uint256,address)" <message id> <du
 ```
 
 A message to Dusk must have paid for `EVM_IGP_GAS_OVERHEAD` Dusk gas
-(2,170,000 by default). Paying for more than the relayer's limit,
+(2,200,000 by default). Paying for more than the relayer's limit,
 `DUSK_RELAYER_GAS_LIMIT` (5M), doesn't help: the relayer sends every
 delivery to Dusk with at most that limit, so a message that needs more
 fails on chain however much it paid
@@ -358,6 +363,40 @@ cast send <evm igp> "setBeneficiary(address)" <address> --rpc-url $EVM_RPC --pri
 
 The addresses are in `deploy/out/<DEPLOY_NAME>/deployment.json`: `.dusk.igp`,
 `.dusk.protocol_fee`, `.evm.igp`.
+
+## Token routes
+
+The token routes, tokens issued on Dusk with a route to Sepolia (EURd and
+USDd by default), are part of the deployment: `deploy` adds those
+`TOKEN_ROUTES` lists, and every command reads back the ones the record has
+([testnet.md](testnet.md#tokens-issued-on-dusk)). Adding them to a
+deployment that has none raises what a message to Dusk must pay, since a
+token route's payout costs more than the native route's: set
+`EVM_IGP_GAS_OVERHEAD` to 2,200,000, then `evm-igp --apply`, `deploy` and
+`agent-configs`, and restart the relayer. Nothing else in the agents
+changes per route.
+
+Each token is a canonical DRC20 whose admin, the Dusk deployer's account,
+holds the admin, minter and pauser roles. `dusk-tx drc20-mint` mints more,
+and `dusk-tx drc20-info` shows a token's supply and an account's balance and
+roles. What the route holds on Dusk backs the token's supply on Sepolia:
+
+```bash
+S=deploy/out/<DEPLOY_NAME>/deployment.json
+dusk-tx drc20-balance --rues-url <node> --token "$(jq -r .token_routes.EURd.dusk.token $S)" \
+    --account-contract "$(jq -r .token_routes.EURd.dusk.route $S)"
+cast call "$(jq -r .token_routes.EURd.evm.token $S)" "totalSupply()(uint256)" --rpc-url $EVM_RPC
+```
+
+The route's balance is the Sepolia supply, plus what waits in its escrow
+for accounts that haven't claimed (`pending_total`), plus the transfers on
+their way, locked or burned and not yet delivered. Alert when the Sepolia
+supply passes the route's balance less its escrow.
+
+The pauser, the admin's account, can pause a token, which stops its
+transfers, and so the route's locks and payouts: a delivery that pays out
+of a paused token fails in the relayer's simulation and waits until the
+token is unpaused. dusk-tx has no command for `pause` or `unpause`.
 
 ## Uncertain transactions
 

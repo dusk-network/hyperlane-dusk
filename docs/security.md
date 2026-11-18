@@ -501,7 +501,7 @@ Accepted:
   simulation and fail the real delivery, costing the relayer the
   transaction's gas limit (5M), as gas estimation can be fooled on EVM. The
   relayer only delivers a message that paid our Sepolia IGP for at least a
-  relayed `process` (2.17M gas at threshold 1, with the margin worth 3.26M),
+  relayed `process` (2.2M gas at threshold 1, with the margin worth 3.3M),
   and doesn't try it again until more is paid, so each such message costs
   its sender that payment and the relayer at most the rest of the 5M
   ([costs.md](costs.md#what-stays-uncovered)).
