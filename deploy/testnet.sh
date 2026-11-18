@@ -123,17 +123,44 @@ state_get() { [ -n "$STATE_JSON" ] && jq -r "$1 // empty" <<<"$STATE_JSON" || tr
 state_json() { if [ -n "$STATE_JSON" ]; then printf '%s\n' "$STATE_JSON"; else echo '{}'; fi; }
 # A record that can't be written stops the command there, so nothing goes
 # on from a step the record lacks. A failed write in an && list wouldn't
-# stop it under set -e, so each step is checked.
+# stop it under set -e, so each step is checked. The record is on disk
+# when state_set returns, so what a step sends after it, as an EVM send
+# after its record (evm_intend), is in the record after a crash of the
+# host too.
 state_set() {
     local new tmp
     new="$(state_json | jq "$@")" || fail "Can't update $STATE"
     mkdir -p "$OUT_DIR" || fail "Can't create $OUT_DIR"
     tmp="$(mktemp "$OUT_DIR/.state.XXXXXX")" || fail "Can't write to $OUT_DIR"
-    if ! printf '%s\n' "$new" > "$tmp" || ! mv "$tmp" "$STATE"; then
+    if ! printf '%s\n' "$new" > "$tmp" || ! durable_replace "$tmp" "$STATE"; then
         rm -f "$tmp"
         fail "Can't write $STATE, so this run stops before the next step. Free space or fix the directory's permissions, then run it again: it resumes from what $STATE records."
     fi
     STATE_JSON="$new"
+}
+# durable_replace <temporary file> <file>: put the temporary file in the
+# file's place for good: its contents reach the disk, then it is renamed
+# over the file, then the directory that holds both reaches the disk.
+durable_replace() {
+    python3 - "$1" "$2" <<'PY'
+import os
+import sys
+
+temporary, path = sys.argv[1:]
+
+
+def sync(name):
+    fd = os.open(name, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+sync(temporary)
+os.replace(temporary, path)
+sync(os.path.dirname(os.path.abspath(path)))
+PY
 }
 
 # One command at a time on a deployment. Every command but fees takes the

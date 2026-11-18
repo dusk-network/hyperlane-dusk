@@ -1360,6 +1360,8 @@ class TestnetScript(unittest.TestCase):
         self.evm = sepolia()
         # Extra environment for the script and its stubs.
         self.extra_env = {}
+        # What runs the script: strace, for one.
+        self.command_prefix = []
         # The dusk-tx stub's "interleave" and "on_read", and what became of
         # them.
         self.dusk_interleave = None
@@ -1421,7 +1423,7 @@ class TestnetScript(unittest.TestCase):
             "FIXTURE_TRACE": str(self.trace),
             **self.extra_env,
         }
-        result = subprocess.run(["bash", str(self.root / "deploy" / "testnet.sh"), *command],
+        result = subprocess.run([*self.command_prefix, "bash", str(self.root / "deploy" / "testnet.sh"), *command],
                                 env=env, capture_output=True, text=True, timeout=120)
         # What the run left on the fake chains, for the next run and the asserts.
         chain = json.loads(self.chain.read_text())
@@ -1991,6 +1993,35 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.assertIn("Its block is final: forgetting it, for the step to go on afresh", result.stderr)
                 self.assertEqual(self.deployed_transactions(), honest, "the oracle created once")
                 self.assertNotIn("evm_sending", self.state())
+
+    @unittest.skipUnless(shutil.which("strace"), "needs strace")
+    def test_each_send_is_on_disk_in_the_record_before_it_goes_out(self):
+        # Each EVM send's record reaches the disk before the send goes out:
+        # the new record's temporary file is synced, renamed over the
+        # record, and the record's directory synced. A crash of the host,
+        # not only of the script, then leaves the next run the send to
+        # settle.
+        trace = self.root / "strace.log"
+        self.command_prefix = ["strace", "-f", "-qq", "-y", "-o", str(trace),
+                               "-e", "trace=fsync,fdatasync,rename,renameat,renameat2,execve"]
+        self.evm.update(hold=1, hold_skip=1)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        record, directory = str(self.out / "deployment.json"), os.path.realpath(self.out)
+        lines = trace.read_text().splitlines()
+        sends = [i for i, line in enumerate(lines)
+                 if re.search(r'execve\("[^"]*", \["(cast", "send|forge", "create)"', line)]
+        self.assertEqual(len(sends), 2, "the ISM's call through its factory, and the oracle's creation")
+        for send in sends:
+            renames = [i for i in range(send) if re.search(r"rename(at2?)?\(", lines[i]) and f'"{record}"' in lines[i]]
+            self.assertTrue(renames, "the record is written before the send")
+            rename = renames[-1]
+            temporary = re.search(r'"([^"]*/\.state\.[^"]*)"', lines[rename]).group(1)
+            synced = lambda path, span: any(re.search(r"\bf(data)?sync\(\d+<" + re.escape(path) + ">", lines[i])
+                                            for i in span)
+            self.assertTrue(synced(os.path.realpath(temporary), range(rename)),
+                            "the new record is on disk before it is renamed over the record")
+            self.assertTrue(synced(directory, range(rename + 1, send)),
+                            "the rename is on disk before the send")
 
     def test_a_send_recorded_without_its_step_is_taken_by_the_step_that_sends_it(self):
         # The record an earlier version of this script left: .evm_pending,
