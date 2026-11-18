@@ -236,6 +236,10 @@ else:
 # events the scripts look for. `cast calldata` and `cast abi-encode` encode
 # as hex of JSON, which only this fake reads back.
 #
+# FIXTURE_EVM's "lag", "stale_latest", "pinned_misses" and "nonce_refusals"
+# play a load-balanced endpoint whose nodes are a block or two apart, as the
+# public Sepolia endpoints are (went_stale and the reads below).
+#
 # FIXTURE_EVM's "front_run" plays an attacker whose transaction lands right
 # after the deployer creates a bare IGP or HypERC20, before anything else the
 # deployer sends: {"attacker": address, "igp": mode, "token": mode}, with igp
@@ -307,7 +311,7 @@ def split(args):
     while i < len(args):
         arg = args[i]
         if arg in ("--rpc-url", "--private-key", "--value", "--from", "--create", "--gas-limit",
-                   "--from-block", "--to-block", "--address"):
+                   "--from-block", "--to-block", "--address", "--block"):
             options[arg] = args[i + 1]
             i += 2
         elif arg == "--constructor-args":
@@ -574,13 +578,25 @@ def create_proxy(state, sender, data):
     state["contracts"][address] = proxy
     return receipt(state, sender, created=address, logs=logs)
 
-def went_stale(state):
-    # FIXTURE_EVM's "lag", n, makes the next n reads of the head, of code or
-    # of receipts answer from before the latest write, as a load-balanced
-    # endpoint can when it reaches a node a block behind.
+def went_stale(state, before):
+    # After each write:
+    # - "lag", n: the next n reads of the head, of code or of receipts answer
+    #   from a node a block behind, which hasn't seen the write, and so does a
+    #   read at a block (cast --block), which that node doesn't have yet;
+    # - "stale_latest", n: the head is current, but the next n reads of code,
+    #   storage, a call or a receipt at the latest block answer from before
+    #   the write, as a node behind the one that answered the head does;
+    # - "pinned_misses", n: the next n reads at a block fail as from a node
+    #   that doesn't have it yet;
+    # `before` is the contracts as they were before the write.
     if state.get("lag"):
         state["stale_left"] = state["lag"]
         state["stale_head"] = state["block"] - 2
+    if state.get("stale_latest"):
+        state["latest_stale_left"] = state["stale_latest"]
+        state["latest_stale"] = {"contracts": before, "block": state["block"] - 2}
+    if state.get("pinned_misses"):
+        state["pinned_misses_left"] = state["pinned_misses"]
 
 def stale_read(state):
     if state.get("stale_left", 0) <= 0:
@@ -589,11 +605,51 @@ def stale_read(state):
     save(state)
     return state["stale_head"]
 
+HEADER_NOT_FOUND = "Error: server returned an error response: error code -32000: header not found"
+
+def read_view(state, options):
+    # What a read of code, storage, a call or a receipt answers from: the
+    # state as of the block it names (cast --block), which the node must
+    # have, or as of the latest block, which "stale_latest" can make a
+    # node's from before the last write. Returns that state and the newest
+    # block it has seen.
+    block = options.get("--block")
+    if block not in (None, "latest"):
+        # The head, as block-number answers it, is state["block"].
+        if int(block) > state["block"]:
+            die(HEADER_NOT_FOUND)
+        if state.get("pinned_misses_left", 0) > 0:
+            state["pinned_misses_left"] -= 1
+            save(state)
+            die(HEADER_NOT_FOUND)
+        if stale_read(state) is not None:
+            die(HEADER_NOT_FOUND)
+        return state, state["block"]
+    if state.get("latest_stale_left", 0) > 0:
+        state["latest_stale_left"] -= 1
+        save(state)
+        return {**state, "contracts": state["latest_stale"]["contracts"]}, state["latest_stale"]["block"]
+    return state, None
+
+def refuse_stale_nonce(state):
+    # "nonce_refusals", n: the next n transactions sent, after the first
+    # "nonce_refusals_skip", are refused as a node that hasn't seen the
+    # sender's last transaction refuses them, and change nothing.
+    if state.get("nonce_refusals_skip", 0) > 0:
+        state["nonce_refusals_skip"] -= 1
+        save(state)
+        return
+    if state.get("nonce_refusals", 0) > 0:
+        state["nonce_refusals"] -= 1
+        save(state)
+        die("Error: server returned an error response: error code -32000: nonce too low: next nonce 5, tx nonce 4")
+
 def main_cast(argv):
     state = load()
     positional, options, flags = split(argv)
     trace("cast " + " ".join(positional + ([f"--create {options['--create'][:40]}..."] if "--create" in options else [])
-                             + ([f"--from {options['--from']}"] if "--from" in options else [])))
+                             + ([f"--from {options['--from']}"] if "--from" in options else [])
+                             + ([f"--block {options['--block']}"] if "--block" in options else [])))
     command = positional[0]
     sender = state["keys"].get(options.get("--private-key", ""), ZERO)
     if command == "chain-id":
@@ -602,8 +658,9 @@ def main_cast(argv):
         stale = stale_read(state)
         print(state["block"] if stale is None else stale)
     elif command == "code":
-        stale = stale_read(state)
-        c = state["contracts"].get(positional[1].lower())
+        view, _ = read_view(state, options)
+        stale = stale_read(state) if view is state and "--block" not in options else None
+        c = view["contracts"].get(positional[1].lower())
         visible = c is not None and (stale is None or c.get("created_at", -1) <= stale)
         print("0x6080" if visible else "0x")
     elif command == "balance":
@@ -614,7 +671,8 @@ def main_cast(argv):
     elif command in ("calldata", "abi-encode"):
         print(encode({"sig": positional[1], "args": positional[2:]}))
     elif command == "storage":
-        c = contract(state, positional[1])
+        view, _ = read_view(state, options)
+        c = contract(view, positional[1])
         if positional[2].lower() == IMPLEMENTATION_SLOT and "implementation" in c:
             print(word(c["implementation"]))
         elif positional[2].lower() == ADMIN_SLOT and "admin" in c:
@@ -623,6 +681,9 @@ def main_cast(argv):
             print("0x" + "00" * 32)
     elif command == "receipt":
         found = state.get("receipts", {}).get(positional[1].lower())
+        _, seen = read_view(state, options)
+        if found is not None and seen is not None and int(found["blockNumber"], 16) > seen:
+            found = None
         stale = stale_read(state)
         if found is not None and stale is not None and int(found["blockNumber"], 16) > stale:
             found = None
@@ -630,8 +691,9 @@ def main_cast(argv):
             die(f"Error: transaction {positional[1]} not found")
         print(json.dumps(found) if "--json" in flags else found[positional[2]])
     elif command == "call":
-        print(call(state, positional[1], positional[2], positional[3:], options.get("--from", ZERO)))
-        if state.pop("changed", False):
+        view, _ = read_view(state, options)
+        print(call(view, positional[1], positional[2], positional[3:], options.get("--from", ZERO)))
+        if view is state and state.pop("changed", False):
             save(state)
     elif command == "logs":
         start, end = int(options["--from-block"]), int(options["--to-block"])
@@ -646,14 +708,18 @@ def main_cast(argv):
                     found.append({**entry, "blockNumber": r["blockNumber"], "transactionHash": tx})
         print(json.dumps(found))
     elif command == "send" and "--create" in options:
+        refuse_stale_nonce(state)
+        before = json.loads(json.dumps(state["contracts"]))
         tx = create_proxy(state, sender, options["--create"])
-        went_stale(state)
+        went_stale(state, before)
         save(state)
         print(json.dumps(state["receipts"][tx]))
     elif command == "send":
+        refuse_stale_nonce(state)
+        before = json.loads(json.dumps(state["contracts"]))
         logs = send(state, positional[1], positional[2], positional[3:], sender)
         tx = receipt(state, sender, to=positional[1], logs=logs)
-        went_stale(state)
+        went_stale(state, before)
         save(state)
         if "--json" in flags:
             print(json.dumps(state["receipts"][tx]))
@@ -674,6 +740,8 @@ def main_forge(argv):
         return
     name = positional[1].split(":")[-1]
     sender = state["keys"][options["--private-key"]]
+    refuse_stale_nonce(state)
+    before = json.loads(json.dumps(state["contracts"]))
     address = new_address(state, sender)
     created = CREATED[name](sender, options.get("--constructor-args", []))
     created["created_at"] = state["block"]
@@ -681,7 +749,7 @@ def main_forge(argv):
     logs = [log(address, OWNERSHIP_TRANSFERRED, word(ZERO), word(sender))] if created.get("owner", ZERO) != ZERO else []
     tx = receipt(state, sender, created=address, logs=logs)
     front_run(state, sender, address, created)
-    went_stale(state)
+    went_stale(state, before)
     save(state)
     print(json.dumps({"deployer": sender, "deployedTo": address, "transactionHash": tx}))
 """
@@ -1205,6 +1273,80 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         creates = self.traced("forge create")
         self.assertEqual(len(creates), len(set(creates)))
         self.assert_ok(self.run_script("agent-configs"))
+
+    def deployed_transactions(self):
+        """The transactions a deploy left on the fake EVM, by what each
+        created or called, in order."""
+        return [r["contractAddress"] and "create" or r["to"] for r in self.evm.get("receipts", {}).values()]
+
+    def test_a_deploy_whose_latest_reads_lag_completes(self):
+        # The live Sepolia deploy: the endpoint's head showed each write, so
+        # the writes settled, but the read of the IGP proxy's implementation
+        # slot right after its creation reached a node behind it and read
+        # zero, and deploy stopped. Once a command has written, its reads
+        # are made at a block at or past the write, which a node either
+        # answers with the write in it or refuses until it has the block;
+        # a refused read is made again.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm.update(stale_latest=2, pinned_misses=1)
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="60")
+        self.assert_ok(result)
+        self.assertEqual(self.deployed_transactions(), honest, "each transaction once, as without the lag")
+        # Every read after the first write names a block.
+        trace = self.trace.read_text().splitlines()
+        first_write = next(i for i, line in enumerate(trace) if line.startswith(("cast send", "forge create")))
+        reads = [line for line in trace[first_write:] if line.split()[1] in ("call", "code", "storage")]
+        self.assertTrue(reads)
+        self.assertEqual([line for line in reads if "--block" not in line], [])
+        self.evm.update(stale_latest=0, latest_stale_left=0, pinned_misses=0, pinned_misses_left=0)
+        self.assert_ok(self.run_script("agent-configs"))
+
+    def test_reads_a_node_never_answers_are_given_up(self):
+        self.evm.update(pinned_misses=10**6)
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+        self.assert_fails(result, "header not found")
+
+    def test_a_transaction_refused_for_a_stale_nonce_is_sent_again(self):
+        # The live Sepolia deploy: a send got its nonce from a node that
+        # hadn't seen the deployer's last transaction, the node refused it
+        # ("nonce too low"), and deploy stopped. Such a transaction is never
+        # in a block, so it is sent again, as forge's creations and the
+        # proxies are.
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        for refusals in (2, 3):
+            with self.subTest(refusals=refusals):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm["nonce_refusals"] = refusals
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="60")
+                self.assert_ok(result)
+                self.assertEqual(result.stderr.count("refused the transaction for a stale nonce"), refusals)
+                self.assertEqual(self.deployed_transactions(), honest)
+        # Each kind of send is tried again: the factory's ISM (cast send),
+        # the oracle (forge create) and a proxy (cast send --create).
+        for skip, expected in ((0, "cast send"), (1, "forge create"), (3, "cast send --create")):
+            with self.subTest(first_refused=expected):
+                self.evm = sepolia()
+                self.forget_deployment()
+                self.evm["nonce_refusals"] = 1
+                self.evm["nonce_refusals_skip"] = skip
+                result = self.run_script("deploy", EVM_SETTLE_SECONDS="60")
+                self.assert_ok(result)
+                self.assertEqual(result.stderr.count("refused the transaction for a stale nonce"), 1)
+                self.assertEqual(self.deployed_transactions(), honest)
+                sends = [line for line in self.trace.read_text().splitlines()
+                         if line.startswith(("cast send", "forge create"))]
+                self.assertTrue(sends[skip].startswith(expected), sends)
+                self.assertEqual(sends[skip], sends[skip + 1])
+        # As long as the node takes the transaction within EVM_SETTLE_SECONDS.
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm["nonce_refusals"] = 10**6
+        self.assert_fails(self.run_script("deploy", EVM_SETTLE_SECONDS="3"), "nonce too low")
 
 
 class TestnetTypelessHooks(TestnetScript):

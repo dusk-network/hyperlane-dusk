@@ -177,12 +177,74 @@ dusk_value() {
     printf '%s' "$value"
 }
 dusk_tx() { DUSK_CONSENSUS_PASSWORD="$DUSK_CONSENSUS_PASSWORD" "$DUSK_TX" "$@"; }
-evm_call() { cast call "$@" --rpc-url "$EVM_RPC"; }
-# EVM_RPC can be a load balancer over nodes a block or two apart, such as the
+# EVM_RPC can be a load balancer over nodes a block or more apart, such as the
 # public Sepolia endpoints, so a read right after a write can reach a node
-# that hasn't seen it, and a check of what was just written fail. After each
-# write, evm_settle waits until the endpoint answers at or past the write's
-# block on three reads in a row, for up to EVM_SETTLE_SECONDS (120).
+# that hasn't seen it: a check of what was just written read the
+# implementation slot of a proxy just created as zero. So once this command
+# has written, every EVM read is made at a block, the newest of its last
+# write's and the head the endpoint reports, never at "latest": a node that
+# has that block answers with the write in it, and one that doesn't have it
+# yet refuses the read ("header not found"), which evm_read tries again. A
+# read before any write, or the first of a command, is at "latest".
+EVM_WRITE_BLOCK=""
+# Note the block of a transaction this command sent.
+evm_wrote() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]] || return 0
+    if [ -z "$EVM_WRITE_BLOCK" ] || [ "$1" -gt "$EVM_WRITE_BLOCK" ]; then
+        EVM_WRITE_BLOCK="$1"
+    fi
+}
+# The block EVM reads are made at: "latest" before this command's first
+# write, then the newest of that write's block and the head, so that a read
+# right before a write still sees as late a state as the endpoint can show.
+evm_read_block() {
+    local head
+    if [ -z "$EVM_WRITE_BLOCK" ]; then
+        echo latest
+        return 0
+    fi
+    head="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || head=""
+    if [[ "$head" =~ ^[0-9]+$ ]] && [ "$head" -gt "$EVM_WRITE_BLOCK" ]; then
+        echo "$head"
+    else
+        echo "$EVM_WRITE_BLOCK"
+    fi
+}
+# Run an EVM read, a cast command that takes --block, at evm_read_block's
+# block. Once this command has written, a read that fails for anything but
+# a revert is tried again, at a block looked up again, for up to
+# EVM_SETTLE_SECONDS (120): it reached a node that doesn't have the block
+# yet. A revert is the contract's answer, at any block. Prints the read's
+# output, or its error.
+evm_read() {
+    local block out errors deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    block="$(evm_read_block)"
+    if [ "$block" = latest ]; then
+        "$@" --rpc-url "$EVM_RPC"
+        return
+    fi
+    errors="$(mktemp)" || return 1
+    while :; do
+        if out="$("$@" --block "$block" --rpc-url "$EVM_RPC" 2>"$errors")"; then
+            rm -f "$errors"
+            printf '%s\n' "$out"
+            return 0
+        fi
+        if grep -qi 'revert' "$errors" || [ "$SECONDS" -ge "$deadline" ]; then
+            cat "$errors" >&2
+            rm -f "$errors"
+            return 1
+        fi
+        sleep 1
+        block="$(evm_read_block)"
+    done
+}
+evm_call() { evm_read cast call "$@"; }
+# After each write, evm_settle also waits until the endpoint answers at or
+# past the write's block on three reads in a row, for up to
+# EVM_SETTLE_SECONDS (120), so that the next transaction is less likely to
+# get its nonce from a node that hasn't seen this one (evm_submit sends it
+# again if it does).
 evm_settle() {
     local block="$1" seen=0 now deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
     [[ "$block" =~ ^[0-9]+$ ]] || fail "No block number to wait for on $EVM_CHAIN_NAME"
@@ -199,22 +261,63 @@ evm_settle() {
         sleep 2
     done
 }
-# The block a transaction is in, once EVM_RPC has its receipt, waiting as
-# evm_settle does.
-evm_tx_block() {
-    local tx="$1" block deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+# A transaction's receipt, as `cast receipt` prints it (with a field or
+# --json), waiting as evm_settle does while EVM_RPC doesn't have it: the
+# node that answers may not have seen the transaction yet. Prints the last
+# error if it never does.
+evm_receipt() {
+    local tx="$1" out deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    shift
     while :; do
-        block="$(cast receipt "$tx" blockNumber --rpc-url "$EVM_RPC" 2>/dev/null)" && block="$(evm_block_number "$block")" \
-            && [[ "$block" =~ ^[0-9]+$ ]] && { printf '%s' "$block"; return 0; }
-        [ "$SECONDS" -lt "$deadline" ] || return 1
+        out="$(cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" 2>/dev/null)" && [ -n "$out" ] \
+            && { printf '%s\n' "$out"; return 0; }
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" >/dev/null
+            return 1
+        fi
         sleep 2
+    done
+}
+# The block a transaction is in, once EVM_RPC has its receipt.
+evm_tx_block() {
+    local block
+    block="$(evm_receipt "$1" blockNumber 2>/dev/null)" && block="$(evm_block_number "$block")" \
+        && [[ "$block" =~ ^[0-9]+$ ]] && printf '%s' "$block"
+}
+# Run a command that sends an EVM transaction (cast send, forge create),
+# and run it again, for up to EVM_SETTLE_SECONDS, while the node refuses the
+# transaction for a stale nonce: "nonce too low". The sender's nonce came
+# from a node of a load-balanced EVM_RPC that hadn't seen its last
+# transaction. A refused transaction is never in a block, so sending it
+# again, with its nonce read again, sends it once. Any other failure is the
+# command's. Prints the command's output.
+evm_submit() {
+    local out errors deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    errors="$(mktemp)" || return 1
+    while :; do
+        if out="$("$@" 2>"$errors")"; then
+            cat "$errors" >&2
+            rm -f "$errors"
+            printf '%s\n' "$out"
+            return 0
+        fi
+        if grep -qi 'nonce too low' "$errors" && [ "$SECONDS" -lt "$deadline" ]; then
+            info "$EVM_CHAIN_NAME refused the transaction for a stale nonce ($(grep -i -m1 -o 'nonce too low[^"]*' "$errors" | cut -c1-80)); sending it again"
+            sleep 2
+            continue
+        fi
+        cat "$errors" >&2
+        rm -f "$errors"
+        printf '%s\n' "$out"
+        return 1
     done
 }
 evm_send() {
     local receipt block
-    receipt="$(cast send "$@" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
+    receipt="$(evm_submit cast send "$@" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
     jq -e '.status | tostring | test("^(0x)?1$")' <<<"$receipt" >/dev/null || return 1
     block="$(evm_block_number "$(jq -r '.blockNumber' <<<"$receipt")")" || return 1
+    evm_wrote "$block"
     evm_settle "$block"
 }
 # A number `cast call` returns, without the scientific form it adds.
@@ -223,9 +326,11 @@ evm_number() { local out; out="$(evm_call "$@")" || return 1; awk 'NR == 1 {prin
 # rather than count as either.
 evm_has_code() {
     local code
-    code="$(cast code "$1" --rpc-url "$EVM_RPC")" || fail "Can't read the code at $1 on $EVM_CHAIN_NAME"
+    code="$(evm_read cast code "$1")" || fail "Can't read the code at $1 on $EVM_CHAIN_NAME"
     [ "$code" != "0x" ]
 }
+# A storage slot of an EVM contract.
+evm_storage() { evm_read cast storage "$1" "$2"; }
 evm_deployer() { cast wallet address --private-key "$EVM_DEPLOYER_KEY"; }
 # Who deployed the EVM contracts: EVM_DEPLOYER_KEY's address, or, for a
 # command run without the key, the deployer deploy recorded.
@@ -239,21 +344,25 @@ evm_creator() {
         return 1
     fi
 }
-# Deploy a contract from the Hyperlane Solidity sources; prints its address.
+# forge_create <variable> <contract> [forge create arguments...]: deploy a
+# contract from the Hyperlane Solidity sources, and set <variable> to its
+# address. It runs in this shell, not in a command substitution, so that
+# the reads after it are made at its block (evm_wrote).
 forge_create() {
-    local contract="$1" created address tx block
-    shift
-    created="$(cd "$SOLIDITY_DIR" && forge create "$contract" --broadcast --json --rpc-url "$EVM_RPC" \
-        --private-key "$EVM_DEPLOYER_KEY" "$@")" || return 1
-    address="$(jq -r '.deployedTo // empty' <<<"$created")"
-    tx="$(jq -r '.transactionHash // empty' <<<"$created")"
-    [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] || return 1
+    local _fc_var="$1" _fc_contract="$2" _fc_created _fc_address _fc_tx _fc_block
+    shift 2
+    _fc_created="$(cd "$SOLIDITY_DIR" && evm_submit forge create "$_fc_contract" --broadcast --json \
+        --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" "$@")" || return 1
+    _fc_address="$(jq -r '.deployedTo // empty' <<<"$_fc_created")"
+    _fc_tx="$(jq -r '.transactionHash // empty' <<<"$_fc_created")"
+    [[ "$_fc_address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$_fc_tx" =~ ^0x[0-9a-fA-F]{64}$ ]] || return 1
     # The contract exists whatever the endpoint shows next: return it so the
     # caller records it, and a re-run doesn't deploy it again.
-    if block="$(evm_tx_block "$tx")"; then
-        ( evm_settle "$block" ) || info "Going on without EVM_RPC showing $tx's block; a check that fails on it is safe to re-run"
+    printf -v "$_fc_var" '%s' "$_fc_address"
+    if _fc_block="$(evm_tx_block "$_fc_tx")"; then
+        evm_wrote "$_fc_block"
+        ( evm_settle "$_fc_block" ) || info "Going on without EVM_RPC showing $_fc_tx's block; a check that fails on it is safe to re-run"
     fi
-    printf '%s' "$address"
 }
 # ERC1967Proxy's creation code, from the OpenZeppelin release Hyperlane's
 # Solidity sources build with.
@@ -279,13 +388,13 @@ evm_proxy_creation_code() {
 # deploys the implementation, unless .evm.<key>_implementation records one,
 # then the proxy, and records .evm.<key> and .evm.<key>_creation_tx.
 deploy_evm_proxied() {
-    local key="$1" label="$2" contract="$3" init="$4" impl code args receipt address tx
+    local key="$1" label="$2" contract="$3" init="$4" impl code args receipt address tx block
     shift 4
     [[ "$init" =~ ^0x[0-9a-fA-F]{8,}$ ]] || fail "No initialize call for the $label"
     impl="$(state_get ".evm.${key}_implementation")"
     if [ -z "$impl" ]; then
         info "Deploying the $label's implementation on $EVM_CHAIN_NAME..."
-        impl="$(forge_create "$contract" "$@")" || fail "$label implementation deployment failed"
+        forge_create impl "$contract" "$@" || fail "$label implementation deployment failed"
         state_set --arg k "${key}_implementation" --arg i "$impl" '.evm[$k] = $i'
     fi
     evm_has_code "$impl" || fail "No $label implementation at $impl, which $STATE records"
@@ -294,15 +403,17 @@ deploy_evm_proxied() {
     args="$(cast abi-encode "constructor(address,bytes)" "$impl" "$init")" \
         || fail "Can't encode the $label proxy's constructor arguments"
     info "Deploying the $label behind an ERC1967Proxy that initializes it in the same transaction..."
-    receipt="$(cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json --create "$code${args#0x}")" \
-        || fail "$label deployment failed"
+    receipt="$(evm_submit cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json \
+        --create "$code${args#0x}")" || fail "$label deployment failed"
     address="$(jq -r '.contractAddress // empty' <<<"$receipt")"
     tx="$(jq -r '.transactionHash // empty' <<<"$receipt")"
     [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] \
         || fail "$label deployment returned no contract address and transaction hash"
     state_set --arg k "$key" --arg a "$address" --arg t "$tx" --arg d "$(evm_deployer)" \
         '.evm[$k] = $a | .evm[$k + "_creation_tx"] = $t | .evm.deployer = $d'
-    evm_settle "$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$receipt")")"
+    block="$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$receipt")")"
+    evm_wrote "$block"
+    evm_settle "$block"
     check_evm_creation "$key" "$label"
 }
 
@@ -322,7 +433,7 @@ check_evm_creation() {
     [ -n "$tx" ] && [ -n "$impl" ] \
         || fail "$STATE records the EVM $label $address without the transaction that created and initialized it. An older deploy/testnet.sh initialized it in a second transaction, which anyone could send first, and so choose its owner, its beneficiary or its pricing (docs/security.md, HIGH-8). Move $OUT_DIR aside and deploy again."
     creator="$(evm_creator)" || exit 1
-    receipt="$(cast receipt "$tx" --json --rpc-url "$EVM_RPC")" \
+    receipt="$(evm_receipt "$tx" --json)" \
         || fail "Can't read the receipt of $tx, which created the EVM $label $address"
     jq -e --arg a "$(lower "$address")" --arg c "$(lower "$creator")" --arg i "$(pad32 "$impl")" \
         --arg upgraded "$UPGRADED_TOPIC" --arg initialized "$INITIALIZED_TOPIC" '
@@ -334,11 +445,11 @@ check_evm_creation() {
                 and ((.topics[1] // "") | ascii_downcase | ltrimstr("0x")) == $i)
         and any(.logs[]; mine and .topics[0] == $initialized)' <<<"$receipt" >/dev/null \
         || fail "The EVM $label $address wasn't initialized in the transaction that created it: $tx isn't the EVM deployer $creator creating it as a proxy of $impl and initializing it. Whoever initialized it chose its owner (docs/security.md, HIGH-8). Move $OUT_DIR aside and deploy again."
-    slot="$(cast storage "$address" "$IMPLEMENTATION_SLOT" --rpc-url "$EVM_RPC")" \
+    slot="$(evm_storage "$address" "$IMPLEMENTATION_SLOT")" \
         || fail "Can't read the implementation of the EVM $label $address"
     [ "$(lower "0x${slot: -40}")" = "$(lower "$impl")" ] \
         || fail "The EVM $label $address runs the implementation 0x${slot: -40}, not $impl, which it was created with"
-    slot="$(cast storage "$address" "$ADMIN_SLOT" --rpc-url "$EVM_RPC")" \
+    slot="$(evm_storage "$address" "$ADMIN_SLOT")" \
         || fail "Can't read the proxy admin of the EVM $label $address"
     [[ "$slot" =~ ^0x0{64}$ ]] \
         || fail "The EVM $label $address has the proxy admin 0x${slot: -40}, which can change its code: this deployment's ERC1967Proxy has no admin. Move $OUT_DIR aside and deploy again."
@@ -1491,7 +1602,7 @@ check_evm_igp_quote_history() {
     [[ "$EVM_LOG_BLOCK_RANGE" =~ ^[1-9][0-9]*$ ]] \
         || fail "EVM_LOG_BLOCK_RANGE must be a whole number of blocks, not '$EVM_LOG_BLOCK_RANGE'"
     [[ "$EVM_REORG_PERIOD" =~ ^[0-9]+$ ]] || fail "EVM_REORG_PERIOD must be a whole number of blocks, not '$EVM_REORG_PERIOD'"
-    created="$(evm_block_number "$(cast receipt "$tx" blockNumber --rpc-url "$EVM_RPC")")" \
+    created="$(evm_block_number "$(evm_receipt "$tx" blockNumber)")" \
         || fail "Can't read the block of $tx, which created the EVM IGP $igp"
     scanned="$(state_json | jq -r --arg igp "$igp" '.evm.igp_quote_signers_scanned // {} | select(.igp == $igp) | .to // empty')"
     from="$created"
@@ -1657,8 +1768,8 @@ deploy_evm_ism() {
         fi
     else
         info "Deploying StorageMessageIdMultisigIsm ($DUSK_ORIGIN_THRESHOLD of [$validators])..."
-        ism="$(forge_create contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
-            --constructor-args "[$validators]" "$DUSK_ORIGIN_THRESHOLD")" || fail "EVM security module deployment failed"
+        forge_create ism contracts/isms/multisig/StorageMultisigIsm.sol:StorageMessageIdMultisigIsm \
+            --constructor-args "[$validators]" "$DUSK_ORIGIN_THRESHOLD" || fail "EVM security module deployment failed"
     fi
     evm_has_code "$ism" || fail "EVM security module deployment failed"
     state_set --arg ism "$ism" --arg v "$validators" --argjson t "$DUSK_ORIGIN_THRESHOLD" \
@@ -1696,7 +1807,7 @@ deploy_evm_igp() {
     if [ -z "$oracle" ]; then
         record_index_from
         info "Deploying a StorageGasOracle on $EVM_CHAIN_NAME..."
-        oracle="$(forge_create contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle)" \
+        forge_create oracle contracts/hooks/igp/StorageGasOracle.sol:StorageGasOracle \
             || fail "StorageGasOracle deployment failed"
         state_set --arg o "$oracle" '.evm.storage_gas_oracle = $o'
     fi
@@ -1744,7 +1855,7 @@ deploy_evm_route_hook() {
         factory="${EVM_AGGREGATION_HOOK_FACTORY:-$(state_get '.evm.aggregation_hook_factory')}"
         if [ -z "$factory" ]; then
             info "Deploying a StaticAggregationHookFactory on $EVM_CHAIN_NAME..."
-            factory="$(forge_create contracts/hooks/aggregation/StaticAggregationHookFactory.sol:StaticAggregationHookFactory)" \
+            forge_create factory contracts/hooks/aggregation/StaticAggregationHookFactory.sol:StaticAggregationHookFactory \
                 || fail "StaticAggregationHookFactory deployment failed"
             state_set --arg f "$factory" '.evm.aggregation_hook_factory = $f'
         fi
