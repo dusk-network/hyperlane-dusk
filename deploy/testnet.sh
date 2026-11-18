@@ -243,8 +243,8 @@ evm_call() { evm_read cast call "$@"; }
 # After each write, evm_settle also waits until the endpoint answers at or
 # past the write's block on three reads in a row, for up to
 # EVM_SETTLE_SECONDS (120), so that the next transaction is less likely to
-# get its nonce from a node that hasn't seen this one (evm_submit sends it
-# again if it does).
+# get its nonce from a node that hasn't seen this one (evm_next_nonce reads
+# it three times, and evm_submit fails rather than send anything again).
 evm_settle() {
     local block="$1" seen=0 now deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
     [[ "$block" =~ ^[0-9]+$ ]] || fail "No block number to wait for on $EVM_CHAIN_NAME"
@@ -284,37 +284,107 @@ evm_tx_block() {
     block="$(evm_receipt "$1" blockNumber 2>/dev/null)" && block="$(evm_block_number "$block")" \
         && [[ "$block" =~ ^[0-9]+$ ]] && printf '%s' "$block"
 }
-# Run a command that sends an EVM transaction (cast send, forge create),
-# and run it again, for up to EVM_SETTLE_SECONDS, while the node refuses the
-# transaction for a stale nonce: "nonce too low". The sender's nonce came
-# from a node of a load-balanced EVM_RPC that hadn't seen its last
-# transaction. A refused transaction is never in a block, so sending it
-# again, with its nonce read again, sends it once. Any other failure is the
-# command's. Prints the command's output.
+# The deployer's next nonce on the EVM chain: the highest of three reads of
+# its pending nonce, as each node behind a load-balanced EVM_RPC can be
+# behind. Every transaction deploy sends carries the nonce it was given, so
+# that what took that nonce can be told afterwards.
+evm_next_nonce() {
+    local deployer read best="" i
+    deployer="$(evm_deployer)" || return 1
+    for i in 1 2 3; do
+        read="$(cast nonce "$deployer" --block pending --rpc-url "$EVM_RPC" 2>/dev/null)" || continue
+        [[ "$read" =~ ^[0-9]+$ ]] || continue
+        if [ -z "$best" ] || [ "$read" -gt "$best" ]; then best="$read"; fi
+    done
+    [ -n "$best" ] || return 1
+    printf '%s' "$best"
+}
+# evm_submit <nonce> <creation input, or empty> <command...>: run a command
+# that sends one EVM transaction (cast send, forge create) with the nonce it
+# carries (--nonce). Nothing is ever sent again: a node's "nonce too low"
+# doesn't show the transaction was refused, as a gateway that sent it on and
+# then answered a replay of the request reports it so. A creation is taken
+# if the deployer's transaction with its nonce is that very creation, which
+# executed and created the contract at the address the nonce gives
+# (evm_adopt_creation); otherwise, and for any other transaction, it fails,
+# for deploy to be run again, which reads the chain afresh and skips what is
+# done. Prints the command's output, or an adopted creation's receipt.
 evm_submit() {
-    local out errors deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    local nonce="$1" input="$2" from out errors receipt
+    shift 2
+    from="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || from=""
     errors="$(mktemp)" || return 1
-    while :; do
-        if out="$("$@" 2>"$errors")"; then
-            cat "$errors" >&2
-            rm -f "$errors"
-            printf '%s\n' "$out"
-            return 0
-        fi
-        if grep -qi 'nonce too low' "$errors" && [ "$SECONDS" -lt "$deadline" ]; then
-            info "$EVM_CHAIN_NAME refused the transaction for a stale nonce ($(grep -i -m1 -o 'nonce too low[^"]*' "$errors" | cut -c1-80)); sending it again"
-            sleep 2
-            continue
-        fi
+    if out="$("$@" 2>"$errors")"; then
         cat "$errors" >&2
         rm -f "$errors"
         printf '%s\n' "$out"
+        return 0
+    fi
+    if grep -qi 'nonce too low' "$errors"; then
+        if [ -n "$input" ] && receipt="$(evm_adopt_creation "$nonce" "$input" "$from")"; then
+            rm -f "$errors"
+            info "$EVM_CHAIN_NAME answered the creation with \"nonce too low\", but the deployer's transaction with its nonce $nonce is that very creation, executed: taking it"
+            printf '%s\n' "$receipt"
+            return 0
+        fi
+        cat "$errors" >&2
+        rm -f "$errors"
+        echo "[FAIL] $EVM_CHAIN_NAME answered the transaction with nonce $nonce with \"nonce too low\", which doesn't show whether it was sent on, and the deployer's transaction with that nonce isn't it: nothing was sent again. Run deploy again: it reads what is on chain afresh and skips what is done." >&2
         return 1
+    fi
+    cat "$errors" >&2
+    rm -f "$errors"
+    printf '%s\n' "$out"
+    return 1
+}
+# The transaction <sender> sent with <nonce>, as `cast block --full --json`
+# shows it, in a block from <from block> to the head, waiting up to
+# EVM_SETTLE_SECONDS for EVM_RPC to show it.
+evm_sent_with_nonce() {
+    local sender="$1" nonce="$2" block="$3" head txs found deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    sender="$(lower "$sender")"
+    while :; do
+        head="$(cast block-number --rpc-url "$EVM_RPC" 2>/dev/null)" || head=""
+        while [[ "$head" =~ ^[0-9]+$ ]] && [ "$block" -le "$head" ]; do
+            txs="$(cast block "$block" --full --json --rpc-url "$EVM_RPC" 2>/dev/null)" || break
+            found="$(jq -c --arg s "$sender" --arg n "$nonce" --arg h "$(printf '0x%x' "$nonce")" \
+                '.transactions[]? | select(((.from // "") | ascii_downcase) == $s
+                    and ((.nonce | tostring | ascii_downcase) as $v | $v == $n or $v == $h))' <<<"$txs" 2>/dev/null | head -1)"
+            if [ -n "$found" ]; then
+                printf '%s\n' "$found"
+                return 0
+            fi
+            block=$((block + 1))
+        done
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 2
     done
 }
+# The receipt of the deployer's transaction with <nonce>, if it is the
+# creation <input>, sent from block <from block> on: it executed, and created
+# the contract at the address the deployer and the nonce give, which has code.
+evm_adopt_creation() {
+    local nonce="$1" input="$2" from="$3" deployer address tx receipt
+    [[ "$from" =~ ^[0-9]+$ ]] || return 1
+    deployer="$(evm_deployer)" || return 1
+    address="$(cast compute-address "$deployer" --nonce "$nonce" 2>/dev/null | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)"
+    [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || return 1
+    tx="$(evm_sent_with_nonce "$deployer" "$nonce" "$from")" || return 1
+    jq -e --arg i "$(lower "$input")" '(.to == null) and ((.input // .data // "") | ascii_downcase) == $i' \
+        <<<"$tx" >/dev/null || return 1
+    receipt="$(evm_receipt "$(jq -r .hash <<<"$tx")" --json)" || return 1
+    jq -e --arg a "$(lower "$address")" \
+        '(.status | tostring | test("^(0x)?1$")) and ((.contractAddress // "") | ascii_downcase) == $a' \
+        <<<"$receipt" >/dev/null || return 1
+    evm_wrote "$(evm_block_number "$(jq -r '.blockNumber' <<<"$receipt")")"
+    evm_has_code "$address" || return 1
+    printf '%s\n' "$receipt"
+}
 evm_send() {
-    local receipt block
-    receipt="$(evm_submit cast send "$@" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
+    local receipt block nonce
+    nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+    receipt="$(evm_submit "$nonce" "" cast send "$@" --nonce "$nonce" --rpc-url "$EVM_RPC" \
+        --private-key "$EVM_DEPLOYER_KEY" --json)" || return 1
     jq -e '.status | tostring | test("^(0x)?1$")' <<<"$receipt" >/dev/null || return 1
     block="$(evm_block_number "$(jq -r '.blockNumber' <<<"$receipt")")" || return 1
     evm_wrote "$block"
@@ -349,11 +419,15 @@ evm_creator() {
 # address. It runs in this shell, not in a command substitution, so that
 # the reads after it are made at its block (evm_wrote).
 forge_create() {
-    local _fc_var="$1" _fc_contract="$2" _fc_created _fc_address _fc_tx _fc_block
+    local _fc_var="$1" _fc_contract="$2" _fc_created _fc_address _fc_tx _fc_block _fc_nonce _fc_input
     shift 2
-    _fc_created="$(cd "$SOLIDITY_DIR" && evm_submit forge create "$_fc_contract" --broadcast --json \
-        --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" "$@")" || return 1
-    _fc_address="$(jq -r '.deployedTo // empty' <<<"$_fc_created")"
+    _fc_input="$(forge_creation_input "$_fc_contract" "$@")" \
+        || fail "Can't work out the creation code of $_fc_contract from $SOLIDITY_DIR"
+    _fc_nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+    _fc_created="$(cd "$SOLIDITY_DIR" && evm_submit "$_fc_nonce" "$_fc_input" forge create "$_fc_contract" \
+        --broadcast --json --nonce "$_fc_nonce" --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" "$@")" \
+        || return 1
+    _fc_address="$(jq -r '.deployedTo // .contractAddress // empty' <<<"$_fc_created")"
     _fc_tx="$(jq -r '.transactionHash // empty' <<<"$_fc_created")"
     [[ "$_fc_address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$_fc_tx" =~ ^0x[0-9a-fA-F]{64}$ ]] || return 1
     # The contract exists whatever the endpoint shows next: return it so the
@@ -363,6 +437,21 @@ forge_create() {
         evm_wrote "$_fc_block"
         ( evm_settle "$_fc_block" ) || info "Going on without EVM_RPC showing $_fc_tx's block; a check that fails on it is safe to re-run"
     fi
+}
+# What `forge create <contract> [--constructor-args <args...>]` sends: the
+# contract's creation code, then its constructor's arguments, ABI-encoded.
+forge_creation_input() {
+    local contract="$1" code types args=""
+    shift
+    [ "${1:-}" != --constructor-args ] || shift
+    code="$(cd "$SOLIDITY_DIR" && forge inspect "$contract" bytecode 2>/dev/null)" \
+        && [[ "$code" =~ ^0x[0-9a-fA-F]+$ ]] || return 1
+    if [ "$#" -gt 0 ]; then
+        types="$(cd "$SOLIDITY_DIR" && forge inspect "$contract" abi --json 2>/dev/null \
+            | jq -r '[.[] | select(.type == "constructor") | .inputs[].type] | join(",")')" || return 1
+        args="$(cast abi-encode "constructor($types)" "$@")" && [[ "$args" =~ ^0x[0-9a-fA-F]*$ ]] || return 1
+    fi
+    printf '%s%s' "$code" "${args#0x}"
 }
 # ERC1967Proxy's creation code, from the OpenZeppelin release Hyperlane's
 # Solidity sources build with.
@@ -390,7 +479,7 @@ evm_proxy_creation_code() {
 # <base> is where $STATE keeps the contract: .evm, or a token route's
 # .token_routes["SYMBOL"].evm.
 deploy_evm_proxied() {
-    local base="$1" key="$2" label="$3" contract="$4" init="$5" impl code args receipt address tx block
+    local base="$1" key="$2" label="$3" contract="$4" init="$5" impl code args receipt address tx block nonce
     shift 5
     [[ "$init" =~ ^0x[0-9a-fA-F]{8,}$ ]] || fail "No initialize call for the $label"
     impl="$(state_get "$base.${key}_implementation")"
@@ -405,8 +494,9 @@ deploy_evm_proxied() {
     args="$(cast abi-encode "constructor(address,bytes)" "$impl" "$init")" \
         || fail "Can't encode the $label proxy's constructor arguments"
     info "Deploying the $label behind an ERC1967Proxy that initializes it in the same transaction..."
-    receipt="$(evm_submit cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" --json \
-        --create "$code${args#0x}")" || fail "$label deployment failed"
+    nonce="$(evm_next_nonce)" || fail "Can't read the EVM deployer's nonce on $EVM_CHAIN_NAME"
+    receipt="$(evm_submit "$nonce" "$code${args#0x}" cast send --rpc-url "$EVM_RPC" --private-key "$EVM_DEPLOYER_KEY" \
+        --json --nonce "$nonce" --create "$code${args#0x}")" || fail "$label deployment failed"
     address="$(jq -r '.contractAddress // empty' <<<"$receipt")"
     tx="$(jq -r '.transactionHash // empty' <<<"$receipt")"
     [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] && [[ "$tx" =~ ^0x[0-9a-fA-F]{64}$ ]] \

@@ -291,6 +291,15 @@ Sepolia IGP or token recorded by an older version of this script, which
 initialized them in a second transaction that anyone could send first
 ([security notes](security.md#fourth-review), HIGH-8).
 
+Every transaction `deploy` sends on Sepolia carries its nonce: the highest
+of three reads of the deployer's pending nonce, as the nodes behind a public
+endpoint can each be behind. A node that answers one with "nonce too low"
+doesn't show it was refused: a gateway that sent it on answers a replay of
+the request so too. So nothing is sent again. A contract creation is taken
+if the deployer's transaction with its nonce is that very creation,
+executed; any other transaction answered so stops `deploy`, which, run
+again, reads the chain afresh and sends only what isn't done.
+
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
 
