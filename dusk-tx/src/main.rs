@@ -4809,6 +4809,23 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A tx log starts with its first entry, its directory synced too, and
+    /// takes each entry after on a line of its own.
+    #[test]
+    fn append_tx_log_starts_a_log_and_appends_to_it() {
+        let dir = std::env::temp_dir().join(format!("dusk-tx-new-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("route.txs");
+        super::append_tx_log(&log, &serde_json::json!({"contract": "token"})).unwrap();
+        super::append_tx_log(&log, &serde_json::json!({"contract": "route"})).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "{\"contract\":\"token\"}\n{\"contract\":\"route\"}\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Each deploy transaction goes to the tx log before it is sent, on a
     /// line of its own even after a line a run left unfinished. A deploy
     /// that fails because a contract got to the ID between the plan and the
@@ -7906,7 +7923,19 @@ fn append_tx_log(path: &std::path::Path, entry: &serde_json::Value) -> Result<()
     writeln!(file, "{separator}{entry}")
         .and_then(|()| file.flush())
         .and_then(|()| file.sync_all())
-        .map_err(error)
+        .map_err(error)?;
+    // A log this append started is in its directory for good, after a
+    // crash of the host too, only once the directory is synced.
+    if length == 0 {
+        let directory = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => std::path::Path::new("."),
+        };
+        fs::File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(error)?;
+    }
+    Ok(())
 }
 
 /// Deploy one of a token route's contracts, after appending its transaction
