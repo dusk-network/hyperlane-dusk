@@ -2127,7 +2127,8 @@ class TestnetDeploy(TestnetScript):
         self.assertLessEqual(state["evm"]["index_from"], min(evm[igp]["created_at"], evm[token]["created_at"]))
         # Sepolia's Mailbox requires only its ProtocolFee: the route's hook
         # replaces the default one, so it inserts into the Merkle tree first.
-        self.assertEqual(evm[hook], {"type": "aggregation", "hook_type": 2, "hooks": [EVM_MERKLE, igp]})
+        self.assertEqual({k: v for k, v in evm[hook].items() if k != "created_at"},
+                         {"type": "aggregation", "hook_type": 2, "hooks": [EVM_MERKLE, igp]})
         self.assertEqual(evm[token]["hook"], hook)
         # A transfer pays the 1 wei protocol fee and the IGP's quote.
         self.assertIn("charges 130200000000 wei for a transfer to Dusk", result.stderr)
