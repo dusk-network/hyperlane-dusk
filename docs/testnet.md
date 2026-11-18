@@ -263,11 +263,14 @@ transfer pays for. `fees` prints what they come to.
   message) included, and so does a query that fails. If the owner changes
   the validators or the threshold on chain, update both settings.
 
-`deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
-skips steps already recorded there. If it stops halfway, fix the cause and run
-it again: it first settles a transaction the stopped run sent but couldn't
-confirm (below), and may stop again until that transaction is in a block. Every command but `fees` takes a lock on that directory
-(`flock` on its `.lock`) and holds it until it exits, and reads the record
+`deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json`,
+on disk before it goes on, and skips steps already recorded there. If it
+stops halfway, fix the cause and run it again: a step whose transaction the
+stopped run sent but couldn't confirm settles it before that step sends
+anything (below), and the run may stop again until that transaction is in a
+block, or until the block of one that took its nonce is final. Every
+command but `fees` takes a lock on that directory (`flock` on its
+`.lock`) and holds it until it exits, and reads the record
 once: one command at a time runs on a deployment, and what a command
 checked is what it records and what the configs it writes name. A command
 started while another holds the lock stops at once; run it again when the
@@ -294,29 +297,33 @@ initialized them in a second transaction that anyone could send first
 
 Every transaction `deploy` sends on Sepolia carries its nonce: the highest
 of three reads of the deployer's pending nonce, as the nodes behind a public
-endpoint can each be behind. A node that answers one with "nonce too low"
-doesn't show it was refused: a gateway that sent it on answers a replay of
-the request so too. So nothing is sent again: the deployer's transaction
-with that nonce tells. A contract creation is taken if it is that very
-creation, executed. If it is another transaction, this one never executes
-once that transaction's block is final: `deploy` waits for that, for up
-to `EVM_FINALITY_SECONDS` (1800), checks that the block is still the
-chain's, and then stops and forgets it, for the next run to send that
-step again. Until then another block can replace that one, and `deploy`
-stops but keeps it. Any other transaction answered so, or a send that
-times out, stops `deploy` too. Its nonce and input are in the record from before it was
-sent, under `.evm_sending`, keyed by the step that sends it: a creation by
-where the record keeps its address, a call by its function and recipient.
-Only that step settles it, when it next runs: the deployer's transaction
-with that nonce, if it is that one and executed, is taken as the step's
-own, and a call's step then reads the chain afresh; if it is still
-pending, the run stops, sending nothing, until it is in a block; if it
+endpoint can each be behind. Before it goes out, its step records it in the
+record, on disk, under `.evm_sending`: its nonce, its recipient (none for a
+creation) and its exact input, keyed by the step, a creation by where the
+record keeps its address and a call by its function and recipient.
+
+A node that answers one with "nonce too low" doesn't show it was refused: a
+gateway that sent it on answers a replay of the request so too. So nothing
+is sent again: the deployer's transaction with that nonce tells. A contract
+creation is taken if it is that very creation, executed. If it is another
+transaction, this one never executes once that transaction's block is
+final: `deploy` waits for that, for up to `EVM_FINALITY_SECONDS` (1800),
+checks that the block is still the chain's, and then stops and forgets it,
+for the next run to send that step again. Until then another block can
+replace that one, and `deploy` stops but keeps it. Any other transaction
+answered so, or a send that times out, stops `deploy` too, keeping it.
+
+The step that sent a kept transaction settles it the next time it runs,
+before it sends anything; other steps, and other commands such as `claim`,
+leave it alone. It reads the blocks from where the send was recorded for
+the deployer's transaction with that nonce, for up to `EVM_SETTLE_SECONDS`
+(120). If that is the one, executed, a creation's step takes it as its own,
+and a call's step reads the chain afresh, as of its block, for what is left
+to do. If it isn't in a block, the run stops, sending nothing. If it
 failed, or another transaction took the nonce, it is forgotten once that
-block is final, and the step goes on afresh. Another command, such as
-`claim`, leaves it alone. A transaction
-that never went out, whose nonce the deployer never reaches, keeps
-stopping its step: once you are sure, remove its entry from
-`.evm_sending`.
+block is final, and the step goes on afresh. A transaction that never went
+out, whose nonce the deployer never reaches, keeps stopping its step: once
+you are sure, remove its entry from `.evm_sending`.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
@@ -592,8 +599,11 @@ IDs, and takes a contract already at a planned ID only if one of those
 transactions created it, in a final block. A logged transaction that is in
 neither the ledger nor the mempool, a couple of blocks on, with its nonce
 not reached, was never sent: it is marked void, and the ID deployed
-afresh. One still in the mempool is waited for, and stops the run if it
-doesn't land. A contract there any other
+afresh. One whose nonce the account has passed without it never executes
+once the block that nonce was read at is final, and the ID is deployed
+afresh then; if another block takes that block's place first, the nonce is
+read again. One still in the mempool is waited for, and stops the run if
+it doesn't land. A contract there any other
 way may come from a deploy or `init` someone front-ran, and reading it back
 can't rule that out: the token doesn't list who holds its roles, so an
 `init` that gave someone a role besides the deployer would read back the
