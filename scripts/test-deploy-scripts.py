@@ -750,6 +750,10 @@ def mine_held(state):
         assert state["receipts"][tx]["nonce"] == item["nonce"]
     if waiting:
         state["held"] = waiting
+    # "after_mining": balances that grow once the held transactions are
+    # mined, as fees paid after them do.
+    for address, wei in state.pop("after_mining", {}).items():
+        state["balances"][address] = state["balances"].get(address, 0) + wei
     save(state)
 
 def accept_then_refuse(state):
@@ -1710,7 +1714,7 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
                 self.assert_fails(result, "another transaction of the deployer's took that nonce, so this one "
                                           "never executes. Nothing was sent again")
-                self.assertNotIn("evm_pending", self.state())
+                self.assertNotIn("evm_sending", self.state())
                 sends = [line for line in self.trace.read_text().splitlines()
                          if line.startswith(("cast send", "forge create"))]
                 self.assertTrue(sends[skip].startswith(expected), sends)
@@ -1790,8 +1794,8 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.forget_deployment()
                 self.evm.update(hold=1, hold_skip=skip)
                 self.assert_fails(self.run_script("deploy"), "timed out")
-                pending = self.state()["evm_pending"]
-                self.assertEqual(pending["nonce"], skip)
+                pending = list(self.state()["evm_sending"].values())
+                self.assertEqual([entry["nonce"] for entry in pending], [skip])
                 # Still pending: the re-run sends nothing.
                 result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
                 self.assert_fails(result, "isn't in a block: it may still be pending, so nothing was sent")
@@ -1801,9 +1805,73 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 result = self.run_script("deploy")
                 self.assert_ok(result)
                 self.assertEqual(self.deployed_transactions(), honest)
-                self.assertNotIn("evm_pending", self.state())
+                self.assertNotIn("evm_sending", self.state())
                 if skip:
                     self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
+
+    def interrupt_the_token_implementation(self):
+        """Deploy, stopped at the DUSK token's implementation, whose
+        creation the node took but whose send timed out; the creation is
+        mined after. Returns the honest deploy's transactions."""
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
+        sends = [line for line in self.trace.read_text().splitlines()
+                 if line.startswith(("cast send", "forge create"))]
+        skip = next(i for i, line in enumerate(sends) if line.startswith("forge create") and "HypERC20" in line)
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm.update(hold=1, hold_skip=skip)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.token_implementation"])
+        self.evm["mine_held"] = True
+        return honest
+
+    def test_a_creation_left_unsettled_is_left_to_its_step_by_the_others(self):
+        # Between the run that sent the creation and the re-run, claim
+        # sends the IGP's claim(). Only the creation's step records its
+        # address, so claim leaves its record alone, and the re-run takes
+        # the creation as its own: nothing is created twice.
+        honest = self.interrupt_the_token_implementation()
+        igp = self.state()["evm"]["igp"]
+        self.evm["balances"][igp] = 7
+        self.assert_ok(self.run_script("claim"))
+        self.assertEqual(self.evm["balances"].get(igp, 0), 0)
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.token_implementation"])
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
+        self.assertNotIn("evm_sending", self.state())
+        self.assertEqual(self.deployed_transactions(), self.with_claim_after_the_implementation(honest),
+                         "each creation once")
+
+    @staticmethod
+    def with_claim_after_the_implementation(honest):
+        # The deploy's transactions, with claim's claim() right after the
+        # DUSK token's implementation, which was mined before claim ran.
+        implementation = honest.index(("create", "token"))
+        return honest[:implementation + 1] + [("call", "igp")] + honest[implementation + 1:]
+
+    def test_a_send_recorded_without_its_step_is_taken_by_the_step_that_sends_it(self):
+        # The record an earlier version of this script left: .evm_pending,
+        # one send without the step that sent it. The step that sends just
+        # that takes it; the others leave it alone.
+        honest = self.interrupt_the_token_implementation()
+        state = self.state()
+        entry = state.pop("evm_sending")["create .evm.token_implementation"]
+        del entry["step"]
+        state["evm_pending"] = entry
+        self.write_state(state)
+        igp = state["evm"]["igp"]
+        self.evm["balances"][igp] = 7
+        self.assert_ok(self.run_script("claim"))
+        self.assertEqual(self.state()["evm_pending"], entry)
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
+        self.assertNotIn("evm_pending", self.state())
+        self.assertNotIn("evm_sending", self.state())
+        self.assertEqual(self.deployed_transactions(), self.with_claim_after_the_implementation(honest),
+                         "each creation once")
 
 
 class TestnetTypelessHooks(TestnetScript):
@@ -2682,6 +2750,26 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assertEqual(len(self.traced("dusk-tx claim-fees")), 2)
         self.assertEqual(self.evm["balances"][beneficiary], 130200000000)
         self.assertEqual(self.queries[f"{IGP}/claimable_fees"]["value"], 0)
+
+    def test_a_claim_an_earlier_run_sent_is_settled_before_the_balance_is_read(self):
+        # claim()'s send times out, and the transaction is mined after,
+        # claiming the IGP's balance then; more fees are paid after it. The
+        # next claim settles the one an earlier run sent before it reads the
+        # balance, and claims what has been paid since with a claim() of
+        # its own, rather than take the earlier one for it.
+        beneficiary = "0x" + "be" * 20
+        self.evm["contracts"][self.evm_igp]["beneficiary"] = beneficiary
+        self.evm["balances"][self.evm_igp] = 7
+        self.evm.update(hold=1)
+        self.assert_fails(self.run_script("claim"), "timed out")
+        self.evm.update(mine_held=True, after_mining={self.evm_igp: 5})
+        result = self.run_script("claim")
+        self.assert_ok(result)
+        self.assertIn("It executed: the step reads the chain as of its block, or later", result.stderr)
+        self.assertIn(f"Claimed 5 wei from the EVM IGP {self.evm_igp}", result.stderr)
+        self.assertEqual(self.evm["balances"][beneficiary], 12)
+        self.assertEqual(self.evm["balances"].get(self.evm_igp, 0), 0)
+        self.assertNotIn("evm_sending", self.state())
 
     def test_an_igp_that_takes_no_top_ups_is_refused(self):
         # IGP state_version 3 has no pay_for_gas: a Dusk message that paid it

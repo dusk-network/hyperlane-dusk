@@ -301,14 +301,18 @@ with that nonce tells. A contract creation is taken if it is that very
 creation, executed; if it is another transaction, this one never executes,
 and `deploy` stops and forgets it, for the next run to send that step
 again. Any other transaction answered so, or a send that times out, stops
-`deploy` too. Its nonce and input are in the record (`.evm_pending`) from
-before it was sent, so the next run settles it before it sends anything:
-the deployer's transaction with that nonce, if it is that one and
-executed, is taken as the step's own; if it is still pending, the run
-stops, sending nothing, until it is in a block; if another transaction
-took the nonce, the run stops for you to find out what. A transaction
+`deploy` too. Its nonce and input are in the record from before it was
+sent, under `.evm_sending`, keyed by the step that sends it: a creation by
+where the record keeps its address, a call by its function and recipient.
+Only that step settles it, when it next runs: the deployer's transaction
+with that nonce, if it is that one and executed, is taken as the step's
+own, and a call's step then reads the chain afresh; if it is still
+pending, the run stops, sending nothing, until it is in a block; if
+another transaction took the nonce, the run stops for you to find out
+what. Another command, such as `claim`, leaves it alone. A transaction
 that never went out, whose nonce the deployer never reaches, keeps
-stopping it: once you are sure, remove `.evm_pending` from the record.
+stopping its step: once you are sure, remove its entry from
+`.evm_sending`.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
