@@ -404,6 +404,16 @@ evm_submit() {
 # another step of deploy, leaves the entry as it is. These change $STATE,
 # so they run in this shell, never in a command substitution.
 evm_creation_step() { printf 'create %s' "$1"; }
+# A send recorded as .evm_pending, the form only an earlier version of this
+# script wrote, has no step: which step it was, and how it ended, are for
+# you to reconcile (docs/testnet.md, Reconciling .evm_pending). Every
+# command that sends on the EVM side stops on it before sending anything.
+check_no_unattributed_evm_send() {
+    local pending
+    pending="$(state_json | jq -c '.evm_pending // empty')"
+    [ -n "$pending" ] || return 0
+    fail "$STATE records an EVM send as .evm_pending, the form only an earlier version of this script wrote: nonce $(jq -r '.nonce' <<<"$pending") ($(jq -r '.label // "no label"' <<<"$pending")), without the step that sent it. Nothing was sent. Reconcile it by hand (docs/testnet.md, Reconciling .evm_pending), then remove .evm_pending from $STATE and run this again."
+}
 evm_call_step() { printf 'call %s on %s' "$2" "$(lower "$1")"; }
 evm_intend() {
     local step="$1" nonce="$2" to="$3" input="$4" label="$5" from
@@ -452,12 +462,7 @@ evm_settle_pending() {
     local _sp_var="$1" _sp_step="$2" _sp_to="$3" _sp_input="$4" _sp_pending _sp_nonce _sp_label _sp_tx _sp_receipt _sp_address
     local _sp_what _sp_final
     printf -v "$_sp_var" '%s' ""
-    # A send an earlier version of this script recorded, as .evm_pending,
-    # without its step, is the step's that sends just that.
-    if state_json | jq -e --arg to "$(lower "$_sp_to")" --arg i "$(lower "$_sp_input")" \
-        '.evm_pending.nonce != null and .evm_pending.to == $to and .evm_pending.input == $i' >/dev/null; then
-        state_set --arg s "$_sp_step" '.evm_sending[$s] = (.evm_pending + {step: $s}) | del(.evm_pending)'
-    fi
+    check_no_unattributed_evm_send
     _sp_pending="$(state_json | jq -c --arg s "$_sp_step" '.evm_sending[$s] // empty')"
     [ -n "$_sp_pending" ] || return 0
     _sp_nonce="$(jq -r .nonce <<<"$_sp_pending")" _sp_label="$(jq -r .label <<<"$_sp_pending")"
@@ -2881,6 +2886,7 @@ check_state_versions() {
 }
 
 cmd_deploy() {
+    check_no_unattributed_evm_send
     cmd_preflight
     state_set --arg n "$EVM_CHAIN_NAME" --argjson d "$EVM_DOMAIN" --arg m "$EVM_MAILBOX" \
         --arg h "$EVM_MERKLE_TREE_HOOK" --arg va "$EVM_VALIDATOR_ANNOUNCE" \
@@ -2972,6 +2978,7 @@ cmd_dusk_igp() {
 cmd_evm_igp() {
     local apply="${1:-}" igp oracle current chain_quote new token route_quote
     [ -z "$apply" ] || [ "$apply" = --apply ] || fail "usage: bash deploy/testnet.sh evm-igp [--apply]"
+    [ -z "$apply" ] || check_no_unattributed_evm_send
     load_fees
     igp="$(state_get '.evm.igp')" oracle="$(state_get '.evm.storage_gas_oracle')"
     [ -n "$igp" ] && [ -n "$oracle" ] || fail "No EVM IGP recorded in $STATE; run deploy first"
@@ -3047,6 +3054,7 @@ cmd_revenue() {
 cmd_claim() {
     local name contract claimable beneficiary signer out igp balance
     [ -n "$STATE_JSON" ] || fail "Run deploy first"
+    check_no_unattributed_evm_send
     igp="$(state_get '.evm.igp')"
     [ -z "$igp" ] || [ -z "$(state_get '.evm.storage_gas_oracle')" ] || check_evm_deployment
     check_dusk_deployment

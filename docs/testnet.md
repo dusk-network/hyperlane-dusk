@@ -328,6 +328,40 @@ you are sure, remove its entry from `.evm_sending`.
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
 
+### Reconciling `.evm_pending`
+
+Only a version of this script that local rehearsals ran recorded an EVM
+send as `.evm_pending`: one send, without the step that sent it. The live
+record has none. Nothing can tell which step such a send was, so a record
+that holds one stops `deploy`, `evm-igp --apply` and `claim` before they
+send anything. For a rehearsal, the simplest is to move
+`deploy/out/<DEPLOY_NAME>` aside and deploy afresh. To keep the deployment:
+
+1. Read it: `jq .evm_pending deploy/out/<DEPLOY_NAME>/deployment.json`
+   gives its `nonce`, its recipient `to` (empty for a creation), its exact
+   `input` and its `label`.
+2. Find the deployer's transaction with that nonce, on a block explorer.
+   While the deployer's nonce (`cast nonce <deployer>`) isn't past it, no
+   transaction with it is in a block: wait, or, if you are sure it never
+   went out, go to step 5.
+3. If it is that transaction, with that recipient and input, and it
+   succeeded: a call needs nothing more. A creation made its contract at
+   the address `cast compute-address <deployer> --nonce <nonce>` gives;
+   record it where the step that made it records it. The label names the
+   contract: StorageMessageIdMultisigIsm at `.evm.ism` (with
+   `.dusk_origin_validators` and `.dusk_origin_threshold` as `deploy`
+   records them), StorageGasOracle at `.evm.storage_gas_oracle`,
+   StaticAggregationHookFactory at `.evm.aggregation_hook_factory`, an
+   implementation at the IGP's or the token's `…_implementation`, and a
+   proxy ("the … proxy") at the IGP's or the token's key, with
+   `…_creation_tx` its transaction and `.evm.deployer` the deployer. The
+   label doesn't name the route: the route whose token has no
+   implementation recorded is the one.
+4. If it failed, or another transaction has the nonce, wait until that
+   block is final.
+5. Remove it (`jq 'del(.evm_pending)'`, written back to the record) and
+   run the command again.
+
 ### Reading back the Dusk contracts
 
 Someone can deploy at our contract IDs first, or front-run a contract's

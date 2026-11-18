@@ -2053,27 +2053,30 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.assertLess(elapsed, 30)
                 self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.storage_gas_oracle"])
 
-    def test_a_send_recorded_without_its_step_is_taken_by_the_step_that_sends_it(self):
-        # The record an earlier version of this script left: .evm_pending,
-        # one send without the step that sent it. The step that sends just
-        # that takes it; the others leave it alone.
-        honest = self.interrupt_the_token_implementation()
+    def test_a_send_recorded_without_its_step_stops_each_command_that_sends(self):
+        # The record only an earlier version of this script left, from a
+        # local rehearsal: .evm_pending, one send without the step that sent
+        # it. Nothing can tell which step's it is, so every command that
+        # sends on the EVM side stops on it, sending nothing anywhere, for
+        # it to be reconciled by hand.
+        self.interrupt_the_token_implementation()
         state = self.state()
         entry = state.pop("evm_sending")["create .evm.token_implementation"]
         del entry["step"]
         state["evm_pending"] = entry
         self.write_state(state)
-        igp = state["evm"]["igp"]
-        self.evm["balances"][igp] = 7
-        self.assert_ok(self.run_script("claim"))
-        self.assertEqual(self.state()["evm_pending"], entry)
-        result = self.run_script("deploy")
-        self.assert_ok(result)
-        self.assertIn("It is this step's own transaction, executed: taking it", result.stderr)
-        self.assertNotIn("evm_pending", self.state())
-        self.assertNotIn("evm_sending", self.state())
-        self.assertEqual(self.deployed_transactions(), self.with_claim_after_the_implementation(honest),
-                         "each creation once")
+        self.evm["balances"][state["evm"]["igp"]] = 7
+        sends = ("deploy-hyperlane", "deploy-token-route", "deploy-wasm", "set-beneficiary", "enroll-router",
+                 "claim-fees", "set-igp-config", "call", "fund-dispatch")
+        for command in (["deploy"], ["evm-igp", "--apply"], ["claim"]):
+            with self.subTest(command=command):
+                result = self.run_script(*command)
+                self.assert_fails(result, "records an EVM send as .evm_pending, the form only an earlier version "
+                                          "of this script wrote")
+                self.assertEqual(self.traced("cast send") + self.traced("forge create"), [])
+                self.assertEqual([line for line in self.traced("dusk-tx") if line.split()[1] in sends], [])
+                self.assertEqual(self.state()["evm_pending"], entry)
+                self.assertNotIn("evm_sending", self.state())
 
 
 class TestnetTypelessHooks(TestnetScript):
