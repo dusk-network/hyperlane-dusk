@@ -265,7 +265,8 @@ transfer pays for. `fees` prints what they come to.
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json` and
 skips steps already recorded there. If it stops halfway, fix the cause and run
-it again. Every command but `fees` takes a lock on that directory
+it again: it first settles a transaction the stopped run sent but couldn't
+confirm (below), and may stop again until that transaction is in a block. Every command but `fees` takes a lock on that directory
 (`flock` on its `.lock`) and holds it until it exits, and reads the record
 once: one command at a time runs on a deployment, and what a command
 checked is what it records and what the configs it writes name. A command
@@ -295,10 +296,19 @@ Every transaction `deploy` sends on Sepolia carries its nonce: the highest
 of three reads of the deployer's pending nonce, as the nodes behind a public
 endpoint can each be behind. A node that answers one with "nonce too low"
 doesn't show it was refused: a gateway that sent it on answers a replay of
-the request so too. So nothing is sent again. A contract creation is taken
-if the deployer's transaction with its nonce is that very creation,
-executed; any other transaction answered so stops `deploy`, which, run
-again, reads the chain afresh and sends only what isn't done.
+the request so too. So nothing is sent again: the deployer's transaction
+with that nonce tells. A contract creation is taken if it is that very
+creation, executed; if it is another transaction, this one never executes,
+and `deploy` stops and forgets it, for the next run to send that step
+again. Any other transaction answered so, or a send that times out, stops
+`deploy` too. Its nonce and input are in the record (`.evm_pending`) from
+before it was sent, so the next run settles it before it sends anything:
+the deployer's transaction with that nonce, if it is that one and
+executed, is taken as the step's own; if it is still pending, the run
+stops, sending nothing, until it is in a block; if another transaction
+took the nonce, the run stops for you to find out what. A transaction
+that never went out, whose nonce the deployer never reaches, keeps
+stopping it: once you are sure, remove `.evm_pending` from the record.
 
 Routes need no prepaid dispatch credit: each transfer's deposit pays its own
 dispatch fee.
@@ -569,9 +579,13 @@ reads back the deployment checks the Sepolia token's decimals and scale.
 records them before it sends anything; `dusk-tx deploy-token-route` then
 deploys the token and the route at them. It writes each deploy transaction
 to `deploy/out/<DEPLOY_NAME>/dusk-route-<SYMBOL>.txs` before it sends it,
-and `deploy` records them. A run that stops anywhere resumes at the same
-contract IDs, and takes a contract already at a planned ID only if one of
-those transactions created it, in a final block. A contract there any other
+and `deploy` records them. A run that stops resumes at the same contract
+IDs, and takes a contract already at a planned ID only if one of those
+transactions created it, in a final block. A logged transaction that is in
+neither the ledger nor the mempool, a couple of blocks on, with its nonce
+not reached, was never sent: it is marked void, and the ID deployed
+afresh. One still in the mempool is waited for, and stops the run if it
+doesn't land. A contract there any other
 way may come from a deploy or `init` someone front-ran, and reading it back
 can't rule that out: the token doesn't list who holds its roles, so an
 `init` that gave someone a role besides the deployer would read back the
