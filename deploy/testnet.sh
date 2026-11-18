@@ -1341,10 +1341,10 @@ pending_token_routes() {
 token_route_count() { token_routes_to_deploy | grep -c . || true; }
 
 # The deploy nonce of a new token route's DRC20: past every nonce $STATE's
-# token routes use.
+# token routes use, or have left to someone else's contracts.
 next_token_route_nonce() {
     state_json | jq -r --argjson first "$TOKEN_ROUTE_FIRST_NONCE" \
-        '[.token_routes // {} | .[].dusk.deploy_nonce // empty | . + 2] + [$first] | max'
+        '[.token_routes // {} | .[].dusk | (.deploy_nonce // empty), (.abandoned // [] | .[]) | . + 2] + [$first] | max'
 }
 
 # Record DUSK_KEYS's public key, the token routes' admin, before deploy
@@ -1364,11 +1364,17 @@ record_dusk_owner_key() {
 # token and its route with dusk-tx deploy-token-route, which deploys only
 # what isn't at the planned IDs yet and reads both back, then read them
 # back here against $STATE and record them as deployed. A run that stops
-# anywhere in between resumes at the same IDs: deploy-token-route takes a
-# contract already there only once it reads back as it would have deployed
-# it. The plan skips nonces whose IDs someone has already taken.
+# anywhere in between resumes at the same IDs. deploy-token-route writes
+# each deploy transaction to the route's tx log before it sends it, and the
+# transactions for the planned IDs go into $STATE: a contract already at a
+# planned ID is taken only if one of them created it, in a final block. One
+# that none created is someone else's, deployed there first with an init of
+# their choosing, whatever it reads back (docs/testnet.md, Before mainnet):
+# the pair of nonces is left, and the next two planned, before anything
+# else is sent. The plan also skips nonces whose IDs are taken already.
 deploy_dusk_token_route() {
-    local symbol="$1" base settings name decimals supply nonce plan tries token dusk_route out report
+    local symbol="$1" base settings name decimals supply nonce attempt token dusk_route out report log
+    local code taken tx recorded
     base=".token_routes[\"$symbol\"]"
     if [ "$(state_get "$base.dusk.read_back")" = true ]; then
         ok "Dusk $symbol route already deployed ($(state_get "$base.dusk.route"))"
@@ -1377,45 +1383,92 @@ deploy_dusk_token_route() {
     settings="$(state_json | jq -c --arg s "$symbol" '.token_routes[$s] // empty | {symbol, name, decimals, supply}')"
     [ -n "$settings" ] || settings="$(jq -c --arg s "$symbol" '.[] | select(.symbol == $s)' <<<"$TOKEN_ROUTES_JSON")"
     name="$(jq -r .name <<<"$settings")" decimals="$(jq -r .decimals <<<"$settings")" supply="$(jq -r .supply <<<"$settings")"
-    nonce="$(state_get "$base.dusk.deploy_nonce")"
-    if [ -z "$nonce" ]; then
-        nonce="$(next_token_route_nonce)"
-        for tries in $(seq 16); do
-            plan="$(dusk_tx deploy-token-route --plan --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-                --mailbox "$(state_get '.dusk.mailbox')" --token-name "$name" --token-symbol "$symbol" \
-                --token-decimals "$decimals" --token-supply "$supply" --deploy-nonce "$nonce" \
-                --wasm-dir "$WASM_DIR")" && jq -e '.success == true' <<<"$plan" >/dev/null \
-                || fail "Can't plan the $symbol route's contracts on Dusk: $(jq -r '.error // empty' <<<"$plan" 2>/dev/null)"
-            jq -e '.exists.token or .exists.route' <<<"$plan" >/dev/null || break
-            info "Deploy nonces $nonce and $((nonce + 1)) give contract IDs someone has taken; trying the next two"
-            nonce=$((nonce + 2))
-            [ "$tries" -lt 16 ] || fail "The first 16 pairs of deploy nonces from $(next_token_route_nonce) give the $symbol route contract IDs someone has taken"
-        done
-        token="$(jq -r .contracts.token <<<"$plan")" dusk_route="$(jq -r .contracts.route <<<"$plan")"
-        [[ "$token" =~ ^[0-9a-f]{64}$ ]] && [[ "$dusk_route" =~ ^[0-9a-f]{64}$ ]] \
-            || fail "deploy-token-route planned no contract IDs for the $symbol route"
-        state_set --arg n "$name" --arg s "$symbol" --argjson d "$decimals" --arg u "$supply" \
-            --argjson nonce "$nonce" --arg t "$token" --arg r "$dusk_route" \
-            ".token_routes = (.token_routes // {}) | $base = {name: \$n, symbol: \$s, decimals: \$d, supply: \$u,
-                dusk: {deploy_nonce: \$nonce, token: \$t, route: \$r}}"
-    fi
-    token="$(state_get "$base.dusk.token")" dusk_route="$(state_get "$base.dusk.route")"
-    info "Deploying the $symbol token and its route on Dusk, at deploy nonces $nonce and $((nonce + 1)) (the token $token, the route $dusk_route)..."
+    log="$OUT_DIR/dusk-route-$symbol.txs"
     out="$OUT_DIR/dusk-route-$symbol.json"
-    dusk_tx deploy-token-route --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
-        --mailbox "$(state_get '.dusk.mailbox')" --token-name "$name" --token-symbol "$symbol" \
-        --token-decimals "$decimals" --token-supply "$supply" --deploy-nonce "$nonce" \
-        --remote-domain "$EVM_DOMAIN" --expected-token "$token" --expected-route "$dusk_route" \
-        --wasm-dir "$WASM_DIR" --gas-limit "$DUSK_GAS_LIMIT" --gas-price "$DUSK_GAS_PRICE" \
-        --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" > "$out" \
-        || fail "The $symbol route's deployment on Dusk failed: $(jq -r '.error // empty' "$out" 2>/dev/null). Run deploy again: it resumes at the same contract IDs."
-    report="$(<"$out")"
-    jq -e --arg t "$token" --arg r "$dusk_route" '.success == true and .contracts.token == $t and .contracts.route == $r' \
-        <<<"$report" >/dev/null || fail "deploy-token-route reported other contracts than the $symbol route's planned ones in $out"
-    check_dusk_token_route "token:$symbol" "$(state_get '.dusk_owner')" \
-        "$(recorded_dusk_owner_key "$(state_get '.dusk_owner')")" fresh
-    state_set "$base.dusk.read_back = true"
-    ok "Dusk $symbol token $token and its route $dusk_route: both read back as deployed, owned by DUSK_KEYS"
+    for attempt in $(seq 16); do
+        [ -n "$(state_get "$base.dusk.deploy_nonce")" ] \
+            || plan_dusk_token_route "$symbol" "$name" "$decimals" "$supply"
+        record_token_route_txs "$symbol" "$log"
+        nonce="$(state_get "$base.dusk.deploy_nonce")"
+        token="$(state_get "$base.dusk.token")" dusk_route="$(state_get "$base.dusk.route")"
+        recorded=()
+        tx="$(state_get "$base.dusk.token_tx")"
+        [ -z "$tx" ] || recorded+=(--token-tx "$tx" --token-tx-nonce "$(state_get "$base.dusk.token_tx_nonce")")
+        tx="$(state_get "$base.dusk.route_tx")"
+        [ -z "$tx" ] || recorded+=(--route-tx "$tx" --route-tx-nonce "$(state_get "$base.dusk.route_tx_nonce")")
+        info "Deploying the $symbol token and its route on Dusk, at deploy nonces $nonce and $((nonce + 1)) (the token $token, the route $dusk_route)..."
+        code=0
+        dusk_tx deploy-token-route --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
+            --mailbox "$(state_get '.dusk.mailbox')" --token-name "$name" --token-symbol "$symbol" \
+            --token-decimals "$decimals" --token-supply "$supply" --deploy-nonce "$nonce" \
+            --remote-domain "$EVM_DOMAIN" --expected-token "$token" --expected-route "$dusk_route" \
+            --tx-log "$log" "${recorded[@]}" --wait-finality \
+            --wasm-dir "$WASM_DIR" --gas-limit "$DUSK_GAS_LIMIT" --gas-price "$DUSK_GAS_PRICE" \
+            --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID" > "$out" || code=$?
+        record_token_route_txs "$symbol" "$log"
+        taken="$(jq -r '.taken // empty' "$out" 2>/dev/null)" || taken=""
+        if [ -n "$taken" ]; then
+            warn "$(jq -r .error "$out") Leaving deploy nonces $nonce and $((nonce + 1)) for the $symbol route; planning the next two."
+            state_set --argjson n "$nonce" "$base.dusk = {abandoned: (($base.dusk.abandoned // []) + [\$n])}"
+            continue
+        fi
+        [ "$code" = 0 ] \
+            || fail "The $symbol route's deployment on Dusk failed: $(jq -r '.error // empty' "$out" 2>/dev/null). Run deploy again: it resumes at the same contract IDs."
+        report="$(<"$out")"
+        jq -e --arg t "$token" --arg r "$dusk_route" '.success == true and .contracts.token == $t and .contracts.route == $r' \
+            <<<"$report" >/dev/null || fail "deploy-token-route reported other contracts than the $symbol route's planned ones in $out"
+        check_dusk_token_route "token:$symbol" "$(state_get '.dusk_owner')" \
+            "$(recorded_dusk_owner_key "$(state_get '.dusk_owner')")" fresh
+        state_set "$base.dusk.read_back = true"
+        ok "Dusk $symbol token $token and its route $dusk_route: both read back as deployed, owned by DUSK_KEYS"
+        return
+    done
+    fail "16 pairs of deploy nonces planned for the $symbol route were taken by someone else's contracts. Nothing of theirs is used: find out who is deploying at this deployer's IDs before running deploy again."
+}
+
+# Plan a token route's deploy nonces and contract IDs, the first pair past
+# every nonce $STATE's token routes use or left whose IDs no contract has
+# yet, and record them with the route's settings.
+plan_dusk_token_route() {
+    local symbol="$1" name="$2" decimals="$3" supply="$4" base nonce plan tries token dusk_route
+    base=".token_routes[\"$symbol\"]"
+    nonce="$(next_token_route_nonce)"
+    for tries in $(seq 16); do
+        plan="$(dusk_tx deploy-token-route --plan --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
+            --mailbox "$(state_get '.dusk.mailbox')" --token-name "$name" --token-symbol "$symbol" \
+            --token-decimals "$decimals" --token-supply "$supply" --deploy-nonce "$nonce" \
+            --wasm-dir "$WASM_DIR")" && jq -e '.success == true' <<<"$plan" >/dev/null \
+            || fail "Can't plan the $symbol route's contracts on Dusk: $(jq -r '.error // empty' <<<"$plan" 2>/dev/null)"
+        jq -e '.exists.token or .exists.route' <<<"$plan" >/dev/null || break
+        info "Deploy nonces $nonce and $((nonce + 1)) give contract IDs someone has taken; trying the next two"
+        nonce=$((nonce + 2))
+        [ "$tries" -lt 16 ] || fail "The first 16 pairs of deploy nonces from $(next_token_route_nonce) give the $symbol route contract IDs someone has taken"
+    done
+    token="$(jq -r .contracts.token <<<"$plan")" dusk_route="$(jq -r .contracts.route <<<"$plan")"
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] && [[ "$dusk_route" =~ ^[0-9a-f]{64}$ ]] \
+        || fail "deploy-token-route planned no contract IDs for the $symbol route"
+    state_set --arg n "$name" --arg s "$symbol" --argjson d "$decimals" --arg u "$supply" \
+        --argjson nonce "$nonce" --arg t "$token" --arg r "$dusk_route" \
+        ".token_routes = (.token_routes // {}) | ($base.dusk.abandoned // []) as \$left
+         | $base = {name: \$n, symbol: \$s, decimals: \$d, supply: \$u,
+             dusk: ({deploy_nonce: \$nonce, token: \$t, route: \$r} + if \$left == [] then {} else {abandoned: \$left} end)}"
+}
+
+# Record in $STATE the transactions deploy-token-route sent for a token
+# route's planned contracts, from the tx log it writes each to before it
+# sends it: the last for each.
+record_token_route_txs() {
+    local symbol="$1" log="$2" base txs
+    base=".token_routes[\"$symbol\"]"
+    [ -s "$log" ] || return 0
+    txs="$(jq -Rsc --arg t "$(state_get "$base.dusk.token")" --arg r "$(state_get "$base.dusk.route")" '
+        [splits("\n") | fromjson? | objects] as $sent
+        | ($sent | map(select(.contract == "token" and .id == $t)) | last) as $token
+        | ($sent | map(select(.contract == "route" and .id == $r)) | last) as $route
+        | (if $token then {token_tx: $token.tx, token_tx_nonce: $token.nonce} else {} end)
+          + (if $route then {route_tx: $route.tx, route_tx_nonce: $route.nonce} else {} end)' "$log")" \
+        || fail "Can't read the tx log $log"
+    [ "$txs" = "{}" ] || state_set --argjson x "$txs" "$base.dusk += \$x"
 }
 
 # Read back a token route's contracts on Dusk, its canonical DRC20 and the
@@ -1440,7 +1493,7 @@ check_dusk_token_route() {
     dusk_route="$(state_get "$base.dusk.route")" token="$(state_get "$base.dusk.token")"
     label="$(route_name "$route")"
     if [ "$mode" = fresh ]; then
-        hint="These aren't the contracts deploy-token-route sent: a deploy or an init may have been front-run, and whoever came first chose their owner and bindings. The route isn't recorded as deployed. Don't use them: take .token_routes.$symbol out of $STATE and run deploy again, which plans the route at other deploy nonces."
+        hint="They don't hold what deploy-token-route sent, though this deployment's own transactions created them, or the node doesn't answer as they do. The route isn't recorded as deployed. Don't use them: take .token_routes.$symbol out of $STATE and run deploy again, which plans the route at other deploy nonces."
     else
         hint="$STATE records a token route that isn't as deploy left it: it is another deployment's, or its owner changed it, which deploy/testnet.sh never does. Nothing was sent. Find out which."
     fi

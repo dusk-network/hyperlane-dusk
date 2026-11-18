@@ -245,19 +245,72 @@ if args[0] == "deploy-token-route":
         if opt(flag) is not None and opt(flag) != value:
             out({"success": False, "error": f"The Wasm gives {value}, not {opt(flag)}, which was planned: nothing was sent"}, 1)
     supply = opt("--token-supply")
+    # FIXTURE_CHAIN's "txs" is the ledger of the stub's deploy transactions,
+    # {hash: {"id": contract, "executed": bool}}. A contract at a planned ID
+    # is this deployment's only if --token-tx or --route-tx names one that
+    # executed: deploy-token-route refuses any other, sending nothing more,
+    # and names it as "taken".
+    txs = chain.setdefault("txs", {})
+    def taken(what, reason):
+        save()
+        out({"success": False, "taken": what, "deploy_nonce": nonce, "contracts": contracts,
+             "error": f"The {what}'s planned ID {contracts[what]} isn't this deployment's: {reason}. "
+                      "Nothing more was sent: plan the route at other deploy nonces."}, 1)
+    ours = {}
+    for what in ("token", "route"):
+        recorded = txs.get(opt(f"--{what}-tx") or "")
+        ours[what] = bool(recorded and recorded["executed"] and recorded["id"] == contracts[what])
+        if exists[what] and not ours[what]:
+            taken(what, "a contract is at its planned ID that no transaction of this deployment's created")
+    def occupy(what):
+        # Someone else's contract, as deploy-token-route would have made it
+        # but with another admin.
+        if what == "token":
+            tokens[token] = {"name": opt("--token-name"), "symbol": opt("--token-symbol"),
+                             "decimals": int(opt("--token-decimals")), "total_supply": supply, "cap": "0",
+                             "paused": False, "accounts": {"ee" * 96: {
+                                 "balance": supply, "admin": True, "minter": True, "pauser": True}}}
+        else:
+            queries[f"{route}/owner"] = {"value": "ee" * 32}
+    def send(what):
+        # The transaction goes to --tx-log before it is sent. FIXTURE_CHAIN's
+        # "front_run_deploy", [id, ...], lands someone else's contract at
+        # each of those IDs right before this deployment's deploy to it,
+        # which then fails.
+        chain["deploys_sent"] = chain.get("deploys_sent", 0) + 1
+        tx = hashlib.sha256(f"deploy:{chain['deploys_sent']}".encode()).hexdigest()
+        if opt("--tx-log"):
+            with open(opt("--tx-log"), "a") as log:
+                log.write(json.dumps({"contract": what, "id": contracts[what], "tx": tx,
+                                      "nonce": chain["deploys_sent"]}) + "\n")
+        front = chain.get("front_run_deploy") or []
+        if contracts[what] in front:
+            front.remove(contracts[what])
+            occupy(what)
+            txs[tx] = {"id": contracts[what], "executed": False}
+            taken(what, f"this deployment's transaction {tx} deploying it failed (contract already exists): "
+                        "another contract got to its ID first")
+        txs[tx] = {"id": contracts[what], "executed": True}
     if not exists["token"]:
+        send("token")
         tokens[token] = {"name": opt("--token-name"), "symbol": opt("--token-symbol"),
                          "decimals": int(opt("--token-decimals")), "total_supply": supply, "cap": "0",
                          "paused": False, "accounts": {chain["deployer_key"]: {
                              "balance": supply, "admin": True, "minter": True, "pauser": True}}}
+        # FIXTURE_CHAIN's "stop_after_token" plays a run that stops once the
+        # token is deployed, before the route is sent.
+        if chain.pop("stop_after_token", False):
+            save()
+            out({"success": False, "error": "stub dusk-tx: stopped after the token, as the fixture asked"}, 1)
     if not exists["route"]:
+        send("route")
         for method, value in (("state_version", 7), ("owner", chain["deployer_h256"]), ("mailbox", opt("--mailbox")),
                               ("wrapped_token", token), ("hook", "00" * 32),
                               ("interchain_security_module", "00" * 32), ("pending_total", 0)):
             queries[f"{route}/{method}"] = {"value": value}
     # FIXTURE_CHAIN's "tamper", {"token": {...}, "route": {...}}, leaves the
-    # contracts at the IDs as someone who deployed or initialized them first
-    # would: token fields, and route queries by method, that differ.
+    # contracts at the IDs reading back otherwise than as sent: token
+    # fields, and route queries by method, that differ.
     tamper = chain.pop("tamper", None) or {}
     for key, value in tamper.get("token", {}).items():
         if key.startswith("account."):
@@ -1022,6 +1075,10 @@ class TestnetScript(unittest.TestCase):
         # ("tamper"), and the deployer's DUSK.
         self.dusk_tamper = None
         self.dusk_balance = 1000 * 10**9
+        # The stub's deploy transactions ("txs", "deploys_sent"), and the
+        # faults its deploy-token-route plays ("front_run_deploy",
+        # "stop_after_token").
+        self.dusk_deploys = {}
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -1032,8 +1089,11 @@ class TestnetScript(unittest.TestCase):
         deploy-hyperlane leaves them."""
         (self.out / "deployment.json").unlink(missing_ok=True)
         (self.out / "dusk-deploy.json").unlink(missing_ok=True)
+        for log in self.out.glob("dusk-route-*.txs"):
+            log.unlink()
         self.queries = dusk_queries()
         self.tokens = {}
+        self.dusk_deploys = {}
 
     def state(self):
         return json.loads((self.out / "deployment.json").read_text())
@@ -1047,7 +1107,8 @@ class TestnetScript(unittest.TestCase):
                                           "deployer_key": DEPLOYER_KEY_HEX, "tokens": self.tokens,
                                           "fail": self.dusk_failures, "deploy": DUSK_CONTRACTS,
                                           "interleave": self.dusk_interleave, "on_read": self.dusk_on_read,
-                                          "tamper": self.dusk_tamper, "balance": self.dusk_balance}))
+                                          "tamper": self.dusk_tamper, "balance": self.dusk_balance,
+                                          **self.dusk_deploys}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
             self.relayer_config.unlink()
@@ -1071,6 +1132,8 @@ class TestnetScript(unittest.TestCase):
         self.dusk_on_read = chain.get("on_read")
         self.tokens, self.dusk_failures = chain.get("tokens", {}), chain.get("fail") or {}
         self.dusk_tamper = chain.get("tamper")
+        self.dusk_deploys = {key: chain[key] for key in ("txs", "deploys_sent", "front_run_deploy", "stop_after_token")
+                             if key in chain}
         self.evm = json.loads(self.evm_file.read_text())
         return result
 
@@ -2802,8 +2865,13 @@ class TokenRouteChecks:
                 token, route = stub_route_ids(nonce)
                 self.assertEqual({key: record[key] for key in ("name", "symbol", "decimals", "supply")},
                                  {"name": name, "symbol": symbol, "decimals": decimals, "supply": supply})
-                self.assertEqual(record["dusk"], {"deploy_nonce": nonce, "token": token, "route": route,
-                                                  "read_back": True})
+                dusk = record["dusk"]
+                self.assertEqual({key: dusk[key] for key in ("deploy_nonce", "token", "route", "read_back")},
+                                 {"deploy_nonce": nonce, "token": token, "route": route, "read_back": True})
+                # Each created by the transaction recorded for it.
+                for what, contract_id in (("token", token), ("route", route)):
+                    self.assertEqual(self.dusk_deploys["txs"][dusk[f"{what}_tx"]],
+                                     {"id": contract_id, "executed": True}, what)
                 # The Dusk token: the deployer its admin and holder of the supply.
                 self.assertEqual({key: self.tokens[token][key] for key in ("name", "symbol", "decimals",
                                                                           "total_supply")},
@@ -2952,6 +3020,69 @@ class TestnetTokenRoutes(TokenRouteChecks, TestnetScript):
         self.assert_token_routes(nonces=(12, 14))
         # Nothing was sent at the taken nonces.
         self.assertEqual([line for line in self.route_sends() if "--deploy-nonce 10" in line], [])
+
+    def test_a_contract_someone_put_at_a_planned_id_is_never_used(self):
+        # The plan is recorded, then someone deploys at the token's planned
+        # ID before this deployment does, a token that reads back exactly as
+        # its own would, the deployer holding every role: but whoever
+        # deployed it chose its init, and could hold roles too, which the
+        # token can't list. No transaction of this deployment's created it,
+        # so the pair is left and the next planned before anything is sent.
+        self.dusk_failures = {"deploy-token-route": 1}
+        self.assert_fails(self.run_script("deploy"), "failed")
+        token, _ = stub_route_ids(10)
+        name, decimals, supply = TOKEN_ROUTE_SETTINGS["EURd"]
+        self.tokens[token] = {"name": name, "symbol": "EURd", "decimals": decimals, "total_supply": supply,
+                              "cap": "0", "paused": False, "accounts": {DEPLOYER_KEY_HEX: {
+                                  "balance": supply, "admin": True, "minter": True, "pauser": True}}}
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn(f"The token's planned ID {token} isn't this deployment's: a contract is at its planned ID "
+                      "that no transaction of this deployment's created", result.stderr)
+        self.assertIn("Leaving deploy nonces 10 and 11 for the EURd route; planning the next two", result.stderr)
+        self.assertEqual(self.state()["token_routes"]["EURd"]["dusk"]["abandoned"], [10])
+        self.assert_token_routes(nonces=(12, 14))
+        # Nothing was sent to nonces 10 and 11.
+        self.assertEqual([sent for sent in self.dusk_deploys["txs"].values() if sent["id"] in stub_route_ids(10)], [])
+
+    def test_a_planned_id_taken_between_the_plan_and_the_send_is_left(self):
+        # Someone's contract lands at the token's planned ID right before
+        # this deployment's deploy to it, which fails: the pair is left, and
+        # the next planned and deployed in the same run.
+        token, _ = stub_route_ids(10)
+        self.dusk_deploys["front_run_deploy"] = [token]
+        result = self.run_script("deploy")
+        self.assert_ok(result)
+        self.assertIn("another contract got to its ID first", result.stderr)
+        self.assertIn("Leaving deploy nonces 10 and 11 for the EURd route; planning the next two", result.stderr)
+        self.assertEqual(self.state()["token_routes"]["EURd"]["dusk"]["abandoned"], [10])
+        self.assert_token_routes(nonces=(12, 14))
+        # The failed deploy is in the ledger; nothing else went to nonce 10.
+        failed = [tx for tx, sent in self.dusk_deploys["txs"].items() if sent["id"] == token]
+        self.assertEqual([self.dusk_deploys["txs"][tx]["executed"] for tx in failed], [False])
+
+    def test_a_resumed_deploy_takes_what_its_recorded_transaction_created(self):
+        # A run stops once the token is deployed: its transaction is in the
+        # tx log, and so in the record. The next run takes the token, which
+        # that transaction created, and deploys only the route.
+        self.dusk_deploys["stop_after_token"] = True
+        self.assert_fails(self.run_script("deploy"), "stopped after the token")
+        token, route = stub_route_ids(10)
+        record = self.state()["token_routes"]["EURd"]["dusk"]
+        self.assertEqual(self.dusk_deploys["txs"][record["token_tx"]], {"id": token, "executed": True})
+        self.assertNotIn("route_tx", record)
+        # Had deploy itself stopped before it recorded the transaction, the
+        # tx log, written before the transaction was sent, still has it.
+        state = self.state()
+        for key in ("token_tx", "token_tx_nonce"):
+            del state["token_routes"]["EURd"]["dusk"][key]
+        self.write_state(state)
+        self.assert_ok(self.run_script("deploy"))
+        [deploy] = [line for line in self.route_sends() if "--deploy-nonce 10" in line]
+        self.assertIn(f"--token-tx {record['token_tx']}", deploy)
+        self.assertNotIn("abandoned", self.state()["token_routes"]["EURd"]["dusk"])
+        self.assert_token_routes()
+        self.assertEqual(len([tx for tx, sent in self.dusk_deploys["txs"].items() if sent["id"] == token]), 1)
 
     def test_a_route_that_doesnt_read_back_is_never_recorded_or_used(self):
         attacker = "ee" * 32

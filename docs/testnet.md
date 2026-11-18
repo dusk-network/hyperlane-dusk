@@ -558,9 +558,17 @@ reads back the deployment checks the Sepolia token's decimals and scale.
 
 `deploy` plans each route's deploy nonces, from 10, two a route, and
 records them before it sends anything; `dusk-tx deploy-token-route` then
-deploys the token and the route at them. A run that stops anywhere resumes
-at the same contract IDs, and a plan skips nonces whose IDs someone has
-already taken.
+deploys the token and the route at them. It writes each deploy transaction
+to `deploy/out/<DEPLOY_NAME>/dusk-route-<SYMBOL>.txs` before it sends it,
+and `deploy` records them. A run that stops anywhere resumes at the same
+contract IDs, and takes a contract already at a planned ID only if one of
+those transactions created it, in a final block. A contract there any other
+way may come from a deploy or `init` someone front-ran, and reading it back
+can't rule that out: the token doesn't list who holds its roles, so an
+`init` that gave someone a role besides the deployer would read back the
+same. So `deploy` leaves that pair of nonces, before anything else is sent,
+and plans and deploys the next two. A plan also skips nonces whose IDs are
+taken already.
 Both contracts are read back, by `dusk-tx` and again by `deploy`, before
 the route is recorded as deployed: the route's owner, Mailbox, token, hook,
 ISM and routers, and the token's name, symbol, decimals, supply, cap and
