@@ -42,3 +42,9 @@ clap = { version = "4", features = ["derive"] }
 blake2b_simd = { workspace = true }
 constant_time_eq = { workspace = true }
 time-core = { workspace = true }
+
+[dev-dependencies]
+# The canonical DRC20's own types, which the mirrors in
+# src/canonical_drc20.rs must archive as (as in the types crate's tests).
+canonical-dusk-contract-standards = { package = "dusk-contract-standards", git = "https://github.com/dusk-network/contracts", rev = "bc1b00ee0af059975e158b7b580b4d0c0f1bdf9f" }
+canonical-dusk-core = { package = "dusk-core", version = "=1.6.0" }

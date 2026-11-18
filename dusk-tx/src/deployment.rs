@@ -13,8 +13,13 @@
 //! prices. The read-back asks each route for its router on the local domain
 //! and on every domain the IGP was priced for, which must have none, and the
 //! IGP for the pricing it was sent. The canonical DRC20 a collateral route
-//! can wrap has no view of its admin: the read-back checks that the deployer
-//! holds the whole supply its `init` minted.
+//! can wrap has no view that names its admin: the read-back asks it whether
+//! the deployer holds each role `init` gives the admin, and checks that the
+//! deployer holds the whole supply `init` minted, so that nobody else holds
+//! any of it.
+//!
+//! `deploy-token-route` reads back the canonical DRC20 and the collateral
+//! route it deploys for an existing Mailbox ([`TokenRoute`]) the same way.
 
 use std::fmt;
 use std::future::Future;
@@ -87,14 +92,169 @@ pub struct Sent {
     pub warp_collateral: Option<(ContractId, ContractId)>,
 }
 
-/// The canonical DRC20 `deploy-hyperlane` deploys for a collateral route,
-/// its whole supply minted to the deployer.
+/// A canonical DRC20 deployed for a collateral route to lock: the deployer
+/// its admin, with every role, and the holder of its whole supply, and no
+/// cap.
 pub struct CanonicalToken {
     pub id: ContractId,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
     /// The `balance_of` argument that names the deployer.
     pub holder: Vec<u8>,
     /// What its `init` minted to the deployer.
     pub supply: u64,
+    /// The `has_role` argument for each role the deployer must hold, and
+    /// the role's name.
+    pub roles: Vec<(&'static str, Vec<u8>)>,
+}
+
+/// What `deploy-token-route` deploys for an existing Mailbox: a canonical
+/// DRC20, and a collateral route that locks it.
+pub struct TokenRoute {
+    /// The deployer's public key, which Rusk records as both contracts'
+    /// owner.
+    pub owner_key: Vec<u8>,
+    /// `keccak256` of it: the route's owner.
+    pub owner: H256,
+    pub mailbox: ContractId,
+    /// The domains the route must have no router for: the Mailbox's own,
+    /// and the remote domains the command was given.
+    pub router_domains: Vec<u32>,
+    pub token: CanonicalToken,
+    pub route: ContractId,
+}
+
+/// What a read-back reads: the contracts a command deployed, each owned by
+/// the deployer, and the views each must answer.
+pub trait Deployed {
+    /// The deployer's public key, which Rusk records as every contract's
+    /// owner.
+    fn owner_key(&self) -> &[u8];
+    /// Every contract deployed, by name.
+    fn contracts(&self) -> Vec<(&'static str, ContractId)>;
+    /// Every view to read, with the value an honest deployment returns.
+    fn checks(&self) -> Vec<Check>;
+    /// The command that deployed them, and what to do when they don't read
+    /// back.
+    fn command(&self) -> &'static str;
+    fn remedy(&self) -> &'static str;
+}
+
+impl Deployed for Sent {
+    fn owner_key(&self) -> &[u8] {
+        &self.owner_key
+    }
+
+    fn contracts(&self) -> Vec<(&'static str, ContractId)> {
+        Sent::contracts(self)
+    }
+
+    fn checks(&self) -> Vec<Check> {
+        checks(self)
+    }
+
+    fn command(&self) -> &'static str {
+        "deploy-hyperlane"
+    }
+
+    fn remedy(&self) -> &'static str {
+        "Deploy again with another deployer key."
+    }
+}
+
+impl Deployed for TokenRoute {
+    fn owner_key(&self) -> &[u8] {
+        &self.owner_key
+    }
+
+    fn contracts(&self) -> Vec<(&'static str, ContractId)> {
+        vec![("Token", self.token.id), ("WarpCollateral", self.route)]
+    }
+
+    fn checks(&self) -> Vec<Check> {
+        const NONE: [u8; 32] = [0u8; 32];
+        let route = self.route;
+        let mut checks = token_checks("Token", &self.token);
+        let views = [
+            (
+                "state_version",
+                Value::U32(state_version("warp-drc20-collateral")),
+            ),
+            ("owner", Value::Owner(Some(self.owner))),
+            ("mailbox", Value::Bytes32(self.mailbox.to_bytes())),
+            ("wrapped_token", Value::Bytes32(self.token.id.to_bytes())),
+            ("hook", Value::Bytes32(NONE)),
+            ("interchain_security_module", Value::Bytes32(NONE)),
+            ("pending_total", Value::U64(0)),
+        ];
+        checks.extend(views.into_iter().map(|(method, expected)| Check {
+            name: "WarpCollateral",
+            contract: route.to_bytes(),
+            method,
+            args: rkyv_serialize(&()),
+            shown_args: String::new(),
+            expected,
+        }));
+        for domain in &self.router_domains {
+            checks.push(Check {
+                name: "WarpCollateral",
+                contract: route.to_bytes(),
+                method: "enrolled_router",
+                args: rkyv_serialize(domain),
+                shown_args: format!("({domain})"),
+                expected: Value::Bytes32(NONE),
+            });
+        }
+        checks
+    }
+
+    fn command(&self) -> &'static str {
+        "deploy-token-route"
+    }
+
+    fn remedy(&self) -> &'static str {
+        "Deploy the route again at other deploy nonces."
+    }
+}
+
+/// What a canonical DRC20 must answer: its name, symbol and decimals, its
+/// whole supply held by the deployer, each of the admin's roles held by the
+/// deployer, no cap, and not paused.
+fn token_checks(name: &'static str, token: &CanonicalToken) -> Vec<Check> {
+    let id = token.id.to_bytes();
+    let check = |method, args: Vec<u8>, shown_args: &str, expected| Check {
+        name,
+        contract: id,
+        method,
+        args,
+        shown_args: shown_args.to_string(),
+        expected,
+    };
+    let none = || rkyv_serialize(&());
+    let mut checks = vec![
+        check("name", none(), "", Value::Text(token.name.clone())),
+        check("symbol", none(), "", Value::Text(token.symbol.clone())),
+        check("decimals", none(), "", Value::U8(token.decimals)),
+        check("total_supply", none(), "", Value::U64(token.supply)),
+        check(
+            "balance_of",
+            token.holder.clone(),
+            "(the deployer)",
+            Value::U64(token.supply),
+        ),
+        check("cap", none(), "", Value::U64(0)),
+        check("paused", none(), "", Value::Bool(false)),
+    ];
+    for (role, args) in &token.roles {
+        checks.push(check(
+            "has_role",
+            args.clone(),
+            &format!("({role}, the deployer)"),
+            Value::Bool(true),
+        ));
+    }
+    checks
 }
 
 impl Sent {
@@ -147,6 +307,7 @@ pub enum Value {
     U8(u8),
     U32(u32),
     U64(u64),
+    Bool(bool),
     /// A list of contract IDs.
     Ids(Vec<[u8; 32]>),
     /// `validators_and_threshold()`.
@@ -165,6 +326,7 @@ impl Value {
             Self::U8(_) => Self::U8(rkyv_deserialize(bytes)?),
             Self::U32(_) => Self::U32(rkyv_deserialize(bytes)?),
             Self::U64(_) => Self::U64(rkyv_deserialize(bytes)?),
+            Self::Bool(_) => Self::Bool(rkyv_deserialize(bytes)?),
             Self::Ids(_) => Self::Ids(
                 rkyv_deserialize::<Vec<ContractId>>(bytes)?
                     .into_iter()
@@ -189,6 +351,7 @@ impl Value {
             Self::U8(value) => rkyv_serialize(value),
             Self::U32(value) => rkyv_serialize(value),
             Self::U64(value) => rkyv_serialize(value),
+            Self::Bool(value) => rkyv_serialize(value),
             Self::Ids(ids) => rkyv_serialize(
                 &ids.iter()
                     .map(|id| ContractId::from_bytes(*id))
@@ -212,6 +375,7 @@ impl fmt::Display for Value {
             Self::U8(value) => write!(f, "{value}"),
             Self::U32(value) => write!(f, "{value}"),
             Self::U64(value) => write!(f, "{value}"),
+            Self::Bool(value) => write!(f, "{value}"),
             Self::Ids(ids) => write!(
                 f,
                 "[{}]",
@@ -472,14 +636,7 @@ pub fn checks(sent: &Sent) -> Vec<Check> {
         ));
     }
     if let Some(token) = &sent.canonical_token {
-        checks.push(Check {
-            name: "CollateralToken",
-            contract: token.id.to_bytes(),
-            method: "balance_of",
-            args: token.holder.clone(),
-            shown_args: "(the deployer)".to_string(),
-            expected: Value::U64(token.supply),
-        });
+        checks.extend(token_checks("CollateralToken", token));
     }
     for &(name, route, _) in &routes {
         for domain in sent.router_domains() {
@@ -562,18 +719,18 @@ where
 /// Read back every contract of `sent` and compare it with what was sent.
 /// Returns how many values were read, or every difference and every value
 /// that couldn't be read.
-pub async fn read_back(node: &impl Node, sent: &Sent) -> Result<usize, String> {
+pub async fn read_back(node: &impl Node, sent: &impl Deployed) -> Result<usize, String> {
     let mut problems = Vec::new();
     let mut read = 0;
     for (name, contract) in sent.contracts() {
         let id = contract.to_bytes();
         let label = format!("{name} {}", hex::encode(id));
         match with_retries(|| node.contract_owner(&id)).await {
-            Ok(Some(owner)) if owner == sent.owner_key => read += 1,
+            Ok(Some(owner)) if owner == sent.owner_key() => read += 1,
             Ok(Some(owner)) => problems.push(format!(
                 "{label}: Rusk records its owner as {}, not the deployer {}",
                 crate::describe_owner(&owner),
-                bs58::encode(&sent.owner_key).into_string()
+                bs58::encode(sent.owner_key()).into_string()
             )),
             Ok(None) => problems.push(format!("{label}: there is no contract at this ID")),
             Err(error) => problems.push(format!(
@@ -581,7 +738,7 @@ pub async fn read_back(node: &impl Node, sent: &Sent) -> Result<usize, String> {
             )),
         }
     }
-    for check in checks(sent) {
+    for check in sent.checks() {
         let label = format!("{} {}", check.name, hex::encode(check.contract));
         let view = format!("{}{}", check.method, check.shown_args);
         let found = with_retries(|| node.query(&check.contract, check.method, &check.args))
@@ -600,11 +757,13 @@ pub async fn read_back(node: &impl Node, sent: &Sent) -> Result<usize, String> {
         return Ok(read);
     }
     Err(format!(
-        "The contracts were deployed, but they don't all hold what deploy-hyperlane sent, \
-         so it reports none of them as deployed:\n  - {}\nA deploy or a contract's init may \
-         have been front-run: whoever deployed or initialized a contract first chose its owner \
-         and its bindings. Don't use these contracts. Deploy again with another deployer key.",
-        problems.join("\n  - ")
+        "The contracts were deployed, but they don't all hold what {} sent, so it reports \
+         none of them as deployed:\n  - {}\nA deploy or a contract's init may have been \
+         front-run: whoever deployed or initialized a contract first chose its owner and its \
+         bindings. Don't use these contracts. {}",
+        sent.command(),
+        problems.join("\n  - "),
+        sent.remedy()
     ))
 }
 
@@ -627,13 +786,13 @@ mod tests {
 
     impl FakeNode {
         /// A node with an honest deployment of `sent`.
-        pub fn honest(sent: &Sent) -> Self {
+        pub fn honest(sent: &impl Deployed) -> Self {
             let mut node = Self::default();
             for (_, contract) in sent.contracts() {
                 node.owners
-                    .insert(contract.to_bytes(), Ok(Some(sent.owner_key.clone())));
+                    .insert(contract.to_bytes(), Ok(Some(sent.owner_key().to_vec())));
             }
-            for check in checks(sent) {
+            for check in sent.checks() {
                 node.answer(&check, Ok(check.expected.encode()));
             }
             node
@@ -704,6 +863,24 @@ mod tests {
         }
     }
 
+    /// A canonical DRC20 at `id`, with the deployer's arguments stood in by
+    /// bytes of their own.
+    fn canonical_token(id: ContractId, symbol: &str, decimals: u8, supply: u64) -> CanonicalToken {
+        CanonicalToken {
+            id,
+            name: format!("{symbol} token"),
+            symbol: symbol.to_string(),
+            decimals,
+            holder: vec![7; 12],
+            supply,
+            roles: vec![
+                ("admin", vec![8; 12]),
+                ("minter", vec![9; 12]),
+                ("pauser", vec![10; 12]),
+            ],
+        }
+    }
+
     /// What `demo/deploy.sh` deploys with TestMock: every route, the
     /// collateral one locking the canonical DRC20 deployed with it.
     fn demo() -> Sent {
@@ -714,13 +891,28 @@ mod tests {
                 vec![(31_337, pricing(1)), (31_338, pricing(2))],
             ),
             warp_drc20: Some((contract(0xe2), "Wrapped Ether".into(), "WETH".into(), 18)),
-            canonical_token: Some(CanonicalToken {
-                id: contract(0xe4),
-                holder: vec![7; 12],
-                supply: 5_000_000_000_000_000_000,
-            }),
+            canonical_token: Some(canonical_token(
+                contract(0xe4),
+                "CDRC20",
+                18,
+                5_000_000_000_000_000_000,
+            )),
             warp_collateral: Some((contract(0xe3), contract(0xe4))),
             ..testnet()
+        }
+    }
+
+    /// What `deploy/testnet.sh` deploys for a token route: EURd and its
+    /// collateral route, bound to the testnet deployment's Mailbox.
+    fn token_route() -> TokenRoute {
+        let testnet = testnet();
+        TokenRoute {
+            owner_key: testnet.owner_key,
+            owner: testnet.owner,
+            mailbox: testnet.mailbox,
+            router_domains: vec![1_146_442_572, 11_155_111],
+            token: canonical_token(contract(0xf1), "EURd", 6, 1_000_000_000_000),
+            route: contract(0xf2),
         }
     }
 
@@ -741,6 +933,7 @@ mod tests {
             Value::U8(value) => Value::U8(value.wrapping_add(1)),
             Value::U32(value) => Value::U32(value.wrapping_add(1)),
             Value::U64(value) => Value::U64(value.wrapping_add(1)),
+            Value::Bool(value) => Value::Bool(!value),
             Value::Ids(ids) => Value::Ids(ids.iter().rev().cloned().collect()),
             Value::Validators(validators, threshold) => {
                 Value::Validators(validators.clone(), threshold.wrapping_sub(1))
@@ -800,6 +993,27 @@ mod tests {
         assert!(demo.iter().any(|check| check.name == "CollateralToken"
             && check.method == "balance_of"
             && check.expected == Value::U64(5_000_000_000_000_000_000)));
+        // The canonical DRC20: everything init set, and the deployer holds
+        // each of the admin's roles.
+        for (method, shown_args, expected) in [
+            ("name", "", Value::Text("CDRC20 token".into())),
+            ("symbol", "", Value::Text("CDRC20".into())),
+            ("decimals", "", Value::U8(18)),
+            ("total_supply", "", Value::U64(5_000_000_000_000_000_000)),
+            ("cap", "", Value::U64(0)),
+            ("paused", "", Value::Bool(false)),
+            ("has_role", "(admin, the deployer)", Value::Bool(true)),
+            ("has_role", "(minter, the deployer)", Value::Bool(true)),
+            ("has_role", "(pauser, the deployer)", Value::Bool(true)),
+        ] {
+            assert!(
+                demo.iter().any(|check| check.name == "CollateralToken"
+                    && check.method == method
+                    && check.shown_args == shown_args
+                    && check.expected == expected),
+                "{method}{shown_args}"
+            );
+        }
         assert!(demo.iter().any(|check| check.name == "WarpCollateral"
             && check.method == "wrapped_token"
             && check.expected == Value::Bytes32([0xe4; 32])));
@@ -809,6 +1023,97 @@ mod tests {
                     .iter()
                     .any(|check| check.name == route && check.shown_args == format!("({domain})")));
             }
+        }
+    }
+
+    /// A token route reads back whole: the token's settings, supply and
+    /// roles, and the route's owner and bindings, with no router for the
+    /// Mailbox's domain or the remote ones.
+    #[tokio::test]
+    async fn an_honest_token_route_reads_back_whole() {
+        let sent = token_route();
+        let checks = sent.checks();
+        let read = read_back(&FakeNode::honest(&sent), &sent).await.unwrap();
+        assert_eq!(read, 2 + checks.len());
+        let views: Vec<String> = checks
+            .iter()
+            .map(|check| format!("{} {}{}", check.name, check.method, check.shown_args))
+            .collect();
+        for expected in [
+            "Token name",
+            "Token symbol",
+            "Token decimals",
+            "Token total_supply",
+            "Token balance_of(the deployer)",
+            "Token cap",
+            "Token paused",
+            "Token has_role(admin, the deployer)",
+            "Token has_role(minter, the deployer)",
+            "Token has_role(pauser, the deployer)",
+            "WarpCollateral state_version",
+            "WarpCollateral owner",
+            "WarpCollateral mailbox",
+            "WarpCollateral wrapped_token",
+            "WarpCollateral hook",
+            "WarpCollateral interchain_security_module",
+            "WarpCollateral pending_total",
+            "WarpCollateral enrolled_router(1146442572)",
+            "WarpCollateral enrolled_router(11155111)",
+        ] {
+            assert!(
+                views.contains(&expected.to_string()),
+                "{expected}: {views:?}"
+            );
+        }
+        assert!(checks
+            .iter()
+            .any(|check| check.method == "wrapped_token"
+                && check.expected == Value::Bytes32([0xf1; 32])));
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.method == "mailbox"
+                    && check.expected == Value::Bytes32([0xa1; 32]))
+        );
+    }
+
+    /// A token route whose token someone else initialized, keeping the
+    /// settings but making itself the admin, or minting some of the supply
+    /// to itself, is caught, and so is a route bound to another Mailbox or
+    /// that came with a router; each value counts, and so does each owner
+    /// Rusk records.
+    #[tokio::test]
+    async fn a_token_route_must_read_back_as_sent() {
+        let sent = token_route();
+        for check in sent.checks() {
+            let mut node = FakeNode::honest(&sent);
+            node.answer(&check, Ok(other(&check.expected).encode()));
+            let error = read_back(&node, &sent).await.unwrap_err();
+            let view = format!(
+                "{} {}: {}{} is {}, not {}",
+                check.name,
+                hex::encode(check.contract),
+                check.method,
+                check.shown_args,
+                other(&check.expected),
+                check.expected
+            );
+            assert!(error.contains(&view), "{view}: {error}");
+            assert!(error.contains("what deploy-token-route sent"), "{error}");
+            assert!(error.contains("at other deploy nonces"), "{error}");
+            assert_eq!(error.matches("\n  - ").count(), 1, "{error}");
+        }
+        for (name, contract) in sent.contracts() {
+            let mut node = FakeNode::honest(&sent);
+            node.owners.insert(contract.to_bytes(), Ok(None));
+            let error = read_back(&node, &sent).await.unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "{name} {}: there is no contract at this ID",
+                    hex::encode(contract.to_bytes())
+                )),
+                "{error}"
+            );
         }
     }
 
