@@ -457,6 +457,68 @@ impl RuesClient {
         parse_block_events_response(&body)
     }
 
+    /// Run a GraphQL query and return its `data`.
+    async fn graphql_data(&self, query: &str, what: &str) -> Result<Value, String> {
+        let url = self.endpoint("/graphql");
+        let response = self
+            .client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({ "query": query }))
+                    .expect("GraphQL request serialization should not fail"),
+            )
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {}", e.without_url()))?;
+        let status = response.status();
+        let body = read_response_body(response, MAX_TRANSACTION_STATUS_RESPONSE_BYTES, what)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!(
+                "The {what} query failed ({status}): {}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        let payload: Value =
+            serde_json::from_slice(&body).map_err(|e| format!("Invalid {what} response: {e}"))?;
+        if let Some(errors) = payload.get("errors") {
+            return Err(format!("The {what} query failed: {errors}"));
+        }
+        payload
+            .get("data")
+            .cloned()
+            .ok_or_else(|| format!("The {what} response has no data"))
+    }
+
+    /// The height of the node's last block.
+    pub async fn tip_height(&self) -> Result<u64, String> {
+        let data = self
+            .graphql_data(
+                "query { block(height: -1) { header { height } } }",
+                "tip height",
+            )
+            .await?;
+        data.pointer("/block/header/height")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("The tip height response has no height: {data}"))
+    }
+
+    /// Whether the node holds the transaction in its mempool.
+    pub async fn in_mempool(&self, tx_id: &str) -> Result<bool, String> {
+        let query = format!(r#"query {{ mempoolTx(hash: "{tx_id}") {{ id }} }}"#);
+        let data = self.graphql_data(&query, "mempool transaction").await?;
+        match data.get("mempoolTx") {
+            Some(Value::Null) => Ok(false),
+            Some(Value::Object(_)) => Ok(true),
+            _ => Err(format!(
+                "The mempool transaction response is unexpected: {data}"
+            )),
+        }
+    }
+
     /// Returns whether a contract exists on-chain, using VM metadata.
     ///
     /// This does **not** invoke contract code.

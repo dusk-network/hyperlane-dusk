@@ -1546,7 +1546,8 @@ plan_dusk_token_route() {
 
 # Record in $STATE the transactions deploy-token-route sent for a token
 # route's planned contracts, from the tx log it writes each to before it
-# sends it: the last for each.
+# sends it: the last for each, or none once deploy-token-route has marked
+# that one void, as never sent.
 record_token_route_txs() {
     local symbol="$1" log="$2" base txs
     base=".token_routes[\"$symbol\"]"
@@ -1555,10 +1556,12 @@ record_token_route_txs() {
         [splits("\n") | fromjson? | objects] as $sent
         | ($sent | map(select(.contract == "token" and .id == $t)) | last) as $token
         | ($sent | map(select(.contract == "route" and .id == $r)) | last) as $route
-        | (if $token then {token_tx: $token.tx, token_tx_nonce: $token.nonce} else {} end)
-          + (if $route then {route_tx: $route.tx, route_tx_nonce: $route.nonce} else {} end)' "$log")" \
+        | (if $token == null then {} elif $token.void then {token_tx: null, token_tx_nonce: null}
+           else {token_tx: $token.tx, token_tx_nonce: $token.nonce} end)
+          + (if $route == null then {} elif $route.void then {route_tx: null, route_tx_nonce: null}
+             else {route_tx: $route.tx, route_tx_nonce: $route.nonce} end)' "$log")" \
         || fail "Can't read the tx log $log"
-    [ "$txs" = "{}" ] || state_set --argjson x "$txs" "$base.dusk += \$x"
+    [ "$txs" = "{}" ] || state_set --argjson x "$txs" "$base.dusk += \$x | $base.dusk |= with_entries(select(.value != null))"
 }
 
 # Read back a token route's contracts on Dusk, its canonical DRC20 and the

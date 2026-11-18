@@ -4330,9 +4330,14 @@ mod tests {
             ),
         ];
         // A contract that is there was created by the transaction recorded
-        // for it (token_route_recorded), in a final block.
-        for _ in 0..usize::from(existing.0) + usize::from(existing.1) {
-            replies.extend(recorded_deploy_replies());
+        // for it (token_route_recorded), in a final block; one that isn't,
+        // has none.
+        for (there, id) in [(existing.0, sent.token.id), (existing.1, sent.route)] {
+            if there {
+                replies.extend(recorded_deploy_replies(owner(true, id)));
+            } else {
+                replies.push(owner(false, id));
+            }
         }
         let deploys = usize::from(!existing.0) + usize::from(!existing.1);
         if deploys > 0 {
@@ -4381,12 +4386,35 @@ mod tests {
         replies
     }
 
-    /// The node's replies about a recorded deploy transaction that executed
-    /// in block 9, which is final: its status, then the finality wait's.
-    fn recorded_deploy_replies() -> MockReplies {
-        let executed = br#"{"data":{"tx":{"err":null,"gasSpent":26400000,"blockHeight":9}}}"#;
+    /// A fence's replies: the signer's account, with `nonce`, and the tip.
+    fn fence_replies(nonce: u64) -> MockReplies {
+        use dusk_core::transfer::moonlight::AccountData;
         vec![
+            (
+                "/account",
+                200,
+                super::rkyv_serialize(&AccountData {
+                    nonce,
+                    balance: 1_000_000_000_000_000,
+                }),
+            ),
+            (
+                "/graphql",
+                200,
+                br#"{"data":{"block":{"header":{"height":20}}}}"#.to_vec(),
+            ),
+        ]
+    }
+
+    /// The node's replies about a recorded deploy transaction that executed
+    /// in block 9, which is final: the fence, its status, the contract it
+    /// made (`owner`), then the finality wait's.
+    fn recorded_deploy_replies(owner: (&'static str, u16, Vec<u8>)) -> MockReplies {
+        let executed = br#"{"data":{"tx":{"err":null,"gasSpent":26400000,"blockHeight":9}}}"#;
+        let mut replies = fence_replies(6);
+        replies.extend([
             ("/graphql", 200, executed.to_vec()),
+            owner,
             ("/graphql", 200, executed.to_vec()),
             (
                 "/graphql",
@@ -4394,7 +4422,8 @@ mod tests {
                 br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Final"}}}"#.to_vec(),
             ),
             ("/graphql", 200, executed.to_vec()),
-        ]
+        ]);
+        replies
     }
 
     /// The arguments that name the transactions an earlier run recorded for
@@ -4655,7 +4684,7 @@ mod tests {
     /// sent: someone who deployed there first chose its init, and could
     /// hold roles besides the deployer's, which the token can't list. The
     /// command sends nothing and names it; one recorded transaction that
-    /// failed, or isn't in the ledger, proves nothing either.
+    /// failed, in a final block, or never executed, proves nothing either.
     #[tokio::test]
     async fn deploy_token_route_refuses_contracts_its_transactions_didnt_create() {
         let dir = token_route_wasms("token-route-taken");
@@ -4673,45 +4702,72 @@ mod tests {
                 (path, 404, b"Contract owner not found".to_vec())
             }
         };
-        let failed = br#"{"data":{"tx":{"err":"Panic: contract already exists","gasSpent":2000000,"blockHeight":9}}}"#;
-        for (existing, recorded, status, taken) in [
-            ((true, false), vec![], None, "token"),
-            ((false, true), vec![], None, "route"),
+        let failed = br#"{"data":{"tx":{"err":"Panic: contract already exists","gasSpent":2000000,"blockHeight":9}}}"#.to_vec();
+        let missing = br#"{"data":{"tx":null}}"#.to_vec();
+        let recorded = "7a".repeat(32);
+        let final_block =
+            br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Final"}}}"#.to_vec();
+        let cases: Vec<(bool, bool, Vec<&str>, MockReplies, &str)> = vec![
+            (true, false, vec![], vec![owner(&token, true)], "token"),
             (
-                (true, true),
-                vec![
-                    "--token-tx",
-                    "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
-                ],
-                Some(failed.to_vec()),
+                false,
+                true,
+                vec![],
+                vec![owner(&token, false), owner(&route, true)],
+                "route",
+            ),
+            // Failed, in a final block.
+            (
+                true,
+                true,
+                vec!["--token-tx", &recorded, "--token-tx-nonce", "5"],
+                {
+                    let mut replies = fence_replies(6);
+                    replies.extend([
+                        ("/graphql", 200, failed.clone()),
+                        owner(&token, true),
+                        ("/graphql", 200, failed.clone()),
+                        ("/graphql", 200, final_block.clone()),
+                        ("/graphql", 200, failed.clone()),
+                        owner(&token, true),
+                    ]);
+                    replies
+                },
                 "token",
             ),
+            // Never executed: not in the ledger, before and after the
+            // contract was read.
             (
-                (true, false),
-                vec![
-                    "--token-tx",
-                    "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
-                ],
-                Some(br#"{"data":{"tx":null}}"#.to_vec()),
+                true,
+                false,
+                vec!["--token-tx", &recorded, "--token-tx-nonce", "5"],
+                {
+                    let mut replies = fence_replies(6);
+                    replies.extend([
+                        ("/graphql", 200, missing.clone()),
+                        owner(&token, true),
+                        ("/graphql", 200, missing.clone()),
+                    ]);
+                    replies
+                },
                 "token",
             ),
-        ] {
+        ];
+        for (token_there, route_there, recorded_args, provenance_replies, taken) in cases {
             let mut replies = vec![
                 ("/chain_id", 200, vec![2]),
-                owner(&token, existing.0),
-                owner(&route, existing.1),
+                owner(&token, token_there),
+                owner(&route, route_there),
                 (
                     "/local_domain",
                     200,
                     super::rkyv_serialize(&1_146_442_572u32),
                 ),
             ];
-            if let Some(status) = status {
-                replies.push(("/graphql", 200, status));
-            }
+            replies.extend(provenance_replies);
             let (url, server) = mock_rues(replies);
             let mut args = vec!["--expected-chain-id", "2"];
-            args.extend(recorded);
+            args.extend(recorded_args);
             let output = super::deploy_token_route(token_route_args(&url, &dir, &args))
                 .await
                 .unwrap();
@@ -4735,10 +4791,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Each deploy transaction goes to the tx log before it is sent. A
-    /// deploy that fails because a contract got to the ID between the plan
-    /// and the send leaves the ID to it: nothing more is sent, and the
-    /// output names it for the caller to plan other IDs.
+    /// Each deploy transaction goes to the tx log before it is sent, on a
+    /// line of its own even after a line a run left unfinished. A deploy
+    /// that fails because a contract got to the ID between the plan and the
+    /// send leaves the ID to it: nothing more is sent, and the output names
+    /// it for the caller to plan other IDs.
     #[tokio::test]
     async fn deploy_token_route_logs_each_deploy_and_gives_up_an_id_taken_before_it() {
         use dusk_core::transfer::moonlight::AccountData;
@@ -4750,24 +4807,27 @@ mod tests {
             hex::encode(sent.route.to_bytes()),
         );
         let log = dir.join("route.txs");
+        // A run that stopped in the middle of a line.
+        std::fs::write(&log, br#"{"contract":"token","id":"00","tx":"aa"#).unwrap();
         let failed = br#"{"data":{"tx":{"err":"Panic: contract already exists","gasSpent":2000000,"blockHeight":9}}}"#;
+        let absent = |id: &str| {
+            (
+                leak(format!("{id}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            )
+        };
         let (url, server) = mock_rues(vec![
             ("/chain_id", 200, vec![2]),
-            (
-                leak(format!("{token}/owner")),
-                404,
-                b"Contract owner not found".to_vec(),
-            ),
-            (
-                leak(format!("{route}/owner")),
-                404,
-                b"Contract owner not found".to_vec(),
-            ),
+            absent(&token),
+            absent(&route),
             (
                 "/local_domain",
                 200,
                 super::rkyv_serialize(&1_146_442_572u32),
             ),
+            absent(&token),
+            absent(&route),
             (
                 "/account",
                 200,
@@ -4808,9 +4868,12 @@ mod tests {
             .collect();
         assert_eq!(sends.len(), 1, "the route isn't sent");
         let tx = dusk_core::transfer::Transaction::from_slice(&sends[0].1).unwrap();
-        let logged: Vec<serde_json::Value> = std::fs::read_to_string(&log)
-            .unwrap()
-            .lines()
+        // The unfinished line stays as it was, and the entry has its own.
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], r#"{"contract":"token","id":"00","tx":"aa"#);
+        let logged: Vec<serde_json::Value> = lines[1..]
+            .iter()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(
@@ -4821,11 +4884,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A recorded transaction that isn't in the ledger, for an ID nothing is
-    /// at, is sent again only once the signer's nonce has passed its own:
-    /// until then it may still execute.
+    /// A recorded transaction that isn't in the ledger is settled before
+    /// anything is sent again for its ID. Its nonce is read first, so one
+    /// that executes while the command looks is taken, not deployed again;
+    /// one whose nonce another transaction took, as of a final block, never
+    /// executes; one in neither the ledger nor the mempool, its nonce not
+    /// reached, a couple of blocks on, was never sent, and is marked void.
     #[tokio::test]
-    async fn deploy_token_route_waits_out_a_recorded_transaction_that_may_still_execute() {
+    async fn deploy_token_route_settles_a_recorded_transaction_before_sending_again() {
         use dusk_core::transfer::moonlight::AccountData;
         let dir = token_route_wasms("token-route-pending");
         let sent = token_route_sent(&dir);
@@ -4834,115 +4900,178 @@ mod tests {
             hex::encode(sent.token.id.to_bytes()),
             hex::encode(sent.route.to_bytes()),
         );
-        let (url, server) = mock_rues(vec![
-            ("/chain_id", 200, vec![2]),
-            (
-                leak(format!("{token}/owner")),
-                404,
-                b"Contract owner not found".to_vec(),
-            ),
-            (
-                leak(format!("{route}/owner")),
-                404,
-                b"Contract owner not found".to_vec(),
-            ),
-            (
-                "/local_domain",
-                200,
-                super::rkyv_serialize(&1_146_442_572u32),
-            ),
-            ("/graphql", 200, br#"{"data":{"tx":null}}"#.to_vec()),
+        let owner = |id: &str, exists: bool| {
+            let path = leak(format!("{id}/owner"));
+            if exists {
+                (path, 200, sent.owner_key.clone())
+            } else {
+                (path, 404, b"Contract owner not found".to_vec())
+            }
+        };
+        let recorded = "7a".repeat(32);
+        let missing = br#"{"data":{"tx":null}}"#.to_vec();
+        let executed =
+            br#"{"data":{"tx":{"err":null,"gasSpent":26400000,"blockHeight":9}}}"#.to_vec();
+        let out_of_gas =
+            br#"{"data":{"tx":{"err":"Out of gas","gasSpent":1,"blockHeight":9}}}"#.to_vec();
+        let final_block =
+            br#"{"data":{"block":{"header":{"hash":"ab"},"status":"Final"}}}"#.to_vec();
+        let account = |nonce| {
             (
                 "/account",
                 200,
                 super::rkyv_serialize(&AccountData {
-                    nonce: 4,
+                    nonce,
                     balance: 1_000_000_000_000_000,
                 }),
-            ),
-        ]);
-        let recorded = "7a".repeat(32);
-        let args = [
-            "--expected-chain-id",
-            "2",
-            "--token-tx",
-            &recorded,
-            "--token-tx-nonce",
-            "5",
-        ];
-        let error = super::deploy_token_route(token_route_args(&url, &dir, &args))
-            .await
-            .unwrap_err();
-        assert!(
-            error.contains("may still execute: nothing was sent"),
-            "{error}"
-        );
-        let requests = server.join().unwrap();
-        assert!(requests
-            .iter()
-            .all(|(path, _)| !path.ends_with("/propagate")));
-        // Once the signer's nonce has passed it, the ID is free again.
-        let account = |nonce| {
-            super::rkyv_serialize(&AccountData {
-                nonce,
-                balance: 1_000_000_000_000_000,
-            })
+            )
         };
-        let (url, server) = mock_rues(vec![
-            ("/chain_id", 200, vec![2]),
+        // The next deploy fails out of gas, with nothing at the ID: what
+        // matters is what was sent, and for which contract.
+        let fails = |id: &str| -> MockReplies {
+            vec![
+                account(5),
+                ("/on/transactions/preverify", 200, Vec::new()),
+                ("/on/transactions/propagate", 200, Vec::new()),
+                ("/graphql", 200, out_of_gas.clone()),
+                ("/graphql", 200, out_of_gas.clone()),
+                owner(id, false),
+            ]
+        };
+        let executes = |nonce| -> MockReplies {
+            let mut replies = fence_replies(nonce);
+            replies.extend([
+                ("/graphql", 200, executed.clone()),
+                owner(&token, true),
+                ("/graphql", 200, executed.clone()),
+                ("/graphql", 200, final_block.clone()),
+                ("/graphql", 200, executed.clone()),
+            ]);
+            replies
+        };
+        let cases: Vec<(&str, MockReplies, &str, bool)> = vec![
             (
-                leak(format!("{token}/owner")),
-                404,
-                b"Contract owner not found".to_vec(),
+                "never sent",
+                {
+                    let mut replies = fence_replies(4);
+                    replies.extend([
+                        ("/graphql", 200, missing.clone()),
+                        owner(&token, false),
+                        ("/graphql", 200, br#"{"data":{"mempoolTx":null}}"#.to_vec()),
+                        owner(&route, false),
+                    ]);
+                    replies.extend(fails(&token));
+                    replies
+                },
+                "Failed to deploy Token",
+                true,
             ),
             (
-                leak(format!("{route}/owner")),
-                404,
-                b"Contract owner not found".to_vec(),
+                "its nonce taken",
+                {
+                    let mut replies = fence_replies(5);
+                    replies.extend([
+                        ("/graphql", 200, missing.clone()),
+                        owner(&token, false),
+                        ("/graphql", 200, final_block.clone()),
+                        ("/graphql", 200, missing.clone()),
+                        owner(&route, false),
+                    ]);
+                    replies.extend(fails(&token));
+                    replies
+                },
+                "Failed to deploy Token",
+                false,
             ),
             (
-                "/local_domain",
-                200,
-                super::rkyv_serialize(&1_146_442_572u32),
+                "executing from the mempool",
+                {
+                    let mut replies = fence_replies(4);
+                    replies.extend([
+                        ("/graphql", 200, missing.clone()),
+                        owner(&token, false),
+                        (
+                            "/graphql",
+                            200,
+                            br#"{"data":{"mempoolTx":{"id":"7a"}}}"#.to_vec(),
+                        ),
+                        ("/graphql", 200, executed.clone()),
+                    ]);
+                    replies.extend(executes(5));
+                    replies.push(owner(&route, false));
+                    replies.extend(fails(&route));
+                    replies
+                },
+                "Failed to deploy WarpCollateral",
+                false,
             ),
-            ("/graphql", 200, br#"{"data":{"tx":null}}"#.to_vec()),
-            ("/account", 200, account(5)),
-            ("/account", 200, account(5)),
-            ("/on/transactions/preverify", 200, Vec::new()),
-            ("/on/transactions/propagate", 200, Vec::new()),
-            // What matters here is that it was sent: it then fails, with
-            // nothing at the ID.
             (
-                "/graphql",
-                200,
-                br#"{"data":{"tx":{"err":"Out of gas","gasSpent":1,"blockHeight":9}}}"#.to_vec(),
+                "executing between the reads",
+                {
+                    let mut replies = fence_replies(4);
+                    replies.extend([
+                        ("/graphql", 200, missing.clone()),
+                        owner(&token, true),
+                        ("/graphql", 200, executed.clone()),
+                    ]);
+                    replies.extend(executes(5));
+                    replies.push(owner(&route, false));
+                    replies.extend(fails(&route));
+                    replies
+                },
+                "Failed to deploy WarpCollateral",
+                false,
             ),
-            (
-                "/graphql",
-                200,
-                br#"{"data":{"tx":{"err":"Out of gas","gasSpent":1,"blockHeight":9}}}"#.to_vec(),
-            ),
-            (
-                leak(format!("{token}/owner")),
-                404,
-                b"Contract owner not found".to_vec(),
-            ),
-        ]);
-        let error = super::deploy_token_route(token_route_args(&url, &dir, &args))
-            .await
-            .unwrap_err();
-        assert!(
-            error.contains("Failed to deploy Token") && error.contains("Out of gas"),
-            "{error}"
-        );
-        let requests = server.join().unwrap();
-        assert_eq!(
-            requests
-                .iter()
-                .filter(|(path, _)| path.ends_with("/propagate"))
-                .count(),
-            1
-        );
+        ];
+        for (case, provenance_replies, expected, void) in cases {
+            let log = dir.join(format!("{}.txs", case.replace(' ', "-")));
+            let mut replies = vec![
+                ("/chain_id", 200, vec![2]),
+                owner(&token, false),
+                owner(&route, false),
+                (
+                    "/local_domain",
+                    200,
+                    super::rkyv_serialize(&1_146_442_572u32),
+                ),
+            ];
+            replies.extend(provenance_replies);
+            let (url, server) = mock_rues(replies);
+            let args = [
+                "--expected-chain-id",
+                "2",
+                "--token-tx",
+                &recorded,
+                "--token-tx-nonce",
+                "5",
+                "--tx-log",
+                log.to_str().unwrap(),
+            ];
+            let error = super::deploy_token_route(token_route_args(&url, &dir, &args))
+                .await
+                .unwrap_err();
+            assert!(error.contains(expected), "{case}: {error}");
+            let requests = server.join().unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|(path, _)| path.ends_with("/propagate"))
+                    .count(),
+                1,
+                "{case}"
+            );
+            let logged: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let voided = logged.iter().any(|entry| {
+                entry["void"] == true
+                    && entry["tx"] == recorded.as_str()
+                    && entry["contract"] == "token"
+            });
+            assert_eq!(voided, void, "{case}: {logged:?}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -7486,22 +7615,72 @@ enum Provenance {
     Taken(String),
 }
 
-/// Whose the contract at a planned ID is, from whether one `exists` there
-/// and the transaction an earlier run `recorded` as deploying it, with its
-/// nonce. A deploy to an ID that holds a contract fails, so a recorded
-/// transaction that executed created the contract that is there, with the
-/// init it carries. Without one, or with one that failed or isn't in the
-/// ledger, a contract at the ID was deployed by someone else: its init, and
-/// who holds what in it, are theirs, whatever it reads back.
+/// How long a resumed run waits, a couple of blocks, for a recorded deploy
+/// transaction that is in neither the ledger nor the mempool, and whose
+/// nonce the signer hasn't reached, to show up, before it takes it as never
+/// sent: a run that stopped between logging it and sending it, or one the
+/// node refused before it took it.
+const RECORDED_TX_GRACE: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(30)
+};
+
+/// A fence: the signer's nonce, then the node's tip, whose block holds the
+/// state the nonce was read from or a later one.
+async fn nonce_fence(client: &RuesClient, pk: &BlsPublicKey) -> Result<(u64, u64), String> {
+    let (nonce, _) = client.query_account(pk).await?;
+    Ok((nonce, client.tip_height().await?))
+}
+
+/// Wait until the block at `tip` is final: then a fence read before it is
+/// final too, and a transaction whose nonce it has reached has executed or
+/// failed, in a final block, or never will.
+async fn wait_until_final(client: &RuesClient, tip: u64) -> Result<(), String> {
+    let timeout = finality_wait().unwrap_or(RECORDED_DEPLOY_FINALITY_TIMEOUT);
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match client.query_block_status(tip).await {
+            Ok(Some(block)) if block.is_final() => return Ok(()),
+            Ok(_) | Err(TransactionStatusQueryError::Retryable(_)) => {}
+            Err(TransactionStatusQueryError::Terminal(error)) => return Err(error),
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Block {tip} wasn't final within {}s: the signer's nonce can't be taken as final yet",
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(TRANSACTION_POLL_INTERVAL).await;
+    }
+}
+
+/// Whose the contract at a planned ID is, from the transaction an earlier
+/// run `recorded` as deploying it, with its nonce. A deploy to an ID that
+/// holds a contract fails, so a recorded transaction that executed created
+/// the contract that is there, with the init it carries. Without one, or
+/// with one that failed or never executed, a contract at the ID was
+/// deployed by someone else: its init, and who holds what in it, are
+/// theirs, whatever it reads back.
+///
+/// The transaction is read after the signer's nonce, and the contract after
+/// the transaction, so that one executing between the reads is seen: once
+/// the nonce has reached the transaction's, as of a final block, the reads
+/// after it see how the transaction ended. A failure counts only once its
+/// block is final. A recorded transaction that is in neither the ledger nor
+/// the mempool, with its nonce not reached, a couple of blocks on, was never
+/// sent: it is marked void in the tx log, and the ID deployed afresh.
 async fn provenance(
     client: &RuesClient,
     what: &str,
-    exists: bool,
+    id_hex: &str,
     recorded: Option<(&str, Option<u64>)>,
     pk: &BlsPublicKey,
+    tx_log: Option<&std::path::Path>,
 ) -> Result<Provenance, String> {
+    let exists = || async { Ok::<_, String>(client.contract_owner(id_hex).await?.is_some()) };
     let Some((tx_id, tx_nonce)) = recorded else {
-        return Ok(if exists {
+        return Ok(if exists().await? {
             Provenance::Taken(
                 "a contract is at its planned ID that no transaction of this deployment's created"
                     .to_string(),
@@ -7510,64 +7689,131 @@ async fn provenance(
             Provenance::Free
         });
     };
-    let status = client.query_transaction_status(tx_id).await.map_err(|e| {
-        format!("Can't read transaction {tx_id}, recorded as deploying the {what}: {e}")
+    let tx_nonce = tx_nonce.ok_or_else(|| {
+        format!("Transaction {tx_id}, recorded as deploying the {what}, has no nonce recorded")
     })?;
-    match status {
-        TransactionStatus::Executed(_) => {
-            if !exists {
-                return Err(format!(
-                    "Transaction {tx_id}, recorded as deploying the {what}, executed, but no \
-                     contract is at the {what}'s ID: nothing was sent"
-                ));
-            }
-            let timeout = finality_wait().unwrap_or(RECORDED_DEPLOY_FINALITY_TIMEOUT);
-            wait_for_finality(client, tx_id, timeout).await?;
-            Ok(Provenance::Ours)
+    let status = |tx_id: &str| {
+        let tx_id = tx_id.to_owned();
+        async move {
+            client.query_transaction_status(&tx_id).await.map_err(|e| {
+                format!("Can't read transaction {tx_id}, recorded as deploying the {what}: {e}")
+            })
         }
-        TransactionStatus::Failed { error, .. } => Ok(if exists {
-            Provenance::Taken(format!(
-                "this deployment's transaction {tx_id} deploying it failed ({error}), and \
-                 another contract is at its planned ID"
-            ))
-        } else {
-            Provenance::Free
-        }),
-        TransactionStatus::NotFound if exists => Ok(Provenance::Taken(format!(
-            "a contract is at its planned ID, and this deployment's transaction {tx_id} \
-             deploying it isn't in the ledger"
-        ))),
-        TransactionStatus::NotFound => {
-            // Nothing is there, and the recorded transaction never executed.
-            // It can't any more once the signer's nonce has passed its own.
-            let (account_nonce, _) = client.query_account(pk).await?;
-            match tx_nonce {
-                Some(nonce) if account_nonce >= nonce => Ok(Provenance::Free),
-                _ => Err(format!(
-                    "Transaction {tx_id}, recorded as deploying the {what}, isn't in the ledger \
-                     and may still execute: nothing was sent. Run again once it is in a final \
-                     block, or a later transaction of the signer's is."
-                )),
+    };
+    let timeout = finality_wait().unwrap_or(RECORDED_DEPLOY_FINALITY_TIMEOUT);
+    let grace = tokio::time::Instant::now() + RECORDED_TX_GRACE;
+    let mut mempool_waits = 0;
+    loop {
+        let (fence, tip) = nonce_fence(client, pk).await?;
+        let found = status(tx_id).await?;
+        let there = exists().await?;
+        match found {
+            TransactionStatus::Executed(_) => {
+                wait_for_finality(client, tx_id, timeout).await?;
+                if !there {
+                    return Err(format!(
+                        "Transaction {tx_id}, recorded as deploying the {what}, executed, but no \
+                         contract is at the {what}'s ID: nothing was sent"
+                    ));
+                }
+                return Ok(Provenance::Ours);
+            }
+            TransactionStatus::Failed { error, .. } => {
+                match wait_for_finality(client, tx_id, timeout).await {
+                    Err(e) if e.starts_with(&format!("Transaction {tx_id} failed: ")) => {}
+                    Err(e) => return Err(e),
+                    // It executed after all, in another block: look again.
+                    Ok(_) => continue,
+                }
+                return Ok(if exists().await? {
+                    Provenance::Taken(format!(
+                        "this deployment's transaction {tx_id} deploying it failed ({error}), \
+                         and another contract is at its planned ID"
+                    ))
+                } else {
+                    Provenance::Free
+                });
+            }
+            TransactionStatus::NotFound if there => {
+                // The transaction may have executed since it was read.
+                if !matches!(status(tx_id).await?, TransactionStatus::NotFound) {
+                    continue;
+                }
+                return Ok(Provenance::Taken(format!(
+                    "a contract is at its planned ID, and this deployment's transaction {tx_id} \
+                     deploying it never executed"
+                )));
+            }
+            TransactionStatus::NotFound if fence >= tx_nonce => {
+                // Its nonce went to another transaction. Once that is final,
+                // it never executes.
+                wait_until_final(client, tip).await?;
+                if !matches!(status(tx_id).await?, TransactionStatus::NotFound) {
+                    continue;
+                }
+                return Ok(Provenance::Free);
+            }
+            TransactionStatus::NotFound => {
+                if client.in_mempool(tx_id).await? {
+                    mempool_waits += 1;
+                    if mempool_waits > 3 {
+                        return Err(format!(
+                            "Transaction {tx_id}, recorded as deploying the {what}, is still in \
+                             the mempool: nothing was sent. Run again once it is in a block."
+                        ));
+                    }
+                    // Wait for it to land, then look again.
+                    let _ = wait_for_inclusion(client, tx_id).await;
+                    continue;
+                }
+                if tokio::time::Instant::now() < grace {
+                    tokio::time::sleep(TRANSACTION_POLL_INTERVAL.min(RECORDED_TX_GRACE)).await;
+                    continue;
+                }
+                eprintln!(
+                    "  Transaction {tx_id}, recorded as deploying the {what}, is in neither the \
+                     ledger nor the mempool, and the signer's nonce hasn't reached its own: it \
+                     was never sent. Marked void; deploying the {what} afresh."
+                );
+                if let Some(path) = tx_log {
+                    append_tx_log(
+                        path,
+                        &json!({"contract": what, "id": id_hex, "tx": tx_id, "nonce": tx_nonce, "void": true}),
+                    )?;
+                }
+                return Ok(Provenance::Free);
             }
         }
     }
 }
 
 /// Append a deploy transaction to the tx log, on disk, before it is sent.
+/// A last line a run left unfinished is ended first, so it can't run into
+/// this one.
 fn append_tx_log(path: &std::path::Path, entry: &serde_json::Value) -> Result<(), String> {
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let error = |e: std::io::Error| format!("Can't write the tx log {}: {e}", path.display());
     let mut file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)
-        .and_then(|mut file| {
-            writeln!(file, "{entry}")?;
-            Ok(file)
-        })
-        .map_err(|e| format!("Can't write the tx log {}: {e}", path.display()))?;
-    file.flush()
+        .map_err(error)?;
+    let length = file.metadata().map_err(error)?.len();
+    let mut separator = "";
+    if length > 0 {
+        let mut last = [0u8; 1];
+        file.seek(SeekFrom::Start(length - 1))
+            .and_then(|_| file.read_exact(&mut last))
+            .map_err(error)?;
+        if last[0] != b'\n' {
+            separator = "\n";
+        }
+    }
+    writeln!(file, "{separator}{entry}")
+        .and_then(|()| file.flush())
         .and_then(|()| file.sync_all())
-        .map_err(|e| format!("Can't write the tx log {}: {e}", path.display()))
+        .map_err(error)
 }
 
 /// Deploy one of a token route's contracts, after appending its transaction
@@ -7736,23 +7982,26 @@ async fn deploy_token_route(args: TokenRouteArgs) -> Result<serde_json::Value, S
     let token_state = provenance(
         &client,
         "token",
-        token_exists,
+        &token_hex,
         args.token_tx.as_deref().map(|tx| (tx, args.token_tx_nonce)),
         &pk,
+        args.tx_log.as_deref(),
     )
     .await?;
+    if let Provenance::Taken(reason) = &token_state {
+        return Ok(taken_output(output, "token", reason));
+    }
     let route_state = provenance(
         &client,
         "route",
-        route_exists,
+        &route_hex,
         args.route_tx.as_deref().map(|tx| (tx, args.route_tx_nonce)),
         &pk,
+        args.tx_log.as_deref(),
     )
     .await?;
-    for (what, state) in [("token", &token_state), ("route", &route_state)] {
-        if let Provenance::Taken(reason) = state {
-            return Ok(taken_output(output, what, reason));
-        }
+    if let Provenance::Taken(reason) = &route_state {
+        return Ok(taken_output(output, "route", reason));
     }
     let shown = |state: &Provenance| match state {
         Provenance::Ours => " (already there, deployed by this deployment's recorded transaction)",
