@@ -4919,6 +4919,88 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The block a fence read the nonce at is replaced again and again,
+    /// each time after a poll that found it not yet final: settling keeps to
+    /// one deadline for all of it, and stops, sending nothing, rather than
+    /// read the nonce afresh with a new deadline each time.
+    #[tokio::test]
+    async fn deploy_token_route_settles_within_one_deadline_however_often_a_fence_block_is_replaced(
+    ) {
+        let dir = token_route_wasms("token-route-replaced");
+        let sent = token_route_sent(&dir);
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let (token, route) = (
+            hex::encode(sent.token.id.to_bytes()),
+            hex::encode(sent.route.to_bytes()),
+        );
+        let absent = |id: &str| -> (&'static str, u16, Vec<u8>) {
+            (
+                leak(format!("{id}/owner")),
+                404,
+                b"Contract owner not found".to_vec(),
+            )
+        };
+        let recorded = "7a".repeat(32);
+        let missing = br#"{"data":{"tx":null}}"#.to_vec();
+        let mut replies = vec![
+            ("/chain_id", 200, vec![2]),
+            absent(&token),
+            absent(&route),
+            (
+                "/local_domain",
+                200,
+                super::rkyv_serialize(&1_146_442_572u32),
+            ),
+        ];
+        // Each poll interval (3s) of the 8s a test build gives settling: the
+        // fence's block is not final yet, then another is at its height.
+        for (fenced, next) in [("aa", "bb"), ("bb", "cc")] {
+            replies.extend(fence_replies_at(5, fenced));
+            replies.extend([
+                ("/graphql", 200, missing.clone()),
+                absent(&token),
+                block_reply(fenced, "Accepted"),
+                block_reply(next, "Accepted"),
+            ]);
+        }
+        replies.extend(fence_replies_at(5, "cc"));
+        replies.extend([
+            ("/graphql", 200, missing.clone()),
+            absent(&token),
+            block_reply("cc", "Accepted"),
+        ]);
+        let (url, server) = mock_rues(replies);
+        let log = dir.join("replaced.txs");
+        let args = [
+            "--expected-chain-id",
+            "2",
+            "--token-tx",
+            &recorded,
+            "--token-tx-nonce",
+            "5",
+            "--tx-log",
+            log.to_str().unwrap(),
+        ];
+        let started = std::time::Instant::now();
+        let error = super::deploy_token_route(token_route_args(&url, &dir, &args))
+            .await
+            .unwrap_err();
+        assert!(error.contains("wasn't final by the deadline"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(11),
+            "{:?}",
+            started.elapsed()
+        );
+        let requests = server.join().unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|(path, _)| !path.ends_with("/propagate")),
+            "nothing is sent"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A recorded transaction that isn't in the ledger is settled before
     /// anything is sent again for its ID. Its nonce is read first, so one
     /// that executes while the command looks is taken, not deployed again;
@@ -7670,9 +7752,13 @@ async fn cmd_deploy_token_route(args: TokenRouteArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// How long a resumed run waits for the block of a recorded deploy
-/// transaction to be final, without --wait-finality.
-const RECORDED_DEPLOY_FINALITY_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a resumed run settles a recorded deploy transaction, its waits
+/// for blocks to be final included, without --wait-finality.
+const RECORDED_DEPLOY_FINALITY_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(8)
+} else {
+    Duration::from_secs(300)
+};
 
 /// Whose a token route's contract at its planned ID is.
 #[derive(Debug, PartialEq, Eq)]
@@ -7739,11 +7825,19 @@ enum FenceBlock {
 /// Once it is final, a transaction whose nonce the fence has reached has
 /// executed or failed, in a final block, or never will. The block's hash
 /// and label come from one read of the block at its height.
-async fn wait_until_final(client: &RuesClient, block: &BlockId) -> Result<FenceBlock, String> {
+async fn wait_until_final(
+    client: &RuesClient,
+    block: &BlockId,
+    deadline: tokio::time::Instant,
+) -> Result<FenceBlock, String> {
     let (height, hash) = block;
-    let timeout = finality_wait().unwrap_or(RECORDED_DEPLOY_FINALITY_TIMEOUT);
-    let deadline = tokio::time::Instant::now() + timeout;
     loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Block {height} ({hash}) wasn't final by the deadline: the signer's nonce can't \
+                 be taken as final yet"
+            ));
+        }
         match client.query_block_status(*height).await {
             Ok(Some(found)) if found.hash != *hash => return Ok(FenceBlock::Replaced),
             Ok(None) => return Ok(FenceBlock::Replaced),
@@ -7751,14 +7845,8 @@ async fn wait_until_final(client: &RuesClient, block: &BlockId) -> Result<FenceB
             Ok(Some(_)) | Err(TransactionStatusQueryError::Retryable(_)) => {}
             Err(TransactionStatusQueryError::Terminal(error)) => return Err(error),
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "Block {height} ({hash}) wasn't final within {}s: the signer's nonce can't be \
-                 taken as final yet",
-                timeout.as_secs()
-            ));
-        }
-        tokio::time::sleep(TRANSACTION_POLL_INTERVAL).await;
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::sleep(TRANSACTION_POLL_INTERVAL.min(left)).await;
     }
 }
 
@@ -7807,16 +7895,27 @@ async fn provenance(
             })
         }
     };
+    // One deadline for settling it, each fence read again after a replaced
+    // block included.
     let timeout = finality_wait().unwrap_or(RECORDED_DEPLOY_FINALITY_TIMEOUT);
+    let deadline = tokio::time::Instant::now() + timeout;
     let grace = tokio::time::Instant::now() + RECORDED_TX_GRACE;
     let mut mempool_waits = 0;
     loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Err(format!(
+                "Transaction {tx_id}, recorded as deploying the {what}, wasn't settled within {}s: \
+                 nothing was sent. Run again.",
+                timeout.as_secs()
+            ));
+        }
         let (fence, fence_block) = nonce_fence(client, pk).await?;
         let found = status(tx_id).await?;
         let there = exists().await?;
         match found {
             TransactionStatus::Executed(_) => {
-                wait_for_finality(client, tx_id, timeout).await?;
+                wait_for_finality(client, tx_id, left).await?;
                 if !there {
                     return Err(format!(
                         "Transaction {tx_id}, recorded as deploying the {what}, executed, but no \
@@ -7826,7 +7925,7 @@ async fn provenance(
                 return Ok(Provenance::Ours);
             }
             TransactionStatus::Failed { error, .. } => {
-                match wait_for_finality(client, tx_id, timeout).await {
+                match wait_for_finality(client, tx_id, left).await {
                     Err(e) if e.starts_with(&format!("Transaction {tx_id} failed: ")) => {}
                     Err(e) => return Err(e),
                     // It executed after all, in another block: look again.
@@ -7854,7 +7953,7 @@ async fn provenance(
             TransactionStatus::NotFound if fence >= tx_nonce => {
                 // Its nonce went to another transaction. Once that is final,
                 // it never executes.
-                if wait_until_final(client, &fence_block).await? == FenceBlock::Replaced {
+                if wait_until_final(client, &fence_block, deadline).await? == FenceBlock::Replaced {
                     // The nonce was read at a block that is gone: prove it again.
                     continue;
                 }
