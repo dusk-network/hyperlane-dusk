@@ -694,9 +694,20 @@ def creation_input(name, args):
         return creation_code(name)
     return creation_code(name) + encode({"sig": f"constructor({CONSTRUCTOR_TYPES[name]})", "args": args})[2:]
 
+def create_address(sender, nonce):
+    # The address a sender's creation with that nonce gets, from those two
+    # alone, as CREATE's does.
+    return derive("create", sender.lower(), nonce)
+
 def new_address(state, sender):
-    state["nonce"] += 1
-    return derive("create", sender, state["nonce"])
+    # The address of the creation the sender sends next. "wrong_address", n:
+    # the next n creations land, and their receipts say they landed,
+    # somewhere else, as a node misreporting them would show.
+    nonce = state.get("account_nonces", {}).get(sender.lower(), 0)
+    if state.get("wrong_address", 0) > 0:
+        state["wrong_address"] -= 1
+        return derive("elsewhere", sender.lower(), nonce)
+    return create_address(sender, nonce)
 
 CREATED = {
     "StorageGasOracle": lambda sender, args: {"type": "oracle", "owner": sender, "data": {}},
@@ -875,10 +886,7 @@ def main_cast(argv):
             nonce = max(nonce - 1, 0)
         print(nonce)
     elif command == "compute-address":
-        sender, nonce = positional[1].lower(), int(options["--nonce"])
-        created = [r["contractAddress"] for r in state.get("receipts", {}).values()
-                   if r["from"] == sender and r.get("nonce") == nonce and r["contractAddress"]]
-        print(f"Computed Address: {created[0] if created else derive('unused', sender, nonce)}")
+        print(f"Computed Address: {create_address(positional[1], int(options['--nonce']))}")
     elif command == "block" and "--full" in flags:
         number = int(positional[1])
         found = [{"hash": tx, "from": r["from"], "to": r["to"], "nonce": hex(r.get("nonce", 0)),
@@ -1629,7 +1637,13 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         # The nonce is the highest of three reads: two nodes behind don't
         # matter. With all three behind, the node refuses the nonce they
         # give, which another transaction of the deployer's took: nothing
-        # is sent again.
+        # is sent again. (Creations' addresses follow the deployer's nonce,
+        # so the deploy to compare with starts at the same one.)
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm["account_nonces"] = {DEPLOYER.lower(): 5}
+        self.assert_ok(self.run_script("deploy"))
+        honest = self.deployed_transactions()
         for stale, fails in ((2, False), (3, True)):
             with self.subTest(stale_reads=stale):
                 self.evm = sepolia()
@@ -1667,6 +1681,16 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         self.assert_fails(self.run_script("deploy"), "nothing was sent again. Run deploy again")
         self.assert_ok(self.run_script("deploy"))
         self.assertEqual(self.deployed_transactions(), honest)
+        # A creation whose receipt says it landed somewhere other than the
+        # address its nonce gives isn't taken: deploy stops, sending nothing
+        # again.
+        self.evm = sepolia()
+        self.forget_deployment()
+        self.evm.update(accept_then_refuse=1, accept_then_refuse_skip=1, wrong_address=1)
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
+        self.assert_fails(result, "nothing was sent again")
+        self.assertNotIn("taking it", result.stderr)
+        self.assertEqual(len([r for r in self.evm["receipts"].values() if r["contractAddress"]]), 1)
 
 
 class TestnetTypelessHooks(TestnetScript):
