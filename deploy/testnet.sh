@@ -244,27 +244,27 @@ evm_read_block() {
 # yet. A revert is the contract's answer, at any block. Prints the read's
 # output, or its error.
 evm_read() {
-    local block out errors deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    local block out errors deadline
+    deadline="$(evm_deadline "${EVM_SETTLE_SECONDS:-120}")"
     block="$(evm_read_block)"
     if [ "$block" = latest ]; then
         "$@" --rpc-url "$EVM_RPC"
         return
     fi
     errors="$(mktemp)" || return 1
-    while :; do
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if out="$("$@" --block "$block" --rpc-url "$EVM_RPC" 2>"$errors")"; then
             rm -f "$errors"
             printf '%s\n' "$out"
             return 0
         fi
-        if grep -qi 'revert' "$errors" || [ "$SECONDS" -ge "$deadline" ]; then
-            cat "$errors" >&2
-            rm -f "$errors"
-            return 1
-        fi
-        sleep 1
+        grep -qi 'revert' "$errors" && break
+        evm_sleep_until "$deadline" 1
         block="$(evm_read_block)"
     done
+    cat "$errors" >&2
+    rm -f "$errors"
+    return 1
 }
 evm_call() { evm_read cast call "$@"; }
 # After each write, evm_settle also waits until the endpoint answers at or
@@ -293,17 +293,22 @@ evm_settle() {
 # node that answers may not have seen the transaction yet. Prints the last
 # error if it never does.
 evm_receipt() {
-    local tx="$1" out deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    local tx="$1" out errors deadline
+    deadline="$(evm_deadline "${EVM_SETTLE_SECONDS:-120}")"
     shift
-    while :; do
-        out="$(cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" 2>/dev/null)" && [ -n "$out" ] \
-            && { printf '%s\n' "$out"; return 0; }
-        if [ "$SECONDS" -ge "$deadline" ]; then
-            cast receipt "$tx" "$@" --rpc-url "$EVM_RPC" >/dev/null
-            return 1
+    errors="$(mktemp)" || return 1
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if out="$(cast receipt "$tx" "$@" --rpc-timeout "$(evm_time_left "$deadline")" \
+            --rpc-url "$EVM_RPC" 2>"$errors")" && [ -n "$out" ]; then
+            rm -f "$errors"
+            printf '%s\n' "$out"
+            return 0
         fi
-        sleep 2
+        evm_sleep_until "$deadline" 2
     done
+    cat "$errors" >&2
+    rm -f "$errors"
+    return 1
 }
 # The block a transaction is in, once EVM_RPC has its receipt.
 evm_tx_block() {
@@ -467,9 +472,15 @@ evm_settle_pending() {
     [ -n "$_sp_pending" ] || return 0
     _sp_nonce="$(jq -r .nonce <<<"$_sp_pending")" _sp_label="$(jq -r .label <<<"$_sp_pending")"
     info "Settling the deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending..."
+    # One deadline for the whole attempt, rechecks after a replaced block
+    # included: each wait below keeps to it (evm_deadline).
+    local evm_attempt_deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120} + ${EVM_FINALITY_SECONDS:-1800}))
     while :; do
-        _sp_tx="$(evm_sent_with_nonce "$(evm_deployer)" "$_sp_nonce" "$(jq -r .from_block <<<"$_sp_pending")")" \
-            || fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending, isn't in a block: it may still be pending, so nothing was sent. Run deploy again once it is in a block. If it never went out, and the deployer's nonce stays below $_sp_nonce, remove the entry \"$_sp_step\" from .evm_sending in $STATE first."
+        if ! _sp_tx="$(evm_sent_with_nonce "$(evm_deployer)" "$_sp_nonce" "$(jq -r .from_block <<<"$_sp_pending")")"; then
+            [ "$SECONDS" -lt "$evm_attempt_deadline" ] \
+                || fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): settling it again didn't finish by the attempt's deadline (EVM_SETTLE_SECONDS plus EVM_FINALITY_SECONDS), so nothing was sent. Run deploy again."
+            fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label), which an earlier run sent or was sending, isn't in the blocks read (above): it may still be pending, or in a later block, so nothing was sent. Run deploy again: it reads from block $(jq -r .from_block <<<"$_sp_pending") again, and a larger EVM_SETTLE_SECONDS reads further. If it never went out, and the deployer's nonce stays below $_sp_nonce, remove the entry \"$_sp_step\" from .evm_sending in $STATE first."
+        fi
         if jq -e --argjson p "$_sp_pending" \
             '((.to // "") | ascii_downcase) == $p.to and ((.input // .data // "") | ascii_downcase) == $p.input' \
             <<<"$_sp_tx" >/dev/null; then
@@ -515,8 +526,12 @@ evm_settle_pending() {
                 evm_done "$_sp_step"
                 return 0
                 ;;
-            2) info "Another block took the place of the one it was in: settling it again..." ;;
-            *) fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): ${_sp_what,}, in a block that isn't final after ${EVM_FINALITY_SECONDS:-1800}s. Until it is, that can change, so nothing was sent. Run deploy again once it is." ;;
+            2)
+                [ "$SECONDS" -lt "$evm_attempt_deadline" ] \
+                    || fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): ${_sp_what,}, in a block another took the place of, and settling it again would go past the attempt's deadline (EVM_SETTLE_SECONDS plus EVM_FINALITY_SECONDS): nothing was sent. Run deploy again."
+                info "Another block took the place of the one it was in: settling it again..."
+                ;;
+            *) fail "The deployer's transaction with nonce $_sp_nonce ($_sp_label): ${_sp_what,}, in a block that wasn't final, and the chain's, by the attempt's deadline (EVM_FINALITY_SECONDS for the block, within EVM_SETTLE_SECONDS plus EVM_FINALITY_SECONDS for the attempt). Until it is, that can change, so nothing was sent. Run deploy again once it is." ;;
         esac
     done
 }
@@ -526,23 +541,25 @@ evm_settle_pending() {
 # if it is, 2 if another block took its place, and 1 if it isn't final in
 # time, or can't be read.
 evm_final_canonical() {
-    local number hash final canonical deadline=$((SECONDS + ${EVM_FINALITY_SECONDS:-1800}))
+    local number hash final canonical deadline
+    deadline="$(evm_deadline "${EVM_FINALITY_SECONDS:-1800}")"
     number="$(evm_block_number "$(jq -r '.blockNumber // empty' <<<"$1")")" || return 1
     hash="$(lower "$(jq -r '.blockHash // empty' <<<"$1")")"
     [[ "$number" =~ ^[0-9]+$ ]] && [[ "$hash" =~ ^0x[0-9a-f]{64}$ ]] || return 1
-    while :; do
-        final="$(cast block-number finalized --rpc-url "$EVM_RPC" 2>/dev/null)" || final=""
-        if [[ "$final" =~ ^[0-9]+$ ]] && [ "$final" -ge "$number" ]; then
-            canonical="$(cast block "$number" --json --rpc-url "$EVM_RPC" 2>/dev/null | jq -r '.hash // empty' 2>/dev/null)" \
-                || canonical=""
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        final="$(cast block-number finalized --rpc-timeout "$(evm_time_left "$deadline")" \
+            --rpc-url "$EVM_RPC" 2>/dev/null)" || final=""
+        if [[ "$final" =~ ^[0-9]+$ ]] && [ "$final" -ge "$number" ] && [ "$SECONDS" -lt "$deadline" ]; then
+            canonical="$(cast block "$number" --json --rpc-timeout "$(evm_time_left "$deadline")" \
+                --rpc-url "$EVM_RPC" 2>/dev/null | jq -r '.hash // empty' 2>/dev/null)" || canonical=""
             if [[ "$canonical" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
                 [ "$(lower "$canonical")" = "$hash" ] && return 0
                 return 2
             fi
         fi
-        [ "$SECONDS" -lt "$deadline" ] || return 1
-        sleep 2
+        evm_sleep_until "$deadline" 2
     done
+    return 1
 }
 # The transaction <sender> sent with <nonce>, as `cast block --full --json`
 # shows it, in a block from <from block> to the head, waiting up to
@@ -550,12 +567,13 @@ evm_final_canonical() {
 # many blocks are left to read, and each read is given only what is left
 # of it.
 evm_sent_with_nonce() {
-    local sender="$1" nonce="$2" block="$3" head txs found deadline=$((SECONDS + ${EVM_SETTLE_SECONDS:-120}))
+    local sender="$1" nonce="$2" from="$3" block="$3" head="" txs found deadline
+    deadline="$(evm_deadline "${EVM_SETTLE_SECONDS:-120}")"
     sender="$(lower "$sender")"
-    while :; do
+    while [ "$SECONDS" -lt "$deadline" ]; do
         head="$(cast block-number --rpc-timeout "$(evm_time_left "$deadline")" --rpc-url "$EVM_RPC" 2>/dev/null)" \
             || head=""
-        while [[ "$head" =~ ^[0-9]+$ ]] && [ "$block" -le "$head" ]; do
+        while [[ "$head" =~ ^[0-9]+$ ]] && [ "$block" -le "$head" ] && [ "$SECONDS" -lt "$deadline" ]; do
             txs="$(cast block "$block" --full --json --rpc-timeout "$(evm_time_left "$deadline")" \
                 --rpc-url "$EVM_RPC" 2>/dev/null)" || break
             found="$(jq -c --arg s "$sender" --arg n "$nonce" --arg h "$(printf '0x%x' "$nonce")" \
@@ -566,11 +584,15 @@ evm_sent_with_nonce() {
                 return 0
             fi
             block=$((block + 1))
-            [ "$SECONDS" -lt "$deadline" ] || return 1
         done
-        [ "$SECONDS" -lt "$deadline" ] || return 1
-        sleep 2
+        evm_sleep_until "$deadline" 2
     done
+    if [ "$block" -gt "$from" ]; then
+        info "No transaction of $sender's with nonce $nonce in blocks $from to $((block - 1)) of $EVM_CHAIN_NAME (the head was ${head:-unknown}), read before the deadline"
+    else
+        info "No block from $from on of $EVM_CHAIN_NAME was read before the deadline, for $sender's transaction with nonce $nonce"
+    fi
+    return 1
 }
 # The whole seconds left until <deadline> (a $SECONDS value), at least 1:
 # what an RPC request made against it may take.
@@ -578,6 +600,22 @@ evm_time_left() {
     local left=$(($1 - SECONDS))
     [ "$left" -ge 1 ] || left=1
     printf '%s' "$left"
+}
+# The deadline (a $SECONDS value) of a wait of <seconds> starting now: the
+# end of those seconds, or the deadline of the settlement attempt it is part
+# of (evm_attempt_deadline, set by evm_settle_pending), if that is sooner.
+evm_deadline() {
+    local own=$((SECONDS + $1))
+    if [ -n "${evm_attempt_deadline:-}" ] && [ "$evm_attempt_deadline" -lt "$own" ]; then
+        own="$evm_attempt_deadline"
+    fi
+    printf '%s' "$own"
+}
+# evm_sleep_until <deadline> <seconds>: sleep the seconds, or until the
+# deadline if that is sooner.
+evm_sleep_until() {
+    local left=$(($1 - SECONDS))
+    [ "$left" -le 0 ] || sleep "$((left < $2 ? left : $2))"
 }
 # The receipt of the deployer's transaction with <nonce>, <tx> as
 # evm_sent_with_nonce shows it, if it is the creation <input>: it executed,

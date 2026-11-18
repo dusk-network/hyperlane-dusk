@@ -1067,7 +1067,11 @@ def main_cast(argv):
         number = finalized(state) if positional[1] == "finalized" else int(positional[1])
         if number > state["block"]:
             die(f"Error: block {number} not found")
-        print(json.dumps({"number": hex(number), "hash": block_hash(state, number)}))
+        # "other_fork_reads": a node on another fork answers each read of a
+        # block by its number, with another block there.
+        other = "0x" + hashlib.sha256(f"other fork:{number}".encode()).hexdigest()
+        print(json.dumps({"number": hex(number),
+                          "hash": other if state.get("other_fork_reads") else block_hash(state, number)}))
     elif command == "block-number" and positional[1:] == ["finalized"]:
         print(finalized(state))
     elif command == "block-number":
@@ -1884,7 +1888,8 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 self.assertEqual([entry["nonce"] for entry in pending], [skip])
                 # Still pending: the re-run sends nothing.
                 result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
-                self.assert_fails(result, "isn't in a block: it may still be pending, so nothing was sent")
+                self.assert_fails(result, "isn't in the blocks read (above): it may still be pending, or in a "
+                                          "later block, so nothing was sent")
                 self.assertEqual(len(self.evm.get("receipts", {})), skip)
                 # Mined: the re-run takes it, and sends each transaction once.
                 self.evm["mine_held"] = True
@@ -1966,7 +1971,7 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 else:
                     # Still not final: the re-run stops too, sending nothing.
                     result = self.run_script("deploy", EVM_FINALITY_SECONDS="3")
-                    self.assert_fails(result, "took its nonce, in a block that isn't final after 3s")
+                    self.assert_fails(result, "took its nonce, in a block that wasn't final, and the chain's, by the attempt's deadline")
                     self.assertEqual(list(self.state()["evm_sending"]), [step])
                     self.evm["finality_depth"] = 0
                     result = self.run_script("deploy")
@@ -1985,8 +1990,8 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
         honest = self.deployed_transactions()
         step = "create .evm.storage_gas_oracle"
         for case, settings, expected in (
-            ("failed", {"mine_held": True, "fail_held": True}, "it failed, in a block that isn't final after 3s"),
-            ("nonce taken", {"fill_held": True}, "took its nonce, in a block that isn't final after 3s"),
+            ("failed", {"mine_held": True, "fail_held": True}, "it failed, in a block that wasn't final, and the chain's, by the attempt's deadline"),
+            ("nonce taken", {"fill_held": True}, "took its nonce, in a block that wasn't final, and the chain's, by the attempt's deadline"),
         ):
             with self.subTest(case=case):
                 self.evm = sepolia()
@@ -2049,9 +2054,31 @@ class TestnetLaggingEvmEndpoint(TestnetScript):
                 started = time.monotonic()
                 result = self.run_script("deploy", EVM_SETTLE_SECONDS="3")
                 elapsed = time.monotonic() - started
-                self.assert_fails(result, "isn't in a block: it may still be pending, so nothing was sent")
+                self.assert_fails(result, "isn't in the blocks read (above): it may still be pending, or in a "
+                                          "later block, so nothing was sent")
+                self.assertRegex(result.stderr, r"No transaction of 0x[0-9a-f]{40}'s with nonce 1 in blocks \d+ to \d+"
+                                                if case == "thousands of blocks" else
+                                                r"No block from \d+ on of sepolia was read before the deadline")
                 self.assertLess(elapsed, 30)
                 self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.storage_gas_oracle"])
+
+    def test_settling_a_send_keeps_to_one_deadline_however_often_its_block_is_replaced(self):
+        # Another transaction took the recorded creation's nonce, and the
+        # node that answers a block by its number is on another fork, so
+        # the block holding the nonce reads as replaced each time. Settling
+        # it again keeps to the attempt's deadline: the run stops, sending
+        # nothing and keeping the record, rather than start afresh forever.
+        self.evm.update(hold=1, hold_skip=1)
+        self.assert_fails(self.run_script("deploy"), "timed out")
+        self.evm.update(fill_held=True, other_fork_reads=True)
+        started = time.monotonic()
+        result = self.run_script("deploy", EVM_SETTLE_SECONDS="2", EVM_FINALITY_SECONDS="2")
+        elapsed = time.monotonic() - started
+        self.assert_fails(result, "the attempt's deadline")
+        self.assertGreaterEqual(result.stderr.count("settling it again..."), 2)
+        self.assertLess(elapsed, 60)
+        self.assertEqual(list(self.state()["evm_sending"]), ["create .evm.storage_gas_oracle"])
+        self.assertEqual(self.traced("forge create"), [])
 
     def test_a_send_recorded_without_its_step_stops_each_command_that_sends(self):
         # The record only an earlier version of this script left, from a
@@ -2776,7 +2803,7 @@ class TestnetFeeCommands(DeployedTestnet):
         del self.settings["ETH_DUSK_PRICE_RATIO"]
         self.queries[f"{IGP}/domain_gas_config/{EVM_DOMAIN}"] = dusk_igp
         result = self.run_script("evm-igp", "--apply", EVM_SETTLE_SECONDS="3")
-        self.assert_fails(result, "isn't in a block")
+        self.assert_fails(result, "isn't in the blocks read (above)")
         self.assertNotIn("already charges what the settings say", result.stderr)
         self.assertEqual(self.traced("cast send"), [])
         self.evm["mine_held"] = True
