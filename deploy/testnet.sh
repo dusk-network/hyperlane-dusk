@@ -3064,7 +3064,8 @@ cmd_claim() {
             require EVM_DEPLOYER_KEY
             evm_settle_call "$igp" "claim()"
         fi
-        balance="$(cast balance "$igp" --rpc-url "$EVM_RPC")"
+        # Read at the block of the claim() settled above, or later.
+        balance="$(evm_read cast balance "$igp")" || fail "Can't read the EVM IGP $igp's balance"
         if [ "$balance" != 0 ]; then
             require EVM_DEPLOYER_KEY
             evm_send "$igp" "claim()"

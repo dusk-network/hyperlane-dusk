@@ -2972,6 +2972,12 @@ class TestnetFeeCommands(DeployedTestnet):
         self.assert_ok(result)
         self.assertIn("It executed: the step reads the chain as of its block, or later", result.stderr)
         self.assertIn(f"Claimed 5 wei from the EVM IGP {self.evm_igp}", result.stderr)
+        # The balance is read as of the earlier claim()'s block, or later.
+        earlier = min(int(r["blockNumber"], 16) for r in self.evm["receipts"].values()
+                      if r["to"] == self.evm_igp.lower())
+        [read] = self.traced(f"cast balance {self.evm_igp}")
+        self.assertRegex(read, r"--block \d+$")
+        self.assertGreaterEqual(int(read.split()[-1]), earlier)
         self.assertEqual(self.evm["balances"][beneficiary], 12)
         self.assertEqual(self.evm["balances"].get(self.evm_igp, 0), 0)
         self.assertNotIn("evm_sending", self.state())
