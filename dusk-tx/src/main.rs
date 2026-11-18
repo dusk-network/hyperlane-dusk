@@ -4386,24 +4386,42 @@ mod tests {
         replies
     }
 
-    /// A fence's replies: the signer's account, with `nonce`, and the tip.
+    /// A fence's replies at block "aa": the signer's nonce is `nonce`.
     fn fence_replies(nonce: u64) -> MockReplies {
+        fence_replies_at(nonce, "aa")
+    }
+
+    /// A fence's replies at the tip block 20 with `hash`: the tip, the
+    /// signer's account, with `nonce`, and the same tip again.
+    fn fence_replies_at(nonce: u64, hash: &str) -> MockReplies {
+        vec![tip_reply(hash), account_reply(nonce), tip_reply(hash)]
+    }
+
+    /// The node's tip: block 20, with `hash`.
+    fn tip_reply(hash: &str) -> (&'static str, u16, Vec<u8>) {
+        let tip = format!(r#"{{"data":{{"block":{{"header":{{"height":20,"hash":"{hash}"}}}}}}}}"#);
+        ("/graphql", 200, tip.into_bytes())
+    }
+
+    /// The signer's account, with `nonce`.
+    fn account_reply(nonce: u64) -> (&'static str, u16, Vec<u8>) {
         use dusk_core::transfer::moonlight::AccountData;
-        vec![
-            (
-                "/account",
-                200,
-                super::rkyv_serialize(&AccountData {
-                    nonce,
-                    balance: 1_000_000_000_000_000,
-                }),
-            ),
-            (
-                "/graphql",
-                200,
-                br#"{"data":{"block":{"header":{"height":20}}}}"#.to_vec(),
-            ),
-        ]
+        (
+            "/account",
+            200,
+            super::rkyv_serialize(&AccountData {
+                nonce,
+                balance: 1_000_000_000_000_000,
+            }),
+        )
+    }
+
+    /// The block at a height, with `hash` and `label`.
+    fn block_reply(hash: &str, label: &str) -> (&'static str, u16, Vec<u8>) {
+        let block = format!(
+            r#"{{"data":{{"block":{{"header":{{"hash":"{hash}"}},"status":"{label}"}}}}}}"#
+        );
+        ("/graphql", 200, block.into_bytes())
     }
 
     /// The node's replies about a recorded deploy transaction that executed
@@ -4969,11 +4987,16 @@ mod tests {
             (
                 "its nonce taken",
                 {
-                    let mut replies = fence_replies(5);
+                    // The tip moves on during the first read of the nonce,
+                    // so it is read again, at block "bb".
+                    let mut replies = vec![tip_reply("aa"), account_reply(5), tip_reply("bb")];
+                    replies.extend(fence_replies_at(5, "bb"));
                     replies.extend([
                         ("/graphql", 200, missing.clone()),
                         owner(&token, false),
-                        ("/graphql", 200, final_block.clone()),
+                        // That very block, not yet final, then final.
+                        block_reply("bb", "Accepted"),
+                        block_reply("bb", "Final"),
                         ("/graphql", 200, missing.clone()),
                         owner(&route, false),
                     ]);
@@ -4981,6 +5004,38 @@ mod tests {
                     replies
                 },
                 "Failed to deploy Token",
+                false,
+            ),
+            (
+                // The block the nonce was read at is replaced before it is
+                // final, and on the chain that stays the transaction is in
+                // the mempool, then executes: taken, not deployed again.
+                "its fence's block replaced",
+                {
+                    let mut replies = fence_replies_at(5, "aa");
+                    replies.extend([
+                        ("/graphql", 200, missing.clone()),
+                        owner(&token, false),
+                        // Another block takes block 20's height.
+                        block_reply("cc", "Accepted"),
+                    ]);
+                    replies.extend(fence_replies_at(4, "cc"));
+                    replies.extend([
+                        ("/graphql", 200, missing.clone()),
+                        owner(&token, false),
+                        (
+                            "/graphql",
+                            200,
+                            br#"{"data":{"mempoolTx":{"id":"7a"}}}"#.to_vec(),
+                        ),
+                        ("/graphql", 200, executed.clone()),
+                    ]);
+                    replies.extend(executes(5));
+                    replies.push(owner(&route, false));
+                    replies.extend(fails(&route));
+                    replies
+                },
+                "Failed to deploy WarpCollateral",
                 false,
             ),
             (
@@ -7626,28 +7681,63 @@ const RECORDED_TX_GRACE: Duration = if cfg!(test) {
     Duration::from_secs(30)
 };
 
-/// A fence: the signer's nonce, then the node's tip, whose block holds the
-/// state the nonce was read from or a later one.
-async fn nonce_fence(client: &RuesClient, pk: &BlsPublicKey) -> Result<(u64, u64), String> {
-    let (nonce, _) = client.query_account(pk).await?;
-    Ok((nonce, client.tip_height().await?))
+/// A block, by its height and hash.
+type BlockId = (u64, String);
+
+/// How long a fence waits after reading the nonce before it reads the tip
+/// again. The node moves its queries to a block's state before it makes the
+/// block its tip, so a block it was committing during the nonce read is the
+/// tip by then, and the fence starts again.
+const FENCE_TIP_DELAY: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(1)
+};
+
+/// A fence: the signer's nonce as of an identified block, the node's tip,
+/// the same block before and after the nonce is read.
+async fn nonce_fence(client: &RuesClient, pk: &BlsPublicKey) -> Result<(u64, BlockId), String> {
+    for _ in 0..5 {
+        let before = client.tip_block().await?;
+        let (nonce, _) = client.query_account(pk).await?;
+        tokio::time::sleep(FENCE_TIP_DELAY).await;
+        if client.tip_block().await? == before {
+            return Ok((nonce, before));
+        }
+    }
+    Err("The node's tip moved on during each of five reads of the signer's nonce".into())
 }
 
-/// Wait until the block at `tip` is final: then a fence read before it is
-/// final too, and a transaction whose nonce it has reached has executed or
-/// failed, in a final block, or never will.
-async fn wait_until_final(client: &RuesClient, tip: u64) -> Result<(), String> {
+/// How a fence's block ended up.
+#[derive(Debug, PartialEq, Eq)]
+enum FenceBlock {
+    /// It is final, so the nonce read at it is.
+    Final,
+    /// Another block, or none, is at its height: the nonce read at it
+    /// proves nothing.
+    Replaced,
+}
+
+/// Wait until the fence's block, that very block, is final, or is replaced.
+/// Once it is final, a transaction whose nonce the fence has reached has
+/// executed or failed, in a final block, or never will. The block's hash
+/// and label come from one read of the block at its height.
+async fn wait_until_final(client: &RuesClient, block: &BlockId) -> Result<FenceBlock, String> {
+    let (height, hash) = block;
     let timeout = finality_wait().unwrap_or(RECORDED_DEPLOY_FINALITY_TIMEOUT);
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        match client.query_block_status(tip).await {
-            Ok(Some(block)) if block.is_final() => return Ok(()),
-            Ok(_) | Err(TransactionStatusQueryError::Retryable(_)) => {}
+        match client.query_block_status(*height).await {
+            Ok(Some(found)) if found.hash != *hash => return Ok(FenceBlock::Replaced),
+            Ok(None) => return Ok(FenceBlock::Replaced),
+            Ok(Some(found)) if found.is_final() => return Ok(FenceBlock::Final),
+            Ok(Some(_)) | Err(TransactionStatusQueryError::Retryable(_)) => {}
             Err(TransactionStatusQueryError::Terminal(error)) => return Err(error),
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
-                "Block {tip} wasn't final within {}s: the signer's nonce can't be taken as final yet",
+                "Block {height} ({hash}) wasn't final within {}s: the signer's nonce can't be \
+                 taken as final yet",
                 timeout.as_secs()
             ));
         }
@@ -7704,7 +7794,7 @@ async fn provenance(
     let grace = tokio::time::Instant::now() + RECORDED_TX_GRACE;
     let mut mempool_waits = 0;
     loop {
-        let (fence, tip) = nonce_fence(client, pk).await?;
+        let (fence, fence_block) = nonce_fence(client, pk).await?;
         let found = status(tx_id).await?;
         let there = exists().await?;
         match found {
@@ -7747,7 +7837,10 @@ async fn provenance(
             TransactionStatus::NotFound if fence >= tx_nonce => {
                 // Its nonce went to another transaction. Once that is final,
                 // it never executes.
-                wait_until_final(client, tip).await?;
+                if wait_until_final(client, &fence_block).await? == FenceBlock::Replaced {
+                    // The nonce was read at a block that is gone: prove it again.
+                    continue;
+                }
                 if !matches!(status(tx_id).await?, TransactionStatus::NotFound) {
                     continue;
                 }

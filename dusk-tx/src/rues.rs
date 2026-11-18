@@ -493,17 +493,22 @@ impl RuesClient {
             .ok_or_else(|| format!("The {what} response has no data"))
     }
 
-    /// The height of the node's last block.
-    pub async fn tip_height(&self) -> Result<u64, String> {
+    /// The node's last block: its height and hash.
+    pub async fn tip_block(&self) -> Result<(u64, String), String> {
         let data = self
             .graphql_data(
-                "query { block(height: -1) { header { height } } }",
-                "tip height",
+                "query { block(height: -1) { header { height hash } } }",
+                "tip block",
             )
             .await?;
-        data.pointer("/block/header/height")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| format!("The tip height response has no height: {data}"))
+        let height = data.pointer("/block/header/height").and_then(Value::as_u64);
+        let hash = data.pointer("/block/header/hash").and_then(Value::as_str);
+        match (height, hash) {
+            (Some(height), Some(hash)) => Ok((height, hash.to_owned())),
+            _ => Err(format!(
+                "The tip block response has no height and hash: {data}"
+            )),
+        }
     }
 
     /// Whether the node holds the transaction in its mempool.
