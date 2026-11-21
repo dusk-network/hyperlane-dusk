@@ -11107,25 +11107,30 @@ impl DuskSigner {
         Ok((client, chain_id))
     }
 
-    /// Sign and send a call, and wait for its block.
+    fn keys(&self) -> Result<(BlsSecretKey, BlsPublicKey), String> {
+        load_keys(
+            self.keys.clone(),
+            self.password.as_deref().unwrap_or_default(),
+            self.secret_key.clone(),
+            self.secret_key_stdin,
+        )
+    }
+
+    /// Sign and send a call with `keys`, and wait for its block.
+    #[allow(clippy::too_many_arguments)]
     async fn send(
         &self,
         client: &RuesClient,
         chain_id: u8,
+        (sk, pk): &(BlsSecretKey, BlsPublicKey),
         contract: [u8; 32],
         fn_name: &str,
         args: Vec<u8>,
         gas_limit: u64,
     ) -> Result<(String, Confirmation), String> {
-        let (sk, pk) = load_keys(
-            self.keys.clone(),
-            self.password.as_deref().unwrap_or_default(),
-            self.secret_key.clone(),
-            self.secret_key_stdin,
-        )?;
-        let (nonce, _balance) = client.query_account(&pk).await?;
+        let (nonce, _balance) = client.query_account(pk).await?;
         let tx = moonlight_call(
-            &sk,
+            sk,
             ContractId::from_bytes(contract),
             fn_name,
             args,
@@ -11289,11 +11294,13 @@ async fn cmd_announce(args: AnnounceArgs) -> Result<(), String> {
                 "The ValidatorAnnounce refuses the announcement, so nothing was sent".into(),
             );
         }
+        let keys = args.signer.keys()?;
         let (tx_id, confirmation) = args
             .signer
             .send(
                 &client,
                 chain_id,
+                &keys,
                 va,
                 "announce",
                 rkyv_serialize(&call),
@@ -11356,7 +11363,7 @@ async fn cmd_validator_checkpoint(args: CheckpointArgs) -> Result<(), String> {
     }
     let client = RuesClient::new(&args.rues_url)?;
     let count: u32 = client.contract_query(&hook, "count", &()).await?;
-    let lag = count.checked_sub(index + 1).ok_or_else(|| {
+    let lag = index.checked_add(1).and_then(|next| count.checked_sub(next)).ok_or_else(|| {
         format!("The latest checkpoint is for index {index}, past the hook's {count} messages: it signs another tree")
     })?;
     if lag > args.max_lag {
@@ -11402,13 +11409,9 @@ async fn cmd_set_ism_validators(args: IsmValidatorsArgs) -> Result<(), String> {
             args.ism
         ));
     }
-    let (_, pk) = load_keys(
-        args.signer.keys.clone(),
-        args.signer.password.as_deref().unwrap_or_default(),
-        args.signer.secret_key.clone(),
-        args.signer.secret_key_stdin,
-    )?;
-    ensure_signer_owns(&client, &ism, &args.ism, &pk).await?;
+    // Read once: --secret-key-stdin can't be read twice.
+    let keys = args.signer.keys()?;
+    ensure_signer_owns(&client, &ism, &args.ism, &keys.1).await?;
     let method = "validators_and_threshold";
     let current: (Vec<EthAddress>, u8) = client.contract_query(&ism, method, &()).await?;
     let mut output = json!({ "success": true, "ism": args.ism, "unchanged": current == policy });
@@ -11418,6 +11421,7 @@ async fn cmd_set_ism_validators(args: IsmValidatorsArgs) -> Result<(), String> {
             .send(
                 &client,
                 chain_id,
+                &keys,
                 ism,
                 "set_validators_and_threshold",
                 rkyv_serialize(&policy),
@@ -11568,6 +11572,49 @@ mod validator_command_tests {
             "nothing but the chain ID was asked"
         );
         assert!(ism_policy(&format!("0x{0},0x{0}", "aa".repeat(20)), 1).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+        // One the contract refuses in its query: nothing is signed, so the
+        // key, which doesn't exist, is never read.
+        let (dir, storage) = local_storage("announce-refused", &[]);
+        let location = storage.location.clone();
+        std::fs::write(
+            dir.join("announcement.json"),
+            announcement_json(&key(7), &location),
+        )
+        .unwrap();
+        let (url, server) = crate::tests::mock_rues(vec![
+            ("/chain_id", 200, vec![2]),
+            ("/mailbox", 200, crate::validators::tests::MAILBOX.to_vec()),
+            ("/local_domain", 200, rkyv_serialize(&DOMAIN)),
+            (
+                "/get_announced_storage_location_hashes",
+                200,
+                rkyv_serialize(&Vec::<[u8; 32]>::new()),
+            ),
+            ("/announce", 500, b"Panic".to_vec()),
+        ]);
+        let signer = DuskSigner {
+            rues_url: url,
+            keys: Some("/nonexistent".into()),
+            password: None,
+            secret_key: None,
+            secret_key_stdin: false,
+            expected_chain_id: 2,
+            gas_price: 1,
+        };
+        let args = AnnounceArgs {
+            signer,
+            storage,
+            validator_announce: "a3".repeat(32),
+            validator: None,
+            gas_limit: ANNOUNCE_GAS_LIMIT,
+        };
+        let error = cmd_announce(args).await.unwrap_err();
+        assert!(
+            error.contains("refuses the announcement, so nothing was sent"),
+            "{error}"
+        );
+        assert_eq!(server.join().unwrap().len(), 5);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

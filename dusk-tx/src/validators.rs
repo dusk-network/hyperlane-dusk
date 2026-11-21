@@ -14,8 +14,10 @@ use secp256k1::{Message, Secp256k1};
 
 /// The ValidatorAnnounce's `MAX_LOCATION_BYTES`.
 pub const MAX_LOCATION_BYTES: usize = 1_024;
-/// The most read of one object: a validator writes a few hundred bytes.
-const MAX_OBJECT_BYTES: usize = 64 * 1024;
+/// The most read of one object, below the relayer's limit for one
+/// (`MAX_CHECKPOINT_OBJECT_SIZE`, 50 KiB): a validator writes a few hundred
+/// bytes.
+const MAX_OBJECT_BYTES: usize = 50 * 1024 - 1;
 
 /// A validator's checkpoint storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,7 +166,8 @@ async fn read_url(url: &Url) -> Result<Option<Vec<u8>>, String> {
 }
 
 fn read_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::metadata(path) {
+    // A symlink could lead out of the checkpoint directory.
+    match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_OBJECT_BYTES as u64 => {
             std::fs::read(path)

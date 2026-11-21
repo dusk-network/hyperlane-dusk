@@ -3699,6 +3699,9 @@ class TestnetValidators(DeployedTestnet):
         six = ",".join(validators(6))
         self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6),
                           "Set it to at least 430,000")
+        # Enough in the settings, but not yet on chain.
+        self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6,
+                                          DUSK_IGP_GAS_OVERHEAD=430000), "apply the settings with --apply")
 
     def test_agent_configs_write_an_outside_operators_validator(self):
         self.assert_ok(self.run_script("agent-configs", OPERATOR_DUSK_RUES_URL="https://node.operator.example/"))

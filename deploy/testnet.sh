@@ -3244,15 +3244,15 @@ storage_options() {
 # signed announcement in its storage, the validator its operator named if
 # given, and record the location. One announced already is only recorded.
 cmd_announce() {
-    local location="${1:-}" expected="${2:-}" options out validator
+    local location="${1:-}" expected="${2:-}" options=() out validator
     [ -n "$location" ] && [ "$#" -le 2 ] || fail "usage: bash deploy/testnet.sh announce <location> [address]"
     require DUSK_KEYS DUSK_CONSENSUS_PASSWORD
     check_dusk_deployment
-    options="$(storage_options "$location")" || exit 1
-    # shellcheck disable=SC2086
+    out="$(storage_options "$location")" || exit 1
+    [ -z "$out" ] || mapfile -t options <<<"$out"
     out="$(dusk_tx announce --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
         --validator-announce "$(state_get '.dusk.validator_announce')" --location "$location" \
-        ${expected:+--validator "$expected"} $options --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
+        ${expected:+--validator "$expected"} "${options[@]}" --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
         || fail "Can't announce the validator: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
     validator="$(jq -r '.validator' <<<"$out")"
     state_set --arg v "$validator" --arg l "$location" '.dusk_origin_locations[$v] = $l'
@@ -3266,7 +3266,7 @@ cmd_announce() {
 # The validator has announced the location $STATE records for it as its
 # newest, which the relayer reads, and signs current checkpoints there.
 check_dusk_origin_validator() {
-    local validator="$1" location hashes hash options out
+    local validator="$1" location hashes hash options=() out
     location="$(state_json | jq -r --arg v "$validator" '.dusk_origin_locations[$v] // empty')"
     [ -n "$location" ] \
         || fail "$STATE records no location for validator $validator: bash deploy/testnet.sh announce <its location>"
@@ -3276,11 +3276,11 @@ check_dusk_origin_validator() {
     hash="$(cast keccak "$location")" || fail "Can't hash $location"
     jq -e --arg h "${hash#0x}" '.[-1] == $h' <<<"$hashes" >/dev/null \
         || fail "Validator $validator's newest announcement isn't $location: bash deploy/testnet.sh announce <its location>"
-    options="$(storage_options "$location")" || exit 1
-    # shellcheck disable=SC2086
+    out="$(storage_options "$location")" || exit 1
+    [ -z "$out" ] || mapfile -t options <<<"$out"
     out="$("$DUSK_TX" validator-checkpoint --rues-url "$DUSK_RUES_URL" --location "$location" \
         --validator "$validator" --origin-domain "$DUSK_DOMAIN" --merkle-tree-hook "$(state_get '.dusk.merkle_tree_hook')" \
-        --max-lag "$VALIDATOR_CHECKPOINT_LAG" $options)" \
+        --max-lag "$VALIDATOR_CHECKPOINT_LAG" "${options[@]}")" \
         || fail "Validator $validator isn't signing at $location: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
     ok "Validator $validator at $location has signed up to index $(jq -r '.index' <<<"$out") of $(jq -r '.count' <<<"$out")"
 }
@@ -3302,7 +3302,8 @@ tokens_final_at() {
         for route in $(recorded_routes); do
             [ -z "$pending" ] || break
             token="$(state_get "$(route_evm_base "$route").token")"
-            ism="$(cast call "$token" "interchainSecurityModule()(address)" --block "$block" --rpc-url "$EVM_RPC" 2>/dev/null)"
+            ism="$(cast call "$token" "interchainSecurityModule()(address)" --block "$block" --rpc-url "$EVM_RPC" 2>/dev/null)" \
+                || ism=""
             [ "$(lower "$ism")" = "$target" ] || pending="$token"
         done
         [ -n "$pending" ] || return 0
@@ -3324,6 +3325,8 @@ cmd_set_validators() {
     set="$(sorted_addresses "$DUSK_ORIGIN_VALIDATORS")" wanted="$DUSK_ORIGIN_THRESHOLD of [$set]"
     [[ "$DUSK_ORIGIN_THRESHOLD" =~ ^[1-9][0-9]*$ ]] && [ "$DUSK_ORIGIN_THRESHOLD" -le "$(count_addresses "$set")" ] \
         || fail "DUSK_ORIGIN_THRESHOLD must be from 1 to the validators in DUSK_ORIGIN_VALIDATORS"
+    # The relayer takes no set of more than 50 (MAX_VALIDATOR_SET_SIZE).
+    [ "$(count_addresses "$set")" -le 50 ] || fail "DUSK_ORIGIN_VALIDATORS has more validators than the relayer takes, 50"
     load_fees
     check_dusk_deployment
     TOKEN_ISMS_CHECKED_ELSEWHERE=1
@@ -3331,11 +3334,15 @@ cmd_set_validators() {
     check_dusk_igp_pricing
     [ -z "$apply" ] || check_no_unattributed_evm_send
     recorded="$(lower "$(state_get '.evm.ism')")"
-    target="$(lower "$(evm_call "$EVM_ISM_FACTORY" "getAddress(address[],uint8)(address)" "[$set]" "$DUSK_ORIGIN_THRESHOLD")")" \
+    target="$(evm_call "$EVM_ISM_FACTORY" "getAddress(address[],uint8)(address)" "[$set]" "$DUSK_ORIGIN_THRESHOLD")" \
         || fail "Can't read the ISM EVM_ISM_FACTORY makes for $wanted"
+    target="$(lower "$target")"
     for route in $(recorded_routes); do
         token="$(state_get "$(route_evm_base "$route").token")"
-        ism="$(lower "$(evm_call "$token" "interchainSecurityModule()(address)")")"
+        # An ISM update an earlier run sent may still land: settle it first.
+        evm_settle_call "$token" "setInterchainSecurityModule(address)"
+        ism="$(evm_call "$token" "interchainSecurityModule()(address)")" || fail "Can't read the ISM of $token"
+        ism="$(lower "$ism")"
         [ "$ism" = "$recorded" ] || [ "$ism" = "$target" ] \
             || fail "The EVM token $token verifies with $ism, neither the $recorded recorded in $STATE nor $target. Point it back at $recorded."
     done
@@ -3363,13 +3370,17 @@ cmd_set_validators() {
     check_evm_ism_policy "$target" "The new EVM ISM $target"
     for route in $(recorded_routes); do
         token="$(state_get "$(route_evm_base "$route").token")"
-        evm_settle_call "$token" "setInterchainSecurityModule(address)"
         if [ "$(lower "$(evm_call "$token" "interchainSecurityModule()(address)")")" != "$target" ]; then
             info "Pointing the EVM $(route_symbol "$route") token at $target..."
             evm_send "$token" "setInterchainSecurityModule(address)" "$target" || fail "Setting the ISM of $token failed"
         fi
     done
     tokens_final_at "$target"
+    for route in $(recorded_routes); do
+        token="$(state_get "$(route_evm_base "$route").token")"
+        ism="$(evm_call "$token" "interchainSecurityModule()(address)")" || fail "Can't read the ISM of $token"
+        [ "$(lower "$ism")" = "$target" ] || fail "$token verifies with $ism now, not $target: run set-validators --apply again"
+    done
     state_set --arg ism "$target" --arg old "$recorded" --arg v "$set" --argjson t "$DUSK_ORIGIN_THRESHOLD" \
         '.evm.previous_isms = ((.evm.previous_isms // []) + [$old]) | .evm.ism = $ism
          | .dusk_origin_validators = ($v | split(",")) | .dusk_origin_threshold = $t'

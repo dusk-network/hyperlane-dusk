@@ -83,7 +83,7 @@ without a type.
 | Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each, and 0.005 DUSK for one that fails. Senders pay it back to the Sepolia IGP. |
 | Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. Senders pay it back to the Dusk IGP. |
 | Each Dusk-origin validator | EVM key, no funds | | Signing checkpoints. Its address goes in `DUSK_ORIGIN_VALIDATORS`. |
-| Each Dusk-origin validator | Dusk testnet | 0.1 DUSK | Its one-time announcement on Dusk, about 2.1M gas. |
+| Each Dusk-origin validator | Dusk testnet | 0.1 DUSK | Its one-time announcement on Dusk, about 2.1M gas, if it announces itself; `announce` sends it for one without a Dusk account. |
 
 Give the relayer and each validator a Dusk account of its own. An account's
 transactions are ordered by its nonce, so two processes signing with one key
@@ -474,6 +474,7 @@ absolute path.
   cd hyperlane-monorepo/rust/main
   export DUSK_TX_BIN=/path/to/dusk-tx
   export HYP_CHAINS_SEPOLIA_SIGNER_KEY=0x...      # relayer's Sepolia key
+  export AWS_ENDPOINT_URL=...                     # CHECKPOINT_S3_ENDPOINT, for the validators' buckets
   # plus the relayer's Dusk key file (see Dusk keys) at the config's keyFile
   CONFIG_FILES=/path/to/relayer.json ./target/release/relayer
   ```
@@ -932,9 +933,9 @@ In the rehearsal:
   fails on the shared nonce.
 
 To rehearse adding a validator, run one from `validator-dusk-operator.json`
-with an Anvil key the rehearsal doesn't use and
-`HYP_CHECKPOINTSYNCER_TYPE=localStorage`, and `announce file://<its
-checkpoint directory>`; record the rehearsal's own validators the same way.
+with an Anvil key the rehearsal doesn't use,
+`HYP_CHECKPOINTSYNCER_TYPE=localStorage` and `HYP_CHECKPOINTSYNCER_PATH`,
+and `announce file://<that directory>`; record the rehearsal's own validators the same way.
 `set-validators` needs an ISM factory: deploy
 `StaticMessageIdMultisigIsmFactory` on Anvil and set `EVM_ISM_FACTORY` in
 `deploy/local.env`.
