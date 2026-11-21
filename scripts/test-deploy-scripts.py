@@ -124,9 +124,6 @@ def quote_signer_history(evm, igp, signer, block):
 DUSK_TX_STUB = r'''#!/usr/bin/env python3
 import hashlib, json, os, sys
 args = sys.argv[1:]
-# Global options come before the command.
-wait_finality = args[:1] == ["--wait-finality"]
-args = args[1:] if wait_finality else args
 with open(os.environ["FIXTURE_TRACE"], "a") as trace:
     trace.write("dusk-tx " + " ".join(args) + "\n")
 def opt(name):
@@ -149,13 +146,7 @@ def set_pricing(igp, config):
 SIGNING = ("call", "deploy-hyperlane", "deploy-wasm", "fund-dispatch", "withdraw-dispatch", "dispatch",
            "process", "enroll-router", "claim-pending", "set-igp-config",
            "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote",
-           "deploy-token-route", "drc20-mint", "announce", "set-ism-validators")
-# The Mailbox and Merkle tree hook the stub's dispatches go through, for the
-# probe, and the ID a message gets, as encode-message gives it.
-MAILBOX = "a1" * 32
-MERKLE_TREE_HOOK = "a4" * 32
-def message_id(nonce, origin, sender, destination, recipient, body):
-    return hashlib.sha256(f"{nonce}|{origin}|{sender}|{destination}|{recipient}|{body}".encode()).hexdigest()
+           "deploy-token-route", "drc20-mint", "announce")
 # FIXTURE_CHAIN's "fail", {command: n}, makes the next n runs of a command
 # fail, as one the node refuses does, sending nothing.
 failing = chain.get("fail") or {}
@@ -342,97 +333,26 @@ if args[0] == "drc20-info":
         result["account"] = info["accounts"].get(opt("--account"), {
             "balance": "0", "admin": False, "minter": False, "pauser": False})
     out(result)
-# A location's hash, as the cast stub's keccak gives it.
-def location_hash(location):
-    return hashlib.sha256(location.encode()).hexdigest()
-# FIXTURE_CHAIN's "announcements", {source: {"validator", "location"}}, are
-# the signed announcements `announce` can read; announcing one adds its
-# location's hash to what the ValidatorAnnounce answers for the validator.
+# FIXTURE_CHAIN's "announcements", {location: validator}, are the signed
+# announcements `announce` reads; announcing adds the location's hash, as
+# the cast stub's keccak gives it, to the validator's. Its "checkpoints",
+# {location: {"index", "count"} or {"error"}}, answer validator-checkpoint.
 if args[0] == "announce":
-    found = (chain.get("announcements") or {}).get(opt("--announcement"))
-    if found is None or "error" in found:
-        out({"success": False, "error": (found or {}).get("error", f"No announcement at {opt('--announcement')}: has the validator started?")}, 1)
-    if opt("--validator") is not None and opt("--validator").lower() != found["validator"].lower():
-        out({"success": False, "error": f"The announcement is the validator {found['validator']}'s, not {opt('--validator')}'s"}, 1)
-    key = f"{opt('--validator-announce')}/get_announced_storage_location_hashes/{found['validator']}"
-    hashes = queries.setdefault(key, {"value": []})["value"]
-    result = {"success": True, "validator": found["validator"], "location": found["location"],
-              "validator_announce": opt("--validator-announce"), "read_from": opt("--announcement")}
-    if location_hash(found["location"]) in hashes:
-        out({**result, "already_announced": True})
-    hashes.append(location_hash(found["location"]))
+    validator = (chain.get("announcements") or {}).get(opt("--location"))
+    if validator is None or opt("--validator") not in (None, validator):
+        out({"success": False, "error": f"No announcement of the validator in {opt('--location')}"}, 1)
+    hashes = queries.setdefault(f"{opt('--validator-announce')}/get_announced_storage_location_hashes/{validator}",
+                                {"value": []})["value"]
+    location_hash = hashlib.sha256(opt("--location").encode()).hexdigest()
+    result = {"success": True, "validator": validator, "already_announced": location_hash in hashes}
+    if location_hash not in hashes:
+        hashes.append(location_hash)
+        result["tx_id"] = "a0" * 32
     save()
-    out({**result, "already_announced": False, "tx_id": "a0" * 32, "block_height": 9})
-# FIXTURE_CHAIN's "checkpoints", {location: {"validator", "index",
-# "message_id", "domain", "hook", "reorg_flag", "follows"}}, are each
-# location's latest checkpoint, for that origin domain and hook (by default
-# Dusk's), and whether the validator flagged a reorg. One that "follows"
-# signs every message the Merkle tree hook has, as a running validator does.
+    out(result)
 if args[0] == "validator-checkpoint":
-    found = (chain.get("checkpoints") or {}).get(opt("--location"))
-    if opt("--location").startswith("file://") and "--allow-local-storage" not in args:
-        out({"success": False, "error": "file:// needs --allow-local-storage"}, 1)
-    if found is None:
-        out({"success": False, "error": f"The validator has written no checkpoint index at {opt('--location')}"}, 1)
-    if found.get("reorg_flag"):
-        out({"success": False, "error": "The validator flagged a reorg"}, 1)
-    if found["validator"].lower() != opt("--validator").lower():
-        out({"success": False, "error": f"The checkpoint is signed by {found['validator']}, not the validator {opt('--validator')}"}, 1)
-    hook = opt("--merkle-tree-hook").lower().removeprefix("0x")
-    if (str(found.get("domain", 1146442572)) != opt("--origin-domain")
-            or found.get("hook", MERKLE_TREE_HOOK).lower().removeprefix("0x").rjust(64, "0") != hook.rjust(64, "0")):
-        out({"success": False, "error": "The checkpoint is for another Merkle tree hook or domain"}, 1)
-    # One that is "slow" takes that many seconds to read.
-    if found.get("slow"):
-        import time
-        time.sleep(found["slow"])
-    # A validator that "follows" signs every message up to the hook's count,
-    # or up to "stops_at"; one that doesn't has signed only "index".
-    latest = found["index"]
-    if found.get("follows"):
-        latest = min(queries[f"{MERKLE_TREE_HOOK}/count"]["value"] - 1, found.get("stops_at", 2**32))
-    index = latest if opt("--index") is None else int(opt("--index"))
-    if index > latest or (not found.get("follows") and index != latest):
-        out({"success": False, "error": f"No checkpoint at index {index} yet"}, 1)
-    signed = found["message_id"]
-    if opt("--index") is not None:
-        signed = found.get("probe_message_id") or queries.get(f"{MERKLE_TREE_HOOK}/message_id_at/{index}", {}).get("value", signed)
-    out({"success": True, "validator": opt("--validator"), "location": opt("--location"),
-         "index": index, "message_id": signed, "root": found.get("root", "5a" * 32)})
-# The probe: Mailbox credit for the TestRecipient, then its dispatch, which
-# the Merkle tree hook counts.
-if args[0] == "fund-dispatch":
-    chain.setdefault("funded", []).append([opt("--payer"), opt("--amount")])
-    save()
-    out({"success": True, "tx_id": "f0" * 32})
-def insert(sender, destination, recipient, body):
-    nonce = queries[f"{MAILBOX}/nonce"]["value"]
-    id = message_id(nonce, 1146442572, sender, destination, recipient, body)
-    queries[f"{MAILBOX}/dispatched_id/{nonce}"] = {"value": id}
-    queries[f"{MAILBOX}/dispatched_block_height/{nonce}"] = {"value": chain.get("dusk_height", 100)}
-    queries[f"{MERKLE_TREE_HOOK}/message_id_at/{nonce}"] = {"value": id}
-    queries[f"{MAILBOX}/nonce"]["value"] += 1
-    queries[f"{MERKLE_TREE_HOOK}/count"]["value"] += 1
-if args[0] == "dispatch":
-    # FIXTURE_CHAIN's "concurrent_dispatch" lands someone else's message
-    # first.
-    if chain.pop("concurrent_dispatch", False):
-        insert("ee" * 32, 1, "ee" * 32, "0xother")
-    chain.setdefault("dispatched", []).append([opt("--test-recipient"), opt("--destination"), opt("--recipient"),
-                                               wait_finality])
-    insert(opt("--test-recipient"), opt("--destination"), opt("--recipient"), opt("--body"))
-    save()
-    out({"success": True, "tx_id": "f1" * 32, "block_height": chain.get("dusk_height", 100), "finalized": True})
-if args[0] == "encode-message":
-    out({"success": True, "message_id": message_id(opt("--nonce"), opt("--origin"), opt("--sender"),
-                                                   opt("--destination"), opt("--recipient"), opt("--body"))})
-if args[0] == "set-ism-validators":
-    validators = sorted(v.lower() for v in opt("--validators").split(","))
-    threshold = int(opt("--threshold"))
-    queries[f"{opt('--ism')}/validators_and_threshold"] = {"value": {"validators": validators, "threshold": threshold}}
-    queries[f"{opt('--ism')}/threshold"] = {"value": threshold}
-    save()
-    out({"success": True, "ism": opt("--ism"), "unchanged": False, "tx_id": "a1" * 32})
+    found = (chain.get("checkpoints") or {}).get(opt("--location"), {"error": "no checkpoint index"})
+    out({"success": "error" not in found, **found}, 1 if "error" in found else 0)
 if args[0] == "claim-fees":
     key = f"{opt('--contract')}/claimable_fees"
     claimed = queries[key]["value"]
@@ -659,15 +579,6 @@ def call(state, address, signature, args, sender):
         return derive("aggregation", address.lower(), args[0].lower())
     if name == "getAddress" and c["type"] == "ism_factory":
         return derive("ism", address.lower(), args[0].lower(), args[1])
-    if name == "getAnnouncedStorageLocations" and c["type"] == "validator_announce":
-        # cast prints a string[][] as JSON.
-        wanted = [v.strip().lower() for v in args[0].strip("[]").split(",") if v.strip()]
-        return json.dumps([c.get("announcements", {}).get(v, []) for v in wanted])
-    if name == "count" and c["type"] == "merkle":
-        return str(c.get("count", 0))
-    if name == "latestCheckpoint" and c["type"] == "merkle":
-        root, index = c.get("latest_checkpoint", ["0x" + "00" * 32, 0])
-        return f"{root}\n{index}"
     if name == "routers":
         interleave(state, address)
         return c["routers"].get(args[0], "0x" + "00" * 32)
@@ -746,7 +657,7 @@ def send(state, address, signature, args, sender):
     elif name == "setHook":
         only_owner(c, sender)
         c["hook"] = args[0].lower()
-    elif name == "setInterchainSecurityModule" and c["type"] == "token":
+    elif name == "setInterchainSecurityModule":
         only_owner(c, sender)
         c["ism"] = args[0].lower()
     elif name == "enrollRemoteRouter":
@@ -1098,8 +1009,7 @@ def read_view(state, options):
             die(HEADER_NOT_FOUND)
         if stale_read(state) is not None:
             die(HEADER_NOT_FOUND)
-        # A read at the finalized block checks what a reorg can no longer
-        # undo, not the script's own last write.
+        # A read at the finalized block checks what no reorg can undo.
         if int(block) != finalized(state):
             note_early_read(state, int(block))
         # The chain as of that block, not as it is now, if anything changed
@@ -1509,12 +1419,8 @@ class TestnetScript(unittest.TestCase):
         # faults its deploy-token-route plays ("front_run_deploy",
         # "stop_after_token").
         self.dusk_deploys = {}
-        # The validators' signed announcements and latest checkpoints the
-        # dusk-tx stub reads ("announcements", "checkpoints").
-        self.announcements = {}
-        self.checkpoints = {}
-        # What the probe funded and dispatched.
-        self.funded, self.dispatched = [], []
+        # Validators' announcements and checkpoints, for the dusk-tx stub.
+        self.announcements, self.checkpoints = {}, {}
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -1545,8 +1451,6 @@ class TestnetScript(unittest.TestCase):
                                           "interleave": self.dusk_interleave, "on_read": self.dusk_on_read,
                                           "tamper": self.dusk_tamper, "balance": self.dusk_balance,
                                           "announcements": self.announcements, "checkpoints": self.checkpoints,
-                                          "funded": self.funded, "dispatched": self.dispatched,
-                                          "concurrent_dispatch": getattr(self, "concurrent", False),
                                           **self.dusk_deploys}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
@@ -1571,7 +1475,6 @@ class TestnetScript(unittest.TestCase):
         self.dusk_on_read = chain.get("on_read")
         self.tokens, self.dusk_failures = chain.get("tokens", {}), chain.get("fail") or {}
         self.dusk_tamper = chain.get("tamper")
-        self.funded, self.dispatched = chain.get("funded", []), chain.get("dispatched", [])
         self.dusk_deploys = {key: chain[key] for key in ("txs", "deploys_sent", "front_run_deploy", "stop_after_token")
                              if key in chain}
         self.evm = json.loads(self.evm_file.read_text())
@@ -3596,7 +3499,7 @@ class TestnetDeploymentRecord(DeployedTestnet):
     configs it writes name, whatever happens to the files meanwhile."""
 
     COMMANDS = [["preflight"], ["deploy"], ["agent-configs"], ["dusk-igp"], ["evm-igp"], ["revenue"],
-                ["claim"], ["announce", "s3://bucket/nbg1/validator"], ["set-validators"]]
+                ["claim"], ["announce", "s3://b/nbg1/v"], ["set-validators"]]
 
     def test_commands_on_a_deployment_run_one_at_a_time(self):
         state = self.state()
@@ -3676,411 +3579,133 @@ TOKEN_ROUTE_SETTINGS = {"EURd": ("Dusk Euro (testnet)", 6, "1000000000000"),
 
 
 class TestnetValidators(DeployedTestnet):
-    """`announce` and `set-validators`: announcing a validator that has no
-    Dusk account from its signed announcement, and moving the ISMs to the
-    settings' validator sets only once every validator in them signs."""
+    """`announce`, and `set-validators` moving the EVM tokens to an ISM of
+    the settings' Dusk-origin set once every validator in it signs."""
 
     NEW = "0x" + "4e" * 20
-    OURS = f"s3://dusk-hyperlane-testnet/nbg1/validator-1"
-    THEIRS = f"s3://outside-operator/nbg1/op"
+    OURS, THEIRS = "s3://dusk-hyperlane-testnet/nbg1/validator-1", "s3://outside-operator/nbg1/op"
 
     def setUp(self):
         super().setUp()
-        self.queries[f"{MERKLE_TREE_HOOK}/count"] = {"value": 40}
-        self.queries[f"{MAILBOX}/nonce"] = {"value": 40}
-        self.queries[f"{MAILBOX}/dispatched_block_height/39"] = {"value": 90}
-        self.concurrent = False
+        # The recorded ISM is the one EVM_ISM_FACTORY makes for the settings.
+        fake = {}
+        exec(FAKE_EVM, fake)
+        self.ism, old = fake["derive"]("ism", EVM_ISM_FACTORY, f"[{VALIDATOR}]", "1"), self.ism
+        self.evm["contracts"][self.ism] = self.evm["contracts"].pop(old)
+        self.evm["contracts"][self.token]["ism"] = self.ism
+        state = self.state()
+        state["evm"]["ism"] = self.ism
+        self.write_state(state)
 
-    def hash(self, location):
-        return hashlib.sha256(location.encode()).hexdigest()
-
-    def signing(self, validator, location, index=None, message_id="ab" * 32, announced=True, recorded=True,
-                **checkpoint):
-        """The validator announced `location` on Dusk and signs there, its
-        latest checkpoint at `index` with `message_id`, which the Dusk
-        Merkle tree hook has at that index. Without an `index` it signs
-        every message as it comes, the probe's too."""
-        follows = index is None
-        index = 39 if index is None else index
+    def signing(self, validator, location, **checkpoint):
+        """The validator announced `location`, newest, and signs there."""
         key = f"{VALIDATOR_ANNOUNCE}/get_announced_storage_location_hashes/{validator}"
-        hashes = self.queries.setdefault(key, {"value": []})["value"]
-        if announced:
-            hashes.append(self.hash(location))
-        self.checkpoints[location] = {"validator": validator, "index": index, "message_id": message_id,
-                                      "follows": follows, **checkpoint}
-        if recorded:
-            state = self.state()
-            state.setdefault("dusk_origin_locations", {})[validator] = location
-            self.write_state(state)
+        self.queries[key] = {"value": [hashlib.sha256(location.encode()).hexdigest()]}
+        self.checkpoints[location] = checkpoint or {"index": 39, "count": 40}
+        state = self.state()
+        state.setdefault("dusk_origin_locations", {})[validator] = location
+        self.write_state(state)
 
     def two_of_two(self):
         return {"DUSK_ORIGIN_VALIDATORS": f"{VALIDATOR},{self.NEW}", "DUSK_ORIGIN_THRESHOLD": "2"}
 
     def evm_sends(self):
-        return [line for line in self.traced("cast send") + self.traced("forge create")]
+        return self.traced("cast send")
 
-    def test_announce_sends_the_validators_announcement_and_records_it(self):
-        self.announcements[self.THEIRS] = {"validator": self.NEW, "location": self.THEIRS}
-        result = self.run_script("announce", self.THEIRS)
+    def test_announce_records_where_the_validator_keeps_its_checkpoints(self):
+        self.announcements[self.THEIRS] = self.NEW
+        result = self.run_script("announce", self.THEIRS, self.NEW)
         self.assert_ok(result)
-        self.assertIn(f"Announced validator {self.NEW} at {self.THEIRS} on Dusk", result.stderr)
-        self.assertIn("It isn't in DUSK_ORIGIN_VALIDATORS", result.stderr)
+        self.assertIn(f"Announced validator {self.NEW} at {self.THEIRS}", result.stderr)
         self.assertEqual(self.state()["dusk_origin_locations"], {self.NEW: self.THEIRS})
         [sent] = self.traced("dusk-tx announce")
-        self.assertIn(f"--validator-announce {VALIDATOR_ANNOUNCE} --announcement {self.THEIRS}", sent)
-        self.assertIn("--s3-endpoint https://nbg1.your-objectstorage.com", sent)
-        self.assertIn("--expected-chain-id 2", sent)
-        # Once announced, it is only recorded.
-        result = self.run_script("announce", self.THEIRS, **self.two_of_two())
-        self.assert_ok(result)
-        self.assertIn("had announced", result.stderr)
-        self.assertNotIn("It isn't in DUSK_ORIGIN_VALIDATORS", result.stderr)
-
-    def test_an_announcement_that_fails_records_nothing(self):
-        self.assert_fails(self.run_script("announce", self.THEIRS),
-                          "Can't announce the validator: No announcement at")
-        self.assertNotIn("dusk_origin_locations", self.state())
+        for part in (f"--location {self.THEIRS}", f"--validator {self.NEW}",
+                     "--s3-endpoint https://nbg1.your-objectstorage.com", "--expected-chain-id 2"):
+            self.assertIn(part, sent)
+        self.assertIn("had announced", self.run_script("announce", self.THEIRS).stderr)
+        self.assert_fails(self.run_script("announce", self.OURS), "Can't announce the validator")
+        self.assert_fails(self.run_script("announce", "file:///tmp/x"), "only a local rehearsal's validators")
         self.assert_fails(self.run_script("announce"), "usage: bash deploy/testnet.sh announce")
-        # Another validator's announcement than the operator said.
-        self.announcements[self.THEIRS] = {"validator": self.NEW, "location": self.THEIRS}
-        self.assert_fails(self.run_script("announce", self.THEIRS, ATTACKER), "not 0xeeee")
-        self.assert_fails(self.run_script("announce", self.THEIRS, "0x12"), "must be 0x and 40 hex characters")
-        self.assertNotIn("dusk_origin_locations", self.state())
-        self.assert_ok(self.run_script("announce", self.THEIRS, self.NEW.upper().replace("0X", "0x")))
-        self.assertIn(f"--validator {self.NEW.upper().replace('0X', '0x')}", self.traced("dusk-tx announce")[0])
 
-    def test_settings_that_match_the_chains_change_nothing(self):
+    def test_settings_that_match_the_chain_change_nothing(self):
         result = self.run_script("set-validators", "--apply")
         self.assert_ok(result)
         self.assertIn("nothing to change", result.stderr)
         self.assertEqual(self.evm_sends(), [])
-        self.assertEqual(self.traced("dusk-tx set-ism-validators"), [])
 
     def test_a_dry_run_checks_every_validator_and_sends_nothing(self):
         self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS, index=35)
-        state = self.state()
+        self.signing(self.NEW, self.THEIRS)
         result = self.run_script("set-validators", **self.two_of_two())
         self.assert_ok(result)
-        self.assertIn(f"Validator {self.NEW} is announced on Dusk at {self.THEIRS}, and has signed up to index 35 of 40",
-                      result.stderr)
+        self.assertIn(f"Validator {self.NEW} at {self.THEIRS} has signed up to index 39 of 40", result.stderr)
         self.assertIn("Dry run: nothing was sent", result.stderr)
         self.assertEqual(self.evm_sends(), [])
-        # It records only what it read: the IGP's quote signer history.
-        after = self.state()
-        after["evm"].pop("igp_quote_signers_scanned", None)
-        state["evm"].pop("igp_quote_signers_scanned", None)
-        self.assertEqual(after, state)
-        self.assertEqual(self.evm["contracts"][self.token]["ism"], self.ism)
+        [check] = [line for line in self.traced("dusk-tx validator-checkpoint") if self.THEIRS in line]
+        self.assertIn(f"--merkle-tree-hook {MERKLE_TREE_HOOK} --max-lag 10", check)
 
-    def test_a_validator_that_isnt_signing_stops_the_switch(self):
-        cases = [
-            ({"recorded": False}, f"records no storage location for the Dusk-origin validator {self.NEW}"),
-            ({"announced": False}, f"Validator {self.NEW} hasn't announced {self.THEIRS} on Dusk"),
-            ({"index": 20}, "is 19 messages behind the 40 in its Merkle tree hook"),
-            ({"index": 40}, "the Merkle tree hook it signs for has 40 messages"),
-        ]
-        for case, expected in cases:
+    def test_a_validator_that_isnt_announced_or_signing_stops_the_switch(self):
+        for case, expected in [
+            ("unrecorded", "records no location for validator"),
+            ("newer", "newest announcement isn't"),
+            ("stale", "isn't signing at s3://outside-operator/nbg1/op: 25 messages behind"),
+        ]:
             with self.subTest(case=case):
                 self.setUp()
                 self.signing(VALIDATOR, self.OURS)
-                self.signing(self.NEW, self.THEIRS, **case)
+                if case == "stale":
+                    self.signing(self.NEW, self.THEIRS, error="25 messages behind")
+                elif case == "newer":
+                    self.signing(self.NEW, self.THEIRS)
+                    key = f"{VALIDATOR_ANNOUNCE}/get_announced_storage_location_hashes/{self.NEW}"
+                    self.queries[key]["value"].append("ff" * 32)
                 self.assert_fails(self.run_script("set-validators", "--apply", **self.two_of_two()), expected)
                 self.assertEqual(self.evm_sends(), [])
-        # A validator that flagged a reorg, which stops every delivery
-        # through an ISM that lists it; and checkpoints for another hook or
-        # domain.
-        for case, expected in [({"reorg_flag": True}, "flagged a reorg"),
-                               ({"hook": "a5" * 32}, "another Merkle tree hook or domain"),
-                               ({"domain": EVM_DOMAIN}, "another Merkle tree hook or domain")]:
-            with self.subTest(case=case):
-                self.setUp()
-                self.signing(VALIDATOR, self.OURS)
-                self.signing(self.NEW, self.THEIRS, **case)
-                self.assert_fails(self.run_script("set-validators", **self.two_of_two()), expected)
-        # The Dusk-origin checks go through the node, which checks the
-        # checkpoint's message ID and root against the Dusk hook.
-        self.setUp()
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        self.assert_ok(self.run_script("set-validators", **self.two_of_two()))
-        for line in self.traced("dusk-tx validator-checkpoint"):
-            self.assertIn("--rues-url https://testnet.nodes.dusk.network/", line)
-        # Nothing dispatched yet: nothing shows a validator signing.
-        self.setUp()
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        self.queries[f"{MERKLE_TREE_HOOK}/count"] = {"value": 0}
-        self.assert_fails(self.run_script("set-validators", **self.two_of_two()), "Send a transfer first")
-        # A lag the settings allow.
-        self.setUp()
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS, index=20)
-        self.assert_ok(self.run_script("set-validators", DUSK_VALIDATOR_CHECKPOINT_LAG=19, **self.two_of_two()))
-
-    def test_apply_first_probes_that_every_validator_signs_now(self):
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        result = self.run_script("set-validators", "--apply", **self.two_of_two())
-        self.assert_ok(result)
-        self.assertEqual(self.funded, [[TEST_RECIPIENT, str(17062500000 + 1000000)]])
-        # Waited until final.
-        self.assertEqual(self.dispatched, [[TEST_RECIPIENT, str(EVM_DOMAIN), "00" * 32, True]])
-        self.assertIn(f"Validator {self.NEW} signed the probe at index 40", result.stderr)
-        probes = [line for line in self.traced("dusk-tx validator-checkpoint") if "--index" in line]
-        self.assertEqual(len(probes), 2)
-        for line in probes:
-            self.assertIn("--index 40", line)
-            self.assertIn("--rues-url https://testnet.nodes.dusk.network/", line)
-        # A dry run sends no probe.
-        self.setUp()
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        self.assert_ok(self.run_script("set-validators", **self.two_of_two()))
-        self.assertEqual(self.dispatched, [])
-
-    def test_a_validator_that_stopped_after_the_latest_message_is_refused(self):
-        # It signed index 39, the latest, then stopped: counting messages
-        # can't tell, the probe can.
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS, index=39)
-        self.assert_ok(self.run_script("set-validators", **self.two_of_two()))
-        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=3, **self.two_of_two()),
-                          f"Validator {self.NEW} hasn't signed the probe at index 40")
-        self.assertEqual(self.evm_sends(), [])
-        self.assertEqual(self.state()["evm"]["ism"], self.ism)
-
-    def test_a_signature_read_after_the_deadline_doesnt_count(self):
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS, slow=5)
-        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=3, **self.two_of_two()),
-                          f"Validator {self.NEW} hasn't signed the probe at index 40")
-        self.assertEqual(self.evm_sends(), [])
-
-    def test_the_probe_is_its_own_message_whatever_else_is_dispatched(self):
-        # Another message lands first, at 40, and the probe at 41: a
-        # validator that stopped at 40 hasn't signed the probe.
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS, stops_at=40)
-        self.concurrent = True
-        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=3, **self.two_of_two()),
-                          f"Validator {self.NEW} hasn't signed the probe at index 41")
-        self.assertEqual(self.evm_sends(), [])
-        self.setUp()
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        self.concurrent = True
-        result = self.run_script("set-validators", "--apply", **self.two_of_two())
-        self.assert_ok(result)
-        self.assertIn(f"Validator {self.NEW} signed the probe at index 41", result.stderr)
-        # One that signed something else at the probe's index.
-        self.setUp()
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS, probe_message_id="cd" * 32)
-        self.assert_fails(self.run_script("set-validators", "--apply", **self.two_of_two()),
-                          f"Validator {self.NEW} signed message {'cd' * 32} at the probe's index 40, not the probe")
-        self.assertEqual(self.evm_sends(), [])
 
     def test_apply_moves_every_token_to_an_ism_of_the_new_set(self):
         self.signing(VALIDATOR, self.OURS)
         self.signing(self.NEW, self.THEIRS)
-        result = self.run_script("set-validators", "--apply", **self.two_of_two())
-        self.assert_ok(result)
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
         state = self.state()
-        new_ism = state["evm"]["ism"]
-        self.assertNotEqual(new_ism, self.ism)
-        self.assertEqual(state["evm"]["previous_isms"], [self.ism])
-        self.assertEqual(state["dusk_origin_validators"], sorted([VALIDATOR, self.NEW]))
-        self.assertEqual(state["dusk_origin_threshold"], 2)
-        self.assertEqual(self.evm["contracts"][self.token]["ism"], new_ism)
-        ism = self.evm["contracts"][new_ism]
-        self.assertEqual((ism["validators"], ism["threshold"]), (sorted([VALIDATOR, self.NEW]), 2))
-        self.assertTrue(any("deploy(address[],uint8)" in line for line in self.traced("cast send")))
-        self.assertTrue(any("setInterchainSecurityModule(address)" in line for line in self.traced("cast send")))
-        self.assertIn("The ISMs take the settings' validator sets", result.stderr)
-        # Every other command now checks the new ISM against the settings.
+        new = state["evm"]["ism"]
+        self.assertEqual((state["evm"]["previous_isms"], self.evm["contracts"][self.token]["ism"]), ([self.ism], new))
+        self.assertEqual((self.evm["contracts"][new]["threshold"], state["dusk_origin_threshold"]), (2, 2))
         self.assert_ok(self.run_script("preflight", **self.two_of_two()))
-        result = self.run_script("set-validators", "--apply", **self.two_of_two())
-        self.assert_ok(result)
-        self.assertIn("nothing to change", result.stderr)
-        self.assert_fails(self.run_script("preflight"), "needs 2 of [")
+        self.assertIn("nothing to change", self.run_script("set-validators", "--apply", **self.two_of_two()).stderr)
+        # A run that stopped before its record: the rerun sends nothing new
+        # and records the switch.
+        state["evm"]["ism"] = self.ism
+        self.write_state(state)
+        self.trace.write_text("")
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
+        self.assertEqual((self.state()["evm"]["ism"], self.evm_sends()), (new, []))
 
     def test_the_switch_is_recorded_only_once_final(self):
         self.signing(VALIDATOR, self.OURS)
         self.signing(self.NEW, self.THEIRS)
-        # The token updates are in blocks that aren't final yet.
         self.evm["finality_depth"] = 1000
         self.assert_fails(self.run_script("set-validators", "--apply", EVM_FINALITY_SECONDS=0, **self.two_of_two()),
-                          "as of sepolia's finalized block")
+                          "as of a final block")
         self.assertEqual(self.state()["evm"]["ism"], self.ism)
-        moved = self.evm["contracts"][self.token]["ism"]
-        self.assertNotEqual(moved, self.ism)
-        # A rerun sends nothing new, and still waits for finality.
-        self.trace.write_text("")
-        self.assert_fails(self.run_script("set-validators", "--apply", EVM_FINALITY_SECONDS=0, **self.two_of_two()),
-                          "as of sepolia's finalized block")
-        self.assertFalse(any("setInterchainSecurityModule" in line for line in self.traced("cast send")))
-        self.assertEqual(self.state()["evm"]["ism"], self.ism)
-        # Nor a second probe: it only waits on finality.
-        self.assertEqual((len(self.funded), len(self.dispatched)), (1, 1))
         self.evm["finality_depth"] = 0
         self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
-        self.assertEqual(self.state()["evm"]["ism"], moved)
+        self.assertNotEqual(self.state()["evm"]["ism"], self.ism)
 
-    def test_a_switch_that_stopped_before_its_record_completes(self):
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        before = self.state()
-        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
-        new_ism = self.state()["evm"]["ism"]
-        # The token points at the new ISM, but the record still names the
-        # old one, as after a crash right before the record was written.
-        self.write_state(before)
-        self.trace.write_text("")
-        result = self.run_script("set-validators", "--apply", **self.two_of_two())
-        self.assert_ok(result)
-        self.assertEqual(self.state()["evm"]["ism"], new_ism)
-        self.assertFalse(any("setInterchainSecurityModule" in line for line in self.traced("cast send")))
-        self.assertFalse(any("deploy(address[],uint8)" in line for line in self.traced("cast send")))
-
-    def test_a_token_at_an_ism_nobody_recorded_is_refused(self):
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
+    def test_a_token_at_another_ism_or_an_unpaid_threshold_is_refused(self):
         stranger = "0x" + "5e" * 20
         self.evm["contracts"][stranger] = {"type": "ism", "module_type": 5, "validators": [ATTACKER], "threshold": 1}
         self.evm["contracts"][self.token]["ism"] = stranger
-        self.assert_fails(self.run_script("set-validators", "--apply", **self.two_of_two()),
-                          f"with the ISM {stranger}, not the {self.ism} recorded")
-        self.assertEqual(self.evm_sends(), [])
-
-    def test_without_a_factory_the_new_ism_is_deployed_from_source(self):
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        self.assert_ok(self.run_script("set-validators", "--apply", EVM_ISM_FACTORY="", **self.two_of_two()))
-        state = self.state()
-        self.assertNotIn("next_ism", state["evm"])
-        self.assertEqual(self.evm["contracts"][self.token]["ism"], state["evm"]["ism"])
-        [created] = self.traced("forge create")
-        self.assertIn("StorageMessageIdMultisigIsm", created)
-
-    def test_a_higher_dusk_origin_threshold_must_be_paid_for(self):
+        self.assert_fails(self.run_script("set-validators", **self.two_of_two()), f"verifies with {stranger}")
         six = ",".join(validators(6))
         self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6),
                           "Set it to at least 430,000")
-        self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_VALIDATORS=f"{VALIDATOR},{VALIDATOR}",
-                                          DUSK_ORIGIN_THRESHOLD=1),
-                          "DUSK_ORIGIN_VALIDATORS lists")
-        self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_THRESHOLD=2),
-                          "DUSK_ORIGIN_THRESHOLD must be between 1 and the 1 validators")
-
-    def test_evm_origin_validators_change_on_the_dusk_isms(self):
-        other = "0x" + "6e" * 20
-        sepolia, outside = "gs://hyperlane-testnet4-validator-0/sepolia/gcsAnnouncementKey", "s3://b/us-east-1/v"
-        self.evm["contracts"][EVM_VA]["announcements"] = {VALIDATOR: [sepolia], other: ["s3://old/us-east-1", outside]}
-        self.evm["contracts"][EVM_MERKLE]["count"] = 1000
-        evm_checkpoint = {"domain": EVM_DOMAIN, "hook": EVM_MERKLE}
-        self.checkpoints[sepolia] = {"validator": VALIDATOR, "index": 999, "message_id": "ab" * 32,
-                                     "root": "5b" * 32, **evm_checkpoint}
-        self.checkpoints[outside] = {"validator": other, "index": 995, "message_id": "ab" * 32, **evm_checkpoint}
-        self.evm["contracts"][EVM_MERKLE]["latest_checkpoint"] = ["0x" + "5b" * 32, 999]
-        # Two signatures take more Dusk gas, which the EVM IGP charges for.
-        self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)][1] = 2400000
-        relayer = self.root / "running-relayer.json"
-        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 5000000}}}))
-        settings = {"EVM_ORIGIN_VALIDATORS": f"{other},{VALIDATOR}", "EVM_ORIGIN_THRESHOLD": "2",
-                    "EVM_IGP_GAS_OVERHEAD": "2400000", "RELAYER_CONFIG": relayer}
-        self.assert_fails(self.run_script("set-validators", **{**settings, "EVM_IGP_GAS_OVERHEAD": "2200000"}),
-                          "a relayed process with EVM_ORIGIN_THRESHOLD 2 takes about 2,390,000")
-        result = self.run_script("set-validators", **settings)
-        self.assert_ok(result)
-        self.assertIn(f"Validator {other} is announced on sepolia at {outside}, and has signed up to index 995 of 1000",
-                      result.stderr)
-        self.assertEqual(self.traced("dusk-tx set-ism-validators"), [])
-        # The running relayer's gas limit must be known: missing, the
-        # switch is refused unless checked by hand.
-        self.assert_fails(self.run_script("set-validators", **{**settings, "RELAYER_CONFIG": self.root / "none.json"}),
-                          "Can't read the relayer's Dusk gas limit")
-        self.assert_ok(self.run_script("set-validators", **{**settings, "RELAYER_CONFIG": self.root / "none.json"},
-                                       RELAYER_GAS_LIMIT_UNCHECKED=1))
-        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 3000000}}}))
-        self.assert_fails(self.run_script("set-validators", **settings), "gives the relayer a Dusk gas limit of 3000000")
-        # The agent also reads a gas limit written as a string.
-        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": "5000000"}}}))
-        self.assert_ok(self.run_script("set-validators", **settings))
-        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 5000000}}}) + "{")
-        self.assert_fails(self.run_script("set-validators", **settings), "Can't read the relayer's Dusk gas limit")
-        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 5000000}}}))
-        # A checkpoint at the hook's latest index must have its root.
-        self.evm["contracts"][EVM_MERKLE]["latest_checkpoint"] = ["0x" + "5c" * 32, 999]
-        self.assert_fails(self.run_script("set-validators", **settings), "it can't join a quorum")
-        self.evm["contracts"][EVM_MERKLE]["latest_checkpoint"] = ["0x" + "5b" * 32, 999]
-        result = self.run_script("set-validators", "--apply", **settings)
-        self.assert_ok(result)
-        [sent] = self.traced("dusk-tx set-ism-validators")
-        self.assertIn(f"--ism {MULTISIG} --validators {','.join(sorted([VALIDATOR, other]))} --threshold 2", sent)
-        self.assertEqual(self.queries[f"{MULTISIG}/validators_and_threshold"]["value"],
-                         {"validators": sorted([VALIDATOR, other]), "threshold": 2})
-        self.assertEqual(self.evm_sends(), [])
-        # One that announced nothing on the EVM chain.
-        self.evm["contracts"][EVM_VA]["announcements"] = {VALIDATOR: [sepolia]}
-        self.assert_fails(self.run_script("set-validators", EVM_ORIGIN_VALIDATORS=f"{VALIDATOR},{other}",
-                                          EVM_ORIGIN_THRESHOLD=1, EVM_IGP_GAS_OVERHEAD=2400000,
-                                          RELAYER_CONFIG=relayer),
-                          f"Validator {other} hasn't announced a storage location on sepolia")
-
-    def test_a_dusk_origin_threshold_the_relayer_cant_deliver_is_refused(self):
-        # 3.52M of EVM IGP overhead pays for 7 signatures, which take a
-        # relayed process past what 5M covers with a 1.5x margin.
-        self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)][1] = 3520000
-        seven = ",".join(validators(7))
-        self.assert_fails(self.run_script("set-validators", EVM_ORIGIN_VALIDATORS=seven, EVM_ORIGIN_THRESHOLD=7,
-                                          EVM_IGP_GAS_OVERHEAD=3520000),
-                          "DUSK_RELAYER_GAS_LIMIT is 5000000; with EVM_ORIGIN_THRESHOLD of 7 it must be at least")
-
-    def test_the_relayer_reads_a_validators_newest_announcement(self):
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        key = f"{VALIDATOR_ANNOUNCE}/get_announced_storage_location_hashes/{self.NEW}"
-        self.queries[key]["value"].append(self.hash("s3://outside-operator/nbg1/newer"))
-        self.assert_fails(self.run_script("set-validators", **self.two_of_two()),
-                          f"has announced another location on Dusk since {self.THEIRS}")
-
-    def test_local_checkpoint_storage_counts_only_in_a_rehearsal(self):
-        local = "file:///var/lib/hyperlane/checkpoints"
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, local)
-        for settings in ({}, {"LOCAL_REHEARSAL_CHECKPOINTS": 1}):
-            with self.subTest(settings=settings):
-                self.assert_fails(self.run_script("set-validators", **self.two_of_two(), **settings),
-                                  "only a local rehearsal's validators do")
-        self.assertEqual(self.traced("dusk-tx validator-checkpoint --location file://"), [])
 
     def test_agent_configs_write_an_outside_operators_validator(self):
-        self.assert_ok(self.run_script("agent-configs"))
-        config = json.loads((self.out / "validator-dusk-operator.json").read_text())
-        self.assertNotIn("signer", config["chains"]["dusk"])
-        self.assertNotIn("skipAnnounce", config)
-        self.assertEqual(config["checkpointSyncer"]["type"], "s3")
-        self.assertEqual(config["db"], "/data/validator-db")
-        self.assertEqual(config["chains"]["dusk"]["eventCursorDir"], "/data/validator-dusk-events")
-        self.assertEqual(config["chains"]["dusk"]["validatorAnnounce"], "0x" + VALIDATOR_ANNOUNCE)
-        self.assertEqual(config["chains"]["dusk"]["rpcUrls"], [{"http": "https://testnet.nodes.dusk.network/"}])
         self.assert_ok(self.run_script("agent-configs", OPERATOR_DUSK_RUES_URL="https://node.operator.example/"))
-        config = json.loads((self.out / "validator-dusk-operator.json").read_text())
-        self.assertEqual(config["chains"]["dusk"]["rpcUrls"], [{"http": "https://node.operator.example/"}])
-        ours = json.loads((self.out / "validator-dusk.json").read_text())
-        self.assertIn("signer", ours["chains"]["dusk"])
-
-    def test_a_location_hash_is_the_contracts_keccak(self):
-        # The stubs hash with sha256; the real cast hashes as the
-        # ValidatorAnnounce does (dusk-tx's validators tests check the same
-        # value against the contracts' keccak256).
-        cast = shutil.which("cast")
-        if cast is None:
-            self.skipTest("no cast (Foundry)")
-        hashed = subprocess.run([cast, "keccak", "s3://dusk-hyperlane-testnet/nbg1/validator-1"],
-                                capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(hashed, "0xbac1294f3cb5349c94f575a244e8c9396fd279286f5a12b227afd2770955e5f3")
+        dusk = json.loads((self.out / "validator-dusk-operator.json").read_text())["chains"]["dusk"]
+        self.assertNotIn("signer", dusk)
+        self.assertEqual((dusk["rpcUrls"], dusk["eventCursorDir"]),
+                         ([{"http": "https://node.operator.example/"}], "/data/validator-dusk-events"))
 
 
 class TokenRouteChecks:

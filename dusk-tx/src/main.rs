@@ -19,8 +19,8 @@
 //!   pay-for-gas        Pay an IGP for more gas for a message (anyone)
 //!   account            Show an account's address, recipient hash and balance
 //!   export-signer-key  Write an agent signer key file from consensus.keys
-//!   announce           Announce a validator's storage from its signed announcement (anyone)
-//!   validator-checkpoint  Check a validator's latest checkpoint in its storage
+//!   announce           Announce a validator from its signed announcement (anyone)
+//!   validator-checkpoint  Check a validator's latest checkpoint against the hook
 //!   set-ism-validators Set a multisig ISM's validators and threshold (owner)
 //!
 //! Every command that sends a transaction takes the chain it signs for
@@ -142,18 +142,14 @@ const LAST_TOKEN_ROUTE_NONCE: u64 = u64::MAX - 1;
 /// withdrawal takes about 59M, directly or through a route's owner-only
 /// wrapper. The VM tests check this limit covers both.
 const WITHDRAW_DISPATCH_GAS_LIMIT: u64 = 80_000_000;
-/// Default gas limit for `announce`. An announcement takes about 2.07M gas,
-/// 2.25M with a 1 KiB location (docs/costs.md); a failed one pays its whole
-/// limit, so it stays low.
+/// Default gas limit for `announce`: 2.07M gas, 2.25M with a 1 KiB location
+/// (docs/costs.md); a failed one pays its whole limit.
 const ANNOUNCE_GAS_LIMIT: u64 = 3_500_000;
 /// The ValidatorAnnounce's `MAX_LOCATIONS_PER_VALIDATOR`.
 const MAX_LOCATIONS_PER_VALIDATOR: usize = 16;
-/// Default gas limit for `set-ism-validators`. Setting 6 validators takes
-/// about 1.87M gas and 255 about 2.50M (docs/costs.md); a failed call pays
-/// its whole limit, so it stays low.
+/// Default gas limit for `set-ism-validators`: 1.87M gas for 6 validators,
+/// 2.50M for 255 (docs/costs.md).
 const ISM_SET_GAS_LIMIT: u64 = 4_000_000;
-/// The module type a MessageIdMultisig ISM reports (Hyperlane's IsmType).
-const MESSAGE_ID_MULTISIG_MODULE_TYPE: u8 = 5;
 /// How often a transaction's status is polled.
 const TRANSACTION_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// How long a submitted transaction may take to be included.
@@ -1042,136 +1038,15 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Announce a validator's checkpoint storage on a ValidatorAnnounce,
-    /// from the signed announcement the validator wrote there. Anyone can
-    /// send it: the contract checks the validator's signature, not who
-    /// sends it, so a validator without a Dusk account can be announced for
-    /// it. Checks the signature, the Mailbox and domain, and runs the
-    /// announcement as a query, before anything is signed; a location the
-    /// validator already announced is reported and nothing is sent.
-    Announce {
-        #[arg(long, default_value = "http://localhost:8080/")]
-        rues_url: String,
-        /// Path to encrypted consensus.keys file.
-        #[arg(long)]
-        keys: Option<PathBuf>,
-        /// Password for consensus.keys. Takes precedence over
-        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
-        #[arg(long)]
-        password: Option<String>,
-        /// Raw BLS secret key hex (alternative to --keys).
-        #[arg(long)]
-        secret_key: Option<String>,
-        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
-        #[arg(long)]
-        secret_key_stdin: bool,
-        /// ValidatorAnnounce contract ID (64 hex chars).
-        #[arg(long)]
-        validator_announce: String,
-        /// The signed announcement: the validator's storage location
-        /// (s3://, gs:// or file://), whose announcement it reads and which
-        /// it must announce; an http(s) URL of the announcement; or a path
-        /// to it.
-        #[arg(long)]
-        announcement: String,
-        /// The validator the announcement must be from (20-byte hex).
-        #[arg(long)]
-        validator: Option<String>,
-        /// The S3-compatible endpoint s3:// locations are read from, as
-        /// AWS_ENDPOINT_URL is for the agents. Without it, AWS S3.
-        #[arg(long)]
-        s3_endpoint: Option<String>,
-        /// Expected native Dusk chain ID. The endpoint must report it before
-        /// anything is queried, the signer is read or a transaction is
-        /// constructed.
-        #[arg(long)]
-        expected_chain_id: u8,
-        /// Gas limit. An announcement takes about 2.07M gas, 2.25M with a
-        /// 1 KiB location.
-        #[arg(long, default_value_t = ANNOUNCE_GAS_LIMIT)]
-        gas_limit: u64,
-        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
-        #[arg(long, default_value = "1")]
-        gas_price: u64,
-    },
-    /// Read a validator's latest checkpoint from its storage location, and
-    /// check it is the validator's: signed by it, for the origin domain
-    /// and Merkle tree hook given. Sends nothing and asks no node. Prints
-    /// the checkpoint's index, root and message ID.
-    ValidatorCheckpoint {
-        /// The validator's storage location, as it announced it (s3://,
-        /// gs:// or file://).
-        #[arg(long)]
-        location: String,
-        /// The validator (20-byte hex).
-        #[arg(long)]
-        validator: String,
-        /// The origin domain its checkpoints are for.
-        #[arg(long)]
-        origin_domain: u32,
-        /// The origin's Merkle tree hook: a Dusk contract ID (32-byte hex)
-        /// or an EVM address (20-byte hex).
-        #[arg(long)]
-        merkle_tree_hook: String,
-        /// The S3-compatible endpoint s3:// locations are read from, as
-        /// AWS_ENDPOINT_URL is for the agents. Without it, AWS S3.
-        #[arg(long)]
-        s3_endpoint: Option<String>,
-        /// Read a file:// location, one on this host, as a local
-        /// rehearsal's validators have.
-        #[arg(long)]
-        allow_local_storage: bool,
-        /// Also check the checkpoint against the Dusk Merkle tree hook
-        /// through this node: the message ID at its index, and its root,
-        /// rebuilt from every message ID up to it.
-        #[arg(long)]
-        rues_url: Option<String>,
-        /// Read the validator's checkpoint at this index instead of its
-        /// latest.
-        #[arg(long)]
-        index: Option<u32>,
-    },
-    /// Set the validators and threshold of a MessageIdMultisig ISM. Owner
-    /// only. The validators are sorted, as the ISM requires, and each may
-    /// be listed once.
-    SetIsmValidators {
-        #[arg(long, default_value = "http://localhost:8080/")]
-        rues_url: String,
-        /// Path to encrypted consensus.keys file.
-        #[arg(long)]
-        keys: Option<PathBuf>,
-        /// Password for consensus.keys. Takes precedence over
-        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
-        #[arg(long)]
-        password: Option<String>,
-        /// Raw BLS secret key hex (alternative to --keys).
-        #[arg(long)]
-        secret_key: Option<String>,
-        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
-        #[arg(long)]
-        secret_key_stdin: bool,
-        /// ISM contract ID (64 hex chars).
-        #[arg(long)]
-        ism: String,
-        /// The validators, comma-separated 20-byte hex addresses.
-        #[arg(long)]
-        validators: String,
-        /// How many of them must sign a message.
-        #[arg(long)]
-        threshold: u8,
-        /// Expected native Dusk chain ID. The endpoint must report it before
-        /// anything is queried, the signer is read or a transaction is
-        /// constructed.
-        #[arg(long)]
-        expected_chain_id: u8,
-        /// Gas limit. Setting 6 validators takes about 1.87M gas, 255 about
-        /// 2.50M.
-        #[arg(long, default_value_t = ISM_SET_GAS_LIMIT)]
-        gas_limit: u64,
-        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
-        #[arg(long, default_value = "1")]
-        gas_price: u64,
-    },
+    /// Announce a validator's checkpoint storage on a ValidatorAnnounce, from
+    /// the signed announcement the validator wrote there. Anyone can send
+    /// it: the contract checks the validator's signature, not the sender.
+    Announce(AnnounceArgs),
+    /// Check a validator's latest checkpoint against the Dusk Merkle tree
+    /// hook. Sends nothing.
+    ValidatorCheckpoint(CheckpointArgs),
+    /// Set the validators and threshold of a MessageIdMultisig ISM (owner).
+    SetIsmValidators(IsmValidatorsArgs),
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -1793,86 +1668,9 @@ async fn run(command: Command) -> Result<(), String> {
             password,
             out,
         } => cmd_export_signer_key(keys, password.as_deref().unwrap_or_default(), &out),
-        Command::Announce {
-            rues_url,
-            keys,
-            password,
-            secret_key,
-            secret_key_stdin,
-            validator_announce,
-            announcement,
-            validator,
-            s3_endpoint,
-            expected_chain_id,
-            gas_limit,
-            gas_price,
-        } => {
-            cmd_announce(
-                &rues_url,
-                keys,
-                password.as_deref().unwrap_or_default(),
-                secret_key,
-                secret_key_stdin,
-                &validator_announce,
-                &announcement,
-                validator.as_deref(),
-                s3_endpoint.as_deref(),
-                expected_chain_id,
-                gas_limit,
-                gas_price,
-            )
-            .await
-        }
-        Command::ValidatorCheckpoint {
-            location,
-            validator,
-            origin_domain,
-            merkle_tree_hook,
-            s3_endpoint,
-            allow_local_storage,
-            rues_url,
-            index,
-        } => {
-            cmd_validator_checkpoint(
-                &location,
-                &validator,
-                origin_domain,
-                &merkle_tree_hook,
-                s3_endpoint.as_deref(),
-                allow_local_storage,
-                rues_url.as_deref(),
-                index,
-            )
-            .await
-        }
-        Command::SetIsmValidators {
-            rues_url,
-            keys,
-            password,
-            secret_key,
-            secret_key_stdin,
-            ism,
-            validators,
-            threshold,
-            expected_chain_id,
-            gas_limit,
-            gas_price,
-        } => {
-            cmd_set_ism_validators(
-                &rues_url,
-                keys,
-                password.as_deref().unwrap_or_default(),
-                secret_key,
-                secret_key_stdin,
-                &ism,
-                &validators,
-                threshold,
-                expected_chain_id,
-                gas_limit,
-                gas_price,
-            )
-            .await
-        }
+        Command::Announce(args) => cmd_announce(args).await,
+        Command::ValidatorCheckpoint(args) => cmd_validator_checkpoint(args).await,
+        Command::SetIsmValidators(args) => cmd_set_ism_validators(args).await,
     }
 }
 
@@ -3254,8 +3052,10 @@ mod tests {
                 "announce",
                 "--validator-announce",
                 &id,
-                "--announcement",
-                "/nonexistent/announcement.json",
+                "--location",
+                "s3://b/nbg1/v",
+                "--s3-endpoint",
+                "http://127.0.0.1:9/",
             ],
             vec![
                 "set-ism-validators",
@@ -11273,318 +11073,303 @@ fn find_dispatched_message(
 
 // ── Validators ──────────────────────────────────────────────────────────────
 
-/// The signed announcement `source` names, where it was read from, and,
-/// when `source` is a storage location, that location: the announcement
-/// must announce it.
-async fn read_announcement(
-    source: &str,
-    s3_endpoint: Option<&reqwest::Url>,
-) -> Result<(Vec<u8>, String, Option<String>), String> {
-    let (from, location) = match source.split_once("://").map(|(scheme, _)| scheme) {
-        Some("s3" | "gs" | "file") => (
-            validators::Storage::parse(source)?.announcement(s3_endpoint)?,
-            Some(source.to_owned()),
-        ),
-        Some("http" | "https") => (
-            validators::Source::Url(
-                reqwest::Url::parse(source).map_err(|e| format!("Invalid URL '{source}': {e}"))?,
-            ),
-            None,
-        ),
-        Some(scheme) => {
-            return Err(format!(
-                "Can't read an announcement from {scheme}:// (use s3://, gs://, file://, http(s):// or a path)"
-            ))
-        }
-        None => (validators::Source::File(PathBuf::from(source)), None),
-    };
-    let json = validators::read(&from)
-        .await?
-        .ok_or_else(|| format!("No announcement at {from}: has the validator started?"))?;
-    Ok((json, from.to_string(), location))
+/// Signing on Dusk, for the validator commands.
+#[derive(clap::Args)]
+struct DuskSigner {
+    #[arg(long, default_value = "http://localhost:8080/")]
+    rues_url: String,
+    /// Path to encrypted consensus.keys file.
+    #[arg(long)]
+    keys: Option<PathBuf>,
+    /// Password for consensus.keys. Takes precedence over
+    /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+    #[arg(long)]
+    password: Option<String>,
+    /// Raw BLS secret key hex (alternative to --keys).
+    #[arg(long)]
+    secret_key: Option<String>,
+    /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+    #[arg(long)]
+    secret_key_stdin: bool,
+    /// Expected native Dusk chain ID. The endpoint must report it before
+    /// anything is queried, the signer is read or a transaction is built.
+    #[arg(long)]
+    expected_chain_id: u8,
+    /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+    #[arg(long, default_value = "1")]
+    gas_price: u64,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn cmd_announce(
-    rues_url: &str,
-    keys_path: Option<PathBuf>,
-    password: &str,
-    secret_key_hex: Option<String>,
-    secret_key_stdin: bool,
-    va_hex: &str,
-    source: &str,
-    expected_validator: Option<&str>,
-    s3_endpoint: Option<&str>,
-    expected_chain_id: u8,
+impl DuskSigner {
+    async fn bind(&self) -> Result<(RuesClient, u8), String> {
+        let client = RuesClient::new(&self.rues_url)?;
+        let chain_id = bind_chain_id(&client, self.expected_chain_id).await?;
+        Ok((client, chain_id))
+    }
+
+    /// Sign and send a call, and wait for its block.
+    async fn send(
+        &self,
+        client: &RuesClient,
+        chain_id: u8,
+        contract: [u8; 32],
+        fn_name: &str,
+        args: Vec<u8>,
+        gas_limit: u64,
+    ) -> Result<(String, Confirmation), String> {
+        let (sk, pk) = load_keys(
+            self.keys.clone(),
+            self.password.as_deref().unwrap_or_default(),
+            self.secret_key.clone(),
+            self.secret_key_stdin,
+        )?;
+        let (nonce, _balance) = client.query_account(&pk).await?;
+        let tx = moonlight_call(
+            &sk,
+            ContractId::from_bytes(contract),
+            fn_name,
+            args,
+            gas_limit,
+            self.gas_price,
+            next_moonlight_nonce(nonce)?,
+            chain_id,
+        )?;
+        let tx_id = hex::encode(tx.hash().to_bytes());
+        let confirmation = propagate_and_wait(client, &tx_id, &tx.to_var_bytes()).await?;
+        Ok((tx_id, confirmation))
+    }
+}
+
+/// A validator's storage location: s3:// read through --s3-endpoint, as the
+/// agents read it with AWS_ENDPOINT_URL, or file:// in a local rehearsal.
+#[derive(clap::Args)]
+struct StorageArgs {
+    /// The validator's storage location, as it announces it.
+    #[arg(long)]
+    location: String,
+    /// The S3-compatible endpoint s3:// locations are read from.
+    #[arg(long)]
+    s3_endpoint: Option<String>,
+    /// Read a file:// location, as a local rehearsal's validators have.
+    #[arg(long)]
+    allow_local_storage: bool,
+}
+
+impl StorageArgs {
+    fn open(&self) -> Result<(validators::Storage, Option<reqwest::Url>), String> {
+        let storage = validators::Storage::parse(&self.location)?;
+        if matches!(storage, validators::Storage::Local(_)) && !self.allow_local_storage {
+            return Err(format!(
+                "{} is on this host: file:// locations are read only with --allow-local-storage",
+                self.location
+            ));
+        }
+        let endpoint = self.s3_endpoint.as_deref().map(validators::parse_endpoint);
+        Ok((storage, endpoint.transpose()?))
+    }
+}
+
+/// `announce`'s arguments.
+#[derive(clap::Args)]
+struct AnnounceArgs {
+    #[command(flatten)]
+    signer: DuskSigner,
+    #[command(flatten)]
+    storage: StorageArgs,
+    /// ValidatorAnnounce contract ID (64 hex chars).
+    #[arg(long)]
+    validator_announce: String,
+    /// The validator the announcement must be from (20-byte hex).
+    #[arg(long)]
+    validator: Option<String>,
+    /// Gas limit. An announcement takes about 2.07M gas.
+    #[arg(long, default_value_t = ANNOUNCE_GAS_LIMIT)]
     gas_limit: u64,
-    gas_price: u64,
-) -> Result<(), String> {
-    let va = parse_bytes32(va_hex)?;
-    let expected_validator = expected_validator.map(parse_eth_address).transpose()?;
-    let endpoint = s3_endpoint.map(validators::parse_endpoint).transpose()?;
-    let client = RuesClient::new(rues_url)?;
-    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
-    let (json, read_from, location) = read_announcement(source, endpoint.as_ref()).await?;
+}
+
+/// `validator-checkpoint`'s arguments.
+#[derive(clap::Args)]
+struct CheckpointArgs {
+    #[arg(long, default_value = "http://localhost:8080/")]
+    rues_url: String,
+    #[command(flatten)]
+    storage: StorageArgs,
+    /// The validator (20-byte hex).
+    #[arg(long)]
+    validator: String,
+    /// The Dusk domain, and the Merkle tree hook (64 hex chars), its
+    /// checkpoints are for.
+    #[arg(long)]
+    origin_domain: u32,
+    #[arg(long)]
+    merkle_tree_hook: String,
+    /// How many messages behind the hook its latest checkpoint may be.
+    #[arg(long, default_value = "10")]
+    max_lag: u32,
+}
+
+/// `set-ism-validators`'s arguments.
+#[derive(clap::Args)]
+struct IsmValidatorsArgs {
+    #[command(flatten)]
+    signer: DuskSigner,
+    /// ISM contract ID (64 hex chars).
+    #[arg(long)]
+    ism: String,
+    /// The validators, comma-separated 20-byte hex addresses.
+    #[arg(long)]
+    validators: String,
+    /// How many of them must sign a message.
+    #[arg(long)]
+    threshold: u8,
+    /// Gas limit. Setting 6 validators takes about 1.87M gas.
+    #[arg(long, default_value_t = ISM_SET_GAS_LIMIT)]
+    gas_limit: u64,
+}
+
+/// Anyone can send a validator's announcement: the ValidatorAnnounce checks
+/// its signature, not the sender. It is checked here first, and run as a
+/// query, before anything is signed; a location announced already is only
+/// reported.
+async fn cmd_announce(args: AnnounceArgs) -> Result<(), String> {
+    let va = parse_bytes32(&args.validator_announce)?;
+    let expected = args
+        .validator
+        .as_deref()
+        .map(parse_eth_address)
+        .transpose()?;
+    let (storage, endpoint) = args.storage.open()?;
+    let location = &args.storage.location;
+    let (client, chain_id) = args.signer.bind().await?;
+    let json = storage
+        .read(storage.announcement(), endpoint.as_ref())
+        .await?
+        .ok_or_else(|| format!("No announcement in {location}: has the validator started?"))?;
     let announcement = validators::Announcement::parse(&json)?;
     let validator = EthAddress(announcement.validator);
-    if let Some(expected) = expected_validator {
-        if expected != validator {
-            return Err(format!(
-                "The announcement at {read_from} is the validator 0x{}'s, not 0x{}'s",
-                hex::encode(validator.0),
-                hex::encode(expected.0)
-            ));
-        }
+    if expected.is_some_and(|expected| expected != validator) {
+        return Err(format!(
+            "The announcement in {location} isn't the validator {}'s",
+            args.validator.unwrap()
+        ));
     }
-    if let Some(location) = location {
-        if announcement.location != location {
-            return Err(format!(
-                "The announcement in {location} announces {}: the validator's storage is \
-                 configured otherwise than where it wrote this",
-                announcement.location
-            ));
-        }
+    if announcement.location != *location {
+        return Err(format!(
+            "The announcement in {location} announces {}",
+            announcement.location
+        ));
     }
     announcement.check()?;
-
-    let mailbox: ContractId = client
-        .contract_query(&va, "mailbox", &())
-        .await
-        .map_err(|e| {
-            format!("Can't read the Mailbox of {va_hex} (is it a ValidatorAnnounce?): {e}")
-        })?;
+    let mailbox: ContractId = client.contract_query(&va, "mailbox", &()).await?;
     let domain: u32 = client.contract_query(&va, "local_domain", &()).await?;
     if mailbox.to_bytes() != announcement.mailbox || domain != announcement.domain {
         return Err(format!(
-            "The announcement is for the Mailbox {} on domain {}, but the ValidatorAnnounce \
-             {va_hex} is the Mailbox {}'s on domain {domain}",
-            hex::encode(announcement.mailbox),
-            announcement.domain,
-            hex::encode(mailbox.to_bytes())
+            "The announcement is for another Mailbox or domain than {}'s",
+            args.validator_announce
         ));
     }
-    let mut output = json!({
-        "success": true,
-        "validator": format!("0x{}", hex::encode(validator.0)),
-        "location": announcement.location,
-        "validator_announce": va_hex,
-        "read_from": read_from,
-    });
-    let hashes: Vec<[u8; 32]> = client
-        .contract_query(&va, "get_announced_storage_location_hashes", &validator)
-        .await?;
-    let location_hash = hyperlane_dusk_types::message::keccak256(announcement.location.as_bytes());
-    if hashes.contains(&location_hash) {
-        output["already_announced"] = json!(true);
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        return Ok(());
+    let hash = hyperlane_dusk_types::message::keccak256(location.as_bytes());
+    let method = "get_announced_storage_location_hashes";
+    let announced: Vec<[u8; 32]> = client.contract_query(&va, method, &validator).await?;
+    let mut output = json!({ "success": true, "validator": format!("0x{}", hex::encode(validator.0)),
+        "location": location, "already_announced": announced.contains(&hash) });
+    if !announced.contains(&hash) {
+        if announced.len() >= MAX_LOCATIONS_PER_VALIDATOR {
+            return Err(format!("The validator has announced the most locations it can, {MAX_LOCATIONS_PER_VALIDATOR}"));
+        }
+        let call = (validator, location.clone(), announcement.signature.to_vec());
+        let accepted: bool = client
+            .contract_query(&va, "announce", &call)
+            .await
+            .map_err(|e| {
+                format!("The ValidatorAnnounce refuses the announcement, so nothing was sent: {e}")
+            })?;
+        if !accepted {
+            return Err(
+                "The ValidatorAnnounce refuses the announcement, so nothing was sent".into(),
+            );
+        }
+        let (tx_id, confirmation) = args
+            .signer
+            .send(
+                &client,
+                chain_id,
+                va,
+                "announce",
+                rkyv_serialize(&call),
+                args.gas_limit,
+            )
+            .await?;
+        let announced: Vec<[u8; 32]> = client.contract_query(&va, method, &validator).await?;
+        if !announced.contains(&hash) {
+            return Err(format!(
+                "Transaction {tx_id} was included, but the location isn't announced"
+            ));
+        }
+        output["tx_id"] = json!(tx_id);
+        confirmation.record(&mut output);
     }
-    if hashes.len() >= MAX_LOCATIONS_PER_VALIDATOR {
-        return Err(format!(
-            "The validator has announced {} locations, the most a ValidatorAnnounce takes",
-            hashes.len()
-        ));
-    }
-    let args = (
-        validator,
-        announcement.location.clone(),
-        announcement.signature.to_vec(),
-    );
-    // The contract checks the whole announcement in a query too, so one it
-    // would refuse fails here, before anything is signed: a failed
-    // transaction pays its whole gas limit.
-    let accepted: bool = client
-        .contract_query(&va, "announce", &args)
-        .await
-        .map_err(|e| {
-            format!("The ValidatorAnnounce refuses the announcement, so nothing was sent: {e}")
-        })?;
-    if !accepted {
-        return Err("The ValidatorAnnounce refuses the announcement, so nothing was sent".into());
-    }
-
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    let (nonce, _balance) = client.query_account(&pk).await?;
-    let tx = moonlight_call(
-        &sk,
-        ContractId::from_bytes(va),
-        "announce",
-        rkyv_serialize(&args),
-        gas_limit,
-        gas_price,
-        next_moonlight_nonce(nonce)?,
-        chain_id,
-    )?;
-    let tx_id = hex::encode(tx.hash().to_bytes());
-    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-    let hashes: Vec<[u8; 32]> = client
-        .contract_query(&va, "get_announced_storage_location_hashes", &validator)
-        .await?;
-    if !hashes.contains(&location_hash) {
-        return Err(format!(
-            "Transaction {tx_id} was included, but the ValidatorAnnounce doesn't list the location"
-        ));
-    }
-    output["already_announced"] = json!(false);
-    output["fn_name"] = json!("announce");
-    output["tx_id"] = json!(tx_id);
-    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
 
-/// A Merkle tree hook: a Dusk contract ID, or an EVM address as Hyperlane
-/// pads it to 32 bytes.
-fn parse_merkle_tree_hook(value: &str) -> Result<[u8; 32], String> {
-    let digits = value.strip_prefix("0x").unwrap_or(value);
-    if digits.len() == 40 {
-        let mut hook = [0u8; 32];
-        hook[12..].copy_from_slice(&parse_eth_address(digits)?.0);
-        return Ok(hook);
-    }
-    parse_bytes32(digits).map_err(|e| format!("Invalid Merkle tree hook '{value}': {e}"))
-}
-
-async fn cmd_validator_checkpoint(
-    location: &str,
-    validator_arg: &str,
-    origin_domain: u32,
-    merkle_tree_hook: &str,
-    s3_endpoint: Option<&str>,
-    allow_local_storage: bool,
-    rues_url: Option<&str>,
-    at_index: Option<u32>,
-) -> Result<(), String> {
-    let storage = validators::Storage::parse(location)?;
-    if storage.is_local() && !allow_local_storage {
-        return Err(format!(
-            "{location} is a directory on this host: read file:// locations only with \
-             --allow-local-storage, as for a local rehearsal"
-        ));
-    }
-    let validator = parse_eth_address(validator_arg)?;
-    let hook = parse_merkle_tree_hook(merkle_tree_hook)?;
-    let endpoint = s3_endpoint.map(validators::parse_endpoint).transpose()?;
-    for flag_at in storage.reorg_flags(endpoint.as_ref())? {
-        if validators::read(&flag_at).await?.is_some() {
-            return Err(format!(
-                "The validator flagged a reorg at {flag_at}: while it is there, the relayer delivers \
-                 nothing through an ISM that lists the validator"
-            ));
-        }
-    }
-    let index = match at_index {
-        Some(index) => index,
-        None => {
-            let index_at = storage.latest_index(endpoint.as_ref())?;
-            let index = validators::read(&index_at).await?.ok_or_else(|| {
-                format!("The validator has written no checkpoint index at {index_at}: has it signed anything yet?")
-            })?;
-            validators::parse_latest_index(&index)?
-        }
+/// The validator's latest checkpoint: signed by it for the hook and domain,
+/// with no reorg flag beside it, at most --max-lag messages behind the
+/// hook, and for the message the hook has at its index.
+async fn cmd_validator_checkpoint(args: CheckpointArgs) -> Result<(), String> {
+    let validator = parse_eth_address(&args.validator)?;
+    let hook = parse_bytes32(&args.merkle_tree_hook)?;
+    let (storage, endpoint) = args.storage.open()?;
+    let read = |name: String| {
+        let (storage, endpoint) = (&storage, endpoint.as_ref());
+        async move { storage.read(&name, endpoint).await }
     };
-    let checkpoint_at = storage.checkpoint(index, endpoint.as_ref())?;
-    let checkpoint = validators::read(&checkpoint_at)
-        .await?
-        .ok_or_else(|| format!("No checkpoint at {checkpoint_at} yet"))?;
-    let checkpoint = validators::Checkpoint::parse(&checkpoint)?;
-    if checkpoint.index != index {
-        return Err(format!(
-            "The checkpoint at {checkpoint_at} is for index {}, not {index}",
-            checkpoint.index
-        ));
+    if read(storage.reorg_flag().into()).await?.is_some() {
+        return Err("The validator flagged a reorg: while the flag is there, the relayer delivers nothing through an ISM that lists it".into());
     }
-    if checkpoint.domain != origin_domain || checkpoint.merkle_tree_hook != hook {
+    let index = read(storage.latest_index().into())
+        .await?
+        .ok_or("The validator has written no checkpoint index: has it signed anything yet?")?;
+    let index: u32 =
+        serde_json::from_slice(&index).map_err(|e| format!("Not a checkpoint index: {e}"))?;
+    let checkpoint = read(storage.checkpoint(index))
+        .await?
+        .ok_or_else(|| format!("No checkpoint at the latest index, {index}"))?;
+    let checkpoint = validators::Checkpoint::parse(&checkpoint)?;
+    if (
+        checkpoint.index,
+        checkpoint.domain,
+        checkpoint.merkle_tree_hook,
+    ) != (index, args.origin_domain, hook)
+    {
         return Err(format!(
-            "The checkpoint at {checkpoint_at} is for the Merkle tree hook {} on domain {}, \
-             not {} on domain {origin_domain}",
-            hex::encode(checkpoint.merkle_tree_hook),
-            checkpoint.domain,
-            hex::encode(hook)
+            "The latest checkpoint isn't index {index} of this hook on domain {}",
+            args.origin_domain
         ));
     }
     let signer = checkpoint.signer()?;
     if signer != validator.0 {
         return Err(format!(
-            "The checkpoint at {checkpoint_at} is signed by 0x{}, not the validator 0x{}",
-            hex::encode(signer),
-            hex::encode(validator.0)
+            "The latest checkpoint is signed by 0x{}, not by the validator",
+            hex::encode(signer)
         ));
     }
-    if let Some(rues_url) = rues_url {
-        check_against_dusk_hook(rues_url, &hook, &checkpoint).await?;
+    let client = RuesClient::new(&args.rues_url)?;
+    let count: u32 = client.contract_query(&hook, "count", &()).await?;
+    let lag = count.checked_sub(index + 1).ok_or_else(|| {
+        format!("The latest checkpoint is for index {index}, past the hook's {count} messages: it signs another tree")
+    })?;
+    if lag > args.max_lag {
+        return Err(format!("The latest checkpoint, index {index}, is {lag} messages behind the hook's {count}, more than {}", args.max_lag));
     }
-    let output = json!({
-        "success": true,
-        "validator": format!("0x{}", hex::encode(validator.0)),
-        "location": location,
-        "root_checked": rues_url.is_some(),
-        "origin_domain": origin_domain,
-        "merkle_tree_hook": hex::encode(hook),
-        "index": index,
-        "root": hex::encode(checkpoint.root),
-        "message_id": hex::encode(checkpoint.message_id),
-        "read_from": checkpoint_at.to_string(),
-    });
+    let on_chain: [u8; 32] = client
+        .contract_query(&hook, "message_id_at", &index)
+        .await?;
+    if on_chain != checkpoint.message_id {
+        return Err(format!("The checkpoint at index {index} isn't for the message the hook has there: it signs another tree"));
+    }
+    let output = json!({ "success": true, "index": index, "count": count, "lag": lag });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    Ok(())
-}
-
-/// The checkpoint is of the Dusk Merkle tree hook `hook`: the message at its
-/// index is its message ID, and the tree of the hook's message IDs up to
-/// that index has its root.
-async fn check_against_dusk_hook(
-    rues_url: &str,
-    hook: &[u8; 32],
-    checkpoint: &validators::Checkpoint,
-) -> Result<(), String> {
-    const PAGE: u32 = 256;
-    let client = RuesClient::new(rues_url)?;
-    let count: u32 = client
-        .contract_query(hook, "count", &())
-        .await
-        .map_err(|e| format!("Can't read the Merkle tree hook's count: {e}"))?;
-    if checkpoint.index >= count {
-        return Err(format!(
-            "The checkpoint is for index {}, but the Merkle tree hook has {count} messages",
-            checkpoint.index
-        ));
-    }
-    let wanted = checkpoint.index + 1;
-    let mut ids: Vec<[u8; 32]> = Vec::with_capacity(wanted as usize);
-    while (ids.len() as u32) < wanted {
-        let start = ids.len() as u32;
-        let page: Vec<[u8; 32]> = client
-            .contract_query(hook, "message_ids", &(start, PAGE.min(wanted - start)))
-            .await
-            .map_err(|e| {
-                format!("Can't read the Merkle tree hook's message IDs from {start}: {e}")
-            })?;
-        if page.is_empty() {
-            return Err(format!(
-                "The Merkle tree hook returned no message IDs from {start}"
-            ));
-        }
-        ids.extend(page);
-    }
-    ids.truncate(wanted as usize);
-    if ids[checkpoint.index as usize] != checkpoint.message_id {
-        return Err(format!(
-            "The checkpoint names message {} at index {}, but the Merkle tree hook has {} there",
-            hex::encode(checkpoint.message_id),
-            checkpoint.index,
-            hex::encode(ids[checkpoint.index as usize])
-        ));
-    }
-    let root = validators::merkle_root(&ids);
-    if root != checkpoint.root {
-        return Err(format!(
-            "The checkpoint's root {} at index {} isn't the Merkle tree hook's, {}: it can't join a quorum",
-            hex::encode(checkpoint.root),
-            checkpoint.index,
-            hex::encode(root)
-        ));
-    }
     Ok(())
 }
 
@@ -11594,100 +11379,60 @@ fn ism_policy(validators: &str, threshold: u8) -> Result<(Vec<EthAddress>, u8), 
     let validators = parse_eth_addresses(validators)?;
     if validators.is_empty() || validators.len() > MAX_MULTISIG_VALIDATORS {
         return Err(format!(
-            "An ISM takes 1 to {MAX_MULTISIG_VALIDATORS} validators, not {}",
-            validators.len()
+            "An ISM takes 1 to {MAX_MULTISIG_VALIDATORS} validators"
         ));
     }
     if threshold == 0 || usize::from(threshold) > validators.len() {
         return Err(format!(
-            "The threshold must be from 1 to the {} validators, not {threshold}",
+            "The threshold must be from 1 to the {} validators",
             validators.len()
         ));
     }
     Ok((validators, threshold))
 }
 
-fn ism_policy_json(policy: &(Vec<EthAddress>, u8)) -> serde_json::Value {
-    json!({
-        "validators": policy.0
-            .iter()
-            .map(|address| format!("0x{}", hex::encode(address.0)))
-            .collect::<Vec<_>>(),
-        "threshold": policy.1,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn cmd_set_ism_validators(
-    rues_url: &str,
-    keys_path: Option<PathBuf>,
-    password: &str,
-    secret_key_hex: Option<String>,
-    secret_key_stdin: bool,
-    ism_hex: &str,
-    validators: &str,
-    threshold: u8,
-    expected_chain_id: u8,
-    gas_limit: u64,
-    gas_price: u64,
-) -> Result<(), String> {
-    let policy = ism_policy(validators, threshold)?;
-    let ism = parse_bytes32(ism_hex)?;
-    let client = RuesClient::new(rues_url)?;
-    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
-    let module_type: u8 = client
-        .contract_query(&ism, "module_type", &())
-        .await
-        .map_err(|e| format!("Can't query {ism_hex} (is it an ISM?): {e}"))?;
-    if module_type != MESSAGE_ID_MULTISIG_MODULE_TYPE {
+async fn cmd_set_ism_validators(args: IsmValidatorsArgs) -> Result<(), String> {
+    let policy = ism_policy(&args.validators, args.threshold)?;
+    let ism = parse_bytes32(&args.ism)?;
+    let (client, chain_id) = args.signer.bind().await?;
+    let module_type: u8 = client.contract_query(&ism, "module_type", &()).await?;
+    if module_type != 5 {
         return Err(format!(
-            "{ism_hex} has module type {module_type}, not a MessageIdMultisig ISM's \
-             ({MESSAGE_ID_MULTISIG_MODULE_TYPE})"
+            "{} isn't a MessageIdMultisig ISM (module type {module_type})",
+            args.ism
         ));
     }
-    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
-    ensure_signer_owns(&client, &ism, ism_hex, &pk).await?;
-    let previous: (Vec<EthAddress>, u8) = client
-        .contract_query(&ism, "validators_and_threshold", &())
-        .await?;
-    let mut output = json!({
-        "success": true,
-        "ism": ism_hex,
-        "previous": ism_policy_json(&previous),
-        "policy": ism_policy_json(&policy),
-    });
-    if previous == policy {
-        output["unchanged"] = json!(true);
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        return Ok(());
-    }
-
-    let (nonce, _balance) = client.query_account(&pk).await?;
-    let tx = moonlight_call(
-        &sk,
-        ContractId::from_bytes(ism),
-        "set_validators_and_threshold",
-        rkyv_serialize(&policy),
-        gas_limit,
-        gas_price,
-        next_moonlight_nonce(nonce)?,
-        chain_id,
+    let (_, pk) = load_keys(
+        args.signer.keys.clone(),
+        args.signer.password.as_deref().unwrap_or_default(),
+        args.signer.secret_key.clone(),
+        args.signer.secret_key_stdin,
     )?;
-    let tx_id = hex::encode(tx.hash().to_bytes());
-    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
-    let current: (Vec<EthAddress>, u8) = client
-        .contract_query(&ism, "validators_and_threshold", &())
-        .await?;
+    ensure_signer_owns(&client, &ism, &args.ism, &pk).await?;
+    let method = "validators_and_threshold";
+    let current: (Vec<EthAddress>, u8) = client.contract_query(&ism, method, &()).await?;
+    let mut output = json!({ "success": true, "ism": args.ism, "unchanged": current == policy });
     if current != policy {
-        return Err(format!(
-            "Transaction {tx_id} was included, but the ISM now takes {}",
-            ism_policy_json(&current)
-        ));
+        let (tx_id, confirmation) = args
+            .signer
+            .send(
+                &client,
+                chain_id,
+                ism,
+                "set_validators_and_threshold",
+                rkyv_serialize(&policy),
+                args.gas_limit,
+            )
+            .await?;
+        let current: (Vec<EthAddress>, u8) = client.contract_query(&ism, method, &()).await?;
+        if current != policy {
+            return Err(format!(
+                "Transaction {tx_id} was included, but the ISM doesn't take the new validators"
+            ));
+        }
+        output["tx_id"] = json!(tx_id);
+        confirmation.record(&mut output);
     }
-    output["unchanged"] = json!(false);
-    output["fn_name"] = json!("set_validators_and_threshold");
-    output["tx_id"] = json!(tx_id);
-    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -11695,41 +11440,11 @@ async fn cmd_set_ism_validators(
 #[cfg(test)]
 mod validator_command_tests {
     use super::*;
+    use crate::validators::tests::{
+        address_of, announcement_json, checkpoint_json, key, DOMAIN, HOOK,
+    };
 
-    #[test]
-    fn an_ism_policy_is_sorted_and_checked() {
-        let a = format!("0x{}", "aa".repeat(20));
-        let b = format!("0x{}", "0b".repeat(20));
-        let (validators, threshold) = ism_policy(&format!("{a},{b}"), 2).unwrap();
-        assert_eq!(
-            validators,
-            vec![EthAddress([0x0b; 20]), EthAddress([0xaa; 20])]
-        );
-        assert_eq!(threshold, 2);
-        assert!(ism_policy(&format!("{a},{b}"), 3).is_err());
-        assert!(ism_policy(&format!("{a},{b}"), 0).is_err());
-        assert!(ism_policy(&format!("{a},{a}"), 1).is_err());
-        assert!(ism_policy("", 1).is_err());
-    }
-
-    #[test]
-    fn a_merkle_tree_hook_is_a_contract_id_or_a_padded_address() {
-        let address = format!("0x{}", "4917a9746a7b6e0a57159ccb7f5a6744247f2d0d");
-        let hook = parse_merkle_tree_hook(&address).unwrap();
-        assert_eq!(&hook[..12], &[0u8; 12]);
-        assert_eq!(
-            hex::encode(&hook[12..]),
-            "4917a9746a7b6e0a57159ccb7f5a6744247f2d0d"
-        );
-        assert_eq!(
-            parse_merkle_tree_hook(&"a4".repeat(32)).unwrap(),
-            [0xa4; 32]
-        );
-        assert!(parse_merkle_tree_hook("0x1234").is_err());
-    }
-
-    /// A temporary file:// storage holding `files`, and its location.
-    fn local_storage(name: &str, files: &[(&str, Vec<u8>)]) -> (std::path::PathBuf, String) {
+    fn local_storage(name: &str, files: &[(String, Vec<u8>)]) -> (PathBuf, StorageArgs) {
         let dir = std::env::temp_dir().join(format!("dusk-tx-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -11737,239 +11452,112 @@ mod validator_command_tests {
             std::fs::write(dir.join(file), body).unwrap();
         }
         let location = format!("file://{}", dir.display());
-        (dir, location)
+        (
+            dir,
+            StorageArgs {
+                location,
+                s3_endpoint: None,
+                allow_local_storage: true,
+            },
+        )
     }
 
     #[tokio::test]
-    async fn a_checkpoint_is_refused_unless_it_is_the_validators_for_the_hook() {
-        use crate::validators::tests::{address_of, checkpoint_json, key, DOMAIN, HOOK};
-        let validator = format!("0x{}", hex::encode(address_of(&key(9))));
-        let good = checkpoint_json(&key(9), 4, [0x11; 32]);
-        let hook = hex::encode(HOOK);
-        let run = |location: String, validator: String, domain: u32, hook: String| async move {
-            cmd_validator_checkpoint(&location, &validator, domain, &hook, None, true, None, None)
-                .await
+    async fn a_checkpoint_is_the_validators_current_one_for_the_hook() {
+        let ours = format!("0x{}", hex::encode(address_of(&key(9))));
+        let at = |id: [u8; 32]| {
+            vec![
+                ("index.json".to_string(), b"4".to_vec()),
+                (
+                    "4_with_id.json".to_string(),
+                    checkpoint_json(&key(9), 4, id),
+                ),
+            ]
         };
-        let (dir, location) = local_storage(
-            "cp-ok",
-            &[
-                ("index.json", b"4".to_vec()),
-                ("4_with_id.json", good.clone()),
-            ],
-        );
-        run(location.clone(), validator.clone(), DOMAIN, hook.clone())
-            .await
-            .unwrap();
-        // Only with --allow-local-storage.
-        let error = cmd_validator_checkpoint(
-            &location, &validator, DOMAIN, &hook, None, false, None, None,
-        )
-        .await
-        .unwrap_err();
-        assert!(error.contains("--allow-local-storage"), "{error}");
-        let other = format!("0x{}", hex::encode(address_of(&key(8))));
-        let error = run(location.clone(), other, DOMAIN, hook.clone())
-            .await
-            .unwrap_err();
-        assert!(error.contains("is signed by"), "{error}");
-        let error = run(
-            location.clone(),
-            validator.clone(),
-            DOMAIN + 1,
-            hook.clone(),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.contains("not "), "{error}");
-        let error = run(location.clone(), validator.clone(), DOMAIN, "a5".repeat(32))
-            .await
-            .unwrap_err();
-        assert!(error.contains("Merkle tree hook"), "{error}");
-        std::fs::write(dir.join("reorg_flag.json"), b"{}").unwrap();
-        let error = run(location.clone(), validator.clone(), DOMAIN, hook.clone())
-            .await
-            .unwrap_err();
-        assert!(error.contains("flagged a reorg"), "{error}");
-        std::fs::remove_dir_all(&dir).unwrap();
-        // The latest index names a checkpoint for another index.
-        let (dir, location) = local_storage(
-            "cp-index",
-            &[("index.json", b"5".to_vec()), ("5_with_id.json", good)],
-        );
-        let error = run(location, validator.clone(), DOMAIN, hook.clone())
-            .await
-            .unwrap_err();
-        assert!(error.contains("is for index 4, not 5"), "{error}");
-        std::fs::remove_dir_all(&dir).unwrap();
-        // At a given index: the checkpoint there, or none yet.
-        let (dir, location) = local_storage(
-            "cp-at",
-            &[
-                ("index.json", b"9".to_vec()),
-                ("4_with_id.json", checkpoint_json(&key(9), 4, [0x11; 32])),
-            ],
-        );
-        cmd_validator_checkpoint(
-            &location,
-            &validator,
-            DOMAIN,
-            &hook,
-            None,
-            true,
-            None,
-            Some(4),
-        )
-        .await
-        .unwrap();
-        let error = cmd_validator_checkpoint(
-            &location,
-            &validator,
-            DOMAIN,
-            &hook,
-            None,
-            true,
-            None,
-            Some(5),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.contains("yet"), "{error}");
-        std::fs::remove_dir_all(&dir).unwrap();
-        // No index yet.
-        let (dir, location) = local_storage("cp-none", &[]);
-        let error = run(location, validator, DOMAIN, hook).await.unwrap_err();
-        assert!(error.contains("no checkpoint index"), "{error}");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_dusk_checkpoint_must_have_the_hooks_message_and_root() {
-        let ids = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
-        let checkpoint =
-            |index: u32, root: [u8; 32], message_id: [u8; 32]| validators::Checkpoint {
-                merkle_tree_hook: [0xA4; 32],
-                domain: 1,
-                root,
-                index,
-                message_id,
-                signature: [0; 65],
+        let check =
+            |files: Vec<(String, Vec<u8>)>, validator: &str, hook: [u8; 32], max_lag: u32| {
+                let validator = validator.to_string();
+                async move {
+                    let (dir, storage) =
+                        local_storage(&format!("cp-{}-{max_lag}-{}", files.len(), hook[0]), &files);
+                    let (url, _server) = crate::tests::mock_rues(vec![
+                        ("/count", 200, rkyv_serialize(&7u32)),
+                        ("/message_id_at", 200, vec![0x11; 32]),
+                    ]);
+                    let args = CheckpointArgs {
+                        rues_url: url,
+                        storage,
+                        validator,
+                        origin_domain: DOMAIN,
+                        merkle_tree_hook: hex::encode(hook),
+                        max_lag,
+                    };
+                    let result = cmd_validator_checkpoint(args).await;
+                    std::fs::remove_dir_all(&dir).unwrap();
+                    result
+                }
             };
-        let check = |checkpoint: validators::Checkpoint, ids: Vec<[u8; 32]>| async move {
-            let (url, server) = crate::tests::mock_rues(vec![
-                ("/count", 200, rkyv_serialize(&3u32)),
-                ("/message_ids", 200, rkyv_serialize(&ids)),
-            ]);
-            let result = check_against_dusk_hook(&url, &[0xA4; 32], &checkpoint).await;
-            drop(server);
-            result
-        };
-        let root = validators::merkle_root(&ids[..2]);
-        check(checkpoint(1, root, [2; 32]), ids[..2].to_vec())
-            .await
-            .unwrap();
-        let error = check(checkpoint(1, [9; 32], [2; 32]), ids[..2].to_vec())
-            .await
-            .unwrap_err();
-        assert!(error.contains("can't join a quorum"), "{error}");
-        let error = check(checkpoint(1, root, [7; 32]), ids[..2].to_vec())
-            .await
-            .unwrap_err();
-        assert!(error.contains("has 0202"), "{error}");
-        let error = check(checkpoint(3, root, [2; 32]), ids.clone())
-            .await
-            .unwrap_err();
-        assert!(error.contains("has 3 messages"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn the_command_checks_a_dusk_checkpoint_against_the_hook_page_by_page() {
-        use crate::validators::tests::{address_of, checkpoint_json_with_root, key, DOMAIN, HOOK};
-        // 257 messages: two pages of message IDs, 256 and 1.
-        let ids: Vec<[u8; 32]> = (0..257u32)
-            .map(|i| {
-                let mut id = [0u8; 32];
-                id[28..].copy_from_slice(&i.to_be_bytes());
-                id
-            })
-            .collect();
-        let validator = format!("0x{}", hex::encode(address_of(&key(9))));
-        let run = |root: [u8; 32], at: Option<u32>| {
-            let ids = ids.clone();
-            let validator = validator.clone();
-            async move {
-                let (dir, location) = local_storage(
-                    &format!("cp-hook-{}-{}", root[0], at.is_some()),
-                    &[
-                        ("index.json", b"256".to_vec()),
-                        (
-                            "256_with_id.json",
-                            checkpoint_json_with_root(&key(9), 256, ids[256], root),
-                        ),
-                    ],
-                );
-                let (url, server) = crate::tests::mock_rues(vec![
-                    ("/count", 200, rkyv_serialize(&257u32)),
-                    ("/message_ids", 200, rkyv_serialize(&ids[..256].to_vec())),
-                    ("/message_ids", 200, rkyv_serialize(&ids[256..].to_vec())),
-                ]);
-                let result = cmd_validator_checkpoint(
-                    &location,
-                    &validator,
-                    DOMAIN,
-                    &hex::encode(HOOK),
-                    None,
-                    true,
-                    Some(&url),
-                    at,
-                )
-                .await;
-                let requests = server.join().unwrap();
-                std::fs::remove_dir_all(&dir).unwrap();
-                (result, requests)
-            }
-        };
-        // The latest checkpoint, and the one at an index, as the probe reads it.
-        for at in [None, Some(256)] {
-            let (result, requests) = run(validators::merkle_root(&ids), at).await;
-            result.unwrap();
-            let pages: Vec<_> = requests
-                .iter()
-                .filter(|(path, _)| path.ends_with("/message_ids"))
-                .map(|(_, body)| rues::rkyv_deserialize::<(u32, u32)>(body).unwrap())
-                .collect();
-            assert_eq!(pages, [(0, 256), (256, 1)]);
-            let (result, _) = run([0x77; 32], at).await;
-            assert!(result.unwrap_err().contains("can't join a quorum"));
+        check(at([0x11; 32]), &ours, HOOK, 10).await.unwrap();
+        for (files, validator, hook, max_lag, expected) in [
+            (at([0x11; 32]), ours.as_str(), HOOK, 1, "2 messages behind"),
+            (at([0x12; 32]), &ours, HOOK, 10, "another tree"),
+            (
+                at([0x11; 32]),
+                "0x3333333333333333333333333333333333333333",
+                HOOK,
+                10,
+                "not by the validator",
+            ),
+            (
+                at([0x11; 32]),
+                &ours,
+                [0xA5; 32],
+                10,
+                "isn't index 4 of this hook",
+            ),
+            (vec![], &ours, HOOK, 10, "no checkpoint index"),
+            (
+                [
+                    at([0x11; 32]),
+                    vec![("reorg_flag.json".to_string(), b"{}".to_vec())],
+                ]
+                .concat(),
+                &ours,
+                HOOK,
+                10,
+                "flagged a reorg",
+            ),
+        ] {
+            let error = check(files, validator, hook, max_lag).await.unwrap_err();
+            assert!(error.contains(expected), "{expected}: {error}");
         }
     }
 
     #[tokio::test]
     async fn an_announcement_must_announce_where_it_was_read_from() {
-        use crate::validators::tests::{announcement_json, key};
-        let (dir, location) = local_storage("announce", &[]);
-        // The validator wrote an announcement of another location here.
-        std::fs::write(
-            dir.join("announcement.json"),
-            announcement_json(&key(7), "s3://bucket/nbg1/elsewhere"),
-        )
-        .unwrap();
+        let announcement = announcement_json(&key(7), "s3://bucket/nbg1/elsewhere");
+        let (dir, storage) = local_storage(
+            "announce",
+            &[("announcement.json".to_string(), announcement)],
+        );
         let (url, server) = crate::tests::mock_rues(vec![("/chain_id", 200, vec![2])]);
-        let error = cmd_announce(
-            &url,
-            Some("/nonexistent/dusk-tx-test.keys".into()),
-            "",
-            None,
-            false,
-            &"a3".repeat(32),
-            &location,
-            None,
-            None,
-            2,
-            ANNOUNCE_GAS_LIMIT,
-            1,
-        )
-        .await
-        .unwrap_err();
+        let signer = DuskSigner {
+            rues_url: url,
+            keys: Some("/nonexistent".into()),
+            password: None,
+            secret_key: None,
+            secret_key_stdin: false,
+            expected_chain_id: 2,
+            gas_price: 1,
+        };
+        let args = AnnounceArgs {
+            signer,
+            storage,
+            validator_announce: "a3".repeat(32),
+            validator: None,
+            gas_limit: ANNOUNCE_GAS_LIMIT,
+        };
+        let error = cmd_announce(args).await.unwrap_err();
         assert!(
             error.contains("announces s3://bucket/nbg1/elsewhere"),
             "{error}"
@@ -11979,20 +11567,7 @@ mod validator_command_tests {
             1,
             "nothing but the chain ID was asked"
         );
+        assert!(ism_policy(&format!("0x{0},0x{0}", "aa".repeat(20)), 1).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_announce_args_are_what_the_contract_takes() {
-        // announce(validator: EthAddress, storage_location: String,
-        // signature: Vec<u8>), as the agent sends it.
-        let args = (
-            EthAddress([7; 20]),
-            "s3://b/nbg1/f".to_string(),
-            vec![1u8; 65],
-        );
-        let bytes = rkyv_serialize(&args);
-        let back: (EthAddress, String, Vec<u8>) = rues::rkyv_deserialize(&bytes).unwrap();
-        assert_eq!(back, args);
     }
 }

@@ -260,9 +260,9 @@ transfer pays for. `fees` prints what they come to.
   once. `deploy` checks it again when it finishes, and `agent-configs`
   before it writes anything.
   Any other module type stops them, a TestMock ISM (which accepts every
-  message) included, and so does a query that fails. To change the
-  validators or the threshold, change both settings and run
-  `set-validators` ([validators.md](validators.md#add-a-validator)).
+  message) included, and so does a query that fails. If the owner changes
+  the validators or the threshold on chain, update both settings. Dusk-origin
+  validators change with `set-validators` ([validators.md](validators.md)).
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json`
 and skips steps already recorded there. Each write of the record is synced
@@ -495,9 +495,9 @@ absolute path.
   The relayer finds it there.
 
 - **`validator-dusk-operator.json`** is the same validator for an outside
-  operator: no Dusk key, its state under `/data`, and its bucket from the
-  operator's env file. It doesn't announce itself: `announce` sends its
-  announcement for it ([validators.md](validators.md)).
+  operator: no Dusk key, state under `/data`, the node
+  `OPERATOR_DUSK_RUES_URL`, and the bucket from the operator's env file.
+  `announce` announces it ([validators.md](validators.md)).
 
 Agents on the same host each need their own `db`, `eventCursorDir`,
 checkpoint location and `metricsPort` (the templates use 9090 for the relayer
@@ -931,13 +931,13 @@ In the rehearsal:
   transactions from that key while the relayer is delivering, or one of them
   fails on the shared nonce.
 
-To rehearse adding a validator ([validators.md](validators.md)), run one
-from `validator-dusk-operator.json` with an Anvil development key the
-rehearsal doesn't use and `HYP_CHECKPOINTSYNCER_TYPE=localStorage`, and
-announce it with `announce file://<its checkpoint directory>`. Record the
-rehearsal's own validators the same way, add the new one to
-`DUSK_ORIGIN_VALIDATORS` in `deploy/local.env`, and run `set-validators`.
-Without `EVM_ISM_FACTORY`, it deploys the new Anvil ISM from source.
+To rehearse adding a validator, run one from `validator-dusk-operator.json`
+with an Anvil key the rehearsal doesn't use and
+`HYP_CHECKPOINTSYNCER_TYPE=localStorage`, and `announce file://<its
+checkpoint directory>`; record the rehearsal's own validators the same way.
+`set-validators` needs an ISM factory: deploy
+`StaticMessageIdMultisigIsmFactory` on Anvil and set `EVM_ISM_FACTORY` in
+`deploy/local.env`.
 
 Stop with `bash deploy/local-agents.sh stop` and `bash demo/stop-env.sh`.
 Running `local-evm-core.sh` again starts a new rehearsal and moves the old
@@ -968,10 +968,16 @@ Testnet runs on trust choices and tooling that mainnet can't:
   replaced, and its holders cut off from what backs their tokens. The Dusk
   routes should take the router they expect to replace, none for a first
   enrollment, and refuse any other.
-- **Validator set.** Sepolia → Dusk trusts one Abacus Works validator, and
-  Dusk → Sepolia only the validators we run until outside operators join
-  ([validators.md](validators.md)). Mainnet needs a deliberately chosen set
-  for both directions, run by independent operators.
+- **Validator set.** Ethereum → Dusk trusts Hyperlane's Ethereum default set
+  (6 of 9 when written; `typescript/sdk/src/consts/multisigIsm.ts`
+  upstream). We mirror their changes into our ISM (`dusk-tx
+  set-ism-validators`), and should monitor for differences. The focus is an
+  independent Dusk-origin set ([validators.md](validators.md)): the weaker
+  direction bounds the route, since a forged Dusk message mints wDUSK that
+  can be bridged back against the DUSK we hold. The relayer must read AWS S3
+  buckets for that (upstream #9159, or our validators off the global
+  endpoint override). An aggregation ISM with a set of our own is an option
+  later, not needed at launch.
 - **Gas payments.** Both IGPs are priced and the relayer enforces payment
   ([costs.md](costs.md#fee-coverage)), but the prices are set by hand
   (`dusk-igp`, `evm-igp`). Mainnet needs them updated as ETH, DUSK and gas
