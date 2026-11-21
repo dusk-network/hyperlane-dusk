@@ -151,8 +151,7 @@ signature, not who sends it.
    `VALIDATOR_PROBE_SECONDS`, for every validator in the new set to sign it:
    one that signed the last message and then stopped passes the count, not
    the probe. The probe goes to `VALIDATOR_PROBE_RECIPIENT`, the zero address
-   unless set, so the relayer can't deliver it and retries it with backoff
-   without paying. Sepolia's MessageIdMultisig ISMs can't be changed, so it
+   unless set, which the relayer drops without trying to deliver it. Sepolia's MessageIdMultisig ISMs can't be changed, so it
    then deploys one for the new set through `EVM_ISM_FACTORY` and points
    every route's token at it, and records the switch once those updates
    are final. The relayer reads the ISM from the token, so it needs no new
@@ -162,7 +161,10 @@ A lower threshold keeps transfers going while a new validator settles in
 only as long as it signs: any validator in the set can stop every delivery
 from Dusk with a reorg flag (above), and the relayer honours it from every
 validator the ISM lists, whatever the threshold. This holds for the agents
-we run (`6f91b2a`) and for fork main. The threshold has to exceed the
+we run (`6f91b2a`) and for fork main; for a GCS validator, `6f91b2a` also
+reads a flag at the bucket's root, and main only in its folder. A validator
+that just goes quiet stops nothing while the others still make the
+threshold. The threshold has to exceed the
 validators we run before outside validators add security: 3 of 4 with two
 of ours and two outside.
 
@@ -183,4 +185,5 @@ threshold goes up: regenerate the agent configs with it (`agent-configs`),
 restart the relayer, then switch. `set-validators` reads the gas limit from
 `RELAYER_CONFIG`, by default the `relayer.json` agent-configs wrote, and
 refuses without one unless `RELAYER_GAS_LIMIT_UNCHECKED=1`: point it at the
-config the relayer runs.
+config the relayer started with. It can't see an environment override such
+as `HYP_CHAINS_DUSK_GASLIMIT`, so check the running relayer has none.

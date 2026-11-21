@@ -664,7 +664,15 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn checkpoint_json(secret: &SecretKey, index: u32, message_id: [u8; 32]) -> Vec<u8> {
-        let root = [0x5A; 32];
+        checkpoint_json_with_root(secret, index, message_id, [0x5A; 32])
+    }
+
+    pub(crate) fn checkpoint_json_with_root(
+        secret: &SecretKey,
+        index: u32,
+        message_id: [u8; 32],
+        root: [u8; 32],
+    ) -> Vec<u8> {
         let signature = sign(
             secret,
             checkpoint_digest(DOMAIN, &HOOK, &root, index, &message_id),

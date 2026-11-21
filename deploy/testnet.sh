@@ -3232,6 +3232,7 @@ DUSK_VALIDATOR_CHECKPOINT_LAG="${DUSK_VALIDATOR_CHECKPOINT_LAG:-10}"
 EVM_VALIDATOR_CHECKPOINT_LAG="${EVM_VALIDATOR_CHECKPOINT_LAG:-20}"
 VALIDATOR_PROBE_SECONDS="${VALIDATOR_PROBE_SECONDS:-600}"
 RELAYER_CONFIG="${RELAYER_CONFIG:-$OUT_DIR/relayer.json}"
+OPERATOR_DUSK_RUES_URL="${OPERATOR_DUSK_RUES_URL:-https://testnet.nodes.dusk.network/}"
 
 # announce <location | URL | file> [validator]: announce a Dusk-origin
 # validator from the signed announcement at its storage location (or a URL or
@@ -3274,11 +3275,12 @@ cmd_announce() {
 # only in a local rehearsal. Call as `x="$(validator_checkpoint ...)" ||
 # exit 1`.
 validator_checkpoint() {
-    local validator="$1" location="$2" domain="$3" hook="$4" out index
+    local validator="$1" location="$2" domain="$3" hook="$4" quick="${5:-}" out index
     local local_storage=() dusk_hook=()
     # A Dusk-origin checkpoint's message ID and root are checked against the
-    # Dusk Merkle tree hook.
-    [ "$domain" != "$DUSK_DOMAIN" ] || dusk_hook=(--rues-url "$DUSK_RUES_URL")
+    # Dusk Merkle tree hook, unless <quick>: the probe's polls only need the
+    # index.
+    [ "$domain" != "$DUSK_DOMAIN" ] || [ -n "$quick" ] || dusk_hook=(--rues-url "$DUSK_RUES_URL")
     if [[ "$location" == file://* ]]; then
         [ "${LOCAL_REHEARSAL_CHECKPOINTS:-0}" = 1 ] && is_local_url "$DUSK_RUES_URL" && is_local_url "$EVM_RPC" \
             || fail "Validator $validator keeps its checkpoints at $location, on this host: only a local rehearsal's validators do (LOCAL_REHEARSAL_CHECKPOINTS=1, with both endpoints local)"
@@ -3350,15 +3352,15 @@ check_evm_origin_validator() {
         || fail "Validator $validator hasn't announced a storage location on $EVM_CHAIN_NAME's ValidatorAnnounce $(state_get '.evm.validator_announce')"
     checkpoint="$(validator_checkpoint "$validator" "$location" "$EVM_DOMAIN" "$(state_get '.evm.merkle_tree_hook')")" || exit 1
     read -r index _ root <<<"$checkpoint"
-    count="$(evm_number "$(state_get '.evm.merkle_tree_hook')" "count()(uint32)")" \
-        || fail "Can't read the count of $EVM_CHAIN_NAME's Merkle tree hook"
-    checkpoint_is_current "$validator" "$index" "$count" EVM_VALIDATOR_CHECKPOINT_LAG
-    # The EVM hook keeps only its latest root: a checkpoint at its latest
-    # index must have it.
+    # One answer for both the bound and the root: the EVM hook keeps only its
+    # latest root, which a checkpoint at its latest index must have.
     latest="$(evm_call "$(state_get '.evm.merkle_tree_hook')" "latestCheckpoint()(bytes32,uint32)")" \
         || fail "Can't read the latest checkpoint of $EVM_CHAIN_NAME's Merkle tree hook"
-    if [ "$(sed -n 2p <<<"$latest" | awk '{print $1}')" = "$index" ] \
-        && [ "$(lower "$(sed -n 1p <<<"$latest")")" != "0x$root" ]; then
+    count="$(sed -n 2p <<<"$latest" | awk '{print $1}')"
+    [[ "$count" =~ ^[0-9]+$ ]] || fail "$EVM_CHAIN_NAME's Merkle tree hook returned a malformed latest checkpoint"
+    count=$((count + 1))
+    checkpoint_is_current "$validator" "$index" "$count" EVM_VALIDATOR_CHECKPOINT_LAG
+    if [ "$index" = "$((count - 1))" ] && [ "$(lower "$(sed -n 1p <<<"$latest")")" != "0x$root" ]; then
         fail "Validator $validator signed the root 0x$root at index $index, but $EVM_CHAIN_NAME's Merkle tree hook has $(sed -n 1p <<<"$latest") there: it can't join a quorum"
     fi
     ok "Validator $validator is announced on $EVM_CHAIN_NAME at $location, and has signed up to index $index of $count"
@@ -3399,12 +3401,12 @@ dusk_route_isms() {
 # tokens_final_at <ism>: wait until every recorded EVM token verifies with
 # <ism> as of the chain's finalized block, at most EVM_FINALITY_SECONDS, so
 # no reorg can undo an update the record then names, this run's or an
-# earlier one's. A local Anvil finalizes only 64 blocks back and doesn't
-# reorg: its latest block counts.
+# earlier one's. A local Anvil, one that answers anvil_nodeInfo, finalizes
+# only 64 blocks back and doesn't reorg: its latest block counts.
 tokens_final_at() {
     local target="$1" block route token ism pending deadline=$((SECONDS + ${EVM_FINALITY_SECONDS:-1800}))
     while :; do
-        if is_local_url "$EVM_RPC"; then
+        if is_local_url "$EVM_RPC" && cast rpc anvil_nodeInfo --rpc-url "$EVM_RPC" >/dev/null 2>&1; then
             block=latest
         else
             block="$(cast block-number finalized --rpc-url "$EVM_RPC" 2>/dev/null)" || block=""
@@ -3438,7 +3440,7 @@ tokens_final_at() {
 # unless set: a message the relayer can't deliver, and retries with backoff
 # without paying for it.
 probe_dusk_origin_validators() {
-    local set="$1" mailbox recipient out amount probe count validator location checkpoint index deadline
+    local set="$1" mailbox recipient out amount probe count validator location checkpoint index deadline mth
     require DUSK_KEYS DUSK_CONSENSUS_PASSWORD
     mailbox="$(state_get '.dusk.mailbox')" recipient="$(state_get '.dusk.test_recipient')"
     [ -n "$recipient" ] || fail "No Dusk TestRecipient recorded in $STATE to send the probe from"
@@ -3448,20 +3450,28 @@ probe_dusk_origin_validators() {
     out="$(dusk_tx fund-dispatch --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" --mailbox "$mailbox" \
         --payer "$recipient" --amount "$amount" --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
         || fail "Can't fund the probe's dispatch fee: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
+    mth="$(state_get '.dusk.merkle_tree_hook')"
+    # The probe goes in at this index or later: what every validator must
+    # have signed up to.
+    probe="$(dusk_value "the Dusk Merkle tree hook's count" --contract "$mth" --method count --return-type u32)" || exit 1
     out="$(dusk_tx dispatch --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" --mailbox "$mailbox" \
         --test-recipient "$recipient" --destination "$EVM_DOMAIN" \
         --recipient "$(pad32 "${VALIDATOR_PROBE_RECIPIENT:-$ZERO_ADDRESS}")" --body 0x70726f6265 \
         --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
         || fail "Can't dispatch the probe: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
-    count="$(dusk_value "the Dusk Merkle tree hook's count" \
-        --contract "$(state_get '.dusk.merkle_tree_hook')" --method count --return-type u32)" || exit 1
-    probe=$((count - 1))
-    info "Dispatched a probe from Dusk ($(jq -r '.tx_id' <<<"$out")): it is at index $probe or before. Waiting for each validator to sign up to it..."
-    deadline=$((SECONDS + VALIDATOR_PROBE_SECONDS))
+    deadline=$((SECONDS + 10#$VALIDATOR_PROBE_SECONDS))
+    # The node must show it in the tree before a checkpoint can be compared.
+    while :; do
+        count="$(dusk_value "the Dusk Merkle tree hook's count" --contract "$mth" --method count --return-type u32)" || exit 1
+        [ "$count" -le "$probe" ] || break
+        [ "$SECONDS" -lt "$deadline" ] || fail "The Dusk node doesn't show the probe ($(jq -r '.tx_id' <<<"$out")) in the Merkle tree hook within VALIDATOR_PROBE_SECONDS. Nothing was switched."
+        sleep 5
+    done
+    info "Dispatched a probe from Dusk ($(jq -r '.tx_id' <<<"$out")), at index $probe or after. Waiting for each validator to sign up to it..."
     for validator in ${set//,/ }; do
         location="$(state_json | jq -r --arg v "$validator" '.dusk_origin_locations[$v]')"
         while :; do
-            if checkpoint="$(validator_checkpoint "$validator" "$location" "$DUSK_DOMAIN" "$(state_get '.dusk.merkle_tree_hook')" 2>/dev/null)"; then
+            if checkpoint="$(validator_checkpoint "$validator" "$location" "$DUSK_DOMAIN" "$mth" quick 2>/dev/null)"; then
                 read -r index _ <<<"$checkpoint"
                 [ "$index" -lt "$probe" ] || break
             fi
@@ -3494,7 +3504,7 @@ cmd_set_validators() {
     [ -n "$(state_get '.evm.token')" ] && [ -n "$(state_get '.dusk.warp_native')" ] \
         || fail "No deployment recorded in $STATE: run deploy first"
     [ -x "$DUSK_TX" ] || fail "dusk-tx not built at $DUSK_TX (run: make dusk-tx)"
-    [[ "$VALIDATOR_PROBE_SECONDS" =~ ^[0-9]+$ ]] || fail "VALIDATOR_PROBE_SECONDS must be a number of seconds"
+    [[ "$VALIDATOR_PROBE_SECONDS" =~ ^[0-9]{1,6}$ ]] || fail "VALIDATOR_PROBE_SECONDS must be a number of seconds"
     dusk_set="$(checked_validator_set DUSK_ORIGIN_VALIDATORS DUSK_ORIGIN_THRESHOLD)" || exit 1
     evm_set="$(checked_validator_set EVM_ORIGIN_VALIDATORS EVM_ORIGIN_THRESHOLD)" || exit 1
     # The new thresholds must be paid for and fit the relayer's gas: the
@@ -3535,6 +3545,7 @@ cmd_set_validators() {
     else
         target=""
     fi
+    local moved=1
     for route in $(recorded_routes); do
         token="$(state_get "$(route_evm_base "$route").token")"
         # An ISM update an earlier run sent may still land: it is settled
@@ -3546,6 +3557,7 @@ cmd_set_validators() {
         ism="$(evm_call "$token" "interchainSecurityModule()(address)")" \
             || fail "Can't read the ISM of the EVM $(route_symbol "$route") token $token"
         ism="$(lower "$ism")"
+        [ -n "$target" ] && [ "$ism" = "$target" ] || moved=""
         if [ "$ism" != "$recorded" ] && { [ -z "$target" ] || [ "$ism" != "$target" ]; }; then
             fail "The EVM $(route_symbol "$route") token $token verifies messages from Dusk with the ISM $ism, not the $recorded recorded in $STATE${target:+, nor the $target this command moves it to}. Point it back at $recorded."
         fi
@@ -3593,7 +3605,8 @@ cmd_set_validators() {
         # signatures.
         # RELAYER_CONFIG is the config the relayer runs, by default the one
         # agent-configs wrote.
-        relayer_limit="$(jq -r '.chains.dusk.gasLimit // empty' "$RELAYER_CONFIG" 2>/dev/null || true)"
+        relayer_limit="$(jq -er 'if type == "object" and (.chains.dusk.gasLimit | type) == "number" then .chains.dusk.gasLimit else error("no gas limit") end' "$RELAYER_CONFIG" 2>/dev/null)" \
+            && [ "$(jq -s length "$RELAYER_CONFIG" 2>/dev/null)" = 1 ] || relayer_limit=""
         if ! [[ "$relayer_limit" =~ ^[0-9]+$ ]]; then
             [ "${RELAYER_GAS_LIMIT_UNCHECKED:-0}" = 1 ] \
                 || fail "Can't read the relayer's Dusk gas limit from RELAYER_CONFIG ($RELAYER_CONFIG). Every delivery after the switch takes $EVM_ORIGIN_THRESHOLD signatures: point RELAYER_CONFIG at the config the relayer runs, or set RELAYER_GAS_LIMIT_UNCHECKED=1 once you have checked its gas limit is at least DUSK_RELAYER_GAS_LIMIT ($DUSK_RELAYER_GAS_LIMIT)."
@@ -3620,7 +3633,9 @@ cmd_set_validators() {
 
     if [ -n "$evm_change" ]; then
         require EVM_DEPLOYER_KEY
-        probe_dusk_origin_validators "$dusk_set"
+        # An earlier run that moved every token probed already: only
+        # finality is left.
+        [ -n "$moved" ] || probe_dusk_origin_validators "$dusk_set"
         if [ -n "${EVM_ISM_FACTORY:-}" ]; then
             evm_settle_call "$EVM_ISM_FACTORY" "deploy(address[],uint8)"
             if ! evm_has_code "$target"; then

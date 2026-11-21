@@ -11834,6 +11834,64 @@ mod validator_command_tests {
     }
 
     #[tokio::test]
+    async fn the_command_checks_a_dusk_checkpoint_against_the_hook_page_by_page() {
+        use crate::validators::tests::{address_of, checkpoint_json_with_root, key, DOMAIN, HOOK};
+        // 257 messages: two pages of message IDs, 256 and 1.
+        let ids: Vec<[u8; 32]> = (0..257u32)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                id[28..].copy_from_slice(&i.to_be_bytes());
+                id
+            })
+            .collect();
+        let validator = format!("0x{}", hex::encode(address_of(&key(9))));
+        let run = |root: [u8; 32]| {
+            let ids = ids.clone();
+            let validator = validator.clone();
+            async move {
+                let (dir, location) = local_storage(
+                    &format!("cp-hook-{}", root[0]),
+                    &[
+                        ("index.json", b"256".to_vec()),
+                        (
+                            "256_with_id.json",
+                            checkpoint_json_with_root(&key(9), 256, ids[256], root),
+                        ),
+                    ],
+                );
+                let (url, server) = crate::tests::mock_rues(vec![
+                    ("/count", 200, rkyv_serialize(&257u32)),
+                    ("/message_ids", 200, rkyv_serialize(&ids[..256].to_vec())),
+                    ("/message_ids", 200, rkyv_serialize(&ids[256..].to_vec())),
+                ]);
+                let result = cmd_validator_checkpoint(
+                    &location,
+                    &validator,
+                    DOMAIN,
+                    &hex::encode(HOOK),
+                    None,
+                    true,
+                    Some(&url),
+                )
+                .await;
+                let requests = server.join().unwrap();
+                std::fs::remove_dir_all(&dir).unwrap();
+                (result, requests)
+            }
+        };
+        let (result, requests) = run(validators::merkle_root(&ids)).await;
+        result.unwrap();
+        let pages: Vec<_> = requests
+            .iter()
+            .filter(|(path, _)| path.ends_with("/message_ids"))
+            .map(|(_, body)| rues::rkyv_deserialize::<(u32, u32)>(body).unwrap())
+            .collect();
+        assert_eq!(pages, [(0, 256), (256, 1)]);
+        let (result, _) = run([0x77; 32]).await;
+        assert!(result.unwrap_err().contains("can't join a quorum"));
+    }
+
+    #[tokio::test]
     async fn an_announcement_must_announce_where_it_was_read_from() {
         use crate::validators::tests::{announcement_json, key};
         let (dir, location) = local_storage("announce", &[]);
