@@ -19,6 +19,9 @@
 //!   pay-for-gas        Pay an IGP for more gas for a message (anyone)
 //!   account            Show an account's address, recipient hash and balance
 //!   export-signer-key  Write an agent signer key file from consensus.keys
+//!   announce           Announce a validator's storage from its signed announcement (anyone)
+//!   validator-checkpoint  Check a validator's latest checkpoint in its storage
+//!   set-ism-validators Set a multisig ISM's validators and threshold (owner)
 //!
 //! Every command that sends a transaction takes the chain it signs for
 //! (`--expected-chain-id`), and stops before it queries a contract or reads
@@ -57,6 +60,7 @@ mod deployment;
 mod keys;
 mod multicall;
 mod rues;
+mod validators;
 
 use rues::{BlockStatus, Inclusion, RuesClient, TransactionStatus, TransactionStatusQueryError};
 const MAX_PASSWORD_FILE_BYTES: usize = 4 * 1024;
@@ -138,6 +142,18 @@ const LAST_TOKEN_ROUTE_NONCE: u64 = u64::MAX - 1;
 /// withdrawal takes about 59M, directly or through a route's owner-only
 /// wrapper. The VM tests check this limit covers both.
 const WITHDRAW_DISPATCH_GAS_LIMIT: u64 = 80_000_000;
+/// Default gas limit for `announce`. An announcement takes about 2.07M gas,
+/// 2.25M with a 1 KiB location (docs/costs.md); a failed one pays its whole
+/// limit, so it stays low.
+const ANNOUNCE_GAS_LIMIT: u64 = 3_500_000;
+/// The ValidatorAnnounce's `MAX_LOCATIONS_PER_VALIDATOR`.
+const MAX_LOCATIONS_PER_VALIDATOR: usize = 16;
+/// Default gas limit for `set-ism-validators`. Setting 6 validators takes
+/// about 1.87M gas and 255 about 2.50M (docs/costs.md); a failed call pays
+/// its whole limit, so it stays low.
+const ISM_SET_GAS_LIMIT: u64 = 4_000_000;
+/// The module type a MessageIdMultisig ISM reports (Hyperlane's IsmType).
+const MESSAGE_ID_MULTISIG_MODULE_TYPE: u8 = 5;
 /// How often a transaction's status is polled.
 const TRANSACTION_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// How long a submitted transaction may take to be included.
@@ -1026,6 +1042,127 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Announce a validator's checkpoint storage on a ValidatorAnnounce,
+    /// from the signed announcement the validator wrote there. Anyone can
+    /// send it: the contract checks the validator's signature, not who
+    /// sends it, so a validator without a Dusk account can be announced for
+    /// it. Checks the signature, the Mailbox and domain, and runs the
+    /// announcement as a query, before anything is signed; a location the
+    /// validator already announced is reported and nothing is sent.
+    Announce {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// ValidatorAnnounce contract ID (64 hex chars).
+        #[arg(long)]
+        validator_announce: String,
+        /// The signed announcement: the validator's storage location
+        /// (s3://, gs:// or file://), whose announcement it reads and which
+        /// it must announce; an http(s) URL of the announcement; or a path
+        /// to it.
+        #[arg(long)]
+        announcement: String,
+        /// The validator the announcement must be from (20-byte hex).
+        #[arg(long)]
+        validator: Option<String>,
+        /// The S3-compatible endpoint s3:// locations are read from, as
+        /// AWS_ENDPOINT_URL is for the agents. Without it, AWS S3.
+        #[arg(long)]
+        s3_endpoint: Option<String>,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
+        /// Gas limit. An announcement takes about 2.07M gas, 2.25M with a
+        /// 1 KiB location.
+        #[arg(long, default_value_t = ANNOUNCE_GAS_LIMIT)]
+        gas_limit: u64,
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
+        gas_price: u64,
+    },
+    /// Read a validator's latest checkpoint from its storage location, and
+    /// check it is the validator's: signed by it, for the origin domain
+    /// and Merkle tree hook given. Sends nothing and asks no node. Prints
+    /// the checkpoint's index, root and message ID.
+    ValidatorCheckpoint {
+        /// The validator's storage location, as it announced it (s3://,
+        /// gs:// or file://).
+        #[arg(long)]
+        location: String,
+        /// The validator (20-byte hex).
+        #[arg(long)]
+        validator: String,
+        /// The origin domain its checkpoints are for.
+        #[arg(long)]
+        origin_domain: u32,
+        /// The origin's Merkle tree hook: a Dusk contract ID (32-byte hex)
+        /// or an EVM address (20-byte hex).
+        #[arg(long)]
+        merkle_tree_hook: String,
+        /// The S3-compatible endpoint s3:// locations are read from, as
+        /// AWS_ENDPOINT_URL is for the agents. Without it, AWS S3.
+        #[arg(long)]
+        s3_endpoint: Option<String>,
+        /// Read a file:// location, one on this host, as a local
+        /// rehearsal's validators have.
+        #[arg(long)]
+        allow_local_storage: bool,
+    },
+    /// Set the validators and threshold of a MessageIdMultisig ISM. Owner
+    /// only. The validators are sorted, as the ISM requires, and each may
+    /// be listed once.
+    SetIsmValidators {
+        #[arg(long, default_value = "http://localhost:8080/")]
+        rues_url: String,
+        /// Path to encrypted consensus.keys file.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Password for consensus.keys. Takes precedence over
+        /// DUSK_CONSENSUS_PASSWORD_FILE and DUSK_CONSENSUS_PASSWORD.
+        #[arg(long)]
+        password: Option<String>,
+        /// Raw BLS secret key hex (alternative to --keys).
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Read raw BLS secret key hex from stdin (alternative to --keys/--secret-key).
+        #[arg(long)]
+        secret_key_stdin: bool,
+        /// ISM contract ID (64 hex chars).
+        #[arg(long)]
+        ism: String,
+        /// The validators, comma-separated 20-byte hex addresses.
+        #[arg(long)]
+        validators: String,
+        /// How many of them must sign a message.
+        #[arg(long)]
+        threshold: u8,
+        /// Expected native Dusk chain ID. The endpoint must report it before
+        /// anything is queried, the signer is read or a transaction is
+        /// constructed.
+        #[arg(long)]
+        expected_chain_id: u8,
+        /// Gas limit. Setting 6 validators takes about 1.87M gas, 255 about
+        /// 2.50M.
+        #[arg(long, default_value_t = ISM_SET_GAS_LIMIT)]
+        gas_limit: u64,
+        /// Gas price in LUX per unit of gas. Calls only need a price above zero.
+        #[arg(long, default_value = "1")]
+        gas_price: u64,
+    },
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -1647,6 +1784,82 @@ async fn run(command: Command) -> Result<(), String> {
             password,
             out,
         } => cmd_export_signer_key(keys, password.as_deref().unwrap_or_default(), &out),
+        Command::Announce {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            validator_announce,
+            announcement,
+            validator,
+            s3_endpoint,
+            expected_chain_id,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_announce(
+                &rues_url,
+                keys,
+                password.as_deref().unwrap_or_default(),
+                secret_key,
+                secret_key_stdin,
+                &validator_announce,
+                &announcement,
+                validator.as_deref(),
+                s3_endpoint.as_deref(),
+                expected_chain_id,
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
+        Command::ValidatorCheckpoint {
+            location,
+            validator,
+            origin_domain,
+            merkle_tree_hook,
+            s3_endpoint,
+            allow_local_storage,
+        } => {
+            cmd_validator_checkpoint(
+                &location,
+                &validator,
+                origin_domain,
+                &merkle_tree_hook,
+                s3_endpoint.as_deref(),
+                allow_local_storage,
+            )
+            .await
+        }
+        Command::SetIsmValidators {
+            rues_url,
+            keys,
+            password,
+            secret_key,
+            secret_key_stdin,
+            ism,
+            validators,
+            threshold,
+            expected_chain_id,
+            gas_limit,
+            gas_price,
+        } => {
+            cmd_set_ism_validators(
+                &rues_url,
+                keys,
+                password.as_deref().unwrap_or_default(),
+                secret_key,
+                secret_key_stdin,
+                &ism,
+                &validators,
+                threshold,
+                expected_chain_id,
+                gas_limit,
+                gas_price,
+            )
+            .await
+        }
     }
 }
 
@@ -3025,6 +3238,22 @@ mod tests {
             ],
             vec!["withdraw-dispatch", "--target", &id, "--amount", "1"],
             vec![
+                "announce",
+                "--validator-announce",
+                &id,
+                "--announcement",
+                "/nonexistent/announcement.json",
+            ],
+            vec![
+                "set-ism-validators",
+                "--ism",
+                &id,
+                "--validators",
+                &evm_address,
+                "--threshold",
+                "1",
+            ],
+            vec![
                 "dispatch",
                 "--mailbox",
                 &id,
@@ -3146,6 +3375,7 @@ mod tests {
             "dispatched-message",
             "account",
             "export-signer-key",
+            "validator-checkpoint",
         ];
         for command in Cli::command().get_subcommands() {
             let name = command.get_name();
@@ -11026,4 +11256,405 @@ fn find_dispatched_message(
         let dispatch = rues::rkyv_deserialize::<Dispatch>(&data).ok()?;
         (message::id(&dispatch.message) == *id).then_some(dispatch.message)
     })
+}
+
+// ── Validators ──────────────────────────────────────────────────────────────
+
+/// The signed announcement `source` names, where it was read from, and,
+/// when `source` is a storage location, that location: the announcement
+/// must announce it.
+async fn read_announcement(
+    source: &str,
+    s3_endpoint: Option<&reqwest::Url>,
+) -> Result<(Vec<u8>, String, Option<String>), String> {
+    let (from, location) = match source.split_once("://").map(|(scheme, _)| scheme) {
+        Some("s3" | "gs" | "file") => (
+            validators::Storage::parse(source)?.announcement(s3_endpoint)?,
+            Some(source.to_owned()),
+        ),
+        Some("http" | "https") => (
+            validators::Source::Url(
+                reqwest::Url::parse(source).map_err(|e| format!("Invalid URL '{source}': {e}"))?,
+            ),
+            None,
+        ),
+        Some(scheme) => {
+            return Err(format!(
+                "Can't read an announcement from {scheme}:// (use s3://, gs://, file://, http(s):// or a path)"
+            ))
+        }
+        None => (validators::Source::File(PathBuf::from(source)), None),
+    };
+    let json = validators::read(&from)
+        .await?
+        .ok_or_else(|| format!("No announcement at {from}: has the validator started?"))?;
+    Ok((json, from.to_string(), location))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_announce(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    va_hex: &str,
+    source: &str,
+    expected_validator: Option<&str>,
+    s3_endpoint: Option<&str>,
+    expected_chain_id: u8,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    let va = parse_bytes32(va_hex)?;
+    let expected_validator = expected_validator.map(parse_eth_address).transpose()?;
+    let endpoint = s3_endpoint.map(validators::parse_endpoint).transpose()?;
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    let (json, read_from, location) = read_announcement(source, endpoint.as_ref()).await?;
+    let announcement = validators::Announcement::parse(&json)?;
+    let validator = EthAddress(announcement.validator);
+    if let Some(expected) = expected_validator {
+        if expected != validator {
+            return Err(format!(
+                "The announcement at {read_from} is the validator 0x{}'s, not 0x{}'s",
+                hex::encode(validator.0),
+                hex::encode(expected.0)
+            ));
+        }
+    }
+    if let Some(location) = location {
+        if announcement.location != location {
+            return Err(format!(
+                "The announcement in {location} announces {}: the validator's storage is \
+                 configured otherwise than where it wrote this",
+                announcement.location
+            ));
+        }
+    }
+    announcement.check()?;
+
+    let mailbox: ContractId = client
+        .contract_query(&va, "mailbox", &())
+        .await
+        .map_err(|e| {
+            format!("Can't read the Mailbox of {va_hex} (is it a ValidatorAnnounce?): {e}")
+        })?;
+    let domain: u32 = client.contract_query(&va, "local_domain", &()).await?;
+    if mailbox.to_bytes() != announcement.mailbox || domain != announcement.domain {
+        return Err(format!(
+            "The announcement is for the Mailbox {} on domain {}, but the ValidatorAnnounce \
+             {va_hex} is the Mailbox {}'s on domain {domain}",
+            hex::encode(announcement.mailbox),
+            announcement.domain,
+            hex::encode(mailbox.to_bytes())
+        ));
+    }
+    let mut output = json!({
+        "success": true,
+        "validator": format!("0x{}", hex::encode(validator.0)),
+        "location": announcement.location,
+        "validator_announce": va_hex,
+        "read_from": read_from,
+    });
+    let hashes: Vec<[u8; 32]> = client
+        .contract_query(&va, "get_announced_storage_location_hashes", &validator)
+        .await?;
+    let location_hash = hyperlane_dusk_types::message::keccak256(announcement.location.as_bytes());
+    if hashes.contains(&location_hash) {
+        output["already_announced"] = json!(true);
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+    if hashes.len() >= MAX_LOCATIONS_PER_VALIDATOR {
+        return Err(format!(
+            "The validator has announced {} locations, the most a ValidatorAnnounce takes",
+            hashes.len()
+        ));
+    }
+    let args = (
+        validator,
+        announcement.location.clone(),
+        announcement.signature.to_vec(),
+    );
+    // The contract checks the whole announcement in a query too, so one it
+    // would refuse fails here, before anything is signed: a failed
+    // transaction pays its whole gas limit.
+    let accepted: bool = client
+        .contract_query(&va, "announce", &args)
+        .await
+        .map_err(|e| {
+            format!("The ValidatorAnnounce refuses the announcement, so nothing was sent: {e}")
+        })?;
+    if !accepted {
+        return Err("The ValidatorAnnounce refuses the announcement, so nothing was sent".into());
+    }
+
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        ContractId::from_bytes(va),
+        "announce",
+        rkyv_serialize(&args),
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let hashes: Vec<[u8; 32]> = client
+        .contract_query(&va, "get_announced_storage_location_hashes", &validator)
+        .await?;
+    if !hashes.contains(&location_hash) {
+        return Err(format!(
+            "Transaction {tx_id} was included, but the ValidatorAnnounce doesn't list the location"
+        ));
+    }
+    output["already_announced"] = json!(false);
+    output["fn_name"] = json!("announce");
+    output["tx_id"] = json!(tx_id);
+    confirmation.record(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// A Merkle tree hook: a Dusk contract ID, or an EVM address as Hyperlane
+/// pads it to 32 bytes.
+fn parse_merkle_tree_hook(value: &str) -> Result<[u8; 32], String> {
+    let digits = value.strip_prefix("0x").unwrap_or(value);
+    if digits.len() == 40 {
+        let mut hook = [0u8; 32];
+        hook[12..].copy_from_slice(&parse_eth_address(digits)?.0);
+        return Ok(hook);
+    }
+    parse_bytes32(digits).map_err(|e| format!("Invalid Merkle tree hook '{value}': {e}"))
+}
+
+async fn cmd_validator_checkpoint(
+    location: &str,
+    validator_arg: &str,
+    origin_domain: u32,
+    merkle_tree_hook: &str,
+    s3_endpoint: Option<&str>,
+    allow_local_storage: bool,
+) -> Result<(), String> {
+    let storage = validators::Storage::parse(location)?;
+    if storage.is_local() && !allow_local_storage {
+        return Err(format!(
+            "{location} is a directory on this host: read file:// locations only with \
+             --allow-local-storage, as for a local rehearsal"
+        ));
+    }
+    let validator = parse_eth_address(validator_arg)?;
+    let hook = parse_merkle_tree_hook(merkle_tree_hook)?;
+    let endpoint = s3_endpoint.map(validators::parse_endpoint).transpose()?;
+    let flag_at = storage.reorg_flag(endpoint.as_ref())?;
+    if validators::read(&flag_at).await?.is_some() {
+        return Err(format!(
+            "The validator flagged a reorg at {flag_at}: the relayer reads none of its checkpoints until it is cleared"
+        ));
+    }
+    let index_at = storage.latest_index(endpoint.as_ref())?;
+    let index = validators::read(&index_at).await?.ok_or_else(|| {
+        format!("The validator has written no checkpoint index at {index_at}: has it signed anything yet?")
+    })?;
+    let index = validators::parse_latest_index(&index)?;
+    let checkpoint_at = storage.checkpoint(index, endpoint.as_ref())?;
+    let checkpoint = validators::read(&checkpoint_at)
+        .await?
+        .ok_or_else(|| format!("No checkpoint at {checkpoint_at}, the latest index's"))?;
+    let checkpoint = validators::Checkpoint::parse(&checkpoint)?;
+    if checkpoint.index != index {
+        return Err(format!(
+            "The checkpoint at {checkpoint_at} is for index {}, not {index}",
+            checkpoint.index
+        ));
+    }
+    if checkpoint.domain != origin_domain || checkpoint.merkle_tree_hook != hook {
+        return Err(format!(
+            "The checkpoint at {checkpoint_at} is for the Merkle tree hook {} on domain {}, \
+             not {} on domain {origin_domain}",
+            hex::encode(checkpoint.merkle_tree_hook),
+            checkpoint.domain,
+            hex::encode(hook)
+        ));
+    }
+    let signer = checkpoint.signer()?;
+    if signer != validator.0 {
+        return Err(format!(
+            "The checkpoint at {checkpoint_at} is signed by 0x{}, not the validator 0x{}",
+            hex::encode(signer),
+            hex::encode(validator.0)
+        ));
+    }
+    let output = json!({
+        "success": true,
+        "validator": format!("0x{}", hex::encode(validator.0)),
+        "location": location,
+        "origin_domain": origin_domain,
+        "merkle_tree_hook": hex::encode(hook),
+        "index": index,
+        "root": hex::encode(checkpoint.root),
+        "message_id": hex::encode(checkpoint.message_id),
+        "read_from": checkpoint_at.to_string(),
+    });
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// The validators and threshold a multisig ISM takes: sorted, each once,
+/// and a threshold from 1 to their number.
+fn ism_policy(validators: &str, threshold: u8) -> Result<(Vec<EthAddress>, u8), String> {
+    let validators = parse_eth_addresses(validators)?;
+    if validators.is_empty() || validators.len() > MAX_MULTISIG_VALIDATORS {
+        return Err(format!(
+            "An ISM takes 1 to {MAX_MULTISIG_VALIDATORS} validators, not {}",
+            validators.len()
+        ));
+    }
+    if threshold == 0 || usize::from(threshold) > validators.len() {
+        return Err(format!(
+            "The threshold must be from 1 to the {} validators, not {threshold}",
+            validators.len()
+        ));
+    }
+    Ok((validators, threshold))
+}
+
+fn ism_policy_json(policy: &(Vec<EthAddress>, u8)) -> serde_json::Value {
+    json!({
+        "validators": policy.0
+            .iter()
+            .map(|address| format!("0x{}", hex::encode(address.0)))
+            .collect::<Vec<_>>(),
+        "threshold": policy.1,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_set_ism_validators(
+    rues_url: &str,
+    keys_path: Option<PathBuf>,
+    password: &str,
+    secret_key_hex: Option<String>,
+    secret_key_stdin: bool,
+    ism_hex: &str,
+    validators: &str,
+    threshold: u8,
+    expected_chain_id: u8,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<(), String> {
+    let policy = ism_policy(validators, threshold)?;
+    let ism = parse_bytes32(ism_hex)?;
+    let client = RuesClient::new(rues_url)?;
+    let chain_id = bind_chain_id(&client, expected_chain_id).await?;
+    let module_type: u8 = client
+        .contract_query(&ism, "module_type", &())
+        .await
+        .map_err(|e| format!("Can't query {ism_hex} (is it an ISM?): {e}"))?;
+    if module_type != MESSAGE_ID_MULTISIG_MODULE_TYPE {
+        return Err(format!(
+            "{ism_hex} has module type {module_type}, not a MessageIdMultisig ISM's \
+             ({MESSAGE_ID_MULTISIG_MODULE_TYPE})"
+        ));
+    }
+    let (sk, pk) = load_keys(keys_path, password, secret_key_hex, secret_key_stdin)?;
+    ensure_signer_owns(&client, &ism, ism_hex, &pk).await?;
+    let previous: (Vec<EthAddress>, u8) = client
+        .contract_query(&ism, "validators_and_threshold", &())
+        .await?;
+    let mut output = json!({
+        "success": true,
+        "ism": ism_hex,
+        "previous": ism_policy_json(&previous),
+        "policy": ism_policy_json(&policy),
+    });
+    if previous == policy {
+        output["unchanged"] = json!(true);
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+
+    let (nonce, _balance) = client.query_account(&pk).await?;
+    let tx = moonlight_call(
+        &sk,
+        ContractId::from_bytes(ism),
+        "set_validators_and_threshold",
+        rkyv_serialize(&policy),
+        gas_limit,
+        gas_price,
+        next_moonlight_nonce(nonce)?,
+        chain_id,
+    )?;
+    let tx_id = hex::encode(tx.hash().to_bytes());
+    let confirmation = propagate_and_wait(&client, &tx_id, &tx.to_var_bytes()).await?;
+    let current: (Vec<EthAddress>, u8) = client
+        .contract_query(&ism, "validators_and_threshold", &())
+        .await?;
+    if current != policy {
+        return Err(format!(
+            "Transaction {tx_id} was included, but the ISM now takes {}",
+            ism_policy_json(&current)
+        ));
+    }
+    output["unchanged"] = json!(false);
+    output["fn_name"] = json!("set_validators_and_threshold");
+    output["tx_id"] = json!(tx_id);
+    confirmation.record(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+#[cfg(test)]
+mod validator_command_tests {
+    use super::*;
+
+    #[test]
+    fn an_ism_policy_is_sorted_and_checked() {
+        let a = format!("0x{}", "aa".repeat(20));
+        let b = format!("0x{}", "0b".repeat(20));
+        let (validators, threshold) = ism_policy(&format!("{a},{b}"), 2).unwrap();
+        assert_eq!(
+            validators,
+            vec![EthAddress([0x0b; 20]), EthAddress([0xaa; 20])]
+        );
+        assert_eq!(threshold, 2);
+        assert!(ism_policy(&format!("{a},{b}"), 3).is_err());
+        assert!(ism_policy(&format!("{a},{b}"), 0).is_err());
+        assert!(ism_policy(&format!("{a},{a}"), 1).is_err());
+        assert!(ism_policy("", 1).is_err());
+    }
+
+    #[test]
+    fn a_merkle_tree_hook_is_a_contract_id_or_a_padded_address() {
+        let address = format!("0x{}", "4917a9746a7b6e0a57159ccb7f5a6744247f2d0d");
+        let hook = parse_merkle_tree_hook(&address).unwrap();
+        assert_eq!(&hook[..12], &[0u8; 12]);
+        assert_eq!(
+            hex::encode(&hook[12..]),
+            "4917a9746a7b6e0a57159ccb7f5a6744247f2d0d"
+        );
+        assert_eq!(
+            parse_merkle_tree_hook(&"a4".repeat(32)).unwrap(),
+            [0xa4; 32]
+        );
+        assert!(parse_merkle_tree_hook("0x1234").is_err());
+    }
+
+    #[test]
+    fn the_announce_args_are_what_the_contract_takes() {
+        // announce(validator: EthAddress, storage_location: String,
+        // signature: Vec<u8>), as the agent sends it.
+        let args = (
+            EthAddress([7; 20]),
+            "s3://b/nbg1/f".to_string(),
+            vec![1u8; 65],
+        );
+        let bytes = rkyv_serialize(&args);
+        let back: (EthAddress, String, Vec<u8>) = rues::rkyv_deserialize(&bytes).unwrap();
+        assert_eq!(back, args);
+    }
 }

@@ -260,8 +260,9 @@ transfer pays for. `fees` prints what they come to.
   once. `deploy` checks it again when it finishes, and `agent-configs`
   before it writes anything.
   Any other module type stops them, a TestMock ISM (which accepts every
-  message) included, and so does a query that fails. If the owner changes
-  the validators or the threshold on chain, update both settings.
+  message) included, and so does a query that fails. To change the
+  validators or the threshold, change both settings and run
+  `set-validators` ([validators.md](validators.md#add-a-validator)).
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json`
 and skips steps already recorded there. Each write of the record is synced
@@ -492,6 +493,11 @@ absolute path.
 
   On startup the validator announces its bucket on Dusk's ValidatorAnnounce.
   The relayer finds it there.
+
+- **`validator-dusk-operator.json`** is the same validator for an outside
+  operator: no Dusk key, its state under `/data`, and its bucket from the
+  operator's env file. It doesn't announce itself: `announce` sends its
+  announcement for it ([validators.md](validators.md)).
 
 Agents on the same host each need their own `db`, `eventCursorDir`,
 checkpoint location and `metricsPort` (the templates use 9090 for the relayer
@@ -925,6 +931,14 @@ In the rehearsal:
   transactions from that key while the relayer is delivering, or one of them
   fails on the shared nonce.
 
+To rehearse adding a validator ([validators.md](validators.md)), run one
+from `validator-dusk-operator.json` with an Anvil development key the
+rehearsal doesn't use and `HYP_CHECKPOINTSYNCER_TYPE=localStorage`, and
+announce it with `announce file://<its checkpoint directory>`. Record the
+rehearsal's own validators the same way, add the new one to
+`DUSK_ORIGIN_VALIDATORS` in `deploy/local.env`, and run `set-validators`.
+Without `EVM_ISM_FACTORY`, it deploys the new Anvil ISM from source.
+
 Stop with `bash deploy/local-agents.sh stop` and `bash demo/stop-env.sh`.
 Running `local-evm-core.sh` again starts a new rehearsal and moves the old
 state aside.
@@ -954,8 +968,10 @@ Testnet runs on trust choices and tooling that mainnet can't:
   replaced, and its holders cut off from what backs their tokens. The Dusk
   routes should take the router they expect to replace, none for a first
   enrollment, and refuse any other.
-- **Validator set.** Sepolia → Dusk trusts one Abacus Works validator. Mainnet
-  needs a deliberately chosen set for both directions.
+- **Validator set.** Sepolia → Dusk trusts one Abacus Works validator, and
+  Dusk → Sepolia only the validators we run until outside operators join
+  ([validators.md](validators.md)). Mainnet needs a deliberately chosen set
+  for both directions, run by independent operators.
 - **Gas payments.** Both IGPs are priced and the relayer enforces payment
   ([costs.md](costs.md#fee-coverage)), but the prices are set by hand
   (`dusk-igp`, `evm-igp`). Mainnet needs them updated as ETH, DUSK and gas

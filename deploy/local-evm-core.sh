@@ -148,5 +148,8 @@ AGENT_STATE_DIR="\$DUSK_DIR/deploy/out/local-rehearsal/agents/state"
 DUSK_SIGNER_KEY_FILE="\$DUSK_DIR/deploy/out/local-rehearsal/agents/dusk-signer.key"
 # Multicall for Dusk on the local chain, or empty without one.
 DUSK_MULTICALL=$DUSK_MULTICALL
+# The rehearsal's validators keep their checkpoints in local directories,
+# which set-validators reads only with this.
+LOCAL_REHEARSAL_CHECKPOINTS=1
 EOF
 ok "Wrote deploy/local.env. Next: TESTNET_ENV=deploy/local.env bash deploy/testnet.sh deploy"

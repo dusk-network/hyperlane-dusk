@@ -117,7 +117,7 @@ data-driver/     Data driver that lets the Dusk explorer decode these contracts
 demo/            Local bridge environment, deploy scripts and E2E/fault tests
 e2e/             Rust E2E test against a running node
 scripts/         Build and check helpers
-docs/            Security notes, storage design, costs and operations guide
+docs/            Security notes, storage design, costs, operations and validators
 ```
 
 ## Building
