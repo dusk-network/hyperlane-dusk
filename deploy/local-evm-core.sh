@@ -151,5 +151,7 @@ DUSK_MULTICALL=$DUSK_MULTICALL
 # The rehearsal's validators keep their checkpoints in local directories,
 # which set-validators reads only with this.
 LOCAL_REHEARSAL_CHECKPOINTS=1
+# An outside operator's validator in the rehearsal uses the local node.
+OPERATOR_DUSK_RUES_URL=$DUSK_RUES_URL
 EOF
 ok "Wrote deploy/local.env. Next: TESTNET_ENV=deploy/local.env bash deploy/testnet.sh deploy"

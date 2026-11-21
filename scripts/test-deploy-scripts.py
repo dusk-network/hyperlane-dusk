@@ -147,6 +147,8 @@ SIGNING = ("call", "deploy-hyperlane", "deploy-wasm", "fund-dispatch", "withdraw
            "process", "enroll-router", "claim-pending", "set-igp-config",
            "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote",
            "deploy-token-route", "drc20-mint", "announce", "set-ism-validators")
+# The Merkle tree hook the stub's dispatches insert into, for the probe.
+MERKLE_TREE_HOOK = "a4" * 32
 # FIXTURE_CHAIN's "fail", {command: n}, makes the next n runs of a command
 # fail, as one the node refuses does, sending nothing.
 failing = chain.get("fail") or {}
@@ -355,17 +357,40 @@ if args[0] == "announce":
     save()
     out({**result, "already_announced": False, "tx_id": "a0" * 32, "block_height": 9})
 # FIXTURE_CHAIN's "checkpoints", {location: {"validator", "index",
-# "message_id"}}, are each location's latest checkpoint.
+# "message_id", "domain", "hook", "reorg_flag", "follows"}}, are each
+# location's latest checkpoint, for that origin domain and hook (by default
+# Dusk's), and whether the validator flagged a reorg. One that "follows"
+# signs every message the Merkle tree hook has, as a running validator does.
 if args[0] == "validator-checkpoint":
     found = (chain.get("checkpoints") or {}).get(opt("--location"))
     if opt("--location").startswith("file://") and "--allow-local-storage" not in args:
         out({"success": False, "error": "file:// needs --allow-local-storage"}, 1)
     if found is None:
         out({"success": False, "error": f"The validator has written no checkpoint index at {opt('--location')}"}, 1)
+    if found.get("reorg_flag"):
+        out({"success": False, "error": "The validator flagged a reorg"}, 1)
     if found["validator"].lower() != opt("--validator").lower():
         out({"success": False, "error": f"The checkpoint is signed by {found['validator']}, not the validator {opt('--validator')}"}, 1)
+    hook = opt("--merkle-tree-hook").lower().removeprefix("0x")
+    if (str(found.get("domain", 1146442572)) != opt("--origin-domain")
+            or found.get("hook", MERKLE_TREE_HOOK).lower().removeprefix("0x").rjust(64, "0") != hook.rjust(64, "0")):
+        out({"success": False, "error": "The checkpoint is for another Merkle tree hook or domain"}, 1)
+    index = found["index"]
+    if found.get("follows"):
+        index = queries[f"{MERKLE_TREE_HOOK}/count"]["value"] - 1
     out({"success": True, "validator": opt("--validator"), "location": opt("--location"),
-         "index": found["index"], "message_id": found["message_id"], "root": "5a" * 32})
+         "index": index, "message_id": found["message_id"], "root": found.get("root", "5a" * 32)})
+# The probe: Mailbox credit for the TestRecipient, then its dispatch, which
+# the Merkle tree hook counts.
+if args[0] == "fund-dispatch":
+    chain.setdefault("funded", []).append([opt("--payer"), opt("--amount")])
+    save()
+    out({"success": True, "tx_id": "f0" * 32})
+if args[0] == "dispatch":
+    chain.setdefault("dispatched", []).append([opt("--test-recipient"), opt("--destination"), opt("--recipient")])
+    queries[f"{MERKLE_TREE_HOOK}/count"]["value"] += 1
+    save()
+    out({"success": True, "tx_id": "f1" * 32})
 if args[0] == "set-ism-validators":
     validators = sorted(v.lower() for v in opt("--validators").split(","))
     threshold = int(opt("--threshold"))
@@ -605,6 +630,9 @@ def call(state, address, signature, args, sender):
         return json.dumps([c.get("announcements", {}).get(v, []) for v in wanted])
     if name == "count" and c["type"] == "merkle":
         return str(c.get("count", 0))
+    if name == "latestCheckpoint" and c["type"] == "merkle":
+        root, index = c.get("latest_checkpoint", ["0x" + "00" * 32, 0])
+        return f"{root}\n{index}"
     if name == "routers":
         interleave(state, address)
         return c["routers"].get(args[0], "0x" + "00" * 32)
@@ -1035,7 +1063,10 @@ def read_view(state, options):
             die(HEADER_NOT_FOUND)
         if stale_read(state) is not None:
             die(HEADER_NOT_FOUND)
-        note_early_read(state, int(block))
+        # A read at the finalized block checks what a reorg can no longer
+        # undo, not the script's own last write.
+        if int(block) != finalized(state):
+            note_early_read(state, int(block))
         # The chain as of that block, not as it is now, if anything changed
         # after it.
         history = state.get("history", [])
@@ -1447,6 +1478,8 @@ class TestnetScript(unittest.TestCase):
         # dusk-tx stub reads ("announcements", "checkpoints").
         self.announcements = {}
         self.checkpoints = {}
+        # What the probe funded and dispatched.
+        self.funded, self.dispatched = [], []
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -1477,6 +1510,7 @@ class TestnetScript(unittest.TestCase):
                                           "interleave": self.dusk_interleave, "on_read": self.dusk_on_read,
                                           "tamper": self.dusk_tamper, "balance": self.dusk_balance,
                                           "announcements": self.announcements, "checkpoints": self.checkpoints,
+                                          "funded": self.funded, "dispatched": self.dispatched,
                                           **self.dusk_deploys}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
@@ -1501,6 +1535,7 @@ class TestnetScript(unittest.TestCase):
         self.dusk_on_read = chain.get("on_read")
         self.tokens, self.dusk_failures = chain.get("tokens", {}), chain.get("fail") or {}
         self.dusk_tamper = chain.get("tamper")
+        self.funded, self.dispatched = chain.get("funded", []), chain.get("dispatched", [])
         self.dusk_deploys = {key: chain[key] for key in ("txs", "deploys_sent", "front_run_deploy", "stop_after_token")
                              if key in chain}
         self.evm = json.loads(self.evm_file.read_text())
@@ -3620,16 +3655,20 @@ class TestnetValidators(DeployedTestnet):
     def hash(self, location):
         return hashlib.sha256(location.encode()).hexdigest()
 
-    def signing(self, validator, location, index=39, message_id="ab" * 32, announced=True, recorded=True):
+    def signing(self, validator, location, index=None, message_id="ab" * 32, announced=True, recorded=True,
+                **checkpoint):
         """The validator announced `location` on Dusk and signs there, its
         latest checkpoint at `index` with `message_id`, which the Dusk
-        Merkle tree hook has at that index."""
+        Merkle tree hook has at that index. Without an `index` it signs
+        every message as it comes, the probe's too."""
+        follows = index is None
+        index = 39 if index is None else index
         key = f"{VALIDATOR_ANNOUNCE}/get_announced_storage_location_hashes/{validator}"
         hashes = self.queries.setdefault(key, {"value": []})["value"]
         if announced:
             hashes.append(self.hash(location))
-        self.checkpoints[location] = {"validator": validator, "index": index, "message_id": message_id}
-        self.queries[f"{MERKLE_TREE_HOOK}/message_id_at/{index}"] = {"value": message_id}
+        self.checkpoints[location] = {"validator": validator, "index": index, "message_id": message_id,
+                                      "follows": follows, **checkpoint}
         if recorded:
             state = self.state()
             state.setdefault("dusk_origin_locations", {})[validator] = location
@@ -3709,13 +3748,25 @@ class TestnetValidators(DeployedTestnet):
                 self.signing(self.NEW, self.THEIRS, **case)
                 self.assert_fails(self.run_script("set-validators", "--apply", **self.two_of_two()), expected)
                 self.assertEqual(self.evm_sends(), [])
-        # A checkpoint for a message the Dusk tree doesn't have there.
+        # A validator that flagged a reorg, which stops every delivery
+        # through an ISM that lists it; and checkpoints for another hook or
+        # domain.
+        for case, expected in [({"reorg_flag": True}, "flagged a reorg"),
+                               ({"hook": "a5" * 32}, "another Merkle tree hook or domain"),
+                               ({"domain": EVM_DOMAIN}, "another Merkle tree hook or domain")]:
+            with self.subTest(case=case):
+                self.setUp()
+                self.signing(VALIDATOR, self.OURS)
+                self.signing(self.NEW, self.THEIRS, **case)
+                self.assert_fails(self.run_script("set-validators", **self.two_of_two()), expected)
+        # The Dusk-origin checks go through the node, which checks the
+        # checkpoint's message ID and root against the Dusk hook.
         self.setUp()
         self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS, index=30)
-        self.queries[f"{MERKLE_TREE_HOOK}/message_id_at/30"] = {"value": "cd" * 32}
-        self.assert_fails(self.run_script("set-validators", "--apply", **self.two_of_two()),
-                          "it signs another deployment's tree")
+        self.signing(self.NEW, self.THEIRS)
+        self.assert_ok(self.run_script("set-validators", **self.two_of_two()))
+        for line in self.traced("dusk-tx validator-checkpoint"):
+            self.assertIn("--rues-url https://testnet.nodes.dusk.network/", line)
         # Nothing dispatched yet: nothing shows a validator signing.
         self.setUp()
         self.signing(VALIDATOR, self.OURS)
@@ -3726,7 +3777,33 @@ class TestnetValidators(DeployedTestnet):
         self.setUp()
         self.signing(VALIDATOR, self.OURS)
         self.signing(self.NEW, self.THEIRS, index=20)
-        self.assert_ok(self.run_script("set-validators", VALIDATOR_CHECKPOINT_LAG=19, **self.two_of_two()))
+        self.assert_ok(self.run_script("set-validators", DUSK_VALIDATOR_CHECKPOINT_LAG=19, **self.two_of_two()))
+
+    def test_apply_first_probes_that_every_validator_signs_now(self):
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        result = self.run_script("set-validators", "--apply", **self.two_of_two())
+        self.assert_ok(result)
+        self.assertEqual(self.funded, [[TEST_RECIPIENT, str(17062500000 + 1000000)]])
+        self.assertEqual(self.dispatched, [[TEST_RECIPIENT, str(EVM_DOMAIN), "00" * 32]])
+        self.assertIn(f"Validator {self.NEW} signed the probe at index 40", result.stderr)
+        # A dry run sends no probe.
+        self.setUp()
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        self.assert_ok(self.run_script("set-validators", **self.two_of_two()))
+        self.assertEqual(self.dispatched, [])
+
+    def test_a_validator_that_stopped_after_the_latest_message_is_refused(self):
+        # It signed index 39, the latest, then stopped: counting messages
+        # can't tell, the probe can.
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS, index=39)
+        self.assert_ok(self.run_script("set-validators", **self.two_of_two()))
+        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=0, **self.two_of_two()),
+                          f"Validator {self.NEW} hasn't signed the probe at index 40")
+        self.assertEqual(self.evm_sends(), [])
+        self.assertEqual(self.state()["evm"]["ism"], self.ism)
 
     def test_apply_moves_every_token_to_an_ism_of_the_new_set(self):
         self.signing(VALIDATOR, self.OURS)
@@ -3751,6 +3828,26 @@ class TestnetValidators(DeployedTestnet):
         self.assert_ok(result)
         self.assertIn("nothing to change", result.stderr)
         self.assert_fails(self.run_script("preflight"), "needs 2 of [")
+
+    def test_the_switch_is_recorded_only_once_final(self):
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        # The token updates are in blocks that aren't final yet.
+        self.evm["finality_depth"] = 1000
+        self.assert_fails(self.run_script("set-validators", "--apply", EVM_FINALITY_SECONDS=0, **self.two_of_two()),
+                          "as of sepolia's finalized block")
+        self.assertEqual(self.state()["evm"]["ism"], self.ism)
+        moved = self.evm["contracts"][self.token]["ism"]
+        self.assertNotEqual(moved, self.ism)
+        # A rerun sends nothing new, and still waits for finality.
+        self.trace.write_text("")
+        self.assert_fails(self.run_script("set-validators", "--apply", EVM_FINALITY_SECONDS=0, **self.two_of_two()),
+                          "as of sepolia's finalized block")
+        self.assertFalse(any("setInterchainSecurityModule" in line for line in self.traced("cast send")))
+        self.assertEqual(self.state()["evm"]["ism"], self.ism)
+        self.evm["finality_depth"] = 0
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
+        self.assertEqual(self.state()["evm"]["ism"], moved)
 
     def test_a_switch_that_stopped_before_its_record_completes(self):
         self.signing(VALIDATOR, self.OURS)
@@ -3803,12 +3900,17 @@ class TestnetValidators(DeployedTestnet):
         sepolia, outside = "gs://hyperlane-testnet4-validator-0/sepolia/gcsAnnouncementKey", "s3://b/us-east-1/v"
         self.evm["contracts"][EVM_VA]["announcements"] = {VALIDATOR: [sepolia], other: ["s3://old/us-east-1", outside]}
         self.evm["contracts"][EVM_MERKLE]["count"] = 1000
-        self.checkpoints[sepolia] = {"validator": VALIDATOR, "index": 999, "message_id": "ab" * 32}
-        self.checkpoints[outside] = {"validator": other, "index": 995, "message_id": "ab" * 32}
+        evm_checkpoint = {"domain": EVM_DOMAIN, "hook": EVM_MERKLE}
+        self.checkpoints[sepolia] = {"validator": VALIDATOR, "index": 999, "message_id": "ab" * 32,
+                                     "root": "5b" * 32, **evm_checkpoint}
+        self.checkpoints[outside] = {"validator": other, "index": 995, "message_id": "ab" * 32, **evm_checkpoint}
+        self.evm["contracts"][EVM_MERKLE]["latest_checkpoint"] = ["0x" + "5b" * 32, 999]
         # Two signatures take more Dusk gas, which the EVM IGP charges for.
         self.evm["contracts"][self.evm_igp]["configs"][str(DUSK_DOMAIN)][1] = 2400000
+        relayer = self.root / "running-relayer.json"
+        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 5000000}}}))
         settings = {"EVM_ORIGIN_VALIDATORS": f"{other},{VALIDATOR}", "EVM_ORIGIN_THRESHOLD": "2",
-                    "EVM_IGP_GAS_OVERHEAD": "2400000"}
+                    "EVM_IGP_GAS_OVERHEAD": "2400000", "RELAYER_CONFIG": relayer}
         self.assert_fails(self.run_script("set-validators", **{**settings, "EVM_IGP_GAS_OVERHEAD": "2200000"}),
                           "a relayed process with EVM_ORIGIN_THRESHOLD 2 takes about 2,390,000")
         result = self.run_script("set-validators", **settings)
@@ -3816,6 +3918,19 @@ class TestnetValidators(DeployedTestnet):
         self.assertIn(f"Validator {other} is announced on sepolia at {outside}, and has signed up to index 995 of 1000",
                       result.stderr)
         self.assertEqual(self.traced("dusk-tx set-ism-validators"), [])
+        # The running relayer's gas limit must be known: missing, the
+        # switch is refused unless checked by hand.
+        self.assert_fails(self.run_script("set-validators", **{**settings, "RELAYER_CONFIG": self.root / "none.json"}),
+                          "Can't read the relayer's Dusk gas limit")
+        self.assert_ok(self.run_script("set-validators", **{**settings, "RELAYER_CONFIG": self.root / "none.json"},
+                                       RELAYER_GAS_LIMIT_UNCHECKED=1))
+        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 3000000}}}))
+        self.assert_fails(self.run_script("set-validators", **settings), "gives the relayer a Dusk gas limit of 3000000")
+        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 5000000}}}))
+        # A checkpoint at the hook's latest index must have its root.
+        self.evm["contracts"][EVM_MERKLE]["latest_checkpoint"] = ["0x" + "5c" * 32, 999]
+        self.assert_fails(self.run_script("set-validators", **settings), "it can't join a quorum")
+        self.evm["contracts"][EVM_MERKLE]["latest_checkpoint"] = ["0x" + "5b" * 32, 999]
         result = self.run_script("set-validators", "--apply", **settings)
         self.assert_ok(result)
         [sent] = self.traced("dusk-tx set-ism-validators")
@@ -3826,7 +3941,8 @@ class TestnetValidators(DeployedTestnet):
         # One that announced nothing on the EVM chain.
         self.evm["contracts"][EVM_VA]["announcements"] = {VALIDATOR: [sepolia]}
         self.assert_fails(self.run_script("set-validators", EVM_ORIGIN_VALIDATORS=f"{VALIDATOR},{other}",
-                                          EVM_ORIGIN_THRESHOLD=1, EVM_IGP_GAS_OVERHEAD=2400000),
+                                          EVM_ORIGIN_THRESHOLD=1, EVM_IGP_GAS_OVERHEAD=2400000,
+                                          RELAYER_CONFIG=relayer),
                           f"Validator {other} hasn't announced a storage location on sepolia")
 
     def test_a_dusk_origin_threshold_the_relayer_cant_deliver_is_refused(self):
@@ -3865,8 +3981,23 @@ class TestnetValidators(DeployedTestnet):
         self.assertEqual(config["db"], "/data/validator-db")
         self.assertEqual(config["chains"]["dusk"]["eventCursorDir"], "/data/validator-dusk-events")
         self.assertEqual(config["chains"]["dusk"]["validatorAnnounce"], "0x" + VALIDATOR_ANNOUNCE)
+        self.assertEqual(config["chains"]["dusk"]["rpcUrls"], [{"http": "https://testnet.nodes.dusk.network/"}])
+        self.assert_ok(self.run_script("agent-configs", OPERATOR_DUSK_RUES_URL="https://node.operator.example/"))
+        config = json.loads((self.out / "validator-dusk-operator.json").read_text())
+        self.assertEqual(config["chains"]["dusk"]["rpcUrls"], [{"http": "https://node.operator.example/"}])
         ours = json.loads((self.out / "validator-dusk.json").read_text())
         self.assertIn("signer", ours["chains"]["dusk"])
+
+    def test_a_location_hash_is_the_contracts_keccak(self):
+        # The stubs hash with sha256; the real cast hashes as the
+        # ValidatorAnnounce does (dusk-tx's validators tests check the same
+        # value against the contracts' keccak256).
+        cast = shutil.which("cast")
+        if cast is None:
+            self.skipTest("no cast (Foundry)")
+        hashed = subprocess.run([cast, "keccak", "s3://dusk-hyperlane-testnet/nbg1/validator-1"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(hashed, "0xbac1294f3cb5349c94f575a244e8c9396fd279286f5a12b227afd2770955e5f3")
 
 
 class TokenRouteChecks:

@@ -1121,6 +1121,11 @@ enum Command {
         /// rehearsal's validators have.
         #[arg(long)]
         allow_local_storage: bool,
+        /// Also check the checkpoint against the Dusk Merkle tree hook
+        /// through this node: the message ID at its index, and its root,
+        /// rebuilt from every message ID up to it.
+        #[arg(long)]
+        rues_url: Option<String>,
     },
     /// Set the validators and threshold of a MessageIdMultisig ISM. Owner
     /// only. The validators are sorted, as the ISM requires, and each may
@@ -1821,6 +1826,7 @@ async fn run(command: Command) -> Result<(), String> {
             merkle_tree_hook,
             s3_endpoint,
             allow_local_storage,
+            rues_url,
         } => {
             cmd_validator_checkpoint(
                 &location,
@@ -1829,6 +1835,7 @@ async fn run(command: Command) -> Result<(), String> {
                 &merkle_tree_hook,
                 s3_endpoint.as_deref(),
                 allow_local_storage,
+                rues_url.as_deref(),
             )
             .await
         }
@@ -2682,7 +2689,7 @@ mod tests {
     /// connection stays open for two seconds, then closes. Returns the base
     /// URL and the requests' paths and bodies, once every reply is sent or
     /// 20 seconds pass with no request.
-    fn mock_rues(
+    pub(crate) fn mock_rues(
         replies: Vec<(&'static str, u16, Vec<u8>)>,
     ) -> (String, std::thread::JoinHandle<MockRequests>) {
         use std::io::{BufRead, BufReader, Read, Write};
@@ -11439,6 +11446,7 @@ async fn cmd_validator_checkpoint(
     merkle_tree_hook: &str,
     s3_endpoint: Option<&str>,
     allow_local_storage: bool,
+    rues_url: Option<&str>,
 ) -> Result<(), String> {
     let storage = validators::Storage::parse(location)?;
     if storage.is_local() && !allow_local_storage {
@@ -11450,11 +11458,13 @@ async fn cmd_validator_checkpoint(
     let validator = parse_eth_address(validator_arg)?;
     let hook = parse_merkle_tree_hook(merkle_tree_hook)?;
     let endpoint = s3_endpoint.map(validators::parse_endpoint).transpose()?;
-    let flag_at = storage.reorg_flag(endpoint.as_ref())?;
-    if validators::read(&flag_at).await?.is_some() {
-        return Err(format!(
-            "The validator flagged a reorg at {flag_at}: the relayer reads none of its checkpoints until it is cleared"
-        ));
+    for flag_at in storage.reorg_flags(endpoint.as_ref())? {
+        if validators::read(&flag_at).await?.is_some() {
+            return Err(format!(
+                "The validator flagged a reorg at {flag_at}: while it is there, the relayer delivers \
+                 nothing through an ISM that lists the validator"
+            ));
+        }
     }
     let index_at = storage.latest_index(endpoint.as_ref())?;
     let index = validators::read(&index_at).await?.ok_or_else(|| {
@@ -11489,10 +11499,14 @@ async fn cmd_validator_checkpoint(
             hex::encode(validator.0)
         ));
     }
+    if let Some(rues_url) = rues_url {
+        check_against_dusk_hook(rues_url, &hook, &checkpoint).await?;
+    }
     let output = json!({
         "success": true,
         "validator": format!("0x{}", hex::encode(validator.0)),
         "location": location,
+        "root_checked": rues_url.is_some(),
         "origin_domain": origin_domain,
         "merkle_tree_hook": hex::encode(hook),
         "index": index,
@@ -11501,6 +11515,64 @@ async fn cmd_validator_checkpoint(
         "read_from": checkpoint_at.to_string(),
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// The checkpoint is of the Dusk Merkle tree hook `hook`: the message at its
+/// index is its message ID, and the tree of the hook's message IDs up to
+/// that index has its root.
+async fn check_against_dusk_hook(
+    rues_url: &str,
+    hook: &[u8; 32],
+    checkpoint: &validators::Checkpoint,
+) -> Result<(), String> {
+    const PAGE: u32 = 256;
+    let client = RuesClient::new(rues_url)?;
+    let count: u32 = client
+        .contract_query(hook, "count", &())
+        .await
+        .map_err(|e| format!("Can't read the Merkle tree hook's count: {e}"))?;
+    if checkpoint.index >= count {
+        return Err(format!(
+            "The checkpoint is for index {}, but the Merkle tree hook has {count} messages",
+            checkpoint.index
+        ));
+    }
+    let wanted = checkpoint.index + 1;
+    let mut ids: Vec<[u8; 32]> = Vec::with_capacity(wanted as usize);
+    while (ids.len() as u32) < wanted {
+        let start = ids.len() as u32;
+        let page: Vec<[u8; 32]> = client
+            .contract_query(hook, "message_ids", &(start, PAGE.min(wanted - start)))
+            .await
+            .map_err(|e| {
+                format!("Can't read the Merkle tree hook's message IDs from {start}: {e}")
+            })?;
+        if page.is_empty() {
+            return Err(format!(
+                "The Merkle tree hook returned no message IDs from {start}"
+            ));
+        }
+        ids.extend(page);
+    }
+    ids.truncate(wanted as usize);
+    if ids[checkpoint.index as usize] != checkpoint.message_id {
+        return Err(format!(
+            "The checkpoint names message {} at index {}, but the Merkle tree hook has {} there",
+            hex::encode(checkpoint.message_id),
+            checkpoint.index,
+            hex::encode(ids[checkpoint.index as usize])
+        ));
+    }
+    let root = validators::merkle_root(&ids);
+    if root != checkpoint.root {
+        return Err(format!(
+            "The checkpoint's root {} at index {} isn't the Merkle tree hook's, {}: it can't join a quorum",
+            hex::encode(checkpoint.root),
+            checkpoint.index,
+            hex::encode(root)
+        ));
+    }
     Ok(())
 }
 
@@ -11642,6 +11714,162 @@ mod validator_command_tests {
             [0xa4; 32]
         );
         assert!(parse_merkle_tree_hook("0x1234").is_err());
+    }
+
+    /// A temporary file:// storage holding `files`, and its location.
+    fn local_storage(name: &str, files: &[(&str, Vec<u8>)]) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("dusk-tx-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, body) in files {
+            std::fs::write(dir.join(file), body).unwrap();
+        }
+        let location = format!("file://{}", dir.display());
+        (dir, location)
+    }
+
+    #[tokio::test]
+    async fn a_checkpoint_is_refused_unless_it_is_the_validators_for_the_hook() {
+        use crate::validators::tests::{address_of, checkpoint_json, key, DOMAIN, HOOK};
+        let validator = format!("0x{}", hex::encode(address_of(&key(9))));
+        let good = checkpoint_json(&key(9), 4, [0x11; 32]);
+        let hook = hex::encode(HOOK);
+        let run = |location: String, validator: String, domain: u32, hook: String| async move {
+            cmd_validator_checkpoint(&location, &validator, domain, &hook, None, true, None).await
+        };
+        let (dir, location) = local_storage(
+            "cp-ok",
+            &[
+                ("index.json", b"4".to_vec()),
+                ("4_with_id.json", good.clone()),
+            ],
+        );
+        run(location.clone(), validator.clone(), DOMAIN, hook.clone())
+            .await
+            .unwrap();
+        // Only with --allow-local-storage.
+        let error =
+            cmd_validator_checkpoint(&location, &validator, DOMAIN, &hook, None, false, None)
+                .await
+                .unwrap_err();
+        assert!(error.contains("--allow-local-storage"), "{error}");
+        let other = format!("0x{}", hex::encode(address_of(&key(8))));
+        let error = run(location.clone(), other, DOMAIN, hook.clone())
+            .await
+            .unwrap_err();
+        assert!(error.contains("is signed by"), "{error}");
+        let error = run(
+            location.clone(),
+            validator.clone(),
+            DOMAIN + 1,
+            hook.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("not "), "{error}");
+        let error = run(location.clone(), validator.clone(), DOMAIN, "a5".repeat(32))
+            .await
+            .unwrap_err();
+        assert!(error.contains("Merkle tree hook"), "{error}");
+        std::fs::write(dir.join("reorg_flag.json"), b"{}").unwrap();
+        let error = run(location.clone(), validator.clone(), DOMAIN, hook.clone())
+            .await
+            .unwrap_err();
+        assert!(error.contains("flagged a reorg"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // The latest index names a checkpoint for another index.
+        let (dir, location) = local_storage(
+            "cp-index",
+            &[("index.json", b"5".to_vec()), ("5_with_id.json", good)],
+        );
+        let error = run(location, validator.clone(), DOMAIN, hook.clone())
+            .await
+            .unwrap_err();
+        assert!(error.contains("is for index 4, not 5"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // No index yet.
+        let (dir, location) = local_storage("cp-none", &[]);
+        let error = run(location, validator, DOMAIN, hook).await.unwrap_err();
+        assert!(error.contains("no checkpoint index"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dusk_checkpoint_must_have_the_hooks_message_and_root() {
+        let ids = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
+        let checkpoint =
+            |index: u32, root: [u8; 32], message_id: [u8; 32]| validators::Checkpoint {
+                merkle_tree_hook: [0xA4; 32],
+                domain: 1,
+                root,
+                index,
+                message_id,
+                signature: [0; 65],
+            };
+        let check = |checkpoint: validators::Checkpoint, ids: Vec<[u8; 32]>| async move {
+            let (url, server) = crate::tests::mock_rues(vec![
+                ("/count", 200, rkyv_serialize(&3u32)),
+                ("/message_ids", 200, rkyv_serialize(&ids)),
+            ]);
+            let result = check_against_dusk_hook(&url, &[0xA4; 32], &checkpoint).await;
+            drop(server);
+            result
+        };
+        let root = validators::merkle_root(&ids[..2]);
+        check(checkpoint(1, root, [2; 32]), ids[..2].to_vec())
+            .await
+            .unwrap();
+        let error = check(checkpoint(1, [9; 32], [2; 32]), ids[..2].to_vec())
+            .await
+            .unwrap_err();
+        assert!(error.contains("can't join a quorum"), "{error}");
+        let error = check(checkpoint(1, root, [7; 32]), ids[..2].to_vec())
+            .await
+            .unwrap_err();
+        assert!(error.contains("has 0202"), "{error}");
+        let error = check(checkpoint(3, root, [2; 32]), ids.clone())
+            .await
+            .unwrap_err();
+        assert!(error.contains("has 3 messages"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_announcement_must_announce_where_it_was_read_from() {
+        use crate::validators::tests::{announcement_json, key};
+        let (dir, location) = local_storage("announce", &[]);
+        // The validator wrote an announcement of another location here.
+        std::fs::write(
+            dir.join("announcement.json"),
+            announcement_json(&key(7), "s3://bucket/nbg1/elsewhere"),
+        )
+        .unwrap();
+        let (url, server) = crate::tests::mock_rues(vec![("/chain_id", 200, vec![2])]);
+        let error = cmd_announce(
+            &url,
+            Some("/nonexistent/dusk-tx-test.keys".into()),
+            "",
+            None,
+            false,
+            &"a3".repeat(32),
+            &location,
+            None,
+            None,
+            2,
+            ANNOUNCE_GAS_LIMIT,
+            1,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("announces s3://bucket/nbg1/elsewhere"),
+            "{error}"
+        );
+        assert_eq!(
+            server.join().unwrap().len(),
+            1,
+            "nothing but the chain ID was asked"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

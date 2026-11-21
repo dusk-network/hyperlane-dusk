@@ -137,16 +137,28 @@ impl Storage {
         )
     }
 
-    /// Where the validator flags a reorg it saw. The relayer refuses a
-    /// validator whose storage has one.
-    pub fn reorg_flag(&self, s3_endpoint: Option<&Url>) -> Result<Source, String> {
-        self.object(
-            match self {
-                Storage::Gcs { .. } => "gcsReorgFlagKey",
-                _ => "reorg_flag.json",
-            },
-            s3_endpoint,
-        )
+    /// Where the validator may have flagged a reorg it saw. The relayer
+    /// refuses every message through an ISM one of whose validators has a
+    /// flag. A GCS validator with a folder is also read at the bucket's
+    /// root, where older validators wrote it, as the agents read it.
+    pub fn reorg_flags(&self, s3_endpoint: Option<&Url>) -> Result<Vec<Source>, String> {
+        match self {
+            Storage::Gcs { bucket, folder } => {
+                let mut flags = Vec::new();
+                if folder.is_some() {
+                    flags.push(
+                        Storage::Gcs {
+                            bucket: bucket.clone(),
+                            folder: None,
+                        }
+                        .object("gcsReorgFlagKey", s3_endpoint)?,
+                    );
+                }
+                flags.push(self.object("gcsReorgFlagKey", s3_endpoint)?);
+                Ok(flags)
+            }
+            _ => Ok(vec![self.object("reorg_flag.json", s3_endpoint)?]),
+        }
     }
 
     /// Where the validator keeps its checkpoint at `index`.
@@ -492,6 +504,16 @@ impl Checkpoint {
     }
 }
 
+/// The root of the Merkle tree of `message_ids`, in order, as the Merkle
+/// tree hook builds it.
+pub fn merkle_root(message_ids: &[[u8; 32]]) -> [u8; 32] {
+    let mut tree = hyperlane_dusk_types::merkle::IncrementalMerkle::new();
+    for id in message_ids {
+        tree.insert(*id);
+    }
+    tree.root()
+}
+
 /// A validator's latest index, as it writes it: a JSON number.
 pub fn parse_latest_index(json: &[u8]) -> Result<u32, String> {
     serde_json::from_slice(json).map_err(|e| format!("Not a checkpoint index: {e}"))
@@ -579,19 +601,19 @@ pub fn recover(digest: &[u8; 32], signature: &[u8; 65]) -> Result<[u8; 20], Stri
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use secp256k1::SecretKey;
 
-    const MAILBOX: [u8; 32] = [0xA1; 32];
-    const HOOK: [u8; 32] = [0xA4; 32];
-    const DOMAIN: u32 = 1_146_442_572;
+    pub(crate) const MAILBOX: [u8; 32] = [0xA1; 32];
+    pub(crate) const HOOK: [u8; 32] = [0xA4; 32];
+    pub(crate) const DOMAIN: u32 = 1_146_442_572;
 
-    fn key(byte: u8) -> SecretKey {
+    pub(crate) fn key(byte: u8) -> SecretKey {
         SecretKey::from_byte_array([byte; 32]).unwrap()
     }
 
-    fn address_of(secret: &SecretKey) -> [u8; 20] {
+    pub(crate) fn address_of(secret: &SecretKey) -> [u8; 20] {
         let public = secp256k1::PublicKey::from_secret_key(&Secp256k1::new(), secret)
             .serialize_uncompressed();
         keccak256(&public[1..])[12..].try_into().unwrap()
@@ -628,7 +650,7 @@ mod tests {
         .unwrap()
     }
 
-    fn announcement_json(secret: &SecretKey, location: &str) -> Vec<u8> {
+    pub(crate) fn announcement_json(secret: &SecretKey, location: &str) -> Vec<u8> {
         let signature = sign(secret, announcement_digest(DOMAIN, &MAILBOX, location));
         signed_json(
             serde_json::json!({
@@ -641,7 +663,7 @@ mod tests {
         )
     }
 
-    fn checkpoint_json(secret: &SecretKey, index: u32, message_id: [u8; 32]) -> Vec<u8> {
+    pub(crate) fn checkpoint_json(secret: &SecretKey, index: u32, message_id: [u8; 32]) -> Vec<u8> {
         let root = [0x5A; 32];
         let signature = sign(
             secret,
@@ -780,6 +802,59 @@ mod tests {
         let mut other = parsed;
         other.message_id = [0x12; 32];
         assert_ne!(other.signer().unwrap(), address_of(&secret));
+    }
+
+    #[test]
+    fn reorg_flags_are_read_where_the_agents_read_them() {
+        let gcs = Storage::parse("gs://bucket/sepolia/gcsAnnouncementKey").unwrap();
+        let flags: Vec<String> = gcs
+            .reorg_flags(None)
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            flags,
+            [
+                "https://storage.googleapis.com/bucket/gcsReorgFlagKey",
+                "https://storage.googleapis.com/bucket/sepolia/gcsReorgFlagKey",
+            ]
+        );
+        let s3 = Storage::parse("s3://bucket/nbg1/op").unwrap();
+        let endpoint = parse_endpoint("https://nbg1.your-objectstorage.com").unwrap();
+        assert_eq!(
+            s3.reorg_flags(Some(&endpoint)).unwrap()[0].to_string(),
+            "https://nbg1.your-objectstorage.com/bucket/op/reorg_flag.json"
+        );
+        assert_eq!(
+            Storage::parse("file:///v")
+                .unwrap()
+                .reorg_flags(None)
+                .unwrap(),
+            [Source::File("/v/reorg_flag.json".into())]
+        );
+    }
+
+    #[test]
+    fn the_root_is_the_hooks() {
+        // An empty tree's root, and one leaf's, as hyperlane-core has them.
+        let mut tree = hyperlane_dusk_types::merkle::IncrementalMerkle::new();
+        assert_eq!(merkle_root(&[]), tree.root());
+        tree.insert([7; 32]);
+        tree.insert([8; 32]);
+        assert_eq!(merkle_root(&[[7; 32], [8; 32]]), tree.root());
+        assert_ne!(merkle_root(&[[8; 32], [7; 32]]), tree.root());
+    }
+
+    #[test]
+    fn a_location_hash_is_the_contracts_keccak() {
+        // `cast keccak "s3://dusk-hyperlane-testnet/nbg1/validator-1"`, as
+        // deploy/testnet.sh hashes a location, and as the ValidatorAnnounce
+        // keeps it: keccak256 of the location's bytes.
+        assert_eq!(
+            hex::encode(keccak256(b"s3://dusk-hyperlane-testnet/nbg1/validator-1")),
+            "bac1294f3cb5349c94f575a244e8c9396fd279286f5a12b227afd2770955e5f3"
+        );
     }
 
     #[test]
