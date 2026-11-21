@@ -3287,7 +3287,8 @@ validator_checkpoint() {
             || fail "Validator $validator keeps its checkpoints at $location, on this host: only a local rehearsal's validators do (LOCAL_REHEARSAL_CHECKPOINTS=1, with both endpoints local)"
         local_storage=(--allow-local-storage)
     fi
-    out="$("$DUSK_TX" validator-checkpoint --location "$location" --validator "$validator" \
+    # READ_BUDGET, when set, is how many seconds the read may take.
+    out="$(timeout "${READ_BUDGET:-0}" "$DUSK_TX" validator-checkpoint --location "$location" --validator "$validator" \
         --origin-domain "$domain" --merkle-tree-hook "$hook" \
         ${CHECKPOINT_S3_ENDPOINT:+--s3-endpoint "$CHECKPOINT_S3_ENDPOINT"} "${local_storage[@]}" "${dusk_hook[@]}" "${at_index[@]}")" \
         || fail "Validator $validator isn't signing at $location: $(jq -r '.error // "dusk-tx validator-checkpoint failed"' <<<"$out" 2>/dev/null)"
@@ -3443,8 +3444,8 @@ tokens_final_at() {
 # same time: once its block is final, each validator's checkpoint at its
 # index must carry that ID, and the root of the hook's tree there.
 probe_dusk_origin_validators() {
-    local set="$1" mailbox recipient sender out amount body before after nonce id probe count
-    local validator location checkpoint message_id deadline mth
+    local set="$1" mailbox recipient sender out amount body after nonce id probe height block
+    local validator location checkpoint message_id deadline mth now
     require DUSK_KEYS DUSK_CONSENSUS_PASSWORD
     mailbox="$(state_get '.dusk.mailbox')" recipient="$(state_get '.dusk.test_recipient')"
     mth="$(state_get '.dusk.merkle_tree_hook')"
@@ -3457,16 +3458,23 @@ probe_dusk_origin_validators() {
         || fail "Can't fund the probe's dispatch fee: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
     body="0x70726f6265$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
     sender="$(pad32 "${VALIDATOR_PROBE_RECIPIENT:-$ZERO_ADDRESS}")"
-    before="$(dusk_value "the Dusk Mailbox's nonce" --contract "$mailbox" --method nonce --return-type u32)" || exit 1
     out="$(dusk_tx --wait-finality dispatch --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" --mailbox "$mailbox" \
         --test-recipient "$recipient" --destination "$EVM_DOMAIN" --recipient "$sender" --body "$body" \
         --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
         || fail "Can't dispatch the probe, or its block isn't final: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
-    # Its nonce: the one, from the nonce before it on, whose dispatched ID is
-    # the ID of the probe's message. The hook inserted it at that index.
+    # Its nonce: among the messages dispatched in the probe's final block or
+    # after it, the latest whose dispatched ID is the ID of the probe's
+    # message at that nonce. Anyone can send the same body through the
+    # TestRecipient, so a copy can match too: the latest is no earlier than
+    # the probe. The hook inserted it at that index.
+    height="$(jq -r '.block_height // empty' <<<"$out")"
+    [[ "$height" =~ ^[0-9]+$ ]] || fail "dusk-tx dispatch reported no block for the probe: $out"
     after="$(dusk_value "the Dusk Mailbox's nonce" --contract "$mailbox" --method nonce --return-type u32)" || exit 1
     probe=""
-    for ((nonce = before; nonce < after; nonce++)); do
+    for ((nonce = after - 1; nonce >= 0; nonce--)); do
+        block="$(dusk_value "the block of the Dusk Mailbox's dispatch $nonce" --contract "$mailbox" \
+            --method dispatched_block_height --return-type u64 --arg-u32 "$nonce")" || exit 1
+        [ "$block" -ge "$height" ] || break
         id="$("$DUSK_TX" encode-message --nonce "$nonce" --origin "$DUSK_DOMAIN" --sender "$recipient" \
             --destination "$EVM_DOMAIN" --recipient "$sender" --body "$body" | jq -er '.message_id')" \
             || fail "Can't encode the probe's message"
@@ -3476,7 +3484,7 @@ probe_dusk_origin_validators() {
             break
         fi
     done
-    [ -n "$probe" ] || fail "The Dusk Mailbox shows no dispatch of the probe ($(jq -r '.tx_id' <<<"$out")) between nonces $before and $after"
+    [ -n "$probe" ] || fail "The Dusk Mailbox shows no dispatch of the probe ($(jq -r '.tx_id' <<<"$out")) from block $height on"
     [ "$(dusk_value "the message at index $probe of the Dusk Merkle tree hook" --contract "$mth" \
         --method message_id_at --return-type bytes32 --arg-u32 "$probe")" = "$id" ] \
         || fail "The Dusk Merkle tree hook doesn't have the probe $id at index $probe"
@@ -3484,11 +3492,13 @@ probe_dusk_origin_validators() {
     deadline=$((SECONDS + 10#$VALIDATOR_PROBE_SECONDS))
     for validator in ${set//,/ }; do
         location="$(state_json | jq -r --arg v "$validator" '.dusk_origin_locations[$v]')"
-        while :; do
+        while [ "$SECONDS" -lt "$deadline" ]; do
             # The full check: the validator's checkpoint at the probe's
             # index, its message ID and the root there checked against the
-            # hook through the node.
-            if checkpoint="$(validator_checkpoint "$validator" "$location" "$DUSK_DOMAIN" "$mth" "$probe" 2>/dev/null)"; then
+            # hook through the node, each read given what is left of the
+            # budget.
+            if checkpoint="$(READ_BUDGET=$((deadline - SECONDS)) \
+                validator_checkpoint "$validator" "$location" "$DUSK_DOMAIN" "$mth" "$probe" 2>/dev/null)"; then
                 read -r _ message_id _ <<<"$checkpoint"
                 [ "$SECONDS" -lt "$deadline" ] || break
                 [ "$message_id" = "$id" ] \
@@ -3496,8 +3506,9 @@ probe_dusk_origin_validators() {
                 ok "Validator $validator signed the probe at index $probe"
                 continue 2
             fi
-            [ "$SECONDS" -lt "$deadline" ] || break
-            sleep "$(( deadline - SECONDS < 10 ? deadline - SECONDS : 10 ))"
+            now=$SECONDS
+            [ "$now" -lt "$deadline" ] || break
+            sleep "$(( deadline - now < 10 ? deadline - now : 10 ))"
         done
         fail "Validator $validator hasn't signed the probe at index $probe within VALIDATOR_PROBE_SECONDS ($VALIDATOR_PROBE_SECONDS): it isn't signing. Nothing was switched."
     done
@@ -3626,7 +3637,8 @@ cmd_set_validators() {
         # RELAYER_CONFIG is the config the relayer runs, by default the one
         # agent-configs wrote.
         relayer_limit="$(jq -er 'if type == "object" then .chains.dusk.gasLimit else error("not an object") end
-            | if type == "number" then . elif type == "string" and test("^[0-9]+$") then tonumber else error("no gas limit") end' \
+            | if type == "number" then . elif type == "string" and test("\\A[0-9]{1,18}\\z") then tonumber else error("no gas limit") end
+            | if . >= 0 and . < 1000000000000000000 and . == floor then . else error("out of range") end' \
             "$RELAYER_CONFIG" 2>/dev/null)" \
             && [ "$(jq -s length "$RELAYER_CONFIG" 2>/dev/null)" = 1 ] || relayer_limit=""
         if ! [[ "$relayer_limit" =~ ^[0-9]+$ ]]; then

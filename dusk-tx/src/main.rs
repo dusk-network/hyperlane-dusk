@@ -11893,12 +11893,12 @@ mod validator_command_tests {
             })
             .collect();
         let validator = format!("0x{}", hex::encode(address_of(&key(9))));
-        let run = |root: [u8; 32]| {
+        let run = |root: [u8; 32], at: Option<u32>| {
             let ids = ids.clone();
             let validator = validator.clone();
             async move {
                 let (dir, location) = local_storage(
-                    &format!("cp-hook-{}", root[0]),
+                    &format!("cp-hook-{}-{}", root[0], at.is_some()),
                     &[
                         ("index.json", b"256".to_vec()),
                         (
@@ -11920,7 +11920,7 @@ mod validator_command_tests {
                     None,
                     true,
                     Some(&url),
-                    None,
+                    at,
                 )
                 .await;
                 let requests = server.join().unwrap();
@@ -11928,16 +11928,19 @@ mod validator_command_tests {
                 (result, requests)
             }
         };
-        let (result, requests) = run(validators::merkle_root(&ids)).await;
-        result.unwrap();
-        let pages: Vec<_> = requests
-            .iter()
-            .filter(|(path, _)| path.ends_with("/message_ids"))
-            .map(|(_, body)| rues::rkyv_deserialize::<(u32, u32)>(body).unwrap())
-            .collect();
-        assert_eq!(pages, [(0, 256), (256, 1)]);
-        let (result, _) = run([0x77; 32]).await;
-        assert!(result.unwrap_err().contains("can't join a quorum"));
+        // The latest checkpoint, and the one at an index, as the probe reads it.
+        for at in [None, Some(256)] {
+            let (result, requests) = run(validators::merkle_root(&ids), at).await;
+            result.unwrap();
+            let pages: Vec<_> = requests
+                .iter()
+                .filter(|(path, _)| path.ends_with("/message_ids"))
+                .map(|(_, body)| rues::rkyv_deserialize::<(u32, u32)>(body).unwrap())
+                .collect();
+            assert_eq!(pages, [(0, 256), (256, 1)]);
+            let (result, _) = run([0x77; 32], at).await;
+            assert!(result.unwrap_err().contains("can't join a quorum"));
+        }
     }
 
     #[tokio::test]

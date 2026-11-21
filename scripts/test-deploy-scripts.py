@@ -382,6 +382,10 @@ if args[0] == "validator-checkpoint":
     if (str(found.get("domain", 1146442572)) != opt("--origin-domain")
             or found.get("hook", MERKLE_TREE_HOOK).lower().removeprefix("0x").rjust(64, "0") != hook.rjust(64, "0")):
         out({"success": False, "error": "The checkpoint is for another Merkle tree hook or domain"}, 1)
+    # One that is "slow" takes that many seconds to read.
+    if found.get("slow"):
+        import time
+        time.sleep(found["slow"])
     # A validator that "follows" signs every message up to the hook's count,
     # or up to "stops_at"; one that doesn't has signed only "index".
     latest = found["index"]
@@ -405,6 +409,7 @@ def insert(sender, destination, recipient, body):
     nonce = queries[f"{MAILBOX}/nonce"]["value"]
     id = message_id(nonce, 1146442572, sender, destination, recipient, body)
     queries[f"{MAILBOX}/dispatched_id/{nonce}"] = {"value": id}
+    queries[f"{MAILBOX}/dispatched_block_height/{nonce}"] = {"value": chain.get("dusk_height", 100)}
     queries[f"{MERKLE_TREE_HOOK}/message_id_at/{nonce}"] = {"value": id}
     queries[f"{MAILBOX}/nonce"]["value"] += 1
     queries[f"{MERKLE_TREE_HOOK}/count"]["value"] += 1
@@ -417,7 +422,7 @@ if args[0] == "dispatch":
                                                wait_finality])
     insert(opt("--test-recipient"), opt("--destination"), opt("--recipient"), opt("--body"))
     save()
-    out({"success": True, "tx_id": "f1" * 32})
+    out({"success": True, "tx_id": "f1" * 32, "block_height": chain.get("dusk_height", 100), "finalized": True})
 if args[0] == "encode-message":
     out({"success": True, "message_id": message_id(opt("--nonce"), opt("--origin"), opt("--sender"),
                                                    opt("--destination"), opt("--recipient"), opt("--body"))})
@@ -3683,6 +3688,7 @@ class TestnetValidators(DeployedTestnet):
         super().setUp()
         self.queries[f"{MERKLE_TREE_HOOK}/count"] = {"value": 40}
         self.queries[f"{MAILBOX}/nonce"] = {"value": 40}
+        self.queries[f"{MAILBOX}/dispatched_block_height/39"] = {"value": 90}
         self.concurrent = False
 
     def hash(self, location):
@@ -3843,6 +3849,13 @@ class TestnetValidators(DeployedTestnet):
                           f"Validator {self.NEW} hasn't signed the probe at index 40")
         self.assertEqual(self.evm_sends(), [])
         self.assertEqual(self.state()["evm"]["ism"], self.ism)
+
+    def test_a_signature_read_after_the_deadline_doesnt_count(self):
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS, slow=5)
+        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=3, **self.two_of_two()),
+                          f"Validator {self.NEW} hasn't signed the probe at index 40")
+        self.assertEqual(self.evm_sends(), [])
 
     def test_the_probe_is_its_own_message_whatever_else_is_dispatched(self):
         # Another message lands first, at 40, and the probe at 41: a
