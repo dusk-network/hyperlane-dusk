@@ -1126,6 +1126,10 @@ enum Command {
         /// rebuilt from every message ID up to it.
         #[arg(long)]
         rues_url: Option<String>,
+        /// Read the validator's checkpoint at this index instead of its
+        /// latest.
+        #[arg(long)]
+        index: Option<u32>,
     },
     /// Set the validators and threshold of a MessageIdMultisig ISM. Owner
     /// only. The validators are sorted, as the ISM requires, and each may
@@ -1827,6 +1831,7 @@ async fn run(command: Command) -> Result<(), String> {
             s3_endpoint,
             allow_local_storage,
             rues_url,
+            index,
         } => {
             cmd_validator_checkpoint(
                 &location,
@@ -1836,6 +1841,7 @@ async fn run(command: Command) -> Result<(), String> {
                 s3_endpoint.as_deref(),
                 allow_local_storage,
                 rues_url.as_deref(),
+                index,
             )
             .await
         }
@@ -11447,6 +11453,7 @@ async fn cmd_validator_checkpoint(
     s3_endpoint: Option<&str>,
     allow_local_storage: bool,
     rues_url: Option<&str>,
+    at_index: Option<u32>,
 ) -> Result<(), String> {
     let storage = validators::Storage::parse(location)?;
     if storage.is_local() && !allow_local_storage {
@@ -11466,15 +11473,20 @@ async fn cmd_validator_checkpoint(
             ));
         }
     }
-    let index_at = storage.latest_index(endpoint.as_ref())?;
-    let index = validators::read(&index_at).await?.ok_or_else(|| {
-        format!("The validator has written no checkpoint index at {index_at}: has it signed anything yet?")
-    })?;
-    let index = validators::parse_latest_index(&index)?;
+    let index = match at_index {
+        Some(index) => index,
+        None => {
+            let index_at = storage.latest_index(endpoint.as_ref())?;
+            let index = validators::read(&index_at).await?.ok_or_else(|| {
+                format!("The validator has written no checkpoint index at {index_at}: has it signed anything yet?")
+            })?;
+            validators::parse_latest_index(&index)?
+        }
+    };
     let checkpoint_at = storage.checkpoint(index, endpoint.as_ref())?;
     let checkpoint = validators::read(&checkpoint_at)
         .await?
-        .ok_or_else(|| format!("No checkpoint at {checkpoint_at}, the latest index's"))?;
+        .ok_or_else(|| format!("No checkpoint at {checkpoint_at} yet"))?;
     let checkpoint = validators::Checkpoint::parse(&checkpoint)?;
     if checkpoint.index != index {
         return Err(format!(
@@ -11735,7 +11747,8 @@ mod validator_command_tests {
         let good = checkpoint_json(&key(9), 4, [0x11; 32]);
         let hook = hex::encode(HOOK);
         let run = |location: String, validator: String, domain: u32, hook: String| async move {
-            cmd_validator_checkpoint(&location, &validator, domain, &hook, None, true, None).await
+            cmd_validator_checkpoint(&location, &validator, domain, &hook, None, true, None, None)
+                .await
         };
         let (dir, location) = local_storage(
             "cp-ok",
@@ -11748,10 +11761,11 @@ mod validator_command_tests {
             .await
             .unwrap();
         // Only with --allow-local-storage.
-        let error =
-            cmd_validator_checkpoint(&location, &validator, DOMAIN, &hook, None, false, None)
-                .await
-                .unwrap_err();
+        let error = cmd_validator_checkpoint(
+            &location, &validator, DOMAIN, &hook, None, false, None, None,
+        )
+        .await
+        .unwrap_err();
         assert!(error.contains("--allow-local-storage"), "{error}");
         let other = format!("0x{}", hex::encode(address_of(&key(8))));
         let error = run(location.clone(), other, DOMAIN, hook.clone())
@@ -11786,6 +11800,40 @@ mod validator_command_tests {
             .await
             .unwrap_err();
         assert!(error.contains("is for index 4, not 5"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // At a given index: the checkpoint there, or none yet.
+        let (dir, location) = local_storage(
+            "cp-at",
+            &[
+                ("index.json", b"9".to_vec()),
+                ("4_with_id.json", checkpoint_json(&key(9), 4, [0x11; 32])),
+            ],
+        );
+        cmd_validator_checkpoint(
+            &location,
+            &validator,
+            DOMAIN,
+            &hook,
+            None,
+            true,
+            None,
+            Some(4),
+        )
+        .await
+        .unwrap();
+        let error = cmd_validator_checkpoint(
+            &location,
+            &validator,
+            DOMAIN,
+            &hook,
+            None,
+            true,
+            None,
+            Some(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("yet"), "{error}");
         std::fs::remove_dir_all(&dir).unwrap();
         // No index yet.
         let (dir, location) = local_storage("cp-none", &[]);
@@ -11872,6 +11920,7 @@ mod validator_command_tests {
                     None,
                     true,
                     Some(&url),
+                    None,
                 )
                 .await;
                 let requests = server.join().unwrap();

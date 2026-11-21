@@ -124,6 +124,9 @@ def quote_signer_history(evm, igp, signer, block):
 DUSK_TX_STUB = r'''#!/usr/bin/env python3
 import hashlib, json, os, sys
 args = sys.argv[1:]
+# Global options come before the command.
+wait_finality = args[:1] == ["--wait-finality"]
+args = args[1:] if wait_finality else args
 with open(os.environ["FIXTURE_TRACE"], "a") as trace:
     trace.write("dusk-tx " + " ".join(args) + "\n")
 def opt(name):
@@ -147,8 +150,12 @@ SIGNING = ("call", "deploy-hyperlane", "deploy-wasm", "fund-dispatch", "withdraw
            "process", "enroll-router", "claim-pending", "set-igp-config",
            "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote",
            "deploy-token-route", "drc20-mint", "announce", "set-ism-validators")
-# The Merkle tree hook the stub's dispatches insert into, for the probe.
+# The Mailbox and Merkle tree hook the stub's dispatches go through, for the
+# probe, and the ID a message gets, as encode-message gives it.
+MAILBOX = "a1" * 32
 MERKLE_TREE_HOOK = "a4" * 32
+def message_id(nonce, origin, sender, destination, recipient, body):
+    return hashlib.sha256(f"{nonce}|{origin}|{sender}|{destination}|{recipient}|{body}".encode()).hexdigest()
 # FIXTURE_CHAIN's "fail", {command: n}, makes the next n runs of a command
 # fail, as one the node refuses does, sending nothing.
 failing = chain.get("fail") or {}
@@ -375,22 +382,45 @@ if args[0] == "validator-checkpoint":
     if (str(found.get("domain", 1146442572)) != opt("--origin-domain")
             or found.get("hook", MERKLE_TREE_HOOK).lower().removeprefix("0x").rjust(64, "0") != hook.rjust(64, "0")):
         out({"success": False, "error": "The checkpoint is for another Merkle tree hook or domain"}, 1)
-    index = found["index"]
+    # A validator that "follows" signs every message up to the hook's count,
+    # or up to "stops_at"; one that doesn't has signed only "index".
+    latest = found["index"]
     if found.get("follows"):
-        index = queries[f"{MERKLE_TREE_HOOK}/count"]["value"] - 1
+        latest = min(queries[f"{MERKLE_TREE_HOOK}/count"]["value"] - 1, found.get("stops_at", 2**32))
+    index = latest if opt("--index") is None else int(opt("--index"))
+    if index > latest or (not found.get("follows") and index != latest):
+        out({"success": False, "error": f"No checkpoint at index {index} yet"}, 1)
+    signed = found["message_id"]
+    if opt("--index") is not None:
+        signed = found.get("probe_message_id") or queries.get(f"{MERKLE_TREE_HOOK}/message_id_at/{index}", {}).get("value", signed)
     out({"success": True, "validator": opt("--validator"), "location": opt("--location"),
-         "index": index, "message_id": found["message_id"], "root": found.get("root", "5a" * 32)})
+         "index": index, "message_id": signed, "root": found.get("root", "5a" * 32)})
 # The probe: Mailbox credit for the TestRecipient, then its dispatch, which
 # the Merkle tree hook counts.
 if args[0] == "fund-dispatch":
     chain.setdefault("funded", []).append([opt("--payer"), opt("--amount")])
     save()
     out({"success": True, "tx_id": "f0" * 32})
-if args[0] == "dispatch":
-    chain.setdefault("dispatched", []).append([opt("--test-recipient"), opt("--destination"), opt("--recipient")])
+def insert(sender, destination, recipient, body):
+    nonce = queries[f"{MAILBOX}/nonce"]["value"]
+    id = message_id(nonce, 1146442572, sender, destination, recipient, body)
+    queries[f"{MAILBOX}/dispatched_id/{nonce}"] = {"value": id}
+    queries[f"{MERKLE_TREE_HOOK}/message_id_at/{nonce}"] = {"value": id}
+    queries[f"{MAILBOX}/nonce"]["value"] += 1
     queries[f"{MERKLE_TREE_HOOK}/count"]["value"] += 1
+if args[0] == "dispatch":
+    # FIXTURE_CHAIN's "concurrent_dispatch" lands someone else's message
+    # first.
+    if chain.pop("concurrent_dispatch", False):
+        insert("ee" * 32, 1, "ee" * 32, "0xother")
+    chain.setdefault("dispatched", []).append([opt("--test-recipient"), opt("--destination"), opt("--recipient"),
+                                               wait_finality])
+    insert(opt("--test-recipient"), opt("--destination"), opt("--recipient"), opt("--body"))
     save()
     out({"success": True, "tx_id": "f1" * 32})
+if args[0] == "encode-message":
+    out({"success": True, "message_id": message_id(opt("--nonce"), opt("--origin"), opt("--sender"),
+                                                   opt("--destination"), opt("--recipient"), opt("--body"))})
 if args[0] == "set-ism-validators":
     validators = sorted(v.lower() for v in opt("--validators").split(","))
     threshold = int(opt("--threshold"))
@@ -1511,6 +1541,7 @@ class TestnetScript(unittest.TestCase):
                                           "tamper": self.dusk_tamper, "balance": self.dusk_balance,
                                           "announcements": self.announcements, "checkpoints": self.checkpoints,
                                           "funded": self.funded, "dispatched": self.dispatched,
+                                          "concurrent_dispatch": getattr(self, "concurrent", False),
                                           **self.dusk_deploys}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
@@ -3651,6 +3682,8 @@ class TestnetValidators(DeployedTestnet):
     def setUp(self):
         super().setUp()
         self.queries[f"{MERKLE_TREE_HOOK}/count"] = {"value": 40}
+        self.queries[f"{MAILBOX}/nonce"] = {"value": 40}
+        self.concurrent = False
 
     def hash(self, location):
         return hashlib.sha256(location.encode()).hexdigest()
@@ -3785,8 +3818,14 @@ class TestnetValidators(DeployedTestnet):
         result = self.run_script("set-validators", "--apply", **self.two_of_two())
         self.assert_ok(result)
         self.assertEqual(self.funded, [[TEST_RECIPIENT, str(17062500000 + 1000000)]])
-        self.assertEqual(self.dispatched, [[TEST_RECIPIENT, str(EVM_DOMAIN), "00" * 32]])
+        # Waited until final.
+        self.assertEqual(self.dispatched, [[TEST_RECIPIENT, str(EVM_DOMAIN), "00" * 32, True]])
         self.assertIn(f"Validator {self.NEW} signed the probe at index 40", result.stderr)
+        probes = [line for line in self.traced("dusk-tx validator-checkpoint") if "--index" in line]
+        self.assertEqual(len(probes), 2)
+        for line in probes:
+            self.assertIn("--index 40", line)
+            self.assertIn("--rues-url https://testnet.nodes.dusk.network/", line)
         # A dry run sends no probe.
         self.setUp()
         self.signing(VALIDATOR, self.OURS)
@@ -3800,10 +3839,34 @@ class TestnetValidators(DeployedTestnet):
         self.signing(VALIDATOR, self.OURS)
         self.signing(self.NEW, self.THEIRS, index=39)
         self.assert_ok(self.run_script("set-validators", **self.two_of_two()))
-        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=0, **self.two_of_two()),
+        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=3, **self.two_of_two()),
                           f"Validator {self.NEW} hasn't signed the probe at index 40")
         self.assertEqual(self.evm_sends(), [])
         self.assertEqual(self.state()["evm"]["ism"], self.ism)
+
+    def test_the_probe_is_its_own_message_whatever_else_is_dispatched(self):
+        # Another message lands first, at 40, and the probe at 41: a
+        # validator that stopped at 40 hasn't signed the probe.
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS, stops_at=40)
+        self.concurrent = True
+        self.assert_fails(self.run_script("set-validators", "--apply", VALIDATOR_PROBE_SECONDS=3, **self.two_of_two()),
+                          f"Validator {self.NEW} hasn't signed the probe at index 41")
+        self.assertEqual(self.evm_sends(), [])
+        self.setUp()
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        self.concurrent = True
+        result = self.run_script("set-validators", "--apply", **self.two_of_two())
+        self.assert_ok(result)
+        self.assertIn(f"Validator {self.NEW} signed the probe at index 41", result.stderr)
+        # One that signed something else at the probe's index.
+        self.setUp()
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS, probe_message_id="cd" * 32)
+        self.assert_fails(self.run_script("set-validators", "--apply", **self.two_of_two()),
+                          f"Validator {self.NEW} signed message {'cd' * 32} at the probe's index 40, not the probe")
+        self.assertEqual(self.evm_sends(), [])
 
     def test_apply_moves_every_token_to_an_ism_of_the_new_set(self):
         self.signing(VALIDATOR, self.OURS)
@@ -3845,6 +3908,8 @@ class TestnetValidators(DeployedTestnet):
                           "as of sepolia's finalized block")
         self.assertFalse(any("setInterchainSecurityModule" in line for line in self.traced("cast send")))
         self.assertEqual(self.state()["evm"]["ism"], self.ism)
+        # Nor a second probe: it only waits on finality.
+        self.assertEqual((len(self.funded), len(self.dispatched)), (1, 1))
         self.evm["finality_depth"] = 0
         self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
         self.assertEqual(self.state()["evm"]["ism"], moved)
@@ -3926,6 +3991,11 @@ class TestnetValidators(DeployedTestnet):
                                        RELAYER_GAS_LIMIT_UNCHECKED=1))
         relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 3000000}}}))
         self.assert_fails(self.run_script("set-validators", **settings), "gives the relayer a Dusk gas limit of 3000000")
+        # The agent also reads a gas limit written as a string.
+        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": "5000000"}}}))
+        self.assert_ok(self.run_script("set-validators", **settings))
+        relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 5000000}}}) + "{")
+        self.assert_fails(self.run_script("set-validators", **settings), "Can't read the relayer's Dusk gas limit")
         relayer.write_text(json.dumps({"chains": {"dusk": {"gasLimit": 5000000}}}))
         # A checkpoint at the hook's latest index must have its root.
         self.evm["contracts"][EVM_MERKLE]["latest_checkpoint"] = ["0x" + "5c" * 32, 999]
