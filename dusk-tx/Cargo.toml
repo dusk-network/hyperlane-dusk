@@ -27,6 +27,9 @@ serde_json = { version = "1", features = ["std"] }
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["hmac"] }
 sha2 = "0.10"
+# Recover who signed a validator's announcement or checkpoint, as the
+# contracts do with the secp256k1 host query.
+secp256k1 = { version = "0.31.1", features = ["recovery"] }
 base64 = "0.22"
 
 # HTTP + async

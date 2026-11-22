@@ -83,7 +83,7 @@ without a type.
 | Relayer | Dusk testnet | a few DUSK | `process` transactions for Sepolia → Dusk, about 0.0022 DUSK each, and 0.005 DUSK for one that fails. Senders pay it back to the Sepolia IGP. |
 | Relayer | Sepolia | 0.1 ETH or more | `process` transactions for Dusk → Sepolia. Senders pay it back to the Dusk IGP. |
 | Each Dusk-origin validator | EVM key, no funds | | Signing checkpoints. Its address goes in `DUSK_ORIGIN_VALIDATORS`. |
-| Each Dusk-origin validator | Dusk testnet | 0.1 DUSK | Its one-time announcement on Dusk, about 2.1M gas. |
+| Each Dusk-origin validator | Dusk testnet | 0.1 DUSK | Its one-time announcement on Dusk, about 2.1M gas, if it announces itself; `announce` sends it for one without a Dusk account. |
 
 Give the relayer and each validator a Dusk account of its own. An account's
 transactions are ordered by its nonce, so two processes signing with one key
@@ -261,7 +261,8 @@ transfer pays for. `fees` prints what they come to.
   before it writes anything.
   Any other module type stops them, a TestMock ISM (which accepts every
   message) included, and so does a query that fails. If the owner changes
-  the validators or the threshold on chain, update both settings.
+  the validators or the threshold on chain, update both settings. Dusk-origin
+  validators change with `set-validators` ([validators.md](validators.md)).
 
 `deploy` records every step in `deploy/out/<DEPLOY_NAME>/deployment.json`
 and skips steps already recorded there. Each write of the record is synced
@@ -473,6 +474,7 @@ absolute path.
   cd hyperlane-monorepo/rust/main
   export DUSK_TX_BIN=/path/to/dusk-tx
   export HYP_CHAINS_SEPOLIA_SIGNER_KEY=0x...      # relayer's Sepolia key
+  # no AWS_ENDPOINT_URL: our fork's s3_storage.rs finds the buckets by region
   # plus the relayer's Dusk key file (see Dusk keys) at the config's keyFile
   CONFIG_FILES=/path/to/relayer.json ./target/release/relayer
   ```
@@ -492,6 +494,11 @@ absolute path.
 
   On startup the validator announces its bucket on Dusk's ValidatorAnnounce.
   The relayer finds it there.
+
+- **`validator-dusk-operator.json`** is the same validator for an outside
+  operator: no Dusk key, state under `/data`, the node
+  `OPERATOR_DUSK_RUES_URL`, and the bucket from the operator's env file.
+  `announce` announces it ([validators.md](validators.md)).
 
 Agents on the same host each need their own `db`, `eventCursorDir`,
 checkpoint location and `metricsPort` (the templates use 9090 for the relayer
@@ -925,6 +932,14 @@ In the rehearsal:
   transactions from that key while the relayer is delivering, or one of them
   fails on the shared nonce.
 
+To rehearse adding a validator, run one from `validator-dusk-operator.json`
+with an Anvil key the rehearsal doesn't use,
+`HYP_CHECKPOINTSYNCER_TYPE=localStorage` and `HYP_CHECKPOINTSYNCER_PATH`,
+and `announce file://<that directory>`; record the rehearsal's own validators the same way.
+`set-validators` needs an ISM factory: deploy
+`StaticMessageIdMultisigIsmFactory` on Anvil and set `EVM_ISM_FACTORY` in
+`deploy/local.env`.
+
 Stop with `bash deploy/local-agents.sh stop` and `bash demo/stop-env.sh`.
 Running `local-evm-core.sh` again starts a new rehearsal and moves the old
 state aside.
@@ -954,8 +969,8 @@ Testnet runs on trust choices and tooling that mainnet can't:
   replaced, and its holders cut off from what backs their tokens. The Dusk
   routes should take the router they expect to replace, none for a first
   enrollment, and refuse any other.
-- **Validator set.** Sepolia → Dusk trusts one Abacus Works validator. Mainnet
-  needs a deliberately chosen set for both directions.
+- **Validator set.** Ethereum → Dusk trusts Hyperlane's Ethereum default set,
+  and Dusk → Ethereum needs an independent set ([validators.md](validators.md)).
 - **Gas payments.** Both IGPs are priced and the relayer enforces payment
   ([costs.md](costs.md#fee-coverage)), but the prices are set by hand
   (`dusk-igp`, `evm-igp`). Mainnet needs them updated as ETH, DUSK and gas

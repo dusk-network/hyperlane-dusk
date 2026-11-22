@@ -146,7 +146,7 @@ def set_pricing(igp, config):
 SIGNING = ("call", "deploy-hyperlane", "deploy-wasm", "fund-dispatch", "withdraw-dispatch", "dispatch",
            "process", "enroll-router", "claim-pending", "set-igp-config",
            "set-beneficiary", "claim-fees", "pay-for-gas", "drc20-approve", "transfer-remote",
-           "deploy-token-route", "drc20-mint")
+           "deploy-token-route", "drc20-mint", "announce")
 # FIXTURE_CHAIN's "fail", {command: n}, makes the next n runs of a command
 # fail, as one the node refuses does, sending nothing.
 failing = chain.get("fail") or {}
@@ -162,7 +162,7 @@ if args[0] in SIGNING and "--quote-only" not in args and "--plan" not in args:
         out({"success": False, "error": f"Configured Dusk chain ID {expected} does not match endpoint chain ID {endpoint}"}, 1)
 if args[0] == "query":
     key = f"{opt('--contract')}/{opt('--method')}"
-    for flag in ("--arg-u32", "--arg-u64"):
+    for flag in ("--arg-u32", "--arg-u64", "--arg-eth-address"):
         if opt(flag) is not None:
             key += "/" + opt(flag)
     plan = chain.get("interleave")
@@ -186,6 +186,8 @@ if args[0] == "query":
     entry = queries.get(key)
     if entry is None and opt("--method") == "enrolled_router":
         entry = {"value": "00" * 32}
+    if entry is None and opt("--method") == "get_announced_storage_location_hashes":
+        entry = {"value": []}
     if entry is None or "error" in entry:
         error = (entry or {}).get("error", f"Query {key} failed (500): ContractDoesNotExist")
         out({"success": False, "error": error}, 1)
@@ -333,6 +335,27 @@ if args[0] == "drc20-info":
         result["account"] = info["accounts"].get(opt("--account"), {
             "balance": "0", "admin": False, "minter": False, "pauser": False})
     out(result)
+# FIXTURE_CHAIN's "announcements", {location: validator}, are the signed
+# announcements `announce` reads; announcing adds the location's hash, as
+# the cast stub's keccak gives it, to the validator's. Its "checkpoints",
+# {location: {"index", "count"} or {"error"}}, answer validator-checkpoint.
+if args[0] in ("announce", "validator-checkpoint") and "--s3-endpoint" in args:
+    out({"success": False, "error": "unexpected argument '--s3-endpoint'"}, 2)
+if args[0] == "announce":
+    validator = (chain.get("announcements") or {}).get(opt("--location"))
+    if validator is None or opt("--validator") not in (None, validator):
+        out({"success": False, "error": f"No announcement of the validator in {opt('--location')}"}, 1)
+    hashes = queries.setdefault(f"{opt('--validator-announce')}/get_announced_storage_location_hashes/{validator}",
+                                {"value": []})["value"]
+    location_hash = hashlib.sha256(opt("--location").encode()).hexdigest()
+    if location_hash in hashes:
+        out({"success": False, "error": "ValidatorAnnounce: replay"}, 1)
+    hashes.append(location_hash)
+    save()
+    out({"success": True, "validator": validator, "tx_id": "a0" * 32})
+if args[0] == "validator-checkpoint":
+    found = (chain.get("checkpoints") or {}).get(opt("--location"), {"error": "no checkpoint index"})
+    out({"success": "error" not in found, **found}, 1 if "error" in found else 0)
 if args[0] == "claim-fees":
     key = f"{opt('--contract')}/claimable_fees"
     claimed = queries[key]["value"]
@@ -637,6 +660,9 @@ def send(state, address, signature, args, sender):
     elif name == "setHook":
         only_owner(c, sender)
         c["hook"] = args[0].lower()
+    elif name == "setInterchainSecurityModule":
+        only_owner(c, sender)
+        c["ism"] = args[0].lower()
     elif name == "enrollRemoteRouter":
         only_owner(c, sender)
         c["routers"][args[0]] = args[1].lower()
@@ -986,7 +1012,9 @@ def read_view(state, options):
             die(HEADER_NOT_FOUND)
         if stale_read(state) is not None:
             die(HEADER_NOT_FOUND)
-        note_early_read(state, int(block))
+        # A read at the finalized block checks what no reorg can undo.
+        if int(block) != finalized(state):
+            note_early_read(state, int(block))
         # The chain as of that block, not as it is now, if anything changed
         # after it.
         history = state.get("history", [])
@@ -1088,6 +1116,8 @@ def main_cast(argv):
         print(f"{wei / 10**18:.18f}" if "--ether" in flags else wei)
     elif command == "wallet":
         print(state["keys"][options["--private-key"]])
+    elif command == "keccak":
+        print("0x" + hashlib.sha256(positional[1].encode()).hexdigest())
     elif command in ("calldata", "abi-encode"):
         print(encode({"sig": positional[1], "args": positional[2:]}))
     elif command == "storage":
@@ -1392,6 +1422,8 @@ class TestnetScript(unittest.TestCase):
         # faults its deploy-token-route plays ("front_run_deploy",
         # "stop_after_token").
         self.dusk_deploys = {}
+        # Validators' announcements and checkpoints, for the dusk-tx stub.
+        self.announcements, self.checkpoints = {}, {}
 
     def write_state(self, state):
         (self.out / "deployment.json").write_text(json.dumps(state))
@@ -1421,6 +1453,7 @@ class TestnetScript(unittest.TestCase):
                                           "fail": self.dusk_failures, "deploy": DUSK_CONTRACTS,
                                           "interleave": self.dusk_interleave, "on_read": self.dusk_on_read,
                                           "tamper": self.dusk_tamper, "balance": self.dusk_balance,
+                                          "announcements": self.announcements, "checkpoints": self.checkpoints,
                                           **self.dusk_deploys}))
         self.evm_file.write_text(json.dumps(self.evm))
         if self.relayer_config.exists():
@@ -3469,7 +3502,7 @@ class TestnetDeploymentRecord(DeployedTestnet):
     configs it writes name, whatever happens to the files meanwhile."""
 
     COMMANDS = [["preflight"], ["deploy"], ["agent-configs"], ["dusk-igp"], ["evm-igp"], ["revenue"],
-                ["claim"]]
+                ["claim"], ["announce", "s3://b/nbg1/v", VALIDATOR], ["set-validators"]]
 
     def test_commands_on_a_deployment_run_one_at_a_time(self):
         state = self.state()
@@ -3546,6 +3579,148 @@ def stub_route_ids(nonce):
 
 TOKEN_ROUTE_SETTINGS = {"EURd": ("Dusk Euro (testnet)", 6, "1000000000000"),
                         "USDd": ("Dusk Dollar (testnet)", 6, "1000000000000")}
+
+
+class TestnetValidators(DeployedTestnet):
+    """`announce`, and `set-validators` moving the EVM tokens to an ISM of
+    the settings' Dusk-origin set once every validator in it signs."""
+
+    NEW = "0x" + "4e" * 20
+    OURS, THEIRS = "s3://dusk-hyperlane-testnet/nbg1/validator-1", "s3://outside-operator/nbg1/op"
+
+    def setUp(self):
+        super().setUp()
+        # The recorded ISM is the one EVM_ISM_FACTORY makes for the settings.
+        fake = {}
+        exec(FAKE_EVM, fake)
+        self.ism, old = fake["derive"]("ism", EVM_ISM_FACTORY, f"[{VALIDATOR}]", "1"), self.ism
+        self.evm["contracts"][self.ism] = self.evm["contracts"].pop(old)
+        self.evm["contracts"][self.token]["ism"] = self.ism
+        state = self.state()
+        state["evm"]["ism"] = self.ism
+        self.write_state(state)
+
+    def signing(self, validator, location, **checkpoint):
+        """The validator announced `location`, newest, and signs there."""
+        key = f"{VALIDATOR_ANNOUNCE}/get_announced_storage_location_hashes/{validator}"
+        self.queries[key] = {"value": [hashlib.sha256(location.encode()).hexdigest()]}
+        self.checkpoints[location] = checkpoint or {"index": 39, "count": 40}
+        state = self.state()
+        state.setdefault("dusk_origin_locations", {})[validator] = location
+        self.write_state(state)
+
+    def two_of_two(self):
+        return {"DUSK_ORIGIN_VALIDATORS": f"{VALIDATOR},{self.NEW}", "DUSK_ORIGIN_THRESHOLD": "2"}
+
+    def evm_sends(self):
+        return self.traced("cast send")
+
+    def test_announce_records_where_the_validator_keeps_its_checkpoints(self):
+        self.announcements[self.THEIRS] = self.NEW
+        result = self.run_script("announce", self.THEIRS, self.NEW)
+        self.assert_ok(result)
+        self.assertIn(f"Announced validator {self.NEW} at {self.THEIRS}", result.stderr)
+        self.assertEqual(self.state()["dusk_origin_locations"], {self.NEW: self.THEIRS})
+        [sent] = self.traced("dusk-tx announce")
+        for part in (f"--location {self.THEIRS}", f"--validator {self.NEW}", "--expected-chain-id 2"):
+            self.assertIn(part, sent)
+        # Announced already, as by a validator that announces itself: only
+        # recorded, and nothing is sent.
+        self.trace.write_text("")
+        self.assertIn("had announced", self.run_script("announce", self.THEIRS, self.NEW).stderr)
+        self.assertEqual(self.traced("dusk-tx announce"), [])
+        self.assert_fails(self.run_script("announce", self.OURS, VALIDATOR), "Can't announce the validator")
+        self.assert_fails(self.run_script("announce", "file:///tmp/x", VALIDATOR), "only a local rehearsal's validators")
+        self.assert_fails(self.run_script("announce", self.THEIRS), "usage: bash deploy/testnet.sh announce")
+
+    def test_a_validator_that_isnt_announced_or_signing_stops_the_switch(self):
+        for case, expected in [
+            ("unrecorded", "records no location for validator"),
+            ("newer", "newest announcement isn't"),
+            ("stale", "isn't signing at s3://outside-operator/nbg1/op: 25 messages behind"),
+        ]:
+            with self.subTest(case=case):
+                self.setUp()
+                self.signing(VALIDATOR, self.OURS)
+                if case == "stale":
+                    self.signing(self.NEW, self.THEIRS, error="25 messages behind")
+                elif case == "newer":
+                    self.signing(self.NEW, self.THEIRS)
+                    key = f"{VALIDATOR_ANNOUNCE}/get_announced_storage_location_hashes/{self.NEW}"
+                    self.queries[key]["value"].append("ff" * 32)
+                self.assert_fails(self.run_script("set-validators", "--apply", **self.two_of_two()), expected)
+                self.assertEqual(self.evm_sends(), [])
+
+    def test_apply_moves_every_token_to_an_ism_of_the_new_set(self):
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        # A dry run checks every validator and sends nothing.
+        state = self.state()
+        result = self.run_script("set-validators", **self.two_of_two())
+        self.assert_ok(result)
+        self.assertIn(f"Validator {self.NEW} at {self.THEIRS} has signed up to index 39 of 40", result.stderr)
+        self.assertEqual((self.evm_sends(), self.state()), ([], state))
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
+        state = self.state()
+        new = state["evm"]["ism"]
+        self.assertEqual(self.evm["contracts"][self.token]["ism"], new)
+        self.assertEqual((self.evm["contracts"][new]["threshold"], state["dusk_origin_threshold"]), (2, 2))
+        self.assert_ok(self.run_script("preflight", **self.two_of_two()))
+        self.assertIn("nothing to change", self.run_script("set-validators", "--apply", **self.two_of_two()).stderr)
+
+    def test_a_switch_that_landed_without_its_record_is_recorded(self):
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
+        state = self.state()
+        new = state["evm"]["ism"]
+        # The run stopped before its record, and the new validator has
+        # fallen behind since: the switch has happened, so it is recorded.
+        state["evm"]["ism"] = self.ism
+        self.write_state(state)
+        self.checkpoints[self.THEIRS] = {"error": "25 messages behind"}
+        self.trace.write_text("")
+        self.assertIn("an earlier run switched them", self.run_script("set-validators", **self.two_of_two()).stderr)
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
+        self.assertEqual((self.state()["evm"]["ism"], self.evm_sends()), (new, []))
+        self.assert_ok(self.run_script("preflight", **self.two_of_two()))
+
+    def test_a_dry_run_after_a_crashed_apply_sends_and_waits_for_nothing(self):
+        state = self.state()
+        step = f"call setInterchainSecurityModule(address) on {self.token}"
+        state["evm_sending"] = {step: {"step": step, "nonce": 7, "to": self.token, "input": "0x", "label": step,
+                                       "from_block": 1}}
+        self.write_state(state)
+        self.assert_fails(self.run_script("set-validators", **self.two_of_two()), "isn't settled yet")
+        self.assertEqual((self.state(), self.evm_sends()), (state, []))
+
+    def test_the_switch_is_recorded_only_once_final(self):
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        self.evm["finality_depth"] = 1000
+        self.assert_fails(self.run_script("set-validators", "--apply", EVM_FINALITY_SECONDS=0, **self.two_of_two()),
+                          "as of a final block")
+        self.assertEqual(self.state()["evm"]["ism"], self.ism)
+        self.evm["finality_depth"] = 0
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
+        self.assertNotEqual(self.state()["evm"]["ism"], self.ism)
+
+    def test_a_token_at_another_ism_or_an_unpaid_threshold_is_refused(self):
+        stranger = "0x" + "5e" * 20
+        self.evm["contracts"][stranger] = {"type": "ism", "module_type": 5, "validators": [ATTACKER], "threshold": 1}
+        self.evm["contracts"][self.token]["ism"] = stranger
+        self.assert_fails(self.run_script("set-validators", **self.two_of_two()), f"verifies with {stranger}")
+        six = ",".join(validators(6))
+        # Enough in the settings, but not yet on chain.
+        self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6,
+                                          DUSK_IGP_GAS_OVERHEAD=430000), "apply the settings with --apply")
+
+    def test_agent_configs_write_an_outside_operators_validator(self):
+        self.assert_ok(self.run_script("agent-configs", OPERATOR_DUSK_RUES_URL="https://node.operator.example/"))
+        dusk = json.loads((self.out / "validator-dusk-operator.json").read_text())["chains"]["dusk"]
+        self.assertNotIn("signer", dusk)
+        self.assertEqual((dusk["rpcUrls"], dusk["eventCursorDir"]),
+                         ([{"http": "https://node.operator.example/"}], "/data/validator-dusk-events"))
 
 
 class TokenRouteChecks:
