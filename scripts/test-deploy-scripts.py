@@ -339,6 +339,8 @@ if args[0] == "drc20-info":
 # announcements `announce` reads; announcing adds the location's hash, as
 # the cast stub's keccak gives it, to the validator's. Its "checkpoints",
 # {location: {"index", "count"} or {"error"}}, answer validator-checkpoint.
+if args[0] in ("announce", "validator-checkpoint") and "--s3-endpoint" in args:
+    out({"success": False, "error": "unexpected argument '--s3-endpoint'"}, 2)
 if args[0] == "announce":
     validator = (chain.get("announcements") or {}).get(opt("--location"))
     if validator is None or opt("--validator") not in (None, validator):

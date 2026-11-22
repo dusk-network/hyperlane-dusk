@@ -11,11 +11,13 @@ written; `typescript/sdk/src/consts/multisigIsm.ts` upstream). We mirror
 their changes into our ISM with `dusk-tx set-ism-validators`, and should
 monitor for differences. The focus is an independent Dusk-origin set: the
 weaker direction bounds the route, since a forged Dusk message mints wDUSK
-that can be bridged back against the DUSK we hold. The relayer finds each
-validator's bucket by its region, which for Hetzner and DigitalOcean needs
-our fork's patch to `hyperlane-base/src/types/s3_storage.rs`
-(`feat/s3-provider-endpoints`). An aggregation ISM with a set of our own is
-an option later, not needed at launch.
+that can be bridged back against the DUSK we hold. An aggregation ISM with a
+set of our own is an option later, not needed at launch.
+
+The relayer finds each validator's bucket by its region. For Hetzner and
+DigitalOcean that needs our fork's patch to
+`hyperlane-base/src/types/s3_storage.rs` (`feat/s3-provider-endpoints`), and
+no `AWS_ENDPOINT_URL` on the relayer, which would send Amazon reads there.
 
 ## Run a validator
 
@@ -84,20 +86,23 @@ without credentials. Give the validator keys that can write to that bucket
 only. For the S3 providers, `dusk-validator.env` is:
 
 ```bash
+# The region: nbg1, ams3, eu-west-1, ...
+HYP_CHECKPOINTSYNCER_REGION=<region>
 HYP_CHECKPOINTSYNCER_BUCKET=<bucket>
-HYP_CHECKPOINTSYNCER_REGION=<region>      # nbg1, ams3, eu-west-1, ...
 HYP_CHECKPOINTSYNCER_FOLDER=dusk-testnet
 AWS_ACCESS_KEY_ID=<key>
 AWS_SECRET_ACCESS_KEY=<secret>
-AWS_ENDPOINT_URL=https://<region>.your-objectstorage.com   # Hetzner
+# Hetzner's; https://<region>.digitaloceanspaces.com on DigitalOcean
+AWS_ENDPOINT_URL=https://<region>.your-objectstorage.com
 ```
 
-On DigitalOcean, `AWS_ENDPOINT_URL` is `https://<region>.digitaloceanspaces.com`;
-Amazon needs none. The released validator predates our fork's region
-mapping, so it needs the endpoint for the other two. Make the bucket public
-with a policy (`aws s3api put-bucket-policy --bucket <bucket> --policy
-file://public.json`, with `--endpoint-url` outside Amazon); on Amazon, turn
-off the bucket's Block Public Access first:
+Amazon needs no `AWS_ENDPOINT_URL`; the released validator predates our
+fork's region mapping, so it needs one for the other two. Keep comments on
+lines of their own: Docker reads a `#` after a value as part of it. Make the
+bucket public with a policy (`aws s3api put-bucket-policy --bucket <bucket>
+--policy file://public.json`, with `--endpoint-url` outside Amazon); on
+Amazon, first turn off Block Public Access for the bucket, and the
+account's if it is on:
 
 ```json
 {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": "*",
@@ -108,7 +113,8 @@ off the bucket's Block Public Access first:
 On Google, grant `allUsers` Storage Object Viewer on the bucket, and give
 the validator a key for a service account with Storage Object User on it,
 readable by the image's user (`chown 65532`) and mounted with `-v
-"$PWD/gcs-key.json:/keys/gcs-key.json:ro"`. `dusk-validator.env` is:
+"$PWD/gcs-key.json:/keys/gcs-key.json:ro"`; the binary takes the key's own
+path. `dusk-validator.env` is:
 
 ```bash
 HYP_CHECKPOINTSYNCER_TYPE=gcs

@@ -11268,7 +11268,9 @@ async fn cmd_validator_checkpoint(args: CheckpointArgs) -> Result<(), String> {
     let hook = parse_bytes32(&args.merkle_tree_hook)?;
     let storage = validators::Storage::parse(&args.location)?;
     if storage.reorg_flagged().await? {
-        return Err("The validator flagged a reorg: while the flag is there, the relayer delivers nothing through an ISM that lists it".into());
+        return Err(
+            "The validator flagged a reorg: while the flag is there, it signs nothing".into(),
+        );
     }
     let index = storage
         .read(storage.latest_index())

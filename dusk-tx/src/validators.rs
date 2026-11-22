@@ -19,7 +19,7 @@ use serde::Deserialize;
 const MAX_OBJECT_BYTES: usize = 50 * 1024 - 1;
 
 /// The domain an S3 region's buckets are under: Hetzner's, DigitalOcean's,
-/// or for any other region Amazon's. This mirrors the relayer's mapping in our
+/// or for any other region Amazon's, as the SDK names it. This mirrors the relayer's mapping in our
 /// hyperlane-monorepo fork (`rust/main/hyperlane-base/src/types/s3_storage.rs`)
 /// and must stay in sync with it.
 fn s3_domain(region: &str) -> String {
@@ -27,6 +27,7 @@ fn s3_domain(region: &str) -> String {
         "fsn1" | "nbg1" | "hel1" => format!("{region}.your-objectstorage.com"),
         "nyc3" | "ams3" | "sfo2" | "sfo3" | "sgp1" | "lon1" | "fra1" | "tor1" | "blr1" | "syd1"
         | "atl1" | "ric1" | "mkc1" => format!("{region}.digitaloceanspaces.com"),
+        _ if region.starts_with("cn-") => format!("s3.{region}.amazonaws.com.cn"),
         _ => format!("s3.{region}.amazonaws.com"),
     }
 }
@@ -81,13 +82,14 @@ impl Storage {
             }
             (format!("{bucket}.{}", s3_domain(region)), &parts[2..])
         };
-        if path.iter().any(|s| {
-            s.is_empty()
-                || *s == "."
-                || *s == ".."
-                || s.contains(|c: char| c.is_control() || matches!(c, '\\' | '%'))
-        }) {
-            return Err(bad("its bucket or folder has a part a key can't have"));
+        // Parts the URL keeps as they are, so it names the key the agent wrote.
+        let plain = |s: &&str| {
+            !matches!(*s, "" | "." | "..")
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        };
+        if !path.iter().all(plain) {
+            return Err(bad("each part of its folder, and a GCS bucket, may have only letters, digits, '-', '_' and '.'"));
         }
         let path = path.iter().map(|s| s.to_string()).collect();
         Ok(Storage::Remote { gcs, host, path })
@@ -120,27 +122,34 @@ impl Storage {
         }
     }
 
-    /// Whether the validator flagged a reorg: while it has, the relayer
-    /// delivers nothing through an ISM that lists it. For GCS the relayer
-    /// reads the flag at the bucket's root too.
+    /// Whether the validator flagged a reorg: while it has, it signs nothing,
+    /// and a flag where it announced stops the relayer delivering through an
+    /// ISM that lists it.
     pub async fn reorg_flagged(&self) -> Result<bool, String> {
-        let Storage::Remote {
-            gcs: true,
-            host,
-            path,
-        } = self
-        else {
+        if let Storage::Local(_) = self {
             return Ok(self.read("reorg_flag.json").await?.is_some());
-        };
-        for depth in 1..=path.len() {
-            if read_url(&url(host, &path[..depth], "gcsReorgFlagKey")?)
-                .await?
-                .is_some()
-            {
+        }
+        for flag in self.reorg_flags()? {
+            if read_url(&flag).await?.is_some() {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    /// Where a remote validator's reorg flags are. One on GCS with a folder
+    /// also stops signing on a flag at the bucket's root.
+    pub fn reorg_flags(&self) -> Result<Vec<Url>, String> {
+        match self {
+            Storage::Remote {
+                gcs: true,
+                host,
+                path,
+            } => (1..=path.len())
+                .map(|depth| url(host, &path[..depth], "gcsReorgFlagKey"))
+                .collect(),
+            _ => Ok(vec![self.url("reorg_flag.json")?]),
+        }
     }
 
     /// The URL the object `name` is read from.
@@ -447,20 +456,35 @@ pub(crate) mod tests {
 
     #[test]
     fn objects_are_read_where_each_provider_keeps_them() {
-        let url = |location: &str| {
-            Storage::parse(location)
-                .and_then(|s| s.url(s.latest_index()))
-                .map(String::from)
+        // The announcement, the latest index, a checkpoint and the reorg
+        // flags, where the agent writes them.
+        let objects = |location: &str| {
+            let s = Storage::parse(location)?;
+            let mut urls = vec![
+                s.url(s.announcement())?,
+                s.url(s.latest_index())?,
+                s.url(&s.checkpoint(7))?,
+            ];
+            urls.extend(s.reorg_flags()?);
+            Ok::<_, String>(urls.into_iter().map(String::from).collect::<Vec<_>>())
         };
-        for (location, expected) in [
-            ("s3://op/nbg1/v", "https://op.nbg1.your-objectstorage.com/v/checkpoint_latest_index.json"),
-            ("s3://op/ams3/v/w", "https://op.ams3.digitaloceanspaces.com/v/w/checkpoint_latest_index.json"),
-            ("s3://op/eu-west-1", "https://op.s3.eu-west-1.amazonaws.com/checkpoint_latest_index.json"),
-            ("s3://op/no-such-region-9/v", "https://op.s3.no-such-region-9.amazonaws.com/v/checkpoint_latest_index.json"),
-            ("gs://hyperlane-testnet4-validator-0/sepolia/gcsAnnouncementKey", "https://storage.googleapis.com/hyperlane-testnet4-validator-0/sepolia/gcsLatestIndexKey"),
-            ("gs://b.c/gcsAnnouncementKey", "https://storage.googleapis.com/b.c/gcsLatestIndexKey"),
+        let s3 = "announcement.json checkpoint_latest_index.json checkpoint_7_with_id.json reorg_flag.json";
+        let gcs = "gcsAnnouncementKey gcsLatestIndexKey checkpoint_7_with_id.json gcsReorgFlagKey";
+        for (location, base, names) in [
+            ("s3://op/nbg1/v", "https://op.nbg1.your-objectstorage.com/v/", s3),
+            ("s3://op/ams3/v/w", "https://op.ams3.digitaloceanspaces.com/v/w/", s3),
+            ("s3://op/eu-west-1", "https://op.s3.eu-west-1.amazonaws.com/", s3),
+            ("s3://op/no-such-region-9", "https://op.s3.no-such-region-9.amazonaws.com/", s3),
+            ("s3://op/cn-north-1", "https://op.s3.cn-north-1.amazonaws.com.cn/", s3),
+            ("gs://b.c/gcsAnnouncementKey", "https://storage.googleapis.com/b.c/", gcs),
+            (
+                "gs://hyperlane-testnet4-validator-0/sepolia/gcsAnnouncementKey",
+                "https://storage.googleapis.com/hyperlane-testnet4-validator-0/",
+                "sepolia/gcsAnnouncementKey sepolia/gcsLatestIndexKey sepolia/checkpoint_7_with_id.json gcsReorgFlagKey sepolia/gcsReorgFlagKey",
+            ),
         ] {
-            assert_eq!(url(location).unwrap(), expected);
+            let expected: Vec<String> = names.split(' ').map(|name| format!("{base}{name}")).collect();
+            assert_eq!(objects(location).unwrap(), expected, "{location}");
         }
         assert_eq!(
             Storage::parse("file:///v").unwrap().checkpoint(2),
@@ -474,11 +498,12 @@ pub(crate) mod tests {
             ("s3://a://b/c", "expected"),
             ("s3://my.bucket/eu-west-1", "a dot"),
             ("s3://B/nbg1", "a dot"),
-            ("s3://b/nbg1/a/../c", "can't have"),
-            ("s3://b/nbg1/a\t", "can't have"),
-            ("s3://b/nbg1/", "can't have"),
-            ("gs://../f/k", "can't have"),
-            ("gs://b/%2e/k", "can't have"),
+            ("s3://b/nbg1/a/../c", "may have only"),
+            ("s3://b/nbg1/a\t", "may have only"),
+            ("s3://b/nbg1/", "may have only"),
+            ("s3://b/nbg1/blue+green", "may have only"),
+            ("gs://../f/k", "may have only"),
+            ("gs://b/100%/k", "may have only"),
         ] {
             assert!(Storage::parse(bad).unwrap_err().contains(why), "{bad}");
         }
