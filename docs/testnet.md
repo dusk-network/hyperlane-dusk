@@ -969,16 +969,8 @@ Testnet runs on trust choices and tooling that mainnet can't:
   replaced, and its holders cut off from what backs their tokens. The Dusk
   routes should take the router they expect to replace, none for a first
   enrollment, and refuse any other.
-- **Validator set.** Ethereum → Dusk trusts Hyperlane's Ethereum default set
-  (6 of 9 when written; `typescript/sdk/src/consts/multisigIsm.ts`
-  upstream). We mirror their changes into our ISM (`dusk-tx
-  set-ism-validators`), and should monitor for differences. The focus is an
-  independent Dusk-origin set ([validators.md](validators.md)): the weaker
-  direction bounds the route, since a forged Dusk message mints wDUSK that
-  can be bridged back against the DUSK we hold. The relayer must read AWS S3
-  buckets for that (upstream #9159, or our validators off the global
-  endpoint override). An aggregation ISM with a set of our own is an option
-  later, not needed at launch.
+- **Validator set.** Ethereum → Dusk trusts Hyperlane's Ethereum default set,
+  and Dusk → Ethereum needs an independent set ([validators.md](validators.md)).
 - **Gas payments.** Both IGPs are priced and the relayer enforces payment
   ([costs.md](costs.md#fee-coverage)), but the prices are set by hand
   (`dusk-igp`, `evm-igp`). Mainnet needs them updated as ETH, DUSK and gas

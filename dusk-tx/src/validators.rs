@@ -11,9 +11,8 @@ use hyperlane_dusk_types::signature::is_canonical;
 use reqwest::Url;
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::{Message, Secp256k1};
+use serde::Deserialize;
 
-/// The ValidatorAnnounce's `MAX_LOCATION_BYTES`.
-pub const MAX_LOCATION_BYTES: usize = 1_024;
 /// The most read of one object, below the relayer's limit for one
 /// (`MAX_CHECKPOINT_OBJECT_SIZE`, 50 KiB): a validator writes a few hundred
 /// bytes.
@@ -183,82 +182,91 @@ fn read_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
 
 // ── Signed values ───────────────────────────────────────────────────────────
 
-/// The string or number at `path` in hyperlane-core's `SignedType` JSON.
-fn field<'a>(json: &'a serde_json::Value, path: &str) -> Result<&'a serde_json::Value, String> {
-    json.pointer(path)
-        .ok_or_else(|| format!("Not a validator's signed value: no {path}"))
+/// hyperlane-core's `SignedType` JSON. Derived, so a duplicate field fails
+/// as it does for the relayer.
+#[derive(Deserialize)]
+struct Signed<T> {
+    value: T,
+    signature: SignatureJson,
 }
 
-fn text<'a>(json: &'a serde_json::Value, path: &str) -> Result<&'a str, String> {
-    field(json, path)?
-        .as_str()
-        .ok_or_else(|| format!("{path} isn't a string"))
+#[derive(Deserialize)]
+struct SignatureJson {
+    r: String,
+    s: String,
+    v: u8,
 }
 
-fn number(json: &serde_json::Value, path: &str) -> Result<u32, String> {
-    field(json, path)?
-        .as_u64()
-        .and_then(|n| u32::try_from(n).ok())
-        .ok_or_else(|| format!("{path} isn't a u32"))
+#[derive(Deserialize)]
+struct AnnouncementJson {
+    validator: String,
+    storage_location: String,
 }
 
-fn signed(json: &[u8]) -> Result<(serde_json::Value, [u8; 65]), String> {
-    let json: serde_json::Value =
+#[derive(Deserialize)]
+struct CheckpointWithIdJson {
+    checkpoint: CheckpointJson,
+    message_id: String,
+}
+
+#[derive(Deserialize)]
+struct CheckpointJson {
+    merkle_tree_hook_address: String,
+    mailbox_domain: u32,
+    root: String,
+    index: u32,
+}
+
+fn signed<'a, T: Deserialize<'a>>(json: &'a [u8]) -> Result<(T, [u8; 65]), String> {
+    let signed: Signed<T> =
         serde_json::from_slice(json).map_err(|e| format!("Not a validator's signed value: {e}"))?;
-    let signature = signature(&json)?;
-    Ok((json, signature))
+    let mut signature = [0u8; 65];
+    for (value, range) in [(&signed.signature.r, 0..32), (&signed.signature.s, 32..64)] {
+        // hyperlane-core writes r and s without leading zeros.
+        let digits = value.strip_prefix("0x").unwrap_or_default();
+        if digits.is_empty() || digits.len() > 64 {
+            return Err(format!(
+                "The signature's '{value}' isn't a 256-bit hex number"
+            ));
+        }
+        hex::decode_to_slice(format!("{digits:0>64}"), &mut signature[range])
+            .map_err(|e| format!("The signature's '{value}': {e}"))?;
+    }
+    signature[64] = signed.signature.v;
+    Ok((signed.value, signature))
 }
 
-/// A validator's signed announcement of where its checkpoints are.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `0x` and exactly N bytes of hex.
+fn hex_bytes<const N: usize>(value: &str) -> Result<[u8; N], String> {
+    let digits = value.strip_prefix("0x").unwrap_or_default();
+    let mut bytes = [0u8; N];
+    if digits.len() != 2 * N || hex::decode_to_slice(digits, &mut bytes).is_err() {
+        return Err(format!("'{value}' isn't 0x and {N} bytes of hex"));
+    }
+    Ok(bytes)
+}
+
+/// A validator's signed announcement of where its checkpoints are. The
+/// ValidatorAnnounce checks the rest when it is sent.
 pub struct Announcement {
     pub validator: [u8; 20],
-    pub mailbox: [u8; 32],
-    pub domain: u32,
     pub location: String,
     pub signature: [u8; 65],
 }
 
 impl Announcement {
     pub fn parse(json: &[u8]) -> Result<Self, String> {
-        let (json, signature) = signed(json)?;
+        let (value, signature) = signed::<AnnouncementJson>(json)?;
         Ok(Announcement {
-            validator: hex_bytes(text(&json, "/value/validator")?)?,
-            mailbox: hex_bytes(text(&json, "/value/mailbox_address")?)?,
-            domain: number(&json, "/value/mailbox_domain")?,
-            location: text(&json, "/value/storage_location")?.to_owned(),
+            validator: hex_bytes(&value.validator)?,
+            location: value.storage_location,
             signature,
         })
-    }
-
-    /// The validator signed it, and its location is one a ValidatorAnnounce
-    /// takes.
-    pub fn check(&self) -> Result<(), String> {
-        if self.location.is_empty() || self.location.len() > MAX_LOCATION_BYTES {
-            return Err(format!(
-                "The announced location is {} bytes; a ValidatorAnnounce takes 1 to {MAX_LOCATION_BYTES}",
-                self.location.len()
-            ));
-        }
-        let digest = hyperlane_dusk_types::checkpoint::announcement_digest(
-            self.domain,
-            &self.mailbox,
-            &self.location,
-        );
-        let signer = recover(&digest, &self.signature)?;
-        if signer != self.validator {
-            return Err(format!(
-                "The announcement names the validator 0x{}, but 0x{} signed it",
-                hex::encode(self.validator),
-                hex::encode(signer)
-            ));
-        }
-        Ok(())
     }
 }
 
 /// A validator's signed checkpoint of a Merkle tree hook.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Checkpoint {
     pub merkle_tree_hook: [u8; 32],
     pub domain: u32,
@@ -270,16 +278,13 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     pub fn parse(json: &[u8]) -> Result<Self, String> {
-        let (json, signature) = signed(json)?;
+        let (value, signature) = signed::<CheckpointWithIdJson>(json)?;
         Ok(Checkpoint {
-            merkle_tree_hook: hex_bytes(text(
-                &json,
-                "/value/checkpoint/merkle_tree_hook_address",
-            )?)?,
-            domain: number(&json, "/value/checkpoint/mailbox_domain")?,
-            root: hex_bytes(text(&json, "/value/checkpoint/root")?)?,
-            index: number(&json, "/value/checkpoint/index")?,
-            message_id: hex_bytes(text(&json, "/value/message_id")?)?,
+            merkle_tree_hook: hex_bytes(&value.checkpoint.merkle_tree_hook_address)?,
+            domain: value.checkpoint.mailbox_domain,
+            root: hex_bytes(&value.checkpoint.root)?,
+            index: value.checkpoint.index,
+            message_id: hex_bytes(&value.message_id)?,
             signature,
         })
     }
@@ -294,34 +299,6 @@ impl Checkpoint {
         );
         recover(&digest, &self.signature)
     }
-}
-
-/// `0x` and exactly N bytes of hex.
-fn hex_bytes<const N: usize>(value: &str) -> Result<[u8; N], String> {
-    let digits = value.strip_prefix("0x").unwrap_or_default();
-    let mut bytes = [0u8; N];
-    if digits.len() != 2 * N || hex::decode_to_slice(digits, &mut bytes).is_err() {
-        return Err(format!("'{value}' isn't 0x and {N} bytes of hex"));
-    }
-    Ok(bytes)
-}
-
-/// The 65-byte signature from `{r, s, v}`, whose r and s hyperlane-core
-/// writes without leading zeros.
-fn signature(json: &serde_json::Value) -> Result<[u8; 65], String> {
-    let mut signature = [0u8; 65];
-    for (part, range) in [("/signature/r", 0..32), ("/signature/s", 32..64)] {
-        let value = text(json, part)?;
-        let digits = value.strip_prefix("0x").unwrap_or_default();
-        if digits.is_empty() || digits.len() > 64 {
-            return Err(format!("{part} '{value}' isn't a 256-bit hex number"));
-        }
-        hex::decode_to_slice(format!("{digits:0>64}"), &mut signature[range])
-            .map_err(|e| format!("{part} '{value}': {e}"))?;
-    }
-    signature[64] =
-        u8::try_from(number(json, "/signature/v")?).map_err(|_| "/signature/v is out of range")?;
-    Ok(signature)
 }
 
 /// Who signed `digest`, for a signature the contracts accept (`v` 27 or 28,
@@ -404,27 +381,27 @@ pub(crate) mod tests {
     fn signed_values_name_their_signers() {
         let parsed = Announcement::parse(&announcement_json(&key(7), "s3://b/nbg1/op")).unwrap();
         assert_eq!(
-            (parsed.validator, parsed.mailbox),
-            (address_of(&key(7)), MAILBOX)
+            (parsed.validator, parsed.location.as_str()),
+            (address_of(&key(7)), "s3://b/nbg1/op")
         );
-        parsed.check().unwrap();
-        let mut moved = parsed.clone();
-        moved.location = "s3://b/nbg1/elsewhere".into();
-        assert!(moved.check().is_err());
-        let mut raw_v = parsed;
-        raw_v.signature[64] -= 27;
-        assert!(raw_v.check().unwrap_err().contains("v must be 27 or 28"));
-        let long = format!("s3://b/nbg1/{}", "a".repeat(MAX_LOCATION_BYTES));
-        let long = Announcement::parse(&announcement_json(&key(7), &long)).unwrap();
-        assert!(long.check().unwrap_err().contains("1 to 1024"));
         let checkpoint = Checkpoint::parse(&checkpoint_json(&key(9), 41, [0x11; 32])).unwrap();
         assert_eq!(checkpoint.signer().unwrap(), address_of(&key(9)));
-        // `cast keccak <location>`, as deploy/testnet.sh hashes a location.
-        let hash = hex::encode(keccak256(b"s3://dusk-hyperlane-testnet/nbg1/validator-1"));
-        assert_eq!(
-            hash,
-            "bac1294f3cb5349c94f575a244e8c9396fd279286f5a12b227afd2770955e5f3"
+        let mut raw_v = checkpoint.clone();
+        raw_v.signature[64] -= 27;
+        assert!(raw_v.signer().unwrap_err().contains("v must be 27 or 28"));
+        let mut moved = checkpoint;
+        moved.index = 40;
+        assert_ne!(moved.signer().unwrap(), address_of(&key(9)));
+        // A duplicate field fails, as for the relayer.
+        let json = String::from_utf8(checkpoint_json(&key(9), 41, [0x11; 32])).unwrap();
+        let doubled = json.replacen(
+            "\"message_id\"",
+            "\"message_id\":\"0x00\",\"message_id\"",
+            1,
         );
+        assert!(Checkpoint::parse(doubled.as_bytes())
+            .unwrap_err()
+            .contains("duplicate field"));
     }
 
     #[tokio::test]

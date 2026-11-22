@@ -4,8 +4,17 @@ Sepolia accepts a message from Dusk once `DUSK_ORIGIN_THRESHOLD` of the
 `DUSK_ORIGIN_VALIDATORS` have signed it. Each validator watches the Dusk
 Merkle tree hook through a Dusk node, signs a checkpoint for every message,
 and writes the checkpoints to a bucket anyone can read. The relayer collects
-the signatures from there. Sepolia → Dusk trusts Hyperlane's own validators
-([testnet.md](testnet.md#before-mainnet)).
+the signatures from there.
+
+Ethereum → Dusk trusts Hyperlane's Ethereum default set (6 of 9 when
+written; `typescript/sdk/src/consts/multisigIsm.ts` upstream). We mirror
+their changes into our ISM with `dusk-tx set-ism-validators`, and should
+monitor for differences. The focus is an independent Dusk-origin set: the
+weaker direction bounds the route, since a forged Dusk message mints wDUSK
+that can be bridged back against the DUSK we hold. The relayer must read AWS
+S3 buckets for that (upstream #9159, or our validators off the global
+endpoint override). An aggregation ISM with a set of our own is an option
+later, not needed at launch.
 
 ## Run a validator
 
@@ -33,11 +42,13 @@ docker run -d --name dusk-validator --restart unless-stopped \
   ghcr.io/dusk-network/hyperlane-dusk-validator:<version>
 ```
 
-Or, with the binary from the release, from its directory:
+Both come from the release: the image above, or the binary in
+`hyperlane-dusk-validator-<version>-linux-x86_64.tar.gz`, run from its
+directory:
 
 ```bash
 set -a; . ../dusk-validator.env; . ../validator-key.env; set +a
-CONFIG_FILES="$PWD/dusk-testnet-validator.json" ./validator
+CONFIG_FILES="$PWD/validator-dusk-operator.json" ./validator
 ```
 
 It keeps its state under `/data`, as the image does; set `HYP_DB` and

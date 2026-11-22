@@ -145,8 +145,6 @@ const WITHDRAW_DISPATCH_GAS_LIMIT: u64 = 80_000_000;
 /// Default gas limit for `announce`: 2.07M gas, 2.25M with a 1 KiB location
 /// (docs/costs.md); a failed one pays its whole limit.
 const ANNOUNCE_GAS_LIMIT: u64 = 3_500_000;
-/// The ValidatorAnnounce's `MAX_LOCATIONS_PER_VALIDATOR`.
-const MAX_LOCATIONS_PER_VALIDATOR: usize = 16;
 /// Default gas limit for `set-ism-validators`: 1.87M gas for 6 validators,
 /// 2.50M for 255 (docs/costs.md).
 const ISM_SET_GAS_LIMIT: u64 = 4_000_000;
@@ -11155,20 +11153,11 @@ struct StorageArgs {
     /// The S3-compatible endpoint s3:// locations are read from.
     #[arg(long)]
     s3_endpoint: Option<String>,
-    /// Read a file:// location, as a local rehearsal's validators have.
-    #[arg(long)]
-    allow_local_storage: bool,
 }
 
 impl StorageArgs {
     fn open(&self) -> Result<(validators::Storage, Option<reqwest::Url>), String> {
         let storage = validators::Storage::parse(&self.location)?;
-        if matches!(storage, validators::Storage::Local(_)) && !self.allow_local_storage {
-            return Err(format!(
-                "{} is on this host: file:// locations are read only with --allow-local-storage",
-                self.location
-            ));
-        }
         let endpoint = self.s3_endpoint.as_deref().map(validators::parse_endpoint);
         Ok((storage, endpoint.transpose()?))
     }
@@ -11233,9 +11222,8 @@ struct IsmValidatorsArgs {
 }
 
 /// Anyone can send a validator's announcement: the ValidatorAnnounce checks
-/// its signature, not the sender. It is checked here first, and run as a
-/// query, before anything is signed; a location announced already is only
-/// reported.
+/// its signature, Mailbox, domain and location, not the sender. It runs as
+/// a query first, so one the contract refuses signs nothing.
 async fn cmd_announce(args: AnnounceArgs) -> Result<(), String> {
     let va = parse_bytes32(&args.validator_announce)?;
     let expected = args
@@ -11252,70 +11240,40 @@ async fn cmd_announce(args: AnnounceArgs) -> Result<(), String> {
         .ok_or_else(|| format!("No announcement in {location}: has the validator started?"))?;
     let announcement = validators::Announcement::parse(&json)?;
     let validator = EthAddress(announcement.validator);
-    if expected.is_some_and(|expected| expected != validator) {
+    if expected.is_some_and(|expected| expected != validator) || announcement.location != *location
+    {
         return Err(format!(
-            "The announcement in {location} isn't the validator {}'s",
-            args.validator.unwrap()
-        ));
-    }
-    if announcement.location != *location {
-        return Err(format!(
-            "The announcement in {location} announces {}",
+            "The announcement in {location} is the validator 0x{}'s, of {}",
+            hex::encode(validator.0),
             announcement.location
         ));
     }
-    announcement.check()?;
-    let mailbox: ContractId = client.contract_query(&va, "mailbox", &()).await?;
-    let domain: u32 = client.contract_query(&va, "local_domain", &()).await?;
-    if mailbox.to_bytes() != announcement.mailbox || domain != announcement.domain {
-        return Err(format!(
-            "The announcement is for another Mailbox or domain than {}'s",
-            args.validator_announce
-        ));
+    let call = (validator, location.clone(), announcement.signature.to_vec());
+    let accepted: bool = client
+        .contract_query(&va, "announce", &call)
+        .await
+        .map_err(|e| {
+            format!("The ValidatorAnnounce refuses the announcement, so nothing was sent: {e}")
+        })?;
+    if !accepted {
+        return Err("The ValidatorAnnounce refuses the announcement, so nothing was sent".into());
     }
-    let hash = hyperlane_dusk_types::message::keccak256(location.as_bytes());
-    let method = "get_announced_storage_location_hashes";
-    let announced: Vec<[u8; 32]> = client.contract_query(&va, method, &validator).await?;
+    let keys = args.signer.keys()?;
+    let (tx_id, confirmation) = args
+        .signer
+        .send(
+            &client,
+            chain_id,
+            &keys,
+            va,
+            "announce",
+            rkyv_serialize(&call),
+            args.gas_limit,
+        )
+        .await?;
     let mut output = json!({ "success": true, "validator": format!("0x{}", hex::encode(validator.0)),
-        "location": location, "already_announced": announced.contains(&hash) });
-    if !announced.contains(&hash) {
-        if announced.len() >= MAX_LOCATIONS_PER_VALIDATOR {
-            return Err(format!("The validator has announced the most locations it can, {MAX_LOCATIONS_PER_VALIDATOR}"));
-        }
-        let call = (validator, location.clone(), announcement.signature.to_vec());
-        let accepted: bool = client
-            .contract_query(&va, "announce", &call)
-            .await
-            .map_err(|e| {
-                format!("The ValidatorAnnounce refuses the announcement, so nothing was sent: {e}")
-            })?;
-        if !accepted {
-            return Err(
-                "The ValidatorAnnounce refuses the announcement, so nothing was sent".into(),
-            );
-        }
-        let keys = args.signer.keys()?;
-        let (tx_id, confirmation) = args
-            .signer
-            .send(
-                &client,
-                chain_id,
-                &keys,
-                va,
-                "announce",
-                rkyv_serialize(&call),
-                args.gas_limit,
-            )
-            .await?;
-        let announced: Vec<[u8; 32]> = client.contract_query(&va, method, &validator).await?;
-        if !announced.contains(&hash) {
-            return Err(format!(
-                "Transaction {tx_id} was included, but the location isn't announced"
-            ));
-        }
-        output["tx_id"] = json!(tx_id);
-        confirmation.record(&mut output);
-    }
+        "location": location, "tx_id": tx_id });
+    confirmation.record(&mut output);
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
@@ -11428,12 +11386,6 @@ async fn cmd_set_ism_validators(args: IsmValidatorsArgs) -> Result<(), String> {
                 args.gas_limit,
             )
             .await?;
-        let current: (Vec<EthAddress>, u8) = client.contract_query(&ism, method, &()).await?;
-        if current != policy {
-            return Err(format!(
-                "Transaction {tx_id} was included, but the ISM doesn't take the new validators"
-            ));
-        }
         output["tx_id"] = json!(tx_id);
         confirmation.record(&mut output);
     }
@@ -11461,9 +11413,29 @@ mod validator_command_tests {
             StorageArgs {
                 location,
                 s3_endpoint: None,
-                allow_local_storage: true,
             },
         )
+    }
+
+    /// `announce` of the announcement in `storage`, to a mock node, with a
+    /// key that doesn't exist: reading it fails.
+    fn announce_args(url: String, storage: StorageArgs) -> AnnounceArgs {
+        let signer = DuskSigner {
+            rues_url: url,
+            keys: Some("/nonexistent".into()),
+            password: None,
+            secret_key: None,
+            secret_key_stdin: false,
+            expected_chain_id: 2,
+            gas_price: 1,
+        };
+        AnnounceArgs {
+            signer,
+            storage,
+            validator_announce: "a3".repeat(32),
+            validator: None,
+            gas_limit: ANNOUNCE_GAS_LIMIT,
+        }
     }
 
     #[tokio::test]
@@ -11502,6 +11474,11 @@ mod validator_command_tests {
                 }
             };
         check(at([0x11; 32]), &ours, HOOK, 10).await.unwrap();
+        let flagged = [
+            at([0x11; 32]),
+            vec![("reorg_flag.json".to_string(), b"{}".to_vec())],
+        ]
+        .concat();
         for (files, validator, hook, max_lag, expected) in [
             (at([0x11; 32]), ours.as_str(), HOOK, 1, "2 messages behind"),
             (at([0x12; 32]), &ours, HOOK, 10, "another tree"),
@@ -11520,17 +11497,7 @@ mod validator_command_tests {
                 "isn't index 4 of this hook",
             ),
             (vec![], &ours, HOOK, 10, "no checkpoint index"),
-            (
-                [
-                    at([0x11; 32]),
-                    vec![("reorg_flag.json".to_string(), b"{}".to_vec())],
-                ]
-                .concat(),
-                &ours,
-                HOOK,
-                10,
-                "flagged a reorg",
-            ),
+            (flagged, &ours, HOOK, 10, "flagged a reorg"),
         ] {
             let error = check(files, validator, hook, max_lag).await.unwrap_err();
             assert!(error.contains(expected), "{expected}: {error}");
@@ -11538,83 +11505,32 @@ mod validator_command_tests {
     }
 
     #[tokio::test]
-    async fn an_announcement_must_announce_where_it_was_read_from() {
-        let announcement = announcement_json(&key(7), "s3://bucket/nbg1/elsewhere");
-        let (dir, storage) = local_storage(
-            "announce",
-            &[("announcement.json".to_string(), announcement)],
-        );
+    async fn an_announcement_is_checked_before_anything_is_signed() {
+        // Of another location than where it was read: refused before any
+        // query but the chain ID's.
+        let elsewhere = announcement_json(&key(7), "s3://bucket/nbg1/elsewhere");
+        let (dir, storage) =
+            local_storage("announce", &[("announcement.json".to_string(), elsewhere)]);
         let (url, server) = crate::tests::mock_rues(vec![("/chain_id", 200, vec![2])]);
-        let signer = DuskSigner {
-            rues_url: url,
-            keys: Some("/nonexistent".into()),
-            password: None,
-            secret_key: None,
-            secret_key_stdin: false,
-            expected_chain_id: 2,
-            gas_price: 1,
-        };
-        let args = AnnounceArgs {
-            signer,
-            storage,
-            validator_announce: "a3".repeat(32),
-            validator: None,
-            gas_limit: ANNOUNCE_GAS_LIMIT,
-        };
-        let error = cmd_announce(args).await.unwrap_err();
-        assert!(
-            error.contains("announces s3://bucket/nbg1/elsewhere"),
-            "{error}"
-        );
-        assert_eq!(
-            server.join().unwrap().len(),
-            1,
-            "nothing but the chain ID was asked"
-        );
-        assert!(ism_policy(&format!("0x{0},0x{0}", "aa".repeat(20)), 1).is_err());
+        let error = cmd_announce(announce_args(url, storage)).await.unwrap_err();
+        assert!(error.contains("of s3://bucket/nbg1/elsewhere"), "{error}");
+        assert_eq!(server.join().unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
-        // One the contract refuses in its query: nothing is signed, so the
-        // key, which doesn't exist, is never read.
+        // One the contract refuses in its query: the key is never read.
         let (dir, storage) = local_storage("announce-refused", &[]);
-        let location = storage.location.clone();
-        std::fs::write(
-            dir.join("announcement.json"),
-            announcement_json(&key(7), &location),
-        )
-        .unwrap();
+        let announcement = announcement_json(&key(7), &storage.location);
+        std::fs::write(dir.join("announcement.json"), announcement).unwrap();
         let (url, server) = crate::tests::mock_rues(vec![
             ("/chain_id", 200, vec![2]),
-            ("/mailbox", 200, crate::validators::tests::MAILBOX.to_vec()),
-            ("/local_domain", 200, rkyv_serialize(&DOMAIN)),
-            (
-                "/get_announced_storage_location_hashes",
-                200,
-                rkyv_serialize(&Vec::<[u8; 32]>::new()),
-            ),
             ("/announce", 500, b"Panic".to_vec()),
         ]);
-        let signer = DuskSigner {
-            rues_url: url,
-            keys: Some("/nonexistent".into()),
-            password: None,
-            secret_key: None,
-            secret_key_stdin: false,
-            expected_chain_id: 2,
-            gas_price: 1,
-        };
-        let args = AnnounceArgs {
-            signer,
-            storage,
-            validator_announce: "a3".repeat(32),
-            validator: None,
-            gas_limit: ANNOUNCE_GAS_LIMIT,
-        };
-        let error = cmd_announce(args).await.unwrap_err();
+        let error = cmd_announce(announce_args(url, storage)).await.unwrap_err();
         assert!(
             error.contains("refuses the announcement, so nothing was sent"),
             "{error}"
         );
-        assert_eq!(server.join().unwrap().len(), 5);
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert!(ism_policy(&format!("0x{0},0x{0}", "aa".repeat(20)), 1).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

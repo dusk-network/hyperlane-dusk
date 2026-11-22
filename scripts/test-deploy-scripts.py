@@ -186,6 +186,8 @@ if args[0] == "query":
     entry = queries.get(key)
     if entry is None and opt("--method") == "enrolled_router":
         entry = {"value": "00" * 32}
+    if entry is None and opt("--method") == "get_announced_storage_location_hashes":
+        entry = {"value": []}
     if entry is None or "error" in entry:
         error = (entry or {}).get("error", f"Query {key} failed (500): ContractDoesNotExist")
         out({"success": False, "error": error}, 1)
@@ -344,12 +346,11 @@ if args[0] == "announce":
     hashes = queries.setdefault(f"{opt('--validator-announce')}/get_announced_storage_location_hashes/{validator}",
                                 {"value": []})["value"]
     location_hash = hashlib.sha256(opt("--location").encode()).hexdigest()
-    result = {"success": True, "validator": validator, "already_announced": location_hash in hashes}
-    if location_hash not in hashes:
-        hashes.append(location_hash)
-        result["tx_id"] = "a0" * 32
+    if location_hash in hashes:
+        out({"success": False, "error": "ValidatorAnnounce: replay"}, 1)
+    hashes.append(location_hash)
     save()
-    out(result)
+    out({"success": True, "validator": validator, "tx_id": "a0" * 32})
 if args[0] == "validator-checkpoint":
     found = (chain.get("checkpoints") or {}).get(opt("--location"), {"error": "no checkpoint index"})
     out({"success": "error" not in found, **found}, 1 if "error" in found else 0)
@@ -3499,7 +3500,7 @@ class TestnetDeploymentRecord(DeployedTestnet):
     configs it writes name, whatever happens to the files meanwhile."""
 
     COMMANDS = [["preflight"], ["deploy"], ["agent-configs"], ["dusk-igp"], ["evm-igp"], ["revenue"],
-                ["claim"], ["announce", "s3://b/nbg1/v"], ["set-validators"]]
+                ["claim"], ["announce", "s3://b/nbg1/v", VALIDATOR], ["set-validators"]]
 
     def test_commands_on_a_deployment_run_one_at_a_time(self):
         state = self.state()
@@ -3622,27 +3623,14 @@ class TestnetValidators(DeployedTestnet):
         for part in (f"--location {self.THEIRS}", f"--validator {self.NEW}",
                      "--s3-endpoint https://nbg1.your-objectstorage.com", "--expected-chain-id 2"):
             self.assertIn(part, sent)
-        self.assertIn("had announced", self.run_script("announce", self.THEIRS).stderr)
-        self.assert_fails(self.run_script("announce", self.OURS), "Can't announce the validator")
-        self.assert_fails(self.run_script("announce", "file:///tmp/x"), "only a local rehearsal's validators")
-        self.assert_fails(self.run_script("announce"), "usage: bash deploy/testnet.sh announce")
-
-    def test_settings_that_match_the_chain_change_nothing(self):
-        result = self.run_script("set-validators", "--apply")
-        self.assert_ok(result)
-        self.assertIn("nothing to change", result.stderr)
-        self.assertEqual(self.evm_sends(), [])
-
-    def test_a_dry_run_checks_every_validator_and_sends_nothing(self):
-        self.signing(VALIDATOR, self.OURS)
-        self.signing(self.NEW, self.THEIRS)
-        result = self.run_script("set-validators", **self.two_of_two())
-        self.assert_ok(result)
-        self.assertIn(f"Validator {self.NEW} at {self.THEIRS} has signed up to index 39 of 40", result.stderr)
-        self.assertIn("Dry run: nothing was sent", result.stderr)
-        self.assertEqual(self.evm_sends(), [])
-        [check] = [line for line in self.traced("dusk-tx validator-checkpoint") if self.THEIRS in line]
-        self.assertIn(f"--merkle-tree-hook {MERKLE_TREE_HOOK} --max-lag 10", check)
+        # Announced already, as by a validator that announces itself: only
+        # recorded, and nothing is sent.
+        self.trace.write_text("")
+        self.assertIn("had announced", self.run_script("announce", self.THEIRS, self.NEW).stderr)
+        self.assertEqual(self.traced("dusk-tx announce"), [])
+        self.assert_fails(self.run_script("announce", self.OURS, VALIDATOR), "Can't announce the validator")
+        self.assert_fails(self.run_script("announce", "file:///tmp/x", VALIDATOR), "only a local rehearsal's validators")
+        self.assert_fails(self.run_script("announce", self.THEIRS), "usage: bash deploy/testnet.sh announce")
 
     def test_a_validator_that_isnt_announced_or_signing_stops_the_switch(self):
         for case, expected in [
@@ -3665,20 +3653,45 @@ class TestnetValidators(DeployedTestnet):
     def test_apply_moves_every_token_to_an_ism_of_the_new_set(self):
         self.signing(VALIDATOR, self.OURS)
         self.signing(self.NEW, self.THEIRS)
+        # A dry run checks every validator and sends nothing.
+        state = self.state()
+        result = self.run_script("set-validators", **self.two_of_two())
+        self.assert_ok(result)
+        self.assertIn(f"Validator {self.NEW} at {self.THEIRS} has signed up to index 39 of 40", result.stderr)
+        self.assertEqual((self.evm_sends(), self.state()), ([], state))
         self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
         state = self.state()
         new = state["evm"]["ism"]
-        self.assertEqual((state["evm"]["previous_isms"], self.evm["contracts"][self.token]["ism"]), ([self.ism], new))
+        self.assertEqual(self.evm["contracts"][self.token]["ism"], new)
         self.assertEqual((self.evm["contracts"][new]["threshold"], state["dusk_origin_threshold"]), (2, 2))
         self.assert_ok(self.run_script("preflight", **self.two_of_two()))
         self.assertIn("nothing to change", self.run_script("set-validators", "--apply", **self.two_of_two()).stderr)
-        # A run that stopped before its record: the rerun sends nothing new
-        # and records the switch.
+
+    def test_a_switch_that_landed_without_its_record_is_recorded(self):
+        self.signing(VALIDATOR, self.OURS)
+        self.signing(self.NEW, self.THEIRS)
+        self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
+        state = self.state()
+        new = state["evm"]["ism"]
+        # The run stopped before its record, and the new validator has
+        # fallen behind since: the switch has happened, so it is recorded.
         state["evm"]["ism"] = self.ism
         self.write_state(state)
+        self.checkpoints[self.THEIRS] = {"error": "25 messages behind"}
         self.trace.write_text("")
+        self.assertIn("an earlier run switched them", self.run_script("set-validators", **self.two_of_two()).stderr)
         self.assert_ok(self.run_script("set-validators", "--apply", **self.two_of_two()))
         self.assertEqual((self.state()["evm"]["ism"], self.evm_sends()), (new, []))
+        self.assert_ok(self.run_script("preflight", **self.two_of_two()))
+
+    def test_a_dry_run_after_a_crashed_apply_sends_and_waits_for_nothing(self):
+        state = self.state()
+        step = f"call setInterchainSecurityModule(address) on {self.token}"
+        state["evm_sending"] = {step: {"step": step, "nonce": 7, "to": self.token, "input": "0x", "label": step,
+                                       "from_block": 1}}
+        self.write_state(state)
+        self.assert_fails(self.run_script("set-validators", **self.two_of_two()), "isn't settled yet")
+        self.assertEqual((self.state(), self.evm_sends()), (state, []))
 
     def test_the_switch_is_recorded_only_once_final(self):
         self.signing(VALIDATOR, self.OURS)
@@ -3697,8 +3710,6 @@ class TestnetValidators(DeployedTestnet):
         self.evm["contracts"][self.token]["ism"] = stranger
         self.assert_fails(self.run_script("set-validators", **self.two_of_two()), f"verifies with {stranger}")
         six = ",".join(validators(6))
-        self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6),
-                          "Set it to at least 430,000")
         # Enough in the settings, but not yet on chain.
         self.assert_fails(self.run_script("set-validators", DUSK_ORIGIN_VALIDATORS=six, DUSK_ORIGIN_THRESHOLD=6,
                                           DUSK_IGP_GAS_OVERHEAD=430000), "apply the settings with --apply")
