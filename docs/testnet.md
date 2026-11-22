@@ -474,7 +474,6 @@ absolute path.
   cd hyperlane-monorepo/rust/main
   export DUSK_TX_BIN=/path/to/dusk-tx
   export HYP_CHAINS_SEPOLIA_SIGNER_KEY=0x...      # relayer's Sepolia key
-  export AWS_ENDPOINT_URL=...                     # CHECKPOINT_S3_ENDPOINT, for the validators' buckets
   # plus the relayer's Dusk key file (see Dusk keys) at the config's keyFile
   CONFIG_FILES=/path/to/relayer.json ./target/release/relayer
   ```

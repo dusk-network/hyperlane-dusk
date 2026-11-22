@@ -3217,12 +3217,11 @@ cmd_claim() {
 VALIDATOR_CHECKPOINT_LAG="${VALIDATOR_CHECKPOINT_LAG:-10}"
 OPERATOR_DUSK_RUES_URL="${OPERATOR_DUSK_RUES_URL:-https://testnet.nodes.dusk.network/}"
 
-# dusk-tx's options for a validator's storage: CHECKPOINT_S3_ENDPOINT. A
-# file:// location is read only in a local rehearsal
+# A validator's storage location: s3:// or gs://, which dusk-tx reads from
+# the provider the location names, or file:// only in a local rehearsal
 # (LOCAL_REHEARSAL_CHECKPOINTS=1, with both endpoints local).
-storage_options() {
+check_storage_location() {
     local location="$1"
-    [ -z "${CHECKPOINT_S3_ENDPOINT:-}" ] || printf '%s\n' --s3-endpoint "$CHECKPOINT_S3_ENDPOINT"
     if [[ "$location" == file://* ]]; then
         [ "${LOCAL_REHEARSAL_CHECKPOINTS:-0}" = 1 ] && is_local_url "$DUSK_RUES_URL" && is_local_url "$EVM_RPC" \
             || fail "$location is on this host: only a local rehearsal's validators keep their checkpoints there"
@@ -3234,13 +3233,12 @@ storage_options() {
 # location. One it announced already, as a validator with a Dusk account
 # does itself, is only recorded.
 cmd_announce() {
-    local location="${1:-}" validator="${2:-}" options=() out hashes hash
+    local location="${1:-}" validator="${2:-}" out hashes hash
     [ -n "$location" ] && [[ "$validator" =~ ^0x[0-9a-fA-F]{40}$ ]] && [ "$#" = 2 ] \
         || fail "usage: bash deploy/testnet.sh announce <location> <validator address>"
     validator="$(lower "$validator")"
     check_dusk_deployment
-    out="$(storage_options "$location")" || exit 1
-    [ -z "$out" ] || mapfile -t options <<<"$out"
+    check_storage_location "$location"
     hashes="$(dusk_value "the locations validator $validator announced" \
         --contract "$(state_get '.dusk.validator_announce')" --method get_announced_storage_location_hashes \
         --return-type bytes32-list --arg-eth-address "$validator")" || exit 1
@@ -3251,7 +3249,7 @@ cmd_announce() {
         require DUSK_KEYS DUSK_CONSENSUS_PASSWORD
         out="$(dusk_tx announce --rues-url "$DUSK_RUES_URL" --keys "$DUSK_KEYS" \
             --validator-announce "$(state_get '.dusk.validator_announce')" --location "$location" \
-            --validator "$validator" "${options[@]}" --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
+            --validator "$validator" --expected-chain-id "$DUSK_EXPECTED_CHAIN_ID")" \
             || fail "Can't announce the validator: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
         ok "Announced validator $validator at $location ($(jq -r '.tx_id' <<<"$out"))"
     fi
@@ -3261,7 +3259,7 @@ cmd_announce() {
 # The validator has announced the location $STATE records for it as its
 # newest, which the relayer reads, and signs current checkpoints there.
 check_dusk_origin_validator() {
-    local validator="$1" location hashes hash options=() out
+    local validator="$1" location hashes hash out
     location="$(state_json | jq -r --arg v "$validator" '.dusk_origin_locations[$v] // empty')"
     [ -n "$location" ] \
         || fail "$STATE records no location for validator $validator: bash deploy/testnet.sh announce <its location>"
@@ -3271,11 +3269,10 @@ check_dusk_origin_validator() {
     hash="$(cast keccak "$location")" || fail "Can't hash $location"
     jq -e --arg h "${hash#0x}" '.[-1] == $h' <<<"$hashes" >/dev/null \
         || fail "Validator $validator's newest announcement isn't $location: bash deploy/testnet.sh announce <its location>"
-    out="$(storage_options "$location")" || exit 1
-    [ -z "$out" ] || mapfile -t options <<<"$out"
+    check_storage_location "$location"
     out="$("$DUSK_TX" validator-checkpoint --rues-url "$DUSK_RUES_URL" --location "$location" \
         --validator "$validator" --origin-domain "$DUSK_DOMAIN" --merkle-tree-hook "$(state_get '.dusk.merkle_tree_hook')" \
-        --max-lag "$VALIDATOR_CHECKPOINT_LAG" "${options[@]}")" \
+        --max-lag "$VALIDATOR_CHECKPOINT_LAG")" \
         || fail "Validator $validator isn't signing at $location: $(jq -r '.error // empty' <<<"$out" 2>/dev/null)"
     ok "Validator $validator at $location has signed up to index $(jq -r '.index' <<<"$out") of $(jq -r '.count' <<<"$out")"
 }

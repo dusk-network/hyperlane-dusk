@@ -3620,8 +3620,7 @@ class TestnetValidators(DeployedTestnet):
         self.assertIn(f"Announced validator {self.NEW} at {self.THEIRS}", result.stderr)
         self.assertEqual(self.state()["dusk_origin_locations"], {self.NEW: self.THEIRS})
         [sent] = self.traced("dusk-tx announce")
-        for part in (f"--location {self.THEIRS}", f"--validator {self.NEW}",
-                     "--s3-endpoint https://nbg1.your-objectstorage.com", "--expected-chain-id 2"):
+        for part in (f"--location {self.THEIRS}", f"--validator {self.NEW}", "--expected-chain-id 2"):
             self.assertIn(part, sent)
         # Announced already, as by a validator that announces itself: only
         # recorded, and nothing is sent.

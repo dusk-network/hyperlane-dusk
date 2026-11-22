@@ -1,6 +1,6 @@
 //! What a Hyperlane validator writes to its checkpoint storage: its signed
-//! announcement and checkpoints, where an `s3://` or `file://` location
-//! keeps them, and who signed them. The JSON is hyperlane-core's
+//! announcement and checkpoints, where an `s3://`, `gs://` or `file://`
+//! location keeps them, and who signed them. The JSON is hyperlane-core's
 //! `SignedType`; locations parse as the agents' `CheckpointSyncerConf`.
 
 use std::path::PathBuf;
@@ -18,115 +18,156 @@ use serde::Deserialize;
 /// bytes.
 const MAX_OBJECT_BYTES: usize = 50 * 1024 - 1;
 
+/// The domain an S3 region's buckets are under: Hetzner's, DigitalOcean's,
+/// or for any other region Amazon's. This mirrors the relayer's mapping in our
+/// hyperlane-monorepo fork (`rust/main/hyperlane-base/src/types/s3_storage.rs`)
+/// and must stay in sync with it.
+fn s3_domain(region: &str) -> String {
+    match region {
+        "fsn1" | "nbg1" | "hel1" => format!("{region}.your-objectstorage.com"),
+        "nyc3" | "ams3" | "sfo2" | "sfo3" | "sgp1" | "lon1" | "fra1" | "tor1" | "blr1" | "syd1"
+        | "atl1" | "ric1" | "mkc1" => format!("{region}.digitaloceanspaces.com"),
+        _ => format!("s3.{region}.amazonaws.com"),
+    }
+}
+
 /// A validator's checkpoint storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Storage {
     /// `file://<path>`, a local rehearsal's.
     Local(PathBuf),
-    /// `s3://bucket/region[/folder]`, read path-style from an endpoint.
-    S3 {
-        bucket: String,
-        folder: Option<String>,
+    /// `s3://bucket/region[/folder]` or `gs://bucket[/folder]/<key>`, read
+    /// anonymously over HTTPS: the bucket's host, virtual-hosted on the
+    /// provider the S3 region names, and the path to its objects.
+    Remote {
+        gcs: bool,
+        host: String,
+        path: Vec<String>,
     },
 }
 
 impl Storage {
     pub fn parse(location: &str) -> Result<Self, String> {
-        let bad = || {
-            format!("Can't read the storage location '{location}': expected s3://bucket/region[/folder] or file://<path>")
-        };
         if let Some(path) = location.strip_prefix("file://") {
             return Ok(Storage::Local(PathBuf::from(path)));
         }
-        let rest = location.strip_prefix("s3://").ok_or_else(bad)?;
+        let bad = |why: &str| format!("Can't read the storage location '{location}': {why}");
+        let expected =
+            "expected s3://bucket/region[/folder], gs://bucket[/folder]/<key> or file://<path>";
+        let (gcs, rest) = match location.split_once("://") {
+            Some(("s3", rest)) => (false, rest),
+            Some(("gs", rest)) => (true, rest),
+            _ => return Err(bad(expected)),
+        };
         let parts: Vec<&str> = rest.split('/').collect();
-        if parts.len() < 2 || rest.contains("://") {
-            return Err(bad());
+        if parts.len() < 2 || rest.contains("://") || (gcs && parts.len() > 3) {
+            return Err(bad(expected));
         }
-        let folder = parts[2..].join("/");
-        Ok(Storage::S3 {
-            bucket: parts[0].to_owned(),
-            folder: (!folder.is_empty()).then_some(folder),
-        })
+        // The relayer ignores the GCS announcement's key after the folder.
+        let (host, path) = if gcs {
+            (
+                "storage.googleapis.com".to_string(),
+                &parts[..parts.len() - 1],
+            )
+        } else {
+            let label = |s: &str| {
+                !s.is_empty()
+                    && s.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            };
+            let (bucket, region) = (parts[0], parts[1]);
+            if !label(bucket) || !label(region) {
+                return Err(bad("an S3 bucket and region have only lowercase letters, digits and hyphens here: a dot breaks the provider's certificate for the bucket's host"));
+            }
+            (format!("{bucket}.{}", s3_domain(region)), &parts[2..])
+        };
+        if path.iter().any(|s| {
+            s.is_empty()
+                || *s == "."
+                || *s == ".."
+                || s.contains(|c: char| c.is_control() || matches!(c, '\\' | '%'))
+        }) {
+            return Err(bad("its bucket or folder has a part a key can't have"));
+        }
+        let path = path.iter().map(|s| s.to_string()).collect();
+        Ok(Storage::Remote { gcs, host, path })
+    }
+
+    fn gcs(&self) -> bool {
+        matches!(self, Storage::Remote { gcs: true, .. })
     }
 
     pub fn announcement(&self) -> &'static str {
-        "announcement.json"
+        if self.gcs() {
+            "gcsAnnouncementKey"
+        } else {
+            "announcement.json"
+        }
     }
 
     pub fn latest_index(&self) -> &'static str {
         match self {
             Storage::Local(_) => "index.json",
-            Storage::S3 { .. } => "checkpoint_latest_index.json",
+            _ if self.gcs() => "gcsLatestIndexKey",
+            _ => "checkpoint_latest_index.json",
         }
     }
 
     pub fn checkpoint(&self, index: u32) -> String {
         match self {
             Storage::Local(_) => format!("{index}_with_id.json"),
-            Storage::S3 { .. } => format!("checkpoint_{index}_with_id.json"),
+            _ => format!("checkpoint_{index}_with_id.json"),
         }
     }
 
-    /// A reorg the validator saw: while it is there, the relayer delivers
-    /// nothing through an ISM that lists the validator.
-    pub fn reorg_flag(&self) -> &'static str {
-        "reorg_flag.json"
+    /// Whether the validator flagged a reorg: while it has, the relayer
+    /// delivers nothing through an ISM that lists it. For GCS the relayer
+    /// reads the flag at the bucket's root too.
+    pub async fn reorg_flagged(&self) -> Result<bool, String> {
+        let Storage::Remote {
+            gcs: true,
+            host,
+            path,
+        } = self
+        else {
+            return Ok(self.read("reorg_flag.json").await?.is_some());
+        };
+        for depth in 1..=path.len() {
+            if read_url(&url(host, &path[..depth], "gcsReorgFlagKey")?)
+                .await?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
-    /// Read the object `name`: its bytes, or `None` when it isn't there. S3
-    /// objects are read anonymously and path-style from `endpoint`, as the
-    /// agents read them with AWS_ENDPOINT_URL set, without following
-    /// redirects.
-    pub async fn read(
-        &self,
-        name: &str,
-        endpoint: Option<&Url>,
-    ) -> Result<Option<Vec<u8>>, String> {
+    /// The URL the object `name` is read from.
+    pub fn url(&self, name: &str) -> Result<Url, String> {
+        match self {
+            Storage::Local(_) => Err("A file:// location has no URL".into()),
+            Storage::Remote { host, path, .. } => url(host, path, name),
+        }
+    }
+
+    /// Read the object `name`: its bytes, or `None` when it isn't there.
+    pub async fn read(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
         match self {
             Storage::Local(dir) => read_file(&dir.join(name)),
-            Storage::S3 { bucket, folder } => {
-                let mut url = endpoint
-                    .ok_or("Reading an s3:// location needs the S3 endpoint (--s3-endpoint)")?
-                    .clone();
-                let mut segments = vec![bucket.as_str()];
-                segments.extend(folder.iter().flat_map(|folder| folder.split('/')));
-                segments.push(name);
-                if segments.iter().any(|segment| {
-                    segment.is_empty()
-                        || *segment == "."
-                        || *segment == ".."
-                        || segment
-                            .chars()
-                            .any(|c| c.is_control() || matches!(c, '\\' | '%'))
-                }) {
-                    return Err(format!(
-                        "'{bucket}' or its folder has a part a key can't have"
-                    ));
-                }
-                url.path_segments_mut()
-                    .map_err(|()| "The S3 endpoint can't take a path".to_string())?
-                    .pop_if_empty()
-                    .extend(&segments);
-                read_url(&url).await
-            }
+            _ => read_url(&self.url(name)?).await,
         }
     }
 }
 
-/// Parse an S3 endpoint as the agents' AWS_ENDPOINT_URL takes it.
-pub fn parse_endpoint(endpoint: &str) -> Result<Url, String> {
-    let url = Url::parse(endpoint).map_err(|e| format!("Invalid S3 endpoint '{endpoint}': {e}"))?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-    {
-        return Err(format!(
-            "Invalid S3 endpoint '{endpoint}': expected http(s)://host[:port][/path]"
-        ));
-    }
+fn url(host: &str, path: &[String], name: &str) -> Result<Url, String> {
+    let mut url = Url::parse(&format!("https://{host}/"))
+        .map_err(|e| format!("Can't read from {host}: {e}"))?;
+    url.path_segments_mut()
+        .map_err(|()| format!("Can't read from {host}"))?
+        .pop_if_empty()
+        .extend(path)
+        .push(name);
     Ok(url)
 }
 
@@ -404,42 +445,42 @@ pub(crate) mod tests {
             .contains("duplicate field"));
     }
 
-    #[tokio::test]
-    async fn locations_are_where_the_agents_keep_them_and_stay_in_their_bucket() {
-        let s3 = Storage::parse("s3://dusk-hyperlane-testnet/nbg1/validator-1").unwrap();
-        assert_eq!(
-            s3,
-            Storage::S3 {
-                bucket: "dusk-hyperlane-testnet".into(),
-                folder: Some("validator-1".into())
-            }
-        );
-        assert_eq!(s3.checkpoint(2), "checkpoint_2_with_id.json");
+    #[test]
+    fn objects_are_read_where_each_provider_keeps_them() {
+        let url = |location: &str| {
+            Storage::parse(location)
+                .and_then(|s| s.url(s.latest_index()))
+                .map(String::from)
+        };
+        for (location, expected) in [
+            ("s3://op/nbg1/v", "https://op.nbg1.your-objectstorage.com/v/checkpoint_latest_index.json"),
+            ("s3://op/ams3/v/w", "https://op.ams3.digitaloceanspaces.com/v/w/checkpoint_latest_index.json"),
+            ("s3://op/eu-west-1", "https://op.s3.eu-west-1.amazonaws.com/checkpoint_latest_index.json"),
+            ("s3://op/no-such-region-9/v", "https://op.s3.no-such-region-9.amazonaws.com/v/checkpoint_latest_index.json"),
+            ("gs://hyperlane-testnet4-validator-0/sepolia/gcsAnnouncementKey", "https://storage.googleapis.com/hyperlane-testnet4-validator-0/sepolia/gcsLatestIndexKey"),
+            ("gs://b.c/gcsAnnouncementKey", "https://storage.googleapis.com/b.c/gcsLatestIndexKey"),
+        ] {
+            assert_eq!(url(location).unwrap(), expected);
+        }
         assert_eq!(
             Storage::parse("file:///v").unwrap().checkpoint(2),
             "2_with_id.json"
         );
-        for bad in [
-            "s3://bucket",
-            "gs://b/f",
-            "https://example.com/x",
-            "s3://a://b/c",
+        for (bad, why) in [
+            ("s3://bucket", "expected"),
+            ("gs://b", "expected"),
+            ("gs://b/f/g/k", "expected"),
+            ("https://example.com/x", "expected"),
+            ("s3://a://b/c", "expected"),
+            ("s3://my.bucket/eu-west-1", "a dot"),
+            ("s3://B/nbg1", "a dot"),
+            ("s3://b/nbg1/a/../c", "can't have"),
+            ("s3://b/nbg1/a\t", "can't have"),
+            ("s3://b/nbg1/", "can't have"),
+            ("gs://../f/k", "can't have"),
+            ("gs://b/%2e/k", "can't have"),
         ] {
-            assert!(Storage::parse(bad).is_err(), "{bad}");
-        }
-        assert!(parse_endpoint("https://user:pw@host").is_err());
-        let endpoint = parse_endpoint("http://127.0.0.1:9/").unwrap();
-        for location in [
-            "s3://../nbg1/f",
-            "s3://b/nbg1/a/../c",
-            "s3://b/nbg1/a\t",
-            "s3://b%2F/nbg1",
-        ] {
-            let read = Storage::parse(location)
-                .unwrap()
-                .read("index.json", Some(&endpoint))
-                .await;
-            assert!(read.unwrap_err().contains("can't have"), "{location}");
+            assert!(Storage::parse(bad).unwrap_err().contains(why), "{bad}");
         }
     }
 }

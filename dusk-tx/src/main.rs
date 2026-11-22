@@ -3052,8 +3052,6 @@ mod tests {
                 &id,
                 "--location",
                 "s3://b/nbg1/v",
-                "--s3-endpoint",
-                "http://127.0.0.1:9/",
             ],
             vec![
                 "set-ism-validators",
@@ -11143,33 +11141,15 @@ impl DuskSigner {
     }
 }
 
-/// A validator's storage location: s3:// read through --s3-endpoint, as the
-/// agents read it with AWS_ENDPOINT_URL, or file:// in a local rehearsal.
-#[derive(clap::Args)]
-struct StorageArgs {
-    /// The validator's storage location, as it announces it.
-    #[arg(long)]
-    location: String,
-    /// The S3-compatible endpoint s3:// locations are read from.
-    #[arg(long)]
-    s3_endpoint: Option<String>,
-}
-
-impl StorageArgs {
-    fn open(&self) -> Result<(validators::Storage, Option<reqwest::Url>), String> {
-        let storage = validators::Storage::parse(&self.location)?;
-        let endpoint = self.s3_endpoint.as_deref().map(validators::parse_endpoint);
-        Ok((storage, endpoint.transpose()?))
-    }
-}
-
 /// `announce`'s arguments.
 #[derive(clap::Args)]
 struct AnnounceArgs {
     #[command(flatten)]
     signer: DuskSigner,
-    #[command(flatten)]
-    storage: StorageArgs,
+    /// The validator's storage location, as it announces it: s3://, gs://,
+    /// or file:// in a local rehearsal.
+    #[arg(long)]
+    location: String,
     /// ValidatorAnnounce contract ID (64 hex chars).
     #[arg(long)]
     validator_announce: String,
@@ -11186,8 +11166,10 @@ struct AnnounceArgs {
 struct CheckpointArgs {
     #[arg(long, default_value = "http://localhost:8080/")]
     rues_url: String,
-    #[command(flatten)]
-    storage: StorageArgs,
+    /// The validator's storage location, as it announces it: s3://, gs://,
+    /// or file:// in a local rehearsal.
+    #[arg(long)]
+    location: String,
     /// The validator (20-byte hex).
     #[arg(long)]
     validator: String,
@@ -11231,11 +11213,11 @@ async fn cmd_announce(args: AnnounceArgs) -> Result<(), String> {
         .as_deref()
         .map(parse_eth_address)
         .transpose()?;
-    let (storage, endpoint) = args.storage.open()?;
-    let location = &args.storage.location;
+    let storage = validators::Storage::parse(&args.location)?;
+    let location = &args.location;
     let (client, chain_id) = args.signer.bind().await?;
     let json = storage
-        .read(storage.announcement(), endpoint.as_ref())
+        .read(storage.announcement())
         .await?
         .ok_or_else(|| format!("No announcement in {location}: has the validator started?"))?;
     let announcement = validators::Announcement::parse(&json)?;
@@ -11284,20 +11266,18 @@ async fn cmd_announce(args: AnnounceArgs) -> Result<(), String> {
 async fn cmd_validator_checkpoint(args: CheckpointArgs) -> Result<(), String> {
     let validator = parse_eth_address(&args.validator)?;
     let hook = parse_bytes32(&args.merkle_tree_hook)?;
-    let (storage, endpoint) = args.storage.open()?;
-    let read = |name: String| {
-        let (storage, endpoint) = (&storage, endpoint.as_ref());
-        async move { storage.read(&name, endpoint).await }
-    };
-    if read(storage.reorg_flag().into()).await?.is_some() {
+    let storage = validators::Storage::parse(&args.location)?;
+    if storage.reorg_flagged().await? {
         return Err("The validator flagged a reorg: while the flag is there, the relayer delivers nothing through an ISM that lists it".into());
     }
-    let index = read(storage.latest_index().into())
+    let index = storage
+        .read(storage.latest_index())
         .await?
         .ok_or("The validator has written no checkpoint index: has it signed anything yet?")?;
     let index: u32 =
         serde_json::from_slice(&index).map_err(|e| format!("Not a checkpoint index: {e}"))?;
-    let checkpoint = read(storage.checkpoint(index))
+    let checkpoint = storage
+        .read(&storage.checkpoint(index))
         .await?
         .ok_or_else(|| format!("No checkpoint at the latest index, {index}"))?;
     let checkpoint = validators::Checkpoint::parse(&checkpoint)?;
@@ -11400,7 +11380,7 @@ mod validator_command_tests {
         address_of, announcement_json, checkpoint_json, key, DOMAIN, HOOK,
     };
 
-    fn local_storage(name: &str, files: &[(String, Vec<u8>)]) -> (PathBuf, StorageArgs) {
+    fn local_storage(name: &str, files: &[(String, Vec<u8>)]) -> (PathBuf, String) {
         let dir = std::env::temp_dir().join(format!("dusk-tx-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -11408,18 +11388,12 @@ mod validator_command_tests {
             std::fs::write(dir.join(file), body).unwrap();
         }
         let location = format!("file://{}", dir.display());
-        (
-            dir,
-            StorageArgs {
-                location,
-                s3_endpoint: None,
-            },
-        )
+        (dir, location)
     }
 
     /// `announce` of the announcement in `storage`, to a mock node, with a
     /// key that doesn't exist: reading it fails.
-    fn announce_args(url: String, storage: StorageArgs) -> AnnounceArgs {
+    fn announce_args(url: String, location: String) -> AnnounceArgs {
         let signer = DuskSigner {
             rues_url: url,
             keys: Some("/nonexistent".into()),
@@ -11431,7 +11405,7 @@ mod validator_command_tests {
         };
         AnnounceArgs {
             signer,
-            storage,
+            location,
             validator_announce: "a3".repeat(32),
             validator: None,
             gas_limit: ANNOUNCE_GAS_LIMIT,
@@ -11454,7 +11428,7 @@ mod validator_command_tests {
             |files: Vec<(String, Vec<u8>)>, validator: &str, hook: [u8; 32], max_lag: u32| {
                 let validator = validator.to_string();
                 async move {
-                    let (dir, storage) =
+                    let (dir, location) =
                         local_storage(&format!("cp-{}-{max_lag}-{}", files.len(), hook[0]), &files);
                     let (url, _server) = crate::tests::mock_rues(vec![
                         ("/count", 200, rkyv_serialize(&7u32)),
@@ -11462,7 +11436,7 @@ mod validator_command_tests {
                     ]);
                     let args = CheckpointArgs {
                         rues_url: url,
-                        storage,
+                        location,
                         validator,
                         origin_domain: DOMAIN,
                         merkle_tree_hook: hex::encode(hook),
@@ -11509,22 +11483,26 @@ mod validator_command_tests {
         // Of another location than where it was read: refused before any
         // query but the chain ID's.
         let elsewhere = announcement_json(&key(7), "s3://bucket/nbg1/elsewhere");
-        let (dir, storage) =
+        let (dir, location) =
             local_storage("announce", &[("announcement.json".to_string(), elsewhere)]);
         let (url, server) = crate::tests::mock_rues(vec![("/chain_id", 200, vec![2])]);
-        let error = cmd_announce(announce_args(url, storage)).await.unwrap_err();
+        let error = cmd_announce(announce_args(url, location))
+            .await
+            .unwrap_err();
         assert!(error.contains("of s3://bucket/nbg1/elsewhere"), "{error}");
         assert_eq!(server.join().unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
         // One the contract refuses in its query: the key is never read.
-        let (dir, storage) = local_storage("announce-refused", &[]);
-        let announcement = announcement_json(&key(7), &storage.location);
+        let (dir, location) = local_storage("announce-refused", &[]);
+        let announcement = announcement_json(&key(7), &location);
         std::fs::write(dir.join("announcement.json"), announcement).unwrap();
         let (url, server) = crate::tests::mock_rues(vec![
             ("/chain_id", 200, vec![2]),
             ("/announce", 500, b"Panic".to_vec()),
         ]);
-        let error = cmd_announce(announce_args(url, storage)).await.unwrap_err();
+        let error = cmd_announce(announce_args(url, location))
+            .await
+            .unwrap_err();
         assert!(
             error.contains("refuses the announcement, so nothing was sent"),
             "{error}"
